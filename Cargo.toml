@@ -1,0 +1,24 @@
+[package]
+name = "processkit"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# The compiled extension is imported as `processkit._processkit` from Python.
+name = "_processkit"
+crate-type = ["cdylib"]
+
+# `extension-module` is declared as an optional Cargo feature so that `cargo test`
+# and `cargo check` work without it (the feature makes the crate non-linkable as a
+# regular dylib, which breaks unit tests that link against the extension).
+# maturin activates it when building for Python via [tool.maturin] features in pyproject.toml.
+[features]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+# abi3-py310: build once, run on CPython 3.10+ (3.9 is EOL; matches requires-python in pyproject.toml).
+pyo3 = { version = "0.23", features = ["abi3-py310"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

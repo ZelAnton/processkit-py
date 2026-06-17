@@ -1,0 +1,69 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "processkit"
+version = "0.1.0"
+description = "Python bindings to the processkit Rust crate — asyncio-native, no-orphan process containment"
+readme = "README.md"
+# abi3 wheels (cp310+): Python 3.9 reached EOL October 2025; dev tools (mypy>=2.1) require 3.10+.
+# Local dev is pinned to 3.12 via .python-version.
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Anton Zhelezniakou", email = "github@zelanton.net" }]
+keywords = ["process", "subprocess", "asyncio", "containment", "pyo3"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Framework :: AsyncIO",
+  "Typing :: Typed",
+]
+
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ZelAnton/processkit-py"
+Repository = "https://github.com/ZelAnton/processkit-py"
+Changelog = "https://github.com/ZelAnton/processkit-py/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+  "maturin>=1.0,<2.0",
+  "pytest>=9.0.3",
+  "mypy>=2.1.0",
+  "ruff>=0.15.16",
+]
+
+[tool.maturin]
+# Build abi3 wheels (cp310+) to keep the wheel matrix flat across Python versions.
+# module-name places the compiled extension at src/processkit/_processkit.pyd — inside
+# the Python package so __init__.py can import from `._processkit`.
+# bindings = "pyo3" is explicit (maturin auto-detects, but explicit avoids sdist ambiguity).
+# features activates the Cargo `extension-module` feature defined in Cargo.toml [features].
+bindings = "pyo3"
+module-name = "processkit._processkit"
+python-source = "src"
+features = ["extension-module"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+filterwarnings = ["error"]
+testpaths = ["tests"]

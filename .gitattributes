@@ -1,0 +1,11 @@
+# Default: normalize line endings to LF in the repository
+* text=auto eol=lf
+
+# Windows batch files must have CRLF — CMD will not parse them otherwise
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# PowerShell scripts work with both, but keep LF consistent with the repo default
+*.ps1  text eol=lf
+*.psm1 text eol=lf
+*.psd1 text eol=lf

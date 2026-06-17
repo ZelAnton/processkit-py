@@ -1,0 +1,49 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+tab_width = 4
+
+# Python — 4-space indent (PEP 8). `ruff format` is the source of truth for .py
+# formatting; this just keeps editors aligned before it runs.
+[*.py]
+indent_style = space
+indent_size = 4
+
+# Config files (pyproject.toml, JSON). YAML has its own section below.
+[*.{toml,json}]
+indent_style = space
+indent_size = 2
+tab_width = 2
+
+# Windows batch files must have CRLF — CMD will not parse them otherwise.
+[*.{bat,cmd}]
+end_of_line = crlf
+tab_width = 2
+
+# PowerShell (the init scripts) — spaces, LF.
+[*.{ps1,psm1,psd1}]
+indent_style = space
+indent_size = 4
+tab_width = 4
+
+# Shell scripts (init.sh, check-env.sh) must stay LF.
+[*.sh]
+indent_style = space
+indent_size = 2
+tab_width = 2
+
+# YAML cannot use tabs.
+[*.{yaml,yml}]
+indent_style = space
+indent_size = 2
+tab_width = 2
+
+# Markdown — keep trailing whitespace (hard line breaks).
+[*.md]
+trim_trailing_whitespace = false

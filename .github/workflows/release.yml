@@ -99,6 +99,8 @@ jobs:
       # Rust toolchain: maturin compiles the PyO3 extension during the build step.
       # Pinned to the same SHA as in ci.yml (dtolnay/rust-toolchain@stable).
       - uses: dtolnay/rust-toolchain@d8352f6b1d2e870bc5716e7a6d9b65c4cc244a1a # stable
+        with:
+          toolchain: stable
 
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:

@@ -52,6 +52,8 @@ jobs:
 
       # Rust requires compilation for CodeQL analysis.
       - uses: dtolnay/rust-toolchain@d8352f6b1d2e870bc5716e7a6d9b65c4cc244a1a # stable
+        with:
+          toolchain: stable
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4

@@ -98,7 +98,7 @@ jobs:
 
       # Rust toolchain: maturin compiles the PyO3 extension during the build step.
       # Pinned to the same SHA as in ci.yml (dtolnay/rust-toolchain@stable).
-      - uses: dtolnay/rust-toolchain@d8352f6b1d2e870bc5716e7a6d9b65c4cc244a1a # stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
         with:
           toolchain: stable
 
@@ -171,7 +171,7 @@ jobs:
           git tag "$PREV_TAG" "$ROOT"
 
       - name: Install git-cliff
-        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46 # v2
+        uses: taiki-e/install-action@b8cecb83565409bcc297b2df6e77f030b2a468d5 # v2
         with:
           tool: git-cliff@2
 

@@ -6,16 +6,25 @@
 //! wait is broken into ticks so that `Ctrl+C` interrupts a blocked call.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use processkit::Command as PkCommand;
 use processkit::Mechanism;
+use processkit::Outcome as PkOutcome;
+use processkit::OutputEvent as PkOutputEvent;
+use processkit::OutputEvents as PkOutputEvents;
 use processkit::ProcessGroup as PkProcessGroup;
 use processkit::ProcessResult as PkProcessResult;
+use processkit::ProcessStdin as PkProcessStdin;
 use processkit::RunningProcess as PkRunningProcess;
+use processkit::Stdin as PkStdin;
+use processkit::StdoutLines as PkStdoutLines;
+use processkit::StreamExt;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyValueError};
+use pyo3::exceptions::{PyException, PyOSError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
+use tokio::sync::Mutex;
 
 /// The one tokio runtime the binding owns, shared by the sync surface
 /// (`block_on`) and the async surface (`future_into_py`).
@@ -200,6 +209,256 @@ impl PyProcessResult {
     }
 }
 
+/// Map a stdin I/O failure (a broken pipe, a closed child) onto `OSError`.
+fn map_io_err(error: std::io::Error) -> PyErr {
+    PyOSError::new_err(error.to_string())
+}
+
+/// How a process ended: a clean exit code, a signal-kill, or a timeout.
+#[pyclass(name = "Outcome", frozen, module = "processkit")]
+struct PyOutcome {
+    inner: PkOutcome,
+}
+
+#[pymethods]
+impl PyOutcome {
+    /// The exit code, or `None` for a signal-kill / timeout.
+    #[getter]
+    fn code(&self) -> Option<i32> {
+        self.inner.code()
+    }
+
+    /// The terminating signal number (Unix), or `None`.
+    #[getter]
+    fn signal(&self) -> Option<i32> {
+        self.inner.signal()
+    }
+
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.inner.timed_out()
+    }
+
+    #[getter]
+    fn is_success(&self) -> bool {
+        self.inner.code() == Some(0)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Outcome(code={:?}, signal={:?}, timed_out={})",
+            self.inner.code(),
+            self.inner.signal(),
+            self.inner.timed_out(),
+        )
+    }
+}
+
+/// One captured line and the stream it came from (`stdout` or `stderr`).
+#[pyclass(name = "OutputEvent", frozen, module = "processkit")]
+struct PyOutputEvent {
+    is_stderr: bool,
+    text: String,
+}
+
+impl PyOutputEvent {
+    fn from_event(event: PkOutputEvent) -> Self {
+        match event {
+            PkOutputEvent::Stdout(line) => Self {
+                is_stderr: false,
+                text: line.into_text(),
+            },
+            PkOutputEvent::Stderr(line) => Self {
+                is_stderr: true,
+                text: line.into_text(),
+            },
+            // `OutputEvent` is `#[non_exhaustive]`; degrade gracefully.
+            other => Self {
+                is_stderr: false,
+                text: other.text().unwrap_or_default().to_string(),
+            },
+        }
+    }
+}
+
+#[pymethods]
+impl PyOutputEvent {
+    /// `"stdout"` or `"stderr"`.
+    #[getter]
+    fn stream(&self) -> &'static str {
+        if self.is_stderr {
+            "stderr"
+        } else {
+            "stdout"
+        }
+    }
+
+    #[getter]
+    fn is_stderr(&self) -> bool {
+        self.is_stderr
+    }
+
+    #[getter]
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OutputEvent(stream={:?}, text={:?})",
+            self.stream(),
+            self.text
+        )
+    }
+}
+
+/// The result of `RunningProcess.finish()`: the outcome plus captured stderr,
+/// without buffering stdout (which you consumed by streaming).
+#[pyclass(name = "Finished", frozen, module = "processkit")]
+struct PyFinished {
+    outcome: PkOutcome,
+    stderr: String,
+}
+
+#[pymethods]
+impl PyFinished {
+    #[getter]
+    fn outcome(&self) -> PyOutcome {
+        PyOutcome {
+            inner: self.outcome,
+        }
+    }
+
+    #[getter]
+    fn stderr(&self) -> &str {
+        &self.stderr
+    }
+
+    #[getter]
+    fn code(&self) -> Option<i32> {
+        self.outcome.code()
+    }
+
+    #[getter]
+    fn is_success(&self) -> bool {
+        self.outcome.code() == Some(0)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Finished(code={:?}, timed_out={})",
+            self.outcome.code(),
+            self.outcome.timed_out(),
+        )
+    }
+}
+
+/// A writable handle to a running process's stdin. Obtain it once via
+/// `RunningProcess.take_stdin()`; all methods are awaitable.
+#[pyclass(name = "ProcessStdin", module = "processkit")]
+struct PyProcessStdin {
+    // `None` after `close()` — writing then raises a clear error.
+    inner: Arc<Mutex<Option<PkProcessStdin>>>,
+}
+
+#[pymethods]
+impl PyProcessStdin {
+    /// Write raw bytes to the child's stdin.
+    fn write<'py>(&self, py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        let stdin = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = stdin.lock().await;
+            let writer = guard
+                .as_mut()
+                .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
+            writer.write(&data).await.map_err(map_io_err)
+        })
+    }
+
+    /// Write a line of text, appending a newline.
+    fn write_line<'py>(&self, py: Python<'py>, line: String) -> PyResult<Bound<'py, PyAny>> {
+        let stdin = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = stdin.lock().await;
+            let writer = guard
+                .as_mut()
+                .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
+            writer.write_line(&line).await.map_err(map_io_err)
+        })
+    }
+
+    /// Flush buffered writes to the child.
+    fn flush<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stdin = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = stdin.lock().await;
+            let writer = guard
+                .as_mut()
+                .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
+            writer.flush().await.map_err(map_io_err)
+        })
+    }
+
+    /// Close stdin (sending EOF to the child). Idempotent.
+    fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stdin = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let writer = { stdin.lock().await.take() };
+            match writer {
+                Some(writer) => writer.finish().await.map_err(map_io_err),
+                None => Ok(()),
+            }
+        })
+    }
+}
+
+/// An async iterator over a process's stdout, line by line:
+/// `async for line in proc.stdout_lines(): ...`.
+#[pyclass(name = "StdoutLines", module = "processkit")]
+struct PyStdoutLines {
+    inner: Arc<Mutex<PkStdoutLines>>,
+}
+
+#[pymethods]
+impl PyStdoutLines {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match stream.lock().await.next().await {
+                Some(line) => Ok(line),
+                None => Err(PyStopAsyncIteration::new_err(())),
+            }
+        })
+    }
+}
+
+/// An async iterator over stdout *and* stderr as interleaved `OutputEvent`s.
+#[pyclass(name = "OutputEvents", module = "processkit")]
+struct PyOutputEvents {
+    inner: Arc<Mutex<PkOutputEvents>>,
+}
+
+#[pymethods]
+impl PyOutputEvents {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match stream.lock().await.next().await {
+                Some(event) => Ok(PyOutputEvent::from_event(event)),
+                None => Err(PyStopAsyncIteration::new_err(())),
+            }
+        })
+    }
+}
+
 /// A command builder. Builder methods return a new `Command`, so a configured
 /// command is reusable and chains read left to right.
 #[pyclass(name = "Command", module = "processkit")]
@@ -242,6 +501,28 @@ impl PyCommand {
     fn env(&self, key: &str, value: &str) -> Self {
         Self {
             inner: self.inner.clone().env(key, value),
+        }
+    }
+
+    /// Feed the given bytes to the child's stdin, then close it (EOF).
+    fn stdin_bytes(&self, data: Vec<u8>) -> Self {
+        Self {
+            inner: self.inner.clone().stdin(PkStdin::from_bytes(data)),
+        }
+    }
+
+    /// Feed the given text to the child's stdin, then close it (EOF).
+    fn stdin_text(&self, text: String) -> Self {
+        Self {
+            inner: self.inner.clone().stdin(PkStdin::from_string(text)),
+        }
+    }
+
+    /// Keep stdin piped and open for interactive writing after the process
+    /// starts, via `RunningProcess.take_stdin()`.
+    fn keep_stdin_open(&self) -> Self {
+        Self {
+            inner: self.inner.clone().keep_stdin_open(),
         }
     }
 
@@ -292,9 +573,6 @@ impl PyCommand {
     /// Async counterpart of `output()`. Awaitable under asyncio; cancelling the
     /// awaiting task tears down the process tree (the run's transient job is
     /// dropped) and raises `asyncio.CancelledError`.
-    ///
-    /// Provisional: the async surface is finalised in Phase 2 (streaming,
-    /// `async with ProcessGroup`).
     fn aoutput<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -315,34 +593,205 @@ impl PyCommand {
         })
     }
 
+    /// Async counterpart of `exit_code()`.
+    fn aexit_code<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cmd = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            cmd.exit_code()
+                .await
+                .map_err(|err| Python::attach(|py| map_err(py, err)))
+        })
+    }
+
+    /// Async counterpart of `probe()`.
+    fn aprobe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cmd = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            cmd.probe()
+                .await
+                .map_err(|err| Python::attach(|py| map_err(py, err)))
+        })
+    }
+
+    /// Start the command and return a `RunningProcess` for streaming and
+    /// interactive I/O. The process runs concurrently — this resolves as soon as
+    /// it has spawned, not when it finishes.
+    fn astart<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cmd = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match cmd.start().await {
+                Ok(running) => Ok(PyRunningProcess {
+                    inner: Some(running),
+                }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
+    }
+
     fn __repr__(&self) -> String {
         format!("Command({:?})", self.inner.command_line())
     }
 }
 
-/// A handle to a process started inside a `ProcessGroup`. Phase 1 exposes only
-/// its identity; streaming and interactive I/O arrive with the async surface.
+/// A handle to a started process: stream its output, write to its stdin, and
+/// await its completion. The consuming methods (`wait`, `finish`, `output`,
+/// `shutdown`) leave the handle spent; using it afterwards raises.
 #[pyclass(name = "RunningProcess", module = "processkit")]
 struct PyRunningProcess {
-    inner: PkRunningProcess,
+    // `None` after a consuming method has taken ownership of the process.
+    inner: Option<PkRunningProcess>,
+}
+
+impl PyRunningProcess {
+    fn running_mut(&mut self) -> PyResult<&mut PkRunningProcess> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))
+    }
+
+    fn take_running(&mut self) -> PyResult<PkRunningProcess> {
+        self.inner
+            .take()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))
+    }
 }
 
 #[pymethods]
 impl PyRunningProcess {
-    /// The OS process id, or `None` if the child has already been reaped.
+    /// The OS process id, or `None` once the handle has been consumed/reaped.
     #[getter]
     fn pid(&self) -> Option<u32> {
-        self.inner.pid()
+        self.inner.as_ref().and_then(|running| running.pid())
+    }
+
+    /// An async iterator over stdout, line by line:
+    /// `async for line in proc.stdout_lines(): ...`.
+    fn stdout_lines(&mut self, py: Python<'_>) -> PyResult<PyStdoutLines> {
+        // Setting up the stream spawns a pump task, so it must run inside the
+        // tokio runtime context.
+        let _guard = rt().enter();
+        let lines = self
+            .running_mut()?
+            .stdout_lines()
+            .map_err(|err| map_err(py, err))?;
+        Ok(PyStdoutLines {
+            inner: Arc::new(Mutex::new(lines)),
+        })
+    }
+
+    /// An async iterator over stdout and stderr as interleaved `OutputEvent`s.
+    fn output_events(&mut self, py: Python<'_>) -> PyResult<PyOutputEvents> {
+        let _guard = rt().enter();
+        let events = self
+            .running_mut()?
+            .output_events()
+            .map_err(|err| map_err(py, err))?;
+        Ok(PyOutputEvents {
+            inner: Arc::new(Mutex::new(events)),
+        })
+    }
+
+    /// Take the writable stdin handle. Returns `None` if stdin was not piped or
+    /// has already been taken.
+    fn take_stdin(&mut self) -> PyResult<Option<PyProcessStdin>> {
+        Ok(self
+            .running_mut()?
+            .take_stdin()
+            .map(|stdin| PyProcessStdin {
+                inner: Arc::new(Mutex::new(Some(stdin))),
+            }))
+    }
+
+    /// Begin tearing the tree down without waiting. (Dropping the handle, or the
+    /// owning group, also kills it; this just starts it early.)
+    fn start_kill(&mut self, py: Python<'_>) -> PyResult<()> {
+        let _guard = rt().enter();
+        self.running_mut()?
+            .start_kill()
+            .map_err(|err| map_err(py, err))
+    }
+
+    /// Await exit and return the `Outcome`. Consumes the handle.
+    fn wait<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let running = self.take_running()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match running.wait().await {
+                Ok(outcome) => Ok(PyOutcome { inner: outcome }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
+    }
+
+    /// Await exit and return `Finished` (outcome + captured stderr) without
+    /// buffering stdout — use this after streaming stdout. Consumes the handle.
+    fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let running = self.take_running()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match running.finish().await {
+                Ok(finished) => Ok(PyFinished {
+                    outcome: finished.outcome,
+                    stderr: finished.stderr,
+                }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
+    }
+
+    /// Await exit and capture the full `ProcessResult`. Consumes the handle.
+    fn output<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let running = self.take_running()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match running.output_string().await {
+                Ok(inner) => Ok(PyProcessResult { inner }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
+    }
+
+    /// Gracefully tear down (signal, wait up to `grace_seconds`, then kill) and
+    /// return the `Outcome`. Consumes the handle.
+    fn shutdown<'py>(
+        &mut self,
+        py: Python<'py>,
+        grace_seconds: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if !grace_seconds.is_finite() || grace_seconds < 0.0 {
+            return Err(PyValueError::new_err(
+                "grace_seconds must be a non-negative, finite number",
+            ));
+        }
+        let grace = Duration::try_from_secs_f64(grace_seconds)
+            .map_err(|err| PyValueError::new_err(format!("invalid grace_seconds: {err}")))?;
+        let running = self.take_running()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match running.shutdown(grace).await {
+                Ok(outcome) => Ok(PyOutcome { inner: outcome }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
     }
 
     fn __repr__(&self) -> String {
-        format!("RunningProcess(pid={:?})", self.inner.pid())
+        match &self.inner {
+            Some(running) => format!("RunningProcess(pid={:?})", running.pid()),
+            None => "RunningProcess(consumed)".to_string(),
+        }
     }
 }
 
-/// A kill-on-drop container for a process *tree*. Use it as a context manager:
-/// every process started inside, and everything those processes spawn, is torn
-/// down when the `with` block exits.
+/// Tear the group down gracefully when we are its sole owner; if an `astart`
+/// future is still racing (another `Arc` ref alive), fall back to a hard kill of
+/// the whole tree so teardown still happens.
+async fn shutdown_group(group: Arc<PkProcessGroup>) -> processkit::Result<()> {
+    match Arc::try_unwrap(group) {
+        Ok(group) => group.shutdown().await,
+        Err(group) => group.terminate_all(),
+    }
+}
+
+/// A kill-on-drop container for a process *tree*. Use it as a context manager
+/// (`with` or `async with`): every process started inside, and everything those
+/// processes spawn, is torn down when the block exits.
 ///
 /// The teardown asymmetry is load-bearing and honest: on Windows the Job Object
 /// reaps the tree when the last handle closes (kernel-enforced); on Linux/macOS
@@ -351,11 +800,13 @@ impl PyRunningProcess {
 #[pyclass(name = "ProcessGroup", module = "processkit")]
 struct PyProcessGroup {
     // `None` after the group is shut down — every method then errors cleanly.
-    inner: Option<PkProcessGroup>,
+    // `Arc` so the async `astart` can hold the group across the await without
+    // borrowing the pyclass.
+    inner: Option<Arc<PkProcessGroup>>,
 }
 
 impl PyProcessGroup {
-    fn group(&self) -> PyResult<&PkProcessGroup> {
+    fn group(&self) -> PyResult<&Arc<PkProcessGroup>> {
         self.inner
             .as_ref()
             .ok_or_else(|| ProcessError::new_err("ProcessGroup is already closed"))
@@ -367,7 +818,9 @@ impl PyProcessGroup {
     #[new]
     fn new(py: Python<'_>) -> PyResult<Self> {
         PkProcessGroup::new()
-            .map(|group| Self { inner: Some(group) })
+            .map(|group| Self {
+                inner: Some(Arc::new(group)),
+            })
             .map_err(|err| map_err(py, err))
     }
 
@@ -388,13 +841,52 @@ impl PyProcessGroup {
         Ok(false)
     }
 
-    /// Start a command inside the group and return a handle. The process runs
-    /// concurrently; this does not wait for it to finish.
+    fn __aenter__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
+    fn __aexit__<'py>(
+        &mut self,
+        py: Python<'py>,
+        _exc_type: Option<Bound<'py, PyAny>>,
+        _exc_value: Option<Bound<'py, PyAny>>,
+        _traceback: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.take();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(group) = group {
+                shutdown_group(group)
+                    .await
+                    .map_err(|err| Python::attach(|py| map_err(py, err)))?;
+            }
+            Ok(false)
+        })
+    }
+
+    /// Start a command inside the group and return a handle (sync). The process
+    /// runs concurrently; this does not wait for it to finish.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        let group = self.group()?;
+        let group = self.group()?.clone();
         let running = block_on_interruptible(py, group.start(&command.inner))?
             .map_err(|err| map_err(py, err))?;
-        Ok(PyRunningProcess { inner: running })
+        Ok(PyRunningProcess {
+            inner: Some(running),
+        })
+    }
+
+    /// Async counterpart of `start()`.
+    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.group()?.clone();
+        let cmd = command.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match group.start(&cmd).await {
+                Ok(running) => Ok(PyRunningProcess {
+                    inner: Some(running),
+                }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
     }
 
     /// The containment mechanism in use: `"job_object"` (Windows),
@@ -415,13 +907,26 @@ impl PyProcessGroup {
         self.group()?.members().map_err(|err| map_err(py, err))
     }
 
-    /// Tear down the whole tree gracefully (signal, bounded wait, then kill on
-    /// POSIX; atomic on Windows). Idempotent — a second call is a no-op.
+    /// Tear down the whole tree gracefully (sync). Idempotent — a second call is
+    /// a no-op.
     fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(group) = self.inner.take() {
-            block_on_interruptible(py, group.shutdown())?.map_err(|err| map_err(py, err))?;
+            block_on_interruptible(py, shutdown_group(group))?.map_err(|err| map_err(py, err))?;
         }
         Ok(())
+    }
+
+    /// Async counterpart of `shutdown()`. Idempotent.
+    fn ashutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.take();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(group) = group {
+                shutdown_group(group)
+                    .await
+                    .map_err(|err| Python::attach(|py| map_err(py, err)))?;
+            }
+            Ok(())
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -438,6 +943,12 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessResult>()?;
     m.add_class::<PyProcessGroup>()?;
     m.add_class::<PyRunningProcess>()?;
+    m.add_class::<PyOutcome>()?;
+    m.add_class::<PyFinished>()?;
+    m.add_class::<PyOutputEvent>()?;
+    m.add_class::<PyProcessStdin>()?;
+    m.add_class::<PyStdoutLines>()?;
+    m.add_class::<PyOutputEvents>()?;
 
     let py = m.py();
     m.add("ProcessError", py.get_type::<ProcessError>())?;

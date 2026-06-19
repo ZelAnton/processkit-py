@@ -4,10 +4,14 @@ Process containment with a kernel-backed no-orphan guarantee: spawn child
 process trees and tear them down whole, with honest results (a non-zero exit is
 data, a timeout is captured, a cancellation is an error).
 
-This is Phase 1: a synchronous `Command` builder, a typed `ProcessResult`, and a
-`ProcessGroup` context manager, plus a provisional async surface
-(`Command.aoutput` / `Command.arun`). The full async surface — streaming,
-readiness probes, and `async with ProcessGroup` — lands in later phases.
+Both a synchronous surface and an asyncio-native one are provided:
+
+- Sync: `Command(...).output()` / `.run()`, `with ProcessGroup() as g:`.
+- Async: `await Command(...).aoutput()` / `.arun()` / `.astart()`,
+  `async with ProcessGroup() as g:`, and streaming over a `RunningProcess`
+  (`async for line in proc.stdout_lines(): ...`, interactive `take_stdin()`).
+
+Cancelling an awaited run tears down the whole process tree.
 """
 
 from __future__ import annotations
@@ -15,13 +19,19 @@ from __future__ import annotations
 from ._processkit import (
     Cancelled,
     Command,
+    Finished,
     NonZeroExit,
+    Outcome,
+    OutputEvent,
+    OutputEvents,
     ProcessError,
     ProcessGroup,
     ProcessNotFound,
     ProcessResult,
+    ProcessStdin,
     RunningProcess,
     Signalled,
+    StdoutLines,
     Timeout,
     Unsupported,
 )
@@ -29,13 +39,19 @@ from ._processkit import (
 __all__ = [
     "Cancelled",
     "Command",
+    "Finished",
     "NonZeroExit",
+    "Outcome",
+    "OutputEvent",
+    "OutputEvents",
     "ProcessError",
     "ProcessGroup",
     "ProcessNotFound",
     "ProcessResult",
+    "ProcessStdin",
     "RunningProcess",
     "Signalled",
+    "StdoutLines",
     "Timeout",
     "Unsupported",
 ]

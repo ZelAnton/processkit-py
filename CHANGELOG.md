@@ -27,9 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blocking synchronous calls are interruptible: `Ctrl+C` (SIGINT) raises
   `KeyboardInterrupt` promptly and tears down the run's process tree, instead of
   hanging until the child exits.
-- Provisional async surface on `Command`: `aoutput()` / `arun()` (tokio ↔ asyncio
-  bridge). Cancelling the awaiting asyncio task tears down the process tree and
-  raises `asyncio.CancelledError`. The async surface is finalised in Phase 2.
+- Asyncio-native surface (tokio ↔ asyncio bridge). Cancelling an awaited run —
+  directly, or via `asyncio.wait_for` / `asyncio.timeout` — tears down the whole
+  process tree and raises `asyncio.CancelledError`.
+  - `Command`: `aoutput()`, `arun()`, `aexit_code()`, `aprobe()`, and `astart()`
+    (returns a `RunningProcess` for streaming/interactive I/O).
+  - `RunningProcess`: `async for line in proc.stdout_lines()`, `output_events()`
+    (stdout+stderr as `OutputEvent`s), interactive `take_stdin()` →
+    `ProcessStdin` (`write`/`write_line`/`flush`/`close`), and `await`able
+    `wait()` → `Outcome`, `finish()` → `Finished`, `output()` → `ProcessResult`,
+    plus `start_kill()` / `shutdown(grace_seconds)`.
+  - `ProcessGroup`: `async with`, `astart()`, `ashutdown()`.
+- `Command` stdin configuration: `stdin_bytes()` / `stdin_text()` (feed input
+  upfront) and `keep_stdin_open()` (write interactively after start).
+- New result types: `Outcome`, `Finished`, `OutputEvent`.
 - Type stubs (`_processkit.pyi`) for the compiled extension.
 
 [Unreleased]: https://github.com/ZelAnton/processkit-py/commits/main

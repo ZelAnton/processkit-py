@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from processkit import Command, NonZeroExit
+from processkit import Command, NonZeroExit, ProcessGroup
 
 from ._liveness import is_alive, read_pid_when_ready, wait_until
 
@@ -73,4 +73,53 @@ def test_cancelling_awaited_run_kills_tree(tmp_path: pathlib.Path) -> None:
     grandchild_pid = asyncio.run(scenario())
     assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
         f"grandchild {grandchild_pid} survived task cancellation"
+    )
+
+
+def test_async_parity() -> None:
+    async def scenario() -> tuple[int, bool, bool]:
+        code = await Command(PY, ["-c", "import sys; sys.exit(7)"]).aexit_code()
+        ok = await Command(PY, ["-c", "import sys; sys.exit(0)"]).aprobe()
+        not_ok = await Command(PY, ["-c", "import sys; sys.exit(1)"]).aprobe()
+        return code, ok, not_ok
+
+    code, ok, not_ok = asyncio.run(scenario())
+    assert code == 7
+    assert ok is True
+    assert not_ok is False
+
+
+def test_async_group_teardown_kills_grandchild(tmp_path: pathlib.Path) -> None:
+    pid_file = tmp_path / "grandchild.pid"
+
+    async def scenario() -> int:
+        async with ProcessGroup() as group:
+            assert group.mechanism in {"job_object", "cgroup_v2", "process_group"}
+            await group.astart(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+            grandchild_pid = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+            assert is_alive(grandchild_pid)
+            return grandchild_pid
+
+    grandchild_pid = asyncio.run(scenario())
+    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+        f"grandchild {grandchild_pid} survived async ProcessGroup teardown"
+    )
+
+
+def test_wait_for_timeout_kills_tree(tmp_path: pathlib.Path) -> None:
+    # asyncio.wait_for cancellation must tear the tree down, like a direct cancel.
+    pid_file = tmp_path / "grandchild.pid"
+
+    async def scenario() -> int:
+        task = asyncio.ensure_future(
+            Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).aoutput()
+        )
+        grandchild_pid = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=0.5)
+        return grandchild_pid
+
+    grandchild_pid = asyncio.run(scenario())
+    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+        f"grandchild {grandchild_pid} survived asyncio.wait_for timeout"
     )

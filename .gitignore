@@ -66,9 +66,10 @@ $RECYCLE.BIN/
 
 ## -------
 ## Agent-instruction files — kept on disk for tooling but never pushed to remote.
-## CLAUDE.md, AGENTS.md, and .claude/ are local-only in this generated repo.
+## CLAUDE.md, CLAUDE.local.md, AGENTS.md, and .claude/ are local-only here.
 ## -------
 /CLAUDE.md
+/CLAUDE.local.md
 /AGENTS.md
 .claude/
 

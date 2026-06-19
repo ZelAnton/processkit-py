@@ -3,7 +3,7 @@
 Python bindings to the [`processkit`](https://crates.io/crates/processkit) Rust crate —
 asyncio-native, kernel-backed, no-orphan process containment.
 
-> **Status: Phase 2 — async & streaming.** Not yet published to PyPI. See
+> **Status: Phase 3 — higher-level features.** Not yet published to PyPI. See
 > [ROADMAP.md](ROADMAP.md) for the plan.
 
 ## What it does
@@ -68,6 +68,33 @@ asyncio.run(main())
 
 Write to a child interactively with `keep_stdin_open()` + `take_stdin()`, or feed
 input upfront with `stdin_text()` / `stdin_bytes()`.
+
+### Higher-level features
+
+```python
+from processkit import Command, ProcessGroup, Supervisor, wait_for_port
+
+# Shell-free pipelines.
+top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
+
+# Resource-limited sandbox for an untrusted tree (Windows Job Object /
+# Linux cgroup-v2 root).
+with ProcessGroup(memory_max=512 * 1024 * 1024, max_processes=64) as group:
+    group.start(Command("untrusted-tool"))
+    print(group.stats().active_process_count)
+
+# Keep a service alive with restart + backoff.
+outcome = Supervisor(Command("flaky-worker"), restart="on_crash",
+                     max_restarts=10, backoff_initial=0.5).run()
+
+# Readiness: start a server, then wait for its port (async).
+# await wait_for_port("127.0.0.1", 8080, timeout=10)
+```
+
+Resource limits are enforced by the Windows Job Object or a Linux **cgroup-v2
+root**; under a container, systemd session, or other non-root cgroup the kernel
+forbids them and `ResourceLimit` is raised. Signals/`stats()` and limits raise
+`Unsupported` where the platform lacks them.
 
 ## Requirements
 

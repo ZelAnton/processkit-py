@@ -41,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Command` stdin configuration: `stdin_bytes()` / `stdin_text()` (feed input
   upfront) and `keep_stdin_open()` (write interactively after start).
 - New result types: `Outcome`, `Finished`, `OutputEvent`.
+- Higher-level features:
+  - **Resource limits** on `ProcessGroup`: keyword-only `memory_max`,
+    `max_processes`, `cpu_quota`, `shutdown_timeout`, `escalate_to_kill`
+    (enforced via the Windows Job Object or a Linux cgroup-v2 *root*).
+  - **Signals & observability** on `ProcessGroup`: `signal("term"|…)`,
+    `suspend()`, `resume()`, `terminate_all()`, and `stats()` →
+    `ProcessGroupStats`.
+  - **Pipelines**: `Command | Command` (or `.pipe()`) → `Pipeline`, with the
+    sync/async run verbs and `timeout()`.
+  - **Supervision**: `Supervisor(cmd, restart=…, max_restarts=…, backoff_initial=…,
+    backoff_factor=…, max_backoff=…, jitter=…, stop_when=…)` with `run()` /
+    `arun()` → `SupervisionOutcome`.
+  - **Readiness probes**: `await wait_for_port(host, port, timeout)` and
+    `await wait_for_line(lines, predicate, timeout)`.
+  - New types/exception: `Pipeline`, `ProcessGroupStats`, `Supervisor`,
+    `SupervisionOutcome`, `ResourceLimit`.
 - Type stubs (`_processkit.pyi`) for the compiled extension.
 
 [Unreleased]: https://github.com/ZelAnton/processkit-py/commits/main

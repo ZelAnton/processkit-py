@@ -31,7 +31,9 @@ pyo3 = { version = "0.29", features = ["abi3-py310"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # The Rust core. Exact pin — the binding tracks API/behaviour churn deliberately,
 # not transitively (a 2.0.0 was published then yanked upstream; pin guards us).
-processkit = "=1.0.1"
+# `limits` (whole-tree resource caps) implies `stats` (resource measurement);
+# both back the Phase 3 sandboxing/observability surface.
+processkit = { version = "=1.0.1", features = ["limits"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [profile.release]

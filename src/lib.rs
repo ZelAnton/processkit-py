@@ -10,17 +10,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use processkit::Command as PkCommand;
+use processkit::JobRunner;
 use processkit::Mechanism;
 use processkit::Outcome as PkOutcome;
 use processkit::OutputEvent as PkOutputEvent;
 use processkit::OutputEvents as PkOutputEvents;
+use processkit::Pipeline as PkPipeline;
 use processkit::ProcessGroup as PkProcessGroup;
+use processkit::ProcessGroupOptions;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessStdin as PkProcessStdin;
+use processkit::RestartPolicy;
 use processkit::RunningProcess as PkRunningProcess;
+use processkit::Signal as PkSignal;
 use processkit::Stdin as PkStdin;
 use processkit::StdoutLines as PkStdoutLines;
+use processkit::StopReason;
 use processkit::StreamExt;
+use processkit::SupervisionOutcome;
+use processkit::Supervisor as PkSupervisor;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyOSError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
@@ -69,7 +77,60 @@ create_exception!(_processkit, Timeout, ProcessError);
 create_exception!(_processkit, Cancelled, ProcessError);
 create_exception!(_processkit, Signalled, ProcessError);
 create_exception!(_processkit, ProcessNotFound, ProcessError);
+create_exception!(_processkit, ResourceLimit, ProcessError);
 create_exception!(_processkit, Unsupported, ProcessError);
+
+/// Validate and convert a positive number of seconds into a `Duration`.
+fn positive_duration(seconds: f64, what: &str) -> PyResult<Duration> {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "{what} must be a positive, finite number of seconds"
+        )));
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|err| PyValueError::new_err(format!("invalid {what}: {err}")))
+}
+
+/// Parse a restart policy name into a crate `RestartPolicy`.
+fn parse_restart_policy(name: &str) -> PyResult<RestartPolicy> {
+    match name.to_ascii_lowercase().as_str() {
+        "always" => Ok(RestartPolicy::Always),
+        "never" => Ok(RestartPolicy::Never),
+        "on_crash" | "on-crash" | "oncrash" => Ok(RestartPolicy::OnCrash),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown restart policy {name:?}; use one of: always, never, on_crash"
+        ))),
+    }
+}
+
+/// Render a `StopReason` as a stable lowercase string.
+fn stop_reason_str(reason: StopReason) -> &'static str {
+    match reason {
+        StopReason::PolicySatisfied => "policy_satisfied",
+        StopReason::Predicate => "predicate",
+        StopReason::RestartsExhausted => "restarts_exhausted",
+        _ => "unknown",
+    }
+}
+
+/// Parse a signal name (`"term"`, `"kill"`, `"int"`, `"hup"`, `"quit"`,
+/// `"usr1"`, `"usr2"`; a `"sig"` prefix is accepted) into a crate `Signal`.
+fn parse_signal(name: &str) -> PyResult<PkSignal> {
+    let key = name.to_ascii_lowercase();
+    let key = key.strip_prefix("sig").unwrap_or(&key);
+    match key {
+        "term" => Ok(PkSignal::Term),
+        "kill" => Ok(PkSignal::Kill),
+        "int" => Ok(PkSignal::Int),
+        "hup" => Ok(PkSignal::Hup),
+        "quit" => Ok(PkSignal::Quit),
+        "usr1" => Ok(PkSignal::Usr1),
+        "usr2" => Ok(PkSignal::Usr2),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown signal {name:?}; use one of: term, kill, int, hup, quit, usr1, usr2"
+        ))),
+    }
+}
 
 /// Map a crate `Error` onto the Python exception hierarchy and attach the
 /// structured fields the variant carries (`code`, `stdout`, `stderr`,
@@ -95,6 +156,7 @@ fn map_err(py: Python<'_>, error: processkit::Error) -> PyErr {
         E::Spawn { source, .. } if source.kind() == ErrorKind::NotFound => {
             ProcessNotFound::new_err(message)
         }
+        E::ResourceLimit { .. } => ResourceLimit::new_err(message),
         E::Unsupported { .. } => Unsupported::new_err(message),
         _ => ProcessError::new_err(message),
     };
@@ -628,8 +690,126 @@ impl PyCommand {
         })
     }
 
+    /// Pipe this command's stdout into `other`'s stdin, returning a `Pipeline`.
+    /// Equivalent to `self | other`.
+    fn pipe(&self, other: &PyCommand) -> PyPipeline {
+        PyPipeline {
+            inner: self.inner.clone().pipe(other.inner.clone()),
+        }
+    }
+
+    fn __or__(&self, other: &PyCommand) -> PyPipeline {
+        self.pipe(other)
+    }
+
     fn __repr__(&self) -> String {
         format!("Command({:?})", self.inner.command_line())
+    }
+}
+
+/// A shell-free pipeline `a | b | c`: each stage's stdout feeds the next's
+/// stdin, all in one process group, with pipefail outcome semantics.
+#[pyclass(name = "Pipeline", module = "processkit")]
+struct PyPipeline {
+    inner: PkPipeline,
+}
+
+#[pymethods]
+impl PyPipeline {
+    /// Extend the pipeline with another stage. Equivalent to `self | other`.
+    fn pipe(&self, other: &PyCommand) -> Self {
+        Self {
+            inner: self.inner.clone().pipe(other.inner.clone()),
+        }
+    }
+
+    fn __or__(&self, other: &PyCommand) -> Self {
+        self.pipe(other)
+    }
+
+    /// Set a wall-clock timeout for the whole pipeline.
+    fn timeout(&self, seconds: f64) -> PyResult<Self> {
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Err(PyValueError::new_err(
+                "timeout must be a positive, finite number of seconds",
+            ));
+        }
+        let duration = Duration::try_from_secs_f64(seconds)
+            .map_err(|err| PyValueError::new_err(format!("invalid timeout: {err}")))?;
+        Ok(Self {
+            inner: self.inner.clone().timeout(duration),
+        })
+    }
+
+    /// Run the pipeline and capture the last stage's output (sync).
+    fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
+        match block_on_interruptible(py, self.inner.output_string())? {
+            Ok(inner) => Ok(PyProcessResult { inner }),
+            Err(err) => Err(map_err(py, err)),
+        }
+    }
+
+    /// Require success and return the last stage's trimmed stdout (sync).
+    fn run(&self, py: Python<'_>) -> PyResult<String> {
+        block_on_interruptible(py, self.inner.run())?.map_err(|err| map_err(py, err))
+    }
+
+    /// The pipeline's exit code (sync).
+    fn exit_code(&self, py: Python<'_>) -> PyResult<i32> {
+        block_on_interruptible(py, self.inner.exit_code())?.map_err(|err| map_err(py, err))
+    }
+
+    /// Run a predicate pipeline and read its exit code as a bool (sync).
+    fn probe(&self, py: Python<'_>) -> PyResult<bool> {
+        block_on_interruptible(py, self.inner.probe())?.map_err(|err| map_err(py, err))
+    }
+
+    /// Async counterpart of `output()`.
+    fn aoutput<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pipeline = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match pipeline.output_string().await {
+                Ok(inner) => Ok(PyProcessResult { inner }),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
+    }
+
+    /// Async counterpart of `run()`.
+    fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pipeline = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            pipeline
+                .run()
+                .await
+                .map_err(|err| Python::attach(|py| map_err(py, err)))
+        })
+    }
+
+    /// Async counterpart of `exit_code()`.
+    fn aexit_code<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pipeline = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            pipeline
+                .exit_code()
+                .await
+                .map_err(|err| Python::attach(|py| map_err(py, err)))
+        })
+    }
+
+    /// Async counterpart of `probe()`.
+    fn aprobe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pipeline = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            pipeline
+                .probe()
+                .await
+                .map_err(|err| Python::attach(|py| map_err(py, err)))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
     }
 }
 
@@ -779,6 +959,44 @@ impl PyRunningProcess {
     }
 }
 
+/// A snapshot of a `ProcessGroup`'s resource usage.
+#[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
+struct PyProcessGroupStats {
+    active_process_count: usize,
+    peak_memory_bytes: Option<u64>,
+    total_cpu_time: Option<Duration>,
+}
+
+#[pymethods]
+impl PyProcessGroupStats {
+    /// Number of live processes currently in the group.
+    #[getter]
+    fn active_process_count(&self) -> usize {
+        self.active_process_count
+    }
+
+    /// Peak resident memory across the tree in bytes, if measurable.
+    #[getter]
+    fn peak_memory_bytes(&self) -> Option<u64> {
+        self.peak_memory_bytes
+    }
+
+    /// Total CPU time consumed by the tree in seconds, if measurable.
+    #[getter]
+    fn total_cpu_time_seconds(&self) -> Option<f64> {
+        self.total_cpu_time.map(|d| d.as_secs_f64())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProcessGroupStats(active_process_count={}, peak_memory_bytes={:?}, total_cpu_time_seconds={:?})",
+            self.active_process_count,
+            self.peak_memory_bytes,
+            self.total_cpu_time.map(|d| d.as_secs_f64()),
+        )
+    }
+}
+
 /// Tear the group down gracefully when we are its sole owner; if an `astart`
 /// future is still racing (another `Arc` ref alive), fall back to a hard kill of
 /// the whole tree so teardown still happens.
@@ -816,12 +1034,59 @@ impl PyProcessGroup {
 #[pymethods]
 impl PyProcessGroup {
     #[new]
-    fn new(py: Python<'_>) -> PyResult<Self> {
-        PkProcessGroup::new()
-            .map(|group| Self {
-                inner: Some(Arc::new(group)),
-            })
-            .map_err(|err| map_err(py, err))
+    #[pyo3(signature = (
+        *,
+        memory_max=None,
+        max_processes=None,
+        cpu_quota=None,
+        shutdown_timeout=None,
+        escalate_to_kill=None,
+    ))]
+    fn new(
+        py: Python<'_>,
+        memory_max: Option<u64>,
+        max_processes: Option<u32>,
+        cpu_quota: Option<f64>,
+        shutdown_timeout: Option<f64>,
+        escalate_to_kill: Option<bool>,
+    ) -> PyResult<Self> {
+        let configured = memory_max.is_some()
+            || max_processes.is_some()
+            || cpu_quota.is_some()
+            || shutdown_timeout.is_some()
+            || escalate_to_kill.is_some();
+        let group = if configured {
+            let mut options = ProcessGroupOptions::default();
+            if let Some(bytes) = memory_max {
+                options = options.memory_max(bytes);
+            }
+            if let Some(n) = max_processes {
+                options = options.max_processes(n);
+            }
+            if let Some(cores) = cpu_quota {
+                options = options.cpu_quota(cores);
+            }
+            if let Some(seconds) = shutdown_timeout {
+                if !seconds.is_finite() || seconds < 0.0 {
+                    return Err(PyValueError::new_err(
+                        "shutdown_timeout must be a non-negative, finite number of seconds",
+                    ));
+                }
+                let duration = Duration::try_from_secs_f64(seconds).map_err(|err| {
+                    PyValueError::new_err(format!("invalid shutdown_timeout: {err}"))
+                })?;
+                options = options.shutdown_timeout(duration);
+            }
+            if let Some(escalate) = escalate_to_kill {
+                options = options.escalate_to_kill(escalate);
+            }
+            PkProcessGroup::with_options(options).map_err(|err| map_err(py, err))?
+        } else {
+            PkProcessGroup::new().map_err(|err| map_err(py, err))?
+        };
+        Ok(Self {
+            inner: Some(Arc::new(group)),
+        })
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -907,6 +1172,41 @@ impl PyProcessGroup {
         self.group()?.members().map_err(|err| map_err(py, err))
     }
 
+    /// Send a signal to every process in the tree. `name` is one of `term`,
+    /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2` (Windows emulates the
+    /// terminate/kill semantics).
+    fn signal(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        let signal = parse_signal(name)?;
+        self.group()?.signal(signal).map_err(|err| map_err(py, err))
+    }
+
+    /// Suspend every process in the tree.
+    fn suspend(&self, py: Python<'_>) -> PyResult<()> {
+        self.group()?.suspend().map_err(|err| map_err(py, err))
+    }
+
+    /// Resume every previously-suspended process in the tree.
+    fn resume(&self, py: Python<'_>) -> PyResult<()> {
+        self.group()?.resume().map_err(|err| map_err(py, err))
+    }
+
+    /// Immediately kill the whole tree (a hard kill, no graceful window).
+    fn terminate_all(&self, py: Python<'_>) -> PyResult<()> {
+        self.group()?
+            .terminate_all()
+            .map_err(|err| map_err(py, err))
+    }
+
+    /// A snapshot of the group's resource usage.
+    fn stats(&self, py: Python<'_>) -> PyResult<PyProcessGroupStats> {
+        let stats = self.group()?.stats().map_err(|err| map_err(py, err))?;
+        Ok(PyProcessGroupStats {
+            active_process_count: stats.active_process_count,
+            peak_memory_bytes: stats.peak_memory_bytes,
+            total_cpu_time: stats.total_cpu_time,
+        })
+    }
+
     /// Tear down the whole tree gracefully (sync). Idempotent — a second call is
     /// a no-op.
     fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -937,6 +1237,175 @@ impl PyProcessGroup {
     }
 }
 
+/// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
+/// callback. Errors / non-bool returns are treated as "do not stop".
+fn make_stop_predicate(
+    callback: Py<PyAny>,
+) -> impl Fn(&PkProcessResult<String>) -> bool + Send + Sync + 'static {
+    move |result| {
+        Python::attach(|py| {
+            match Py::new(
+                py,
+                PyProcessResult {
+                    inner: result.clone(),
+                },
+            ) {
+                Ok(py_result) => callback
+                    .call1(py, (py_result,))
+                    .and_then(|value| value.extract::<bool>(py))
+                    .unwrap_or(false),
+                Err(_) => false,
+            }
+        })
+    }
+}
+
+fn convert_supervision_outcome(outcome: &SupervisionOutcome) -> PySupervisionOutcome {
+    PySupervisionOutcome {
+        final_result: outcome.final_result.clone(),
+        restarts: outcome.restarts,
+        stopped: stop_reason_str(outcome.stopped),
+        storm_pauses: outcome.storm_pauses,
+    }
+}
+
+/// The result of `Supervisor.run()`.
+#[pyclass(name = "SupervisionOutcome", frozen, module = "processkit")]
+struct PySupervisionOutcome {
+    final_result: PkProcessResult<String>,
+    restarts: u32,
+    stopped: &'static str,
+    storm_pauses: u32,
+}
+
+#[pymethods]
+impl PySupervisionOutcome {
+    /// The `ProcessResult` of the final run.
+    #[getter]
+    fn final_result(&self) -> PyProcessResult {
+        PyProcessResult {
+            inner: self.final_result.clone(),
+        }
+    }
+
+    /// How many times the command was restarted.
+    #[getter]
+    fn restarts(&self) -> u32 {
+        self.restarts
+    }
+
+    /// Why supervision stopped: `"policy_satisfied"`, `"predicate"`, or
+    /// `"restarts_exhausted"`.
+    #[getter]
+    fn stopped(&self) -> &'static str {
+        self.stopped
+    }
+
+    /// How many restart-storm pauses occurred.
+    #[getter]
+    fn storm_pauses(&self) -> u32 {
+        self.storm_pauses
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SupervisionOutcome(restarts={}, stopped={:?}, storm_pauses={})",
+            self.restarts, self.stopped, self.storm_pauses,
+        )
+    }
+}
+
+/// Keep a command alive: restart it per policy with backoff until a stop
+/// condition is met. Configure with keyword arguments, then `run()` / `arun()`.
+#[pyclass(name = "Supervisor", module = "processkit")]
+struct PySupervisor {
+    inner: Option<PkSupervisor<JobRunner>>,
+}
+
+impl PySupervisor {
+    fn take_supervisor(&mut self) -> PyResult<PkSupervisor<JobRunner>> {
+        self.inner
+            .take()
+            .ok_or_else(|| ProcessError::new_err("this Supervisor has already been run"))
+    }
+}
+
+#[pymethods]
+impl PySupervisor {
+    #[new]
+    #[pyo3(signature = (
+        command,
+        *,
+        restart=None,
+        max_restarts=None,
+        backoff_initial=None,
+        backoff_factor=None,
+        max_backoff=None,
+        jitter=None,
+        stop_when=None,
+    ))]
+    #[allow(clippy::too_many_arguments)] // a keyword-only builder constructor
+    fn new(
+        command: &PyCommand,
+        restart: Option<&str>,
+        max_restarts: Option<u32>,
+        backoff_initial: Option<f64>,
+        backoff_factor: Option<f64>,
+        max_backoff: Option<f64>,
+        jitter: Option<bool>,
+        stop_when: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let mut supervisor = PkSupervisor::new(command.inner.clone());
+        if let Some(policy) = restart {
+            supervisor = supervisor.restart(parse_restart_policy(policy)?);
+        }
+        if let Some(n) = max_restarts {
+            supervisor = supervisor.max_restarts(n);
+        }
+        if let Some(initial) = backoff_initial {
+            let initial = positive_duration(initial, "backoff_initial")?;
+            let factor = backoff_factor.unwrap_or(2.0);
+            if !factor.is_finite() || factor < 1.0 {
+                return Err(PyValueError::new_err(
+                    "backoff_factor must be a finite number >= 1.0",
+                ));
+            }
+            supervisor = supervisor.backoff(initial, factor);
+        }
+        if let Some(seconds) = max_backoff {
+            supervisor = supervisor.max_backoff(positive_duration(seconds, "max_backoff")?);
+        }
+        if let Some(enabled) = jitter {
+            supervisor = supervisor.jitter(enabled);
+        }
+        if let Some(callback) = stop_when {
+            supervisor = supervisor.stop_when(make_stop_predicate(callback));
+        }
+        Ok(Self {
+            inner: Some(supervisor),
+        })
+    }
+
+    /// Run supervision to completion (sync). Consumes the supervisor.
+    fn run(&mut self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
+        let supervisor = self.take_supervisor()?;
+        let outcome =
+            block_on_interruptible(py, supervisor.run())?.map_err(|err| map_err(py, err))?;
+        Ok(convert_supervision_outcome(&outcome))
+    }
+
+    /// Async counterpart of `run()`. Consumes the supervisor.
+    fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let supervisor = self.take_supervisor()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match supervisor.run().await {
+                Ok(outcome) => Ok(convert_supervision_outcome(&outcome)),
+                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+            }
+        })
+    }
+}
+
 #[pymodule]
 fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
@@ -949,6 +1418,10 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessStdin>()?;
     m.add_class::<PyStdoutLines>()?;
     m.add_class::<PyOutputEvents>()?;
+    m.add_class::<PyProcessGroupStats>()?;
+    m.add_class::<PyPipeline>()?;
+    m.add_class::<PySupervisor>()?;
+    m.add_class::<PySupervisionOutcome>()?;
 
     let py = m.py();
     m.add("ProcessError", py.get_type::<ProcessError>())?;
@@ -957,6 +1430,7 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Cancelled", py.get_type::<Cancelled>())?;
     m.add("Signalled", py.get_type::<Signalled>())?;
     m.add("ProcessNotFound", py.get_type::<ProcessNotFound>())?;
+    m.add("ResourceLimit", py.get_type::<ResourceLimit>())?;
     m.add("Unsupported", py.get_type::<Unsupported>())?;
     Ok(())
 }

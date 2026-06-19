@@ -16,6 +16,7 @@ Cancelling an awaited run tears down the whole process tree.
 
 from __future__ import annotations
 
+from ._aio import wait_for_line, wait_for_port
 from ._processkit import (
     Cancelled,
     Command,
@@ -24,14 +25,19 @@ from ._processkit import (
     Outcome,
     OutputEvent,
     OutputEvents,
+    Pipeline,
     ProcessError,
     ProcessGroup,
+    ProcessGroupStats,
     ProcessNotFound,
     ProcessResult,
     ProcessStdin,
+    ResourceLimit,
     RunningProcess,
     Signalled,
     StdoutLines,
+    SupervisionOutcome,
+    Supervisor,
     Timeout,
     Unsupported,
 )
@@ -44,14 +50,21 @@ __all__ = [
     "Outcome",
     "OutputEvent",
     "OutputEvents",
+    "Pipeline",
     "ProcessError",
     "ProcessGroup",
+    "ProcessGroupStats",
     "ProcessNotFound",
     "ProcessResult",
     "ProcessStdin",
+    "ResourceLimit",
     "RunningProcess",
     "Signalled",
     "StdoutLines",
+    "SupervisionOutcome",
+    "Supervisor",
     "Timeout",
     "Unsupported",
+    "wait_for_line",
+    "wait_for_port",
 ]

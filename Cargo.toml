@@ -2,6 +2,13 @@
 name = "processkit"
 version = "0.1.0"
 edition = "2021"
+description = "PyO3 binding crate for the processkit Python package (compiled into wheels)"
+license = "MIT"
+repository = "https://github.com/ZelAnton/processkit-py"
+# This crate is the PyO3 glue compiled into the Python wheels — it is NOT a
+# crates.io artifact. The published Rust crate is `processkit` itself (which we
+# depend on); never publish this same-named binding over it.
+publish = false
 
 [lib]
 # The compiled extension is imported as `processkit._processkit` from Python.
@@ -18,6 +25,14 @@ extension-module = ["pyo3/extension-module"]
 [dependencies]
 # abi3-py310: build once, run on CPython 3.10+ (3.9 is EOL; matches requires-python in pyproject.toml).
 pyo3 = { version = "0.29", features = ["abi3-py310"] }
+# Async bridge (tokio ↔ asyncio). The `tokio-runtime` feature gives a managed
+# runtime we reuse for BOTH the sync surface (`block_on`) and the async surface
+# (`future_into_py`), so the binding owns exactly one runtime. Tracks pyo3 0.29.
+pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
+# The Rust core. Exact pin — the binding tracks API/behaviour churn deliberately,
+# not transitively (a 2.0.0 was published then yanked upstream; pin guards us).
+processkit = "=1.0.1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [profile.release]
 lto = true

@@ -1,0 +1,20 @@
+# Local Linux test harness for processkit-py. Run from the repo root:
+#
+#   docker compose run --build --rm test
+#
+# `--build` picks up your latest source; `--rm` removes the one-off container.
+# Append a command to scope the run, e.g.:
+#
+#   docker compose run --build --rm test uv run pytest -q tests/test_async.py
+services:
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    # Privileged so the crate can create a delegated cgroup v2 and select the
+    # `cgroup_v2` containment mechanism — the same path the CI Linux runner
+    # exercises. Remove this line to test the POSIX `process_group` fallback.
+    privileged: true
+    # A real init reaps the short-lived child/grandchild processes the teardown
+    # tests spawn, so nothing lingers as a zombie.
+    init: true

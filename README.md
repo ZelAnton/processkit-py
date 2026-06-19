@@ -3,33 +3,41 @@
 Python bindings to the [`processkit`](https://crates.io/crates/processkit) Rust crate —
 asyncio-native, kernel-backed, no-orphan process containment.
 
-> **Status: Phase 0 — de-risk spikes.** Not yet published to PyPI. See
+> **Status: Phase 1 — minimal viable sync core.** Not yet published to PyPI. See
 > [ROADMAP.md](ROADMAP.md) for the plan.
 
 ## What it does
 
 Thin PyO3 bindings to the `processkit` Rust crate. The Rust crate handles all the hard
 platform code — Windows Job Object containment, Linux cgroup v2, race-free subprocess spawn.
-The Python layer exposes an asyncio-native surface with context-manager teardown.
+The Python layer exposes a typed surface with context-manager teardown.
+
+The synchronous surface is available today:
 
 ```python
-import asyncio
 from processkit import Command, ProcessGroup
 
-async def main():
-    result = await Command("git", ["rev-parse", "HEAD"]).output()
-    print(result.stdout.strip(), result.exit_code)
+# Run and capture. A non-zero exit is data, not an exception.
+result = Command("git", ["rev-parse", "HEAD"]).output()
+print(result.stdout.strip(), result.code)
 
-    async with ProcessGroup() as group:
-        server = await group.start(Command("my-server"))
-        await server.wait_for_port(("127.0.0.1", 8080), timeout=10)
-        # whole process tree is reaped on exit, grandchildren included
-
-asyncio.run(main())
+# Kill-on-exit container for a whole tree.
+with ProcessGroup() as group:
+    group.start(Command("my-server"))
+    # ... use the server ...
+# group exit reaps the whole tree, grandchildren included
 ```
 
-> **Note (Phase 0):** `Command` and `ProcessGroup` are not yet implemented.
-> The API above is the planned target surface — see [ROADMAP.md](ROADMAP.md).
+`output()` captures a non-zero exit, a timeout, and a signal-kill as data
+(`result.code`, `result.timed_out`, `result.signal`); `run()` returns trimmed
+stdout and raises on failure. The raised exceptions carry structured fields
+(`NonZeroExit.code` / `.stdout` / `.stderr`, `Timeout.timeout_seconds`, …), and
+a blocked sync call honours `Ctrl+C` — it raises `KeyboardInterrupt` and reaps
+the process tree rather than hanging.
+
+> **Coming next:** the asyncio-native surface (`await Command(...).output()`,
+> `async with ProcessGroup()`, line streaming, readiness probes) — see
+> [ROADMAP.md](ROADMAP.md) Phase 2+.
 
 ## Requirements
 

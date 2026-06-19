@@ -1,0 +1,18 @@
+# Keep the build context small and the image hermetic: never copy build
+# artifacts, the local venv, VCS metadata, or host-platform compiled extensions
+# into the Linux test image.
+target/
+dist/
+.git/
+.jj/
+.venv/
+**/__pycache__/
+*.pyd
+*.so
+*.pdb
+
+# Local-only agent tooling (also git-ignored).
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md

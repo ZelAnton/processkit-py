@@ -23,6 +23,30 @@ uv run maturin build --release --out dist  # build a release abi3 wheel
 `ruff check`, `mypy --strict`, and `pytest` (with warnings promoted to errors)
 are the gates CI enforces, so run them locally before opening a pull request.
 
+## Testing on Linux with Docker
+
+Some behaviour only runs on Linux/macOS — the cgroup/process-group teardown,
+async cancellation, and the `Ctrl+C` interrupt test are skipped on Windows. To
+exercise them from a Windows (or any) host, run the suite in a container:
+
+```sh
+docker compose run --build --rm test
+```
+
+This builds the PyO3 extension with a real Rust toolchain + uv and runs `pytest`
+on Linux. The container is `privileged` so the crate selects the `cgroup_v2`
+mechanism — the same path CI's Linux runner uses; drop `privileged` in
+[`compose.yaml`](compose.yaml) to test the `process_group` fallback instead.
+Append a command to scope the run:
+
+```sh
+docker compose run --build --rm test uv run pytest -q tests/test_async.py
+```
+
+It needs a Docker-compatible engine (Docker Desktop, Rancher Desktop, …) and
+writes nothing to your working tree. It complements — does not replace — the
+native `uv run pytest`, which is faster for day-to-day work.
+
 ## Conventions
 
 - **Formatting and linting** are governed by [`ruff`](https://docs.astral.sh/ruff/)

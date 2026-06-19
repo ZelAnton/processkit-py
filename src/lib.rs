@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use processkit::testing::{Reply as PkReply, ScriptedRunner as PkScriptedRunner};
 use processkit::Command as PkCommand;
 use processkit::JobRunner;
 use processkit::Mechanism;
@@ -19,6 +20,8 @@ use processkit::Pipeline as PkPipeline;
 use processkit::ProcessGroup as PkProcessGroup;
 use processkit::ProcessGroupOptions;
 use processkit::ProcessResult as PkProcessResult;
+use processkit::ProcessRunner;
+use processkit::ProcessRunnerExt;
 use processkit::ProcessStdin as PkProcessStdin;
 use processkit::RestartPolicy;
 use processkit::RunningProcess as PkRunningProcess;
@@ -1406,6 +1409,228 @@ impl PySupervisor {
     }
 }
 
+// --- Runner seam: a `ProcessRunner` abstraction so callers can inject a real
+// `Runner` in production and a `ScriptedRunner` in tests. The run verbs are
+// generic over the crate's `ProcessRunner` so the two pyclasses share one impl.
+
+fn runner_output<R: ProcessRunner + Sync + ?Sized>(
+    py: Python<'_>,
+    runner: &R,
+    command: &PyCommand,
+) -> PyResult<PyProcessResult> {
+    match block_on_interruptible(py, runner.output_string(&command.inner))? {
+        Ok(inner) => Ok(PyProcessResult { inner }),
+        Err(err) => Err(map_err(py, err)),
+    }
+}
+
+fn runner_run<R: ProcessRunner + Sync + ?Sized>(
+    py: Python<'_>,
+    runner: &R,
+    command: &PyCommand,
+) -> PyResult<String> {
+    block_on_interruptible(py, runner.run(&command.inner))?.map_err(|err| map_err(py, err))
+}
+
+fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
+    py: Python<'_>,
+    runner: &R,
+    command: &PyCommand,
+) -> PyResult<i32> {
+    block_on_interruptible(py, runner.exit_code(&command.inner))?.map_err(|err| map_err(py, err))
+}
+
+fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
+    py: Python<'_>,
+    runner: &R,
+    command: &PyCommand,
+) -> PyResult<bool> {
+    block_on_interruptible(py, runner.probe(&command.inner))?.map_err(|err| map_err(py, err))
+}
+
+fn runner_start<R: ProcessRunner + Sync + ?Sized>(
+    py: Python<'_>,
+    runner: &R,
+    command: &PyCommand,
+) -> PyResult<PyRunningProcess> {
+    // `start()` is async, so `block_on_interruptible` provides the runtime
+    // context while it (and its pump spawn) is polled — no `enter()` needed.
+    let running = block_on_interruptible(py, runner.start(&command.inner))?
+        .map_err(|err| map_err(py, err))?;
+    Ok(PyRunningProcess {
+        inner: Some(running),
+    })
+}
+
+/// The real process runner. Inject it where you'd otherwise call `Command`
+/// verbs directly, so the same code can take a `ScriptedRunner` under test.
+#[pyclass(name = "Runner", module = "processkit")]
+struct PyRunner {
+    inner: JobRunner,
+}
+
+#[pymethods]
+impl PyRunner {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: JobRunner::new(),
+        }
+    }
+
+    /// Run a command and capture output (a non-zero exit is data).
+    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
+        runner_output(py, &self.inner, command)
+    }
+
+    /// Require a zero exit and return trimmed stdout.
+    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
+        runner_run(py, &self.inner, command)
+    }
+
+    /// The command's exit code.
+    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
+        runner_exit_code(py, &self.inner, command)
+    }
+
+    /// Read a predicate command's exit code as a bool.
+    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
+        runner_probe(py, &self.inner, command)
+    }
+
+    /// Start a command and return a `RunningProcess`.
+    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
+        runner_start(py, &self.inner, command)
+    }
+
+    fn __repr__(&self) -> String {
+        "Runner()".to_string()
+    }
+}
+
+/// A scripted test double for a `Runner`: configure canned replies for argv
+/// prefixes, then run commands through it without spawning real processes. The
+/// results it returns are genuine `ProcessResult` / `RunningProcess` objects.
+#[pyclass(name = "ScriptedRunner", module = "processkit")]
+struct PyScriptedRunner {
+    inner: PkScriptedRunner,
+}
+
+#[pymethods]
+impl PyScriptedRunner {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: PkScriptedRunner::new(),
+        }
+    }
+
+    /// Reply with `reply` when a command's argv starts with `prefix`.
+    fn on(&mut self, prefix: Vec<String>, reply: &PyReply) {
+        let runner = std::mem::take(&mut self.inner);
+        self.inner = runner.on(prefix, reply.inner.clone());
+    }
+
+    /// The reply for any command not matched by an `on(...)` rule.
+    fn fallback(&mut self, reply: &PyReply) {
+        let runner = std::mem::take(&mut self.inner);
+        self.inner = runner.fallback(reply.inner.clone());
+    }
+
+    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
+        runner_output(py, &self.inner, command)
+    }
+
+    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
+        runner_run(py, &self.inner, command)
+    }
+
+    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
+        runner_exit_code(py, &self.inner, command)
+    }
+
+    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
+        runner_probe(py, &self.inner, command)
+    }
+
+    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
+        runner_start(py, &self.inner, command)
+    }
+
+    fn __repr__(&self) -> String {
+        "ScriptedRunner()".to_string()
+    }
+}
+
+/// A canned reply for a `ScriptedRunner` rule.
+#[pyclass(name = "Reply", module = "processkit")]
+struct PyReply {
+    inner: PkReply,
+}
+
+#[pymethods]
+impl PyReply {
+    /// A successful run with the given stdout (exit code 0).
+    #[staticmethod]
+    fn ok(stdout: String) -> Self {
+        Self {
+            inner: PkReply::ok(stdout),
+        }
+    }
+
+    /// A failed run with the given exit code and stderr.
+    #[staticmethod]
+    fn fail(code: i32, stderr: String) -> Self {
+        Self {
+            inner: PkReply::fail(code, stderr),
+        }
+    }
+
+    /// A run that times out.
+    #[staticmethod]
+    fn timeout() -> Self {
+        Self {
+            inner: PkReply::timeout(),
+        }
+    }
+
+    /// A run killed by a signal (`signal=None` for an unknown signal).
+    #[staticmethod]
+    #[pyo3(signature = (signal=None))]
+    fn signalled(signal: Option<i32>) -> Self {
+        Self {
+            inner: PkReply::signalled(signal),
+        }
+    }
+
+    /// A run that never exits on its own (cancel / timeout still ends it).
+    #[staticmethod]
+    fn pending() -> Self {
+        Self {
+            inner: PkReply::pending(),
+        }
+    }
+
+    /// A successful run emitting the given stdout lines.
+    #[staticmethod]
+    fn lines(lines: Vec<String>) -> Self {
+        Self {
+            inner: PkReply::lines(lines),
+        }
+    }
+
+    /// Attach stdout to this reply (e.g. to a failure).
+    fn with_stdout(&self, stdout: String) -> Self {
+        Self {
+            inner: self.inner.clone().with_stdout(stdout),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
 #[pymodule]
 fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
@@ -1422,6 +1647,9 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPipeline>()?;
     m.add_class::<PySupervisor>()?;
     m.add_class::<PySupervisionOutcome>()?;
+    m.add_class::<PyRunner>()?;
+    m.add_class::<PyScriptedRunner>()?;
+    m.add_class::<PyReply>()?;
 
     let py = m.py();
     m.add("ProcessError", py.get_type::<ProcessError>())?;

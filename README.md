@@ -3,8 +3,10 @@
 Python bindings to the [`processkit`](https://crates.io/crates/processkit) Rust crate —
 asyncio-native, kernel-backed, no-orphan process containment.
 
-> **Status: Phase 3 — higher-level features.** Not yet published to PyPI. See
-> [ROADMAP.md](ROADMAP.md) for the plan.
+> **Status: Phase 4 — testing seam, typing, docs.** Not yet published to PyPI.
+> See [ROADMAP.md](ROADMAP.md) for the plan.
+
+The [cookbook](docs/cookbook.md) has task-oriented snippets for every feature.
 
 ## What it does
 

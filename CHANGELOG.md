@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `await wait_for_line(lines, predicate, timeout)`.
   - New types/exception: `Pipeline`, `ProcessGroupStats`, `Supervisor`,
     `SupervisionOutcome`, `ResourceLimit`.
+- Testing seam: a `Runner` (real) and a `ScriptedRunner` (test double) with a
+  uniform `output`/`run`/`exit_code`/`probe`/`start` interface, plus `Reply`
+  (`ok`/`fail`/`timeout`/`signalled`/`lines`/`pending`). Inject a `Runner` in
+  production and a `ScriptedRunner` in tests — no real processes spawned; the
+  results returned are genuine `ProcessResult` / `RunningProcess` objects.
+- A task-oriented [cookbook](docs/cookbook.md).
 - Type stubs (`_processkit.pyi`) for the compiled extension.
 
 [Unreleased]: https://github.com/ZelAnton/processkit-py/commits/main

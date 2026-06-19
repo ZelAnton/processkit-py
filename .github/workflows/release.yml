@@ -1,11 +1,20 @@
 name: Release
 
-# Manual release workflow for a Python package published to PyPI.
+# Manual, multi-platform release to PyPI. Shipped ENABLED but
+# `workflow_dispatch`-only (no push/tag trigger), so it never runs on its own —
+# click "Run workflow" and pick a bump. The version is never typed by hand: the
+# latest `v*` tag drives the next number; the first release (no `v*` tag yet)
+# seeds from the `version` in pyproject.toml.
 #
-# Shipped ENABLED but `workflow_dispatch`-only (no push/tag trigger), so it never
-# runs on its own — click "Run workflow" and pick a bump. The version is never
-# typed by hand: the latest `v*` tag drives the next number; the first release
-# (no `v*` tag yet) seeds from the `version` in pyproject.toml.
+# Pipeline:
+#   prepare       — compute the version, fill/extract release notes, bump the
+#                   manifests (uploaded as the `release-meta` artifact).
+#   build_wheels  — cibuildwheel matrix: one abi3 wheel per OS/arch.
+#   build_sdist   — the source distribution.
+#   publish       — the single irreversible PyPI pivot, then push + GitHub Release.
+#
+# Actions are pinned to a full commit SHA (supply-chain hardening); the trailing
+# comment records the human-readable version. Dependabot bumps the SHA + comment.
 
 on:
   workflow_dispatch:
@@ -24,34 +33,22 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # push the release commit + tag, and create the Release
-    steps:
-      # RELEASE ORDERING INVARIANT (rationale repeated at each relevant step):
-      # publishing to PyPI is the single IRREVERSIBLE step, so it is the pivot.
-      # Everything before it is cheap and reversible (build/test/package, plus a
-      # LOCAL commit+tag that is not yet pushed); everything after it (push the
-      # commit+tag to main, create the GitHub Release) is reversible/recreatable
-      # and is made idempotent + retried. A failure before the pivot leaves no
-      # trace on the remote or registry — just re-run. A failure after the pivot
-      # is recoverable by re-run, EXCEPT once the tag is on main (see the Release
-      # step's note).
-      #
-      # The "Push the release commit + tag" step pushes straight to main. If you
-      # protect main with a rule that requires pull requests or status checks, that
-      # push is rejected unless the pusher can bypass it. This workflow mints a
-      # short-lived GitHub App token (repo variable RELEASE_APP_ID + secret
-      # RELEASE_APP_PRIVATE_KEY) and checks out with it, so the push runs as the App
-      # — add that App to the ruleset's bypass list. Until it is configured the
-      # checkout falls back to GITHUB_TOKEN (fine while main is unprotected). Recipe:
-      # release-token-bypass.md.
-      # Actions are pinned to a full commit SHA (supply-chain hardening); the
-      # trailing comment records the human-readable version. Dependabot bumps the
-      # SHA and updates the comment on its weekly run.
+permissions:
+  contents: read
 
+jobs:
+  # ---------------------------------------------------------------------------
+  # Compute the version and assemble the release metadata. No build, no remote
+  # writes — everything here is reversible and re-runnable.
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      current: ${{ steps.version.outputs.current }}
+      first_release: ${{ steps.version.outputs.first_release }}
+    steps:
       - name: Guard — release only from main
         run: |
           set -euo pipefail
@@ -68,43 +65,19 @@ jobs:
           PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           set -euo pipefail
-          # Fail fast, before any irreversible publish or VCS push, if the publish
-          # credential is missing. If you switch to PyPI Trusted Publishing (OIDC,
-          # see the publish step below), drop this check and add `id-token: write`
-          # to the job permissions instead.
+          # Fail fast, before any build or publish, if the publish credential is
+          # missing. If you switch to PyPI Trusted Publishing (OIDC), drop this
+          # check and add `id-token: write` to the publish job instead.
           if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
             echo "::error::PYPI_API_TOKEN secret is not set. Add it under Settings -> Secrets and variables -> Actions before releasing."
             exit 1
           fi
           echo "Required secrets present."
 
-      # Mint a short-lived GitHub App installation token so the push to `main` runs as
-      # the App (which sits in the branch-protection ruleset's bypass list). Skipped
-      # until RELEASE_APP_ID is set; then the push falls back to GITHUB_TOKEN. See
-      # release-token-bypass.md.
-      - name: Mint GitHub App token
-        id: app-token
-        if: ${{ vars.RELEASE_APP_ID != '' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
           fetch-depth: 0 # full history + tags, for version math and git-cliff
-          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
-
-      # Rust toolchain: maturin compiles the PyO3 extension during the build step.
-      # Pinned to the same SHA as in ci.yml (dtolnay/rust-toolchain@stable).
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
-
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          enable-cache: true
 
       - name: Determine next version
         id: version
@@ -266,10 +239,11 @@ jobs:
           print("----------------------------")
           PY
 
-      # Persist the computed version into pyproject.toml AND Cargo.toml BEFORE building
-      # so the wheel carries the released version. maturin reads the version from
-      # pyproject.toml; Cargo.toml is bumped in parallel to keep both in sync.
-      # These are reversible local edits — committed below, reach the remote after the pivot.
+      # Persist the computed version into pyproject.toml AND Cargo.toml so the wheels
+      # built downstream carry the released version. maturin reads the version from
+      # pyproject.toml; Cargo.toml is bumped in parallel to keep both in sync. These
+      # reversible edits travel to the build/publish jobs as the `release-meta`
+      # artifact and reach the remote only after the pivot.
       - name: Bump version in pyproject.toml and Cargo.toml
         run: |
           set -euo pipefail
@@ -277,31 +251,8 @@ jobs:
           sed -i -E "s|^version = \"[^\"]+\"|version = \"$NEW\"|" pyproject.toml
           sed -i -E "s|^version = \"[^\"]+\"|version = \"$NEW\"|" Cargo.toml
 
-      # Gate + package: run the tests, then build a release abi3 wheel AND an sdist.
-      # - `maturin build --release` produces the platform wheel (abi3, cp310+).
-      # - `maturin sdist` produces the source distribution (.tar.gz) for users who
-      #   build from source (unsupported platforms, audit, etc.).
-      # Both reads the version written into pyproject.toml above.
-      - name: Test and package
-        run: |
-          set -euo pipefail
-          uv run pytest
-          uv run maturin build --release --out-dir ./artifacts
-          uv run maturin sdist --out-dir ./artifacts
-
-      - name: Generate SHA256SUMS
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          cd ./artifacts
-          files=(*.whl *.tar.gz)
-          if [[ ${#files[@]} -eq 0 ]]; then
-            echo "::error::No package files to hash in ./artifacts. Did the build step run?"
-            exit 1
-          fi
-          sha256sum "${files[@]}" > SHA256SUMS
-          cat SHA256SUMS
-
+      # The version-bumped manifests + the promoted changelog + the extracted notes,
+      # carried to every downstream job as the single source of truth.
       - name: Promote Unreleased section in CHANGELOG.md
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -359,6 +310,155 @@ jobs:
           path.write_text(text)
           PY
 
+      - name: Upload release metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-meta
+          path: |
+            pyproject.toml
+            Cargo.toml
+            CHANGELOG.md
+            release-notes.md
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Build one abi3 wheel per OS/arch with cibuildwheel. Each runner builds its
+  # own native arch (no cross-compile): Linux x86_64 (manylinux), Windows x64,
+  # macOS x86_64 (macos-13) and arm64 (macos-14).
+  # ---------------------------------------------------------------------------
+  build_wheels:
+    needs: prepare
+    name: wheels (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+      # Host toolchain for the Windows/macOS builds; the Linux manylinux container
+      # installs its own Rust via the cibuildwheel `before-all` hook (pyproject.toml).
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # Overlay the version-bumped manifests so the wheel carries the release version.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-meta
+          path: .
+      - name: Build wheels
+        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Build the platform-independent source distribution once.
+  # ---------------------------------------------------------------------------
+  build_sdist:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-meta
+          path: .
+      # `maturin sdist` packages source only (no compile), so no Rust toolchain here.
+      - name: Build sdist
+        run: uvx maturin sdist --out dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # The single irreversible step (PyPI publish) and the reversible writes around
+  # it. RELEASE ORDERING INVARIANT: publishing to PyPI cannot be undone (a
+  # version can be yanked but never re-uploaded), so it is the pivot. Everything
+  # before it is cheap and reversible (the wheels/sdist already built above, plus
+  # a LOCAL commit+tag not yet pushed); everything after it (push the commit+tag
+  # to main, create the Release) is reversible/recreatable and made idempotent +
+  # retried. A failure before the pivot leaves no trace on the remote or
+  # registry — just re-run. Never move the publish after the tag push, and keep
+  # the post-pivot steps idempotent.
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [prepare, build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release commit + tag, and create the Release
+    steps:
+      - name: Preflight — required secrets present before the pivot
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
+            echo "::error::PYPI_API_TOKEN secret is not set."
+            exit 1
+          fi
+          echo "Required secrets present."
+
+      # Mint a short-lived GitHub App installation token so the push to `main` runs as
+      # the App (which sits in the branch-protection ruleset's bypass list). Skipped
+      # until RELEASE_APP_ID is set; then the push falls back to GITHUB_TOKEN. See
+      # release-token-bypass.md.
+      - name: Mint GitHub App token
+        id: app-token
+        if: ${{ vars.RELEASE_APP_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+
+      # Overlay the version-bumped manifests + promoted changelog + release notes
+      # (the same files the wheels were built from) onto the checkout, so the
+      # release commit records exactly what was published.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-meta
+          path: .
+
+      - name: Collect built distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ./artifacts
+          pattern: "{wheels-*,sdist}"
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd ./artifacts
+          files=(*.whl *.tar.gz)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No package files to hash in ./artifacts. Did the build jobs run?"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
       # Create the release commit and tag LOCALLY, but do NOT push yet: the push is a
       # VCS write and must happen AFTER the irreversible PyPI publish (the pivot below).
       - name: Commit and tag the release (local only)
@@ -370,18 +470,14 @@ jobs:
           # uv.lock and Cargo.lock record resolved deps; re-stage only if already tracked.
           if git ls-files --error-unmatch uv.lock >/dev/null 2>&1; then git add uv.lock; fi
           if git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then git add Cargo.lock; fi
-          git commit -m "Release ${{ steps.version.outputs.tag }}"
-          git tag "${{ steps.version.outputs.tag }}"
+          git commit -m "Release ${{ needs.prepare.outputs.tag }}"
+          git tag "${{ needs.prepare.outputs.tag }}"
 
       # === PIVOT: the single irreversible step ===
-      # Publishing to PyPI cannot be undone (a published version can be yanked but
-      # never re-uploaded), so it is the pivot and every reversible action is ordered
-      # around it. It runs BEFORE the git push and the GitHub Release: if it fails, no
-      # tag/commit has reached the remote and no Release exists, so a re-run is safe
-      # and recomputes the SAME version. `twine upload --skip-existing` treats an
-      # already-published file (HTTP 409) as success — PyPI's own version-scoped
-      # "already published == success" signal — so a re-run after a post-publish
-      # failure sails through. The loop retries only transient (network) failures.
+      # `twine upload --skip-existing` treats an already-published file (HTTP 409) as
+      # success — PyPI's own version-scoped "already published == success" signal — so
+      # a re-run after a post-publish failure sails through. The loop retries only
+      # transient (network) failures.
       #
       # MORE SECURE ALTERNATIVE — PyPI Trusted Publishing (OIDC): instead of a
       # long-lived PYPI_API_TOKEN secret, mint a short-lived credential per run. Add
@@ -409,7 +505,7 @@ jobs:
       # Reversible VCS write, AFTER the pivot. --atomic guarantees the branch and tag
       # move together (or neither does), so we never advance main while losing the tag.
       - name: Push the release commit + tag (atomic)
-        run: git push --atomic origin HEAD:refs/heads/main "${{ steps.version.outputs.tag }}"
+        run: git push --atomic origin HEAD:refs/heads/main "${{ needs.prepare.outputs.tag }}"
 
       # Final, recreatable step, made idempotent (edit the Release if it already
       # exists, else create it) and retried. By now the package is on PyPI AND the tag
@@ -419,7 +515,7 @@ jobs:
       - name: Create or update the GitHub Release (idempotent)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
           shopt -s nullglob

@@ -75,8 +75,12 @@ jobs:
       - run: uv run pytest
 
   build:
-    name: build (wheel + sdist)
-    runs-on: ubuntu-latest
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -85,9 +89,12 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
-      # Build an abi3 wheel (cp310+) and an sdist — mirrors what the release workflow produces.
+      # Verify the abi3 wheel (cp310+) builds on every target OS, not just Linux —
+      # a one-OS build would not catch a Windows/macOS packaging break.
       - run: uv run maturin build --release --out dist
-      - run: uv run maturin sdist --out dist
+      # The sdist is platform-independent; build it once.
+      - if: matrix.os == 'ubuntu-latest'
+        run: uv run maturin sdist --out dist
 
   audit:
     name: pip-audit

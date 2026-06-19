@@ -67,3 +67,20 @@ namespace_packages = true
 addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 filterwarnings = ["error"]
 testpaths = ["tests"]
+
+[tool.cibuildwheel]
+# One build with cp310 yields an abi3 wheel that runs on CPython 3.10+, so the
+# release matrix produces a single wheel per OS/arch instead of one per Python.
+build = "cp310-*"
+# manylinux covers the common Linux case (revisit musllinux on demand); 32-bit
+# Windows is not a target. Each matrix runner builds its own native arch.
+skip = "*-musllinux* *-win32"
+# Smoke-test the actual built wheel on each platform (see scripts/smoke.py).
+test-command = "python {project}/scripts/smoke.py"
+
+[tool.cibuildwheel.linux]
+# The manylinux build container ships no Rust toolchain — install a current
+# stable (>= the crate's MSRV) before building. On Windows/macOS the runner's
+# own toolchain (dtolnay/rust-toolchain) is used instead.
+before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable"
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }

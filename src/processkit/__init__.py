@@ -16,6 +16,8 @@ Cancelling an awaited run tears down the whole process tree.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 from ._aio import wait_for_line, wait_for_port
 from ._processkit import (
     Cancelled,
@@ -44,6 +46,11 @@ from ._processkit import (
     Timeout,
     Unsupported,
 )
+
+try:
+    __version__ = version("processkit")
+except PackageNotFoundError:  # not installed (e.g. running from a source tree)
+    __version__ = "unknown"
 
 __all__ = [
     "Cancelled",

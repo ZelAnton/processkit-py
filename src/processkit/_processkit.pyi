@@ -303,7 +303,11 @@ class Timeout(ProcessError):
     stderr: str
 
 class Cancelled(ProcessError):
-    """A run was cancelled via a cancellation token (Phase 2 surface)."""
+    """A run was cancelled (e.g. via a cancellation token).
+
+    Note: cancelling an *awaited* run via asyncio surfaces as
+    `asyncio.CancelledError`, not this exception.
+    """
 
     program: str
 

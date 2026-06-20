@@ -4,18 +4,38 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use processkit::Command as PkCommand;
+use processkit::Encoding;
 use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;
 use processkit::Pipeline as PkPipeline;
 use processkit::Stdin as PkStdin;
+use processkit::StdioMode;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::convert::positive_duration;
+use crate::convert::{nonnegative_duration, parse_signal, positive_duration};
 use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
 use crate::runtime::block_on_interruptible;
+
+/// Map a Python stdio-mode label to the crate `StdioMode`.
+fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
+    match mode {
+        "pipe" | "piped" => Ok(StdioMode::Piped),
+        "inherit" => Ok(StdioMode::Inherit),
+        "null" | "discard" => Ok(StdioMode::Null),
+        other => Err(PyValueError::new_err(format!(
+            "unknown stdio mode {other:?}; use one of: pipe, inherit, null"
+        ))),
+    }
+}
+
+/// Resolve an encoding label (e.g. `"iso-8859-1"`, `"shift_jis"`) to an `Encoding`.
+fn parse_encoding(label: &str) -> PyResult<&'static Encoding> {
+    Encoding::for_label(label.as_bytes())
+        .ok_or_else(|| PyValueError::new_err(format!("unknown encoding label {label:?}")))
+}
 
 /// A command builder. Builder methods return a new `Command`, so a configured
 /// command is reusable and chains read left to right.
@@ -85,6 +105,14 @@ impl PyCommand {
         }
     }
 
+    /// Inherit only the named variables from the parent's environment — pair with
+    /// `env_clear()` to build a locked-down allowlist for a sandboxed child.
+    fn inherit_env(&self, names: Vec<String>) -> Self {
+        Self {
+            inner: self.inner.clone().inherit_env(names),
+        }
+    }
+
     /// Feed the given bytes to the child's stdin, then close it (EOF).
     fn stdin_bytes(&self, data: Vec<u8>) -> Self {
         Self {
@@ -114,6 +142,125 @@ impl PyCommand {
         Ok(Self {
             inner: self.inner.clone().timeout(duration),
         })
+    }
+
+    /// On timeout, send the terminate signal and wait this grace period before
+    /// hard-killing the tree (instead of an immediate kill).
+    fn timeout_grace(&self, seconds: f64) -> PyResult<Self> {
+        let grace = nonnegative_duration(seconds, "timeout_grace")?;
+        Ok(Self {
+            inner: self.inner.clone().timeout_grace(grace),
+        })
+    }
+
+    /// The signal sent first on a graceful timeout (default `term`): one of
+    /// `term`/`kill`/`int`/`hup`/`quit`/`usr1`/`usr2`.
+    fn timeout_signal(&self, name: &str) -> PyResult<Self> {
+        let signal = parse_signal(name)?;
+        Ok(Self {
+            inner: self.inner.clone().timeout_signal(signal),
+        })
+    }
+
+    /// Set the exit codes treated as success — this **replaces** the default of
+    /// just `0`, so pass every code you accept (e.g. `[0, 1]`). For tools whose
+    /// non-zero exit is a normal result, like `grep` (`1` = no match) or `diff`
+    /// (`1` = differs). Affects `run()` and `ProcessResult.is_success`;
+    /// `exit_code()` (raw) and `probe()` (0/1) are unchanged. An empty list is
+    /// ignored.
+    fn ok_codes(&self, codes: Vec<i32>) -> Self {
+        Self {
+            inner: self.inner.clone().ok_codes(codes),
+        }
+    }
+
+    /// Where the child's stdout goes: `"pipe"` (capture — the default), `"inherit"`
+    /// (the parent's stdout), or `"null"` (discard). Capture verbs and streaming
+    /// see output only in `"pipe"` mode.
+    fn stdout(&self, mode: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().stdout(parse_stdio_mode(mode)?),
+        })
+    }
+
+    /// Where the child's stderr goes: `"pipe"` / `"inherit"` / `"null"`.
+    fn stderr(&self, mode: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().stderr(parse_stdio_mode(mode)?),
+        })
+    }
+
+    /// Decode captured stdout *and* stderr with the named encoding instead of
+    /// UTF-8. `label` is a WHATWG Encoding label (e.g. `"iso-8859-1"`,
+    /// `"shift_jis"`, `"windows-1251"`) — **not** a Python codec alias, so
+    /// `"latin_1"` / `"mbcs"` won't resolve; an unknown label raises `ValueError`.
+    fn encoding(&self, label: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().encoding(parse_encoding(label)?),
+        })
+    }
+
+    /// Decode captured stdout with the named encoding (see `encoding`).
+    fn stdout_encoding(&self, label: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().stdout_encoding(parse_encoding(label)?),
+        })
+    }
+
+    /// Decode captured stderr with the named encoding (see `encoding`).
+    fn stderr_encoding(&self, label: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.clone().stderr_encoding(parse_encoding(label)?),
+        })
+    }
+
+    /// Tie the child's lifetime to this process: if the parent dies, the OS kills
+    /// the child too (Linux `PR_SET_PDEATHSIG`; folded into the job elsewhere).
+    /// Reinforces the no-orphan guarantee even without explicit teardown.
+    fn kill_on_parent_death(&self) -> Self {
+        Self {
+            inner: self.inner.clone().kill_on_parent_death(),
+        }
+    }
+
+    /// Windows: don't allocate a console window for the child. No-op elsewhere.
+    fn create_no_window(&self) -> Self {
+        Self {
+            inner: self.inner.clone().create_no_window(),
+        }
+    }
+
+    /// POSIX: run the child as this user id (drop privileges). On a non-POSIX
+    /// platform the run raises `Unsupported` — a requested privilege drop is
+    /// never silently skipped.
+    fn uid(&self, uid: u32) -> Self {
+        Self {
+            inner: self.inner.clone().uid(uid),
+        }
+    }
+
+    /// POSIX: run the child as this group id. On a non-POSIX platform the run
+    /// raises `Unsupported`.
+    fn gid(&self, gid: u32) -> Self {
+        Self {
+            inner: self.inner.clone().gid(gid),
+        }
+    }
+
+    /// POSIX: set the child's supplementary group ids. On a non-POSIX platform
+    /// the run raises `Unsupported`.
+    fn groups(&self, gids: Vec<u32>) -> Self {
+        Self {
+            inner: self.inner.clone().groups(gids),
+        }
+    }
+
+    /// POSIX: start the child in a new session (`setsid`). On a non-POSIX
+    /// platform the run raises `Unsupported`.
+    fn setsid(&self) -> Self {
+        Self {
+            inner: self.inner.clone().setsid(),
+        }
     }
 
     /// Cap how much captured output is retained. Pass at least one of

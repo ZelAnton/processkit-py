@@ -1,11 +1,67 @@
 //! The captured-result value types: `ProcessResult`, `BytesResult`, `Outcome`,
-//! `OutputEvent`, and `Finished`.
+//! `OutputEvent`, `Finished`, and `RunProfile`.
 
 use processkit::Outcome as PkOutcome;
 use processkit::OutputEvent as PkOutputEvent;
 use processkit::ProcessResult as PkProcessResult;
+use processkit::RunProfile as PkRunProfile;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+
+/// A resource-usage profile sampled across a run (from `RunningProcess.profile`).
+#[pyclass(name = "RunProfile", frozen, module = "processkit")]
+pub(crate) struct PyRunProfile {
+    pub(crate) inner: PkRunProfile,
+}
+
+#[pymethods]
+impl PyRunProfile {
+    /// The exit code, or `None` for a timeout / signal-kill.
+    #[getter]
+    fn exit_code(&self) -> Option<i32> {
+        self.inner.exit_code
+    }
+
+    /// Wall-clock time from start until the run finished, in seconds.
+    #[getter]
+    fn duration_seconds(&self) -> f64 {
+        self.inner.duration.as_secs_f64()
+    }
+
+    /// Cumulative CPU time at the last sample, in seconds, if measurable.
+    #[getter]
+    fn cpu_time_seconds(&self) -> Option<f64> {
+        self.inner.cpu_time.map(|d| d.as_secs_f64())
+    }
+
+    /// Peak resident memory observed across samples, in bytes, if measurable.
+    #[getter]
+    fn peak_memory_bytes(&self) -> Option<u64> {
+        self.inner.peak_memory_bytes
+    }
+
+    /// How many sampling ticks ran.
+    #[getter]
+    fn samples(&self) -> usize {
+        self.inner.samples
+    }
+
+    /// Average CPU cores used over the run (cpu_time / duration), if measurable.
+    #[getter]
+    fn avg_cpu(&self) -> Option<f64> {
+        self.inner.avg_cpu()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RunProfile(exit_code={:?}, duration_seconds={:.3}, peak_memory_bytes={:?}, samples={})",
+            self.inner.exit_code,
+            self.inner.duration.as_secs_f64(),
+            self.inner.peak_memory_bytes,
+            self.inner.samples,
+        )
+    }
+}
 
 /// The captured result of a finished run. A non-zero exit, a timeout, and a
 /// signal-kill are all *data* here — `output()` never raises on them.

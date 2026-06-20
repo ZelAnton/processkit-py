@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output is retained (cap `max_bytes` to bound the parent's memory against an
   untrusted child; a `max_lines`-only cap does not); on `"error"` overflow the
   run raises `OutputTooLarge`.
+- More `Command` knobs: `ok_codes([…])` (treat the given exit codes as success,
+  replacing the default `{0}` — for `grep`/`diff`-style tools), `inherit_env([…])`
+  (allowlist inheritance), `timeout_grace()` / `timeout_signal()` (graceful
+  timeout), `stdout("inherit"|"null")` / `stderr(…)` redirection, `encoding(…)` /
+  `stdout_encoding` / `stderr_encoding` (decode non-UTF-8 output),
+  `kill_on_parent_death()`, `create_no_window()` (Windows), and POSIX
+  `uid` / `gid` / `groups` / `setsid`.
+- Concurrent batch execution: `output_all` / `aoutput_all` (and `…_bytes`
+  variants) run many commands with bounded `concurrency`, returning each
+  `ProcessResult` — or a `ProcessError` for a spawn/I/O failure — in input order.
+- `CliClient(program, *, default_timeout=…, default_env=…, default_env_remove=…)`
+  — a typed wrapper for a tool you call repeatedly, with `run` / `output` /
+  `output_bytes` / `exit_code` / `probe` / `run_unit` (+ async) taking just the
+  per-call args.
+- `RunningProcess` live introspection (`elapsed_seconds`, `cpu_time_seconds`,
+  `peak_memory_bytes`, `stdout_line_count` / `stderr_line_count`, `owns_group`),
+  plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`.
+- `RecordReplayRunner` test double — `record(path)` real runs then `save()`, and
+  `replay(path)` offline; plus `output_bytes` on `Runner` / `ScriptedRunner`.
 - `ProcessResult` with `stdout`, `stderr`, `code`, `is_success`, `timed_out`,
   `signal`, `program`, `duration_seconds`, `truncated`, and `combined()`; plus a
   `BytesResult` (raw-bytes `stdout`, text `stderr`) from `output_bytes()` /
@@ -99,5 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This is the **1.0** release: the public API is frozen.
 - Distributed as abi3 wheels for CPython 3.10+ (standard/GIL builds);
   free-threaded (PEP 703) support is tracked for a later release.
+- The `RecordReplayRunner` test double enables the crate's `record` feature,
+  which pulls `serde` / `serde_json` into the compiled wheel.
 
 [Unreleased]: https://github.com/ZelAnton/processkit-py/commits/main

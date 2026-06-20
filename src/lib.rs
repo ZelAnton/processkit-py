@@ -7,6 +7,8 @@
 
 use pyo3::prelude::*;
 
+mod batch;
+mod cli;
 mod command;
 mod convert;
 mod errors;
@@ -17,14 +19,17 @@ mod running;
 mod runtime;
 mod supervisor;
 
+use crate::cli::PyCliClient;
 use crate::command::{PyCommand, PyPipeline};
 use crate::errors::{
     init_dual_exceptions, Cancelled, NonZeroExit, OutputTooLarge, ProcessError, ResourceLimit,
     Signalled, Unsupported,
 };
 use crate::group::{PyProcessGroup, PyProcessGroupStats};
-use crate::result::{PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult};
-use crate::runner::{PyReply, PyRunner, PyScriptedRunner};
+use crate::result::{
+    PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
+};
+use crate::runner::{PyRecordReplayRunner, PyReply, PyRunner, PyScriptedRunner};
 use crate::running::{PyOutputEvents, PyProcessStdin, PyRunningProcess, PyStdoutLines};
 use crate::supervisor::{PySupervisionOutcome, PySupervisor};
 
@@ -33,6 +38,7 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
     m.add_class::<PyProcessResult>()?;
     m.add_class::<PyBytesResult>()?;
+    m.add_class::<PyRunProfile>()?;
     m.add_class::<PyProcessGroup>()?;
     m.add_class::<PyRunningProcess>()?;
     m.add_class::<PyOutcome>()?;
@@ -48,6 +54,13 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunner>()?;
     m.add_class::<PyScriptedRunner>()?;
     m.add_class::<PyReply>()?;
+    m.add_class::<PyRecordReplayRunner>()?;
+    m.add_class::<PyCliClient>()?;
+
+    m.add_function(pyo3::wrap_pyfunction!(batch::output_all, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(batch::aoutput_all, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(batch::output_all_bytes, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(batch::aoutput_all_bytes, m)?)?;
 
     let py = m.py();
     // Register the single-base exceptions, normalizing `__module__` to the

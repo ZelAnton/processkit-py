@@ -51,11 +51,28 @@ clean = Command("git", ["diff", "--quiet"]).probe()   # True if exit 0, False if
 code = Command("mytool").exit_code()                   # the raw exit code
 ```
 
+## Accept non-zero exit codes
+
+Some tools use non-zero as a normal result (`grep` 1 = no match, `diff` 1 =
+differs). `ok_codes` **replaces** the success set (default `{0}`) — list every
+code you accept:
+
+```python
+differs = not Command("diff", ["a", "b"]).ok_codes([0, 1]).probe()  # 0 same, 1 differs
+Command("grep", ["needle", "file"]).ok_codes([0, 1]).run()          # 1 (no match) is OK
+```
+
+`ok_codes` affects `run()` and `result.is_success`; `exit_code()` (raw) and
+`probe()` (0/1) are unchanged.
+
 ## Set a timeout
 
 ```python
 result = Command("slow-tool").timeout(5.0).output()    # result.timed_out == True on expiry
 Command("slow-tool").timeout(5.0).run()                # raises Timeout on expiry
+
+# Graceful: signal, wait, then hard-kill.
+Command("server").timeout(30.0).timeout_signal("term").timeout_grace(5.0).run()
 ```
 
 ## Pass input on stdin
@@ -227,6 +244,37 @@ A pipeline is run-to-completion (no `astart()` streaming) and has no
 `output_limit` cap of its own — bound a flooding pipeline with `timeout()`. Set
 per-stage `env`/`cwd` on each `Command` before piping.
 
+## Run many commands at once
+
+`output_all` runs a batch with bounded concurrency (default: CPU count) and
+returns each result in input order. A command that fails to *spawn* (or hits an
+I/O error) appears as a `ProcessError` in its slot (a non-zero exit is still data
+on a `ProcessResult`):
+
+```python
+from processkit import Command, ProcessResult, output_all   # or: await aoutput_all(...)
+
+results = output_all([Command("git", ["-C", d, "rev-parse", "HEAD"]) for d in repos],
+                     concurrency=8)
+heads = [r.stdout.strip() for r in results if isinstance(r, ProcessResult) and r.is_success]
+```
+
+## Wrap a CLI tool
+
+`CliClient` binds a program to default timeout/env, so repeated calls pass only
+their args:
+
+```python
+from processkit import CliClient
+
+git = CliClient("git", default_timeout=30.0)
+head = git.run(["rev-parse", "HEAD"])            # or: await git.arun([...])
+clean = git.probe(["diff", "--quiet"])
+```
+
+For testable code, inject a `Runner` / `ScriptedRunner` at the `Command` level
+instead — `CliClient` always uses the real runner.
+
 ## Keep a service alive (supervision)
 
 ```python
@@ -258,11 +306,24 @@ container / systemd session / non-root cgroup the kernel forbids them and
 ```python
 from processkit import Command, ProcessGroup
 
+# Lock down the command too: empty env (allowlisting PATH), cap output, and tie
+# its lifetime to ours. All cross-platform.
+tool = (
+    Command("untrusted-tool")
+    .env_clear().inherit_env(["PATH"])
+    .kill_on_parent_death()          # die with us even without explicit teardown
+    .output_limit(max_bytes=8 * 1024 * 1024)
+)
 with ProcessGroup(memory_max=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
-    group.start(Command("untrusted-tool"))
+    group.start(tool)
     stats = group.stats()
     print(stats.active_process_count, stats.peak_memory_bytes)
 ```
+
+On POSIX you can also drop privileges with `.uid(65534).gid(65534)` (run as
+`nobody`) — but those builders make the **run raise `Unsupported` on Windows**
+(a privilege drop is never silently skipped), so apply them only when targeting
+POSIX.
 
 ## Signal, suspend, or resume a tree
 
@@ -319,3 +380,17 @@ assert latest_commit(scripted) == "deadbeef"
 `Reply.ok` / `.fail` / `.timeout` / `.signalled` / `.lines` / `.pending` cover
 the outcomes; `ScriptedRunner.start()` even returns a streamable scripted
 `RunningProcess`.
+
+To capture *real* tool output once and replay it deterministically offline, use
+`RecordReplayRunner` — both share the `Runner` verb surface:
+
+```python
+from processkit import RecordReplayRunner
+
+rec = RecordReplayRunner.record("cassette.json")   # records via the real runner
+recorded = latest_commit(rec)                       # spawns git once, captures it
+rec.save()
+
+rep = RecordReplayRunner.replay("cassette.json")   # offline; no process spawned
+assert latest_commit(rep) == recorded
+```

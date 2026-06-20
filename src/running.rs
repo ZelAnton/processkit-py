@@ -12,9 +12,11 @@ use pyo3::exceptions::{PyOSError, PyStopAsyncIteration};
 use pyo3::prelude::*;
 use tokio::sync::Mutex;
 
-use crate::convert::nonnegative_duration;
+use crate::convert::{nonnegative_duration, positive_duration};
 use crate::errors::{map_err, ProcessError};
-use crate::result::{PyFinished, PyOutcome, PyOutputEvent, PyProcessResult};
+use crate::result::{
+    PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
+};
 use crate::runtime::{block_on_interruptible, rt};
 
 /// Map a stdin I/O failure (a broken pipe, a closed child) onto `OSError`.
@@ -161,6 +163,47 @@ impl PyRunningProcess {
         self.inner.as_ref().and_then(|running| running.pid())
     }
 
+    /// Seconds elapsed since the process started, or `None` once consumed.
+    #[getter]
+    fn elapsed_seconds(&self) -> Option<f64> {
+        self.inner.as_ref().map(|r| r.elapsed().as_secs_f64())
+    }
+
+    /// Cumulative CPU time so far in seconds, if measurable (`None` otherwise).
+    #[getter]
+    fn cpu_time_seconds(&self) -> Option<f64> {
+        self.inner
+            .as_ref()
+            .and_then(|r| r.cpu_time())
+            .map(|d| d.as_secs_f64())
+    }
+
+    /// Peak resident memory so far in bytes, if measurable (`None` otherwise).
+    #[getter]
+    fn peak_memory_bytes(&self) -> Option<u64> {
+        self.inner.as_ref().and_then(|r| r.peak_memory_bytes())
+    }
+
+    /// Number of stdout lines captured so far (`None` once consumed).
+    #[getter]
+    fn stdout_line_count(&self) -> Option<usize> {
+        self.inner.as_ref().map(|r| r.stdout_line_count())
+    }
+
+    /// Number of stderr lines captured so far (`None` once consumed).
+    #[getter]
+    fn stderr_line_count(&self) -> Option<usize> {
+        self.inner.as_ref().map(|r| r.stderr_line_count())
+    }
+
+    /// Whether this handle owns a private tree — i.e. dropping it (or exiting its
+    /// context manager) hard-kills the whole tree. `False` for a handle started
+    /// inside a shared `ProcessGroup`; `None` once consumed.
+    #[getter]
+    fn owns_group(&self) -> Option<bool> {
+        self.inner.as_ref().map(|r| r.kills_tree_on_drop())
+    }
+
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -291,6 +334,30 @@ impl PyRunningProcess {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match running.output_string().await {
                 Ok(inner) => Ok(PyProcessResult { inner }),
+                Err(err) => Err(map_err(err)),
+            }
+        })
+    }
+
+    /// Await exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
+    fn output_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let running = self.take_running()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match running.output_bytes().await {
+                Ok(inner) => Ok(PyBytesResult { inner }),
+                Err(err) => Err(map_err(err)),
+            }
+        })
+    }
+
+    /// Await exit while sampling resource usage every `every_seconds`, returning a
+    /// `RunProfile`. Consumes the handle.
+    fn profile<'py>(&mut self, py: Python<'py>, every_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
+        let every = positive_duration(every_seconds, "every_seconds")?;
+        let running = self.take_running()?;
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match running.profile(every).await {
+                Ok(profile) => Ok(PyRunProfile { inner: profile }),
                 Err(err) => Err(map_err(err)),
             }
         })

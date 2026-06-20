@@ -14,11 +14,23 @@ from processkit import (
     Command,
     OutputTooLarge,
     ProcessError,
+    ProcessGroup,
     ProcessNotFound,
+    Runner,
     Timeout,
+    wait_for,
 )
 
+from ._liveness import read_pid_when_ready, wait_dead
+
 PY = sys.executable
+
+_SPAWN_GRANDCHILD = (
+    "import subprocess, sys, time;"
+    "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+    "open(sys.argv[1], 'w').write(str(gc.pid));"
+    "time.sleep(60)"
+)
 
 
 # --- Environment control ----------------------------------------------------
@@ -128,3 +140,165 @@ def test_process_not_found_is_a_file_not_found_error() -> None:
     assert issubclass(ProcessNotFound, ProcessError)
     with pytest.raises(FileNotFoundError):
         Command("processkit-definitely-no-such-program-xyz").run()
+
+
+# --- RunningProcess as a context manager ------------------------------------
+
+
+def test_running_process_sync_with_reaps_tree(tmp_path: object) -> None:
+    import pathlib
+
+    pid_file = pathlib.Path(str(tmp_path)) / "gc.pid"
+    # A standalone start() owns a private tree; the `with` exit must kill it.
+    with Runner().start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)])):
+        grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+    assert wait_dead(grandchild, timeout=10.0), "grandchild survived the with-block exit"
+
+
+def test_running_process_async_with_reaps_tree(tmp_path: object) -> None:
+    import pathlib
+
+    pid_file = pathlib.Path(str(tmp_path)) / "gc.pid"
+
+    async def scenario() -> int:
+        async with await Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).astart():
+            return read_pid_when_ready(pid_file, timeout=10.0)
+
+    grandchild = asyncio.run(scenario())
+    assert wait_dead(grandchild, timeout=10.0), "grandchild survived the async-with exit"
+
+
+def test_context_manager_is_noop_after_consuming() -> None:
+    async def scenario() -> None:
+        async with await Command(PY, ["-c", "print('hi')"]).astart() as proc:
+            result = await proc.output()  # consumes the handle
+            assert result.is_success
+        # __aexit__ sees a consumed handle and must not raise.
+
+    asyncio.run(scenario())
+
+
+# --- wait_for ---------------------------------------------------------------
+
+
+def test_wait_for_sync_predicate() -> None:
+    async def scenario() -> None:
+        calls = 0
+
+        def ready() -> bool:
+            nonlocal calls
+            calls += 1
+            return calls >= 3
+
+        await wait_for(ready, timeout=2.0, interval=0.01)
+        assert calls >= 3
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_async_predicate() -> None:
+    async def scenario() -> None:
+        async def ready() -> bool:
+            return True
+
+        await wait_for(ready, timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_times_out() -> None:
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError):
+            await wait_for(lambda: False, timeout=0.2, interval=0.01)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_returns_immediately_when_already_true() -> None:
+    # An already-true predicate must return before the deadline check, even at
+    # timeout=0 (predicate is evaluated first).
+    async def scenario() -> None:
+        await wait_for(lambda: True, timeout=0.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_async_predicate_polls_until_true() -> None:
+    # A missing `await` would treat the coroutine as truthy and return after one
+    # call; requiring three proves the value is actually awaited.
+    async def scenario() -> None:
+        calls = 0
+
+        async def ready() -> bool:
+            nonlocal calls
+            calls += 1
+            return calls >= 3
+
+        await wait_for(ready, timeout=2.0, interval=0.01)
+        assert calls >= 3
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_async_predicate_times_out() -> None:
+    async def scenario() -> None:
+        async def never() -> bool:
+            return False
+
+        with pytest.raises(TimeoutError):
+            await wait_for(never, timeout=0.2, interval=0.01)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_rejects_nonpositive_interval() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError):
+            await wait_for(lambda: True, timeout=1.0, interval=0)
+
+    asyncio.run(scenario())
+
+
+# --- Context-manager teardown under exceptions / inside a group -------------
+
+
+def test_with_reaps_tree_even_when_block_raises(tmp_path: object) -> None:
+    import pathlib
+
+    pid_file = pathlib.Path(str(tmp_path)) / "gc.pid"
+    grandchild = -1
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        Runner().start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)])),
+    ):
+        grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+        raise RuntimeError("boom")
+    assert grandchild > 0
+    assert wait_dead(grandchild, timeout=10.0), "grandchild survived a raising with-block"
+
+
+def test_async_with_reaps_tree_even_when_block_raises(tmp_path: object) -> None:
+    import pathlib
+
+    pid_file = pathlib.Path(str(tmp_path)) / "gc.pid"
+    captured: dict[str, int] = {}
+
+    async def scenario() -> None:
+        async with await Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).astart():
+            captured["pid"] = read_pid_when_ready(pid_file, timeout=10.0)
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(scenario())
+    assert wait_dead(captured["pid"], timeout=10.0), "grandchild survived a raising async-with"
+
+
+def test_group_started_handle_works_as_context_manager() -> None:
+    # A handle from group.start() is a shared-group handle: the context-manager
+    # exit kills just that child, and the surrounding group stays usable.
+    with ProcessGroup() as group:
+        with group.start(Command(PY, ["-c", "import time; time.sleep(60)"])) as proc:
+            child = proc.pid
+            assert child is not None
+        assert wait_dead(child, timeout=10.0), "group-started child survived its inner with-block"
+        assert isinstance(group.members(), list)

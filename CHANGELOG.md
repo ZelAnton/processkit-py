@@ -53,7 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (stdout+stderr as `OutputEvent`s), interactive `take_stdin()` →
     `ProcessStdin` (`write`/`write_line`/`flush`/`close`), and `await`able
     `wait()` → `Outcome`, `finish()` → `Finished`, `output()` → `ProcessResult`,
-    plus `start_kill()` / `shutdown(grace_seconds)`.
+    plus `start_kill()` / `shutdown(grace_seconds)`. It is also a context manager
+    (`with` / `async with`): exiting the block tears the process down
+    deterministically — a hard kill of the whole private tree for a standalone
+    `start()`/`astart()` handle — without relying on Python's GC.
   - `ProcessGroup`: `async with`, `astart()`, `ashutdown()`.
 - `Command` stdin configuration: `stdin_bytes()` / `stdin_text()` (feed input
   upfront) and `keep_stdin_open()` (write interactively after start).
@@ -70,8 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Supervision**: `Supervisor(cmd, restart=…, max_restarts=…, backoff_initial=…,
     backoff_factor=…, max_backoff=…, jitter=…, stop_when=…)` with `run()` /
     `arun()` → `SupervisionOutcome`.
-  - **Readiness probes**: `await wait_for_port(host, port, timeout)` and
-    `await wait_for_line(lines, predicate, timeout)`.
+  - **Readiness probes**: `await wait_for_port(host, port, timeout)`,
+    `await wait_for_line(lines, predicate, timeout)`, and
+    `await wait_for(predicate, timeout)` (poll any sync-or-async condition).
   - New types/exception: `Pipeline`, `ProcessGroupStats`, `Supervisor`,
     `SupervisionOutcome`, `ResourceLimit`.
 - Testing seam: a `Runner` (real) and a `ScriptedRunner` (test double) with a

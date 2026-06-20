@@ -85,6 +85,20 @@ def test_compiled_class_members_match_the_stub() -> None:
         assert not missing, f"{name}: members missing from stub: {sorted(missing)}"
 
 
+def test_context_manager_protocol_is_declared() -> None:
+    # The `__enter__`/`__exit__`/`__aenter__`/`__aexit__` dunders are excluded
+    # from the member-parity check (leading underscore), so guard them explicitly
+    # for the classes that promise the (async) context-manager protocol.
+    stub = _stub_classes()
+    protocol = ("__enter__", "__exit__", "__aenter__", "__aexit__")
+    for name in ("RunningProcess", "ProcessGroup"):
+        cls = getattr(_processkit, name)
+        declared = _declared_members(stub[name])
+        for dunder in protocol:
+            assert hasattr(cls, dunder), f"{name} lost {dunder} at runtime"
+            assert dunder in declared, f"{name}.{dunder} missing from the stub"
+
+
 def test_dual_base_exceptions_match_stdlib_and_stub() -> None:
     # The stdlib aliasing is the whole point of these two exceptions; assert it
     # both at runtime and in the stub so neither can regress silently.

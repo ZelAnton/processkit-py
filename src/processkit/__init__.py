@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
-from ._aio import wait_for_line, wait_for_port
+from ._aio import wait_for, wait_for_line, wait_for_port
 from ._processkit import (
     BytesResult,
     Cancelled,
@@ -82,6 +82,7 @@ __all__ = [
     "Supervisor",
     "Timeout",
     "Unsupported",
+    "wait_for",
     "wait_for_line",
     "wait_for_port",
 ]

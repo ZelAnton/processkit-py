@@ -10,11 +10,39 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from ._processkit import ProcessError
 
-__all__ = ["wait_for_line", "wait_for_port"]
+__all__ = ["wait_for", "wait_for_line", "wait_for_port"]
+
+
+async def wait_for(
+    predicate: Callable[[], bool | Awaitable[bool]],
+    timeout: float,
+    *,
+    interval: float = 0.05,
+) -> None:
+    """Poll ``predicate`` until it returns true, or ``timeout`` seconds elapse.
+
+    ``predicate`` may be synchronous or return an awaitable. Polls every
+    ``interval`` seconds; raises `TimeoutError` if the deadline passes first. A
+    synchronous ``predicate`` runs on the event loop, so keep it non-blocking —
+    use an async ``predicate`` for anything that does I/O.
+    """
+    if interval <= 0:
+        raise ValueError("interval must be a positive number of seconds")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        outcome = predicate()
+        ready = await outcome if isinstance(outcome, Awaitable) else outcome
+        if ready:
+            return
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(f"condition not met within {timeout}s")
+        await asyncio.sleep(min(interval, remaining))
 
 
 async def wait_for_port(
@@ -29,6 +57,8 @@ async def wait_for_port(
     Polls every ``interval`` seconds until the port accepts a connection or
     ``timeout`` seconds elapse, in which case `TimeoutError` is raised.
     """
+    if interval <= 0:
+        raise ValueError("interval must be a positive number of seconds")
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:

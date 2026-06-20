@@ -177,10 +177,29 @@ class ProcessStdin:
     async def close(self) -> None: ...
 
 class RunningProcess:
-    """A handle to a started process: stream output, write stdin, await exit."""
+    """A handle to a started process: stream output, write stdin, await exit.
+
+    Usable as a context manager (``with`` or ``async with``); exiting the block
+    tears the process down — a hard kill of the whole private tree for a
+    standalone ``start()``/``astart()`` handle. The streaming / stdin / await
+    methods are async-only (coroutines / async iterators)."""
 
     @property
     def pid(self) -> int | None: ...
+    def __enter__(self) -> RunningProcess: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc_value: BaseException | None = ...,
+        traceback: TracebackType | None = ...,
+    ) -> Literal[False]: ...
+    async def __aenter__(self) -> RunningProcess: ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc_value: BaseException | None = ...,
+        traceback: TracebackType | None = ...,
+    ) -> Literal[False]: ...
     def stdout_lines(self) -> StdoutLines: ...
     def output_events(self) -> OutputEvents: ...
     def take_stdin(self) -> ProcessStdin | None: ...

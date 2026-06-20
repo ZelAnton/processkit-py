@@ -7,6 +7,13 @@ The whole library has two parallel surfaces: a **synchronous** one (plain method
 names) and an **asyncio** one (the same names with an `a` prefix). Use whichever
 fits your code; they share the same types and the same no-orphan guarantee.
 
+`ProcessStdin` and the `stdout_lines()` / `output_events()` iterators are
+**async-only**, as are a `RunningProcess`'s I/O and await methods
+(`take_stdin`/`wait`/`finish`/`output`/`shutdown`): they exist for streaming and
+interactive use, so they are coroutines with no `a` prefix (there is no
+synchronous twin to disambiguate from). A `RunningProcess` is still usable as a
+**sync or async context manager** for deterministic teardown.
+
 ---
 
 ## Run a command and capture its output
@@ -124,6 +131,30 @@ async for event in proc.output_events():
     print(event.stream, event.text)   # "stdout" / "stderr"
 ```
 
+## Tear a standalone process down deterministically
+
+A `RunningProcess` is a context manager. Exiting the block kills the process —
+for a standalone `astart()` / `start()` handle that means a hard kill of its
+whole private tree — even if the block raises, without waiting on Python's GC:
+
+```python
+from processkit import Command, Runner
+
+async with await Command("flaky-server").astart() as proc:
+    async for line in proc.stdout_lines():
+        if "ready" in line:
+            break
+# proc (and its children) are reaped here
+
+# Sync handles work too:
+with Runner().start(Command("worker")) as proc:
+    ...                              # do other work
+# proc torn down here
+```
+
+If you consume the handle inside the block (`await proc.output()` / `.wait()` /
+`.finish()` / `.shutdown(...)`), exit is a no-op.
+
 ## Talk to a process interactively (async)
 
 ```python
@@ -171,13 +202,15 @@ task.cancel()                        # the process tree is reaped; CancelledErro
 ## Wait for a server to be ready
 
 ```python
-from processkit import Command, ProcessGroup, wait_for_port, wait_for_line
+from processkit import Command, ProcessGroup, wait_for, wait_for_port, wait_for_line
 
 async with ProcessGroup() as group:
     proc = await group.astart(Command("my-server"))
     await wait_for_port("127.0.0.1", 8080, timeout=10)        # poll the port
     # or wait for a log line:
     # await wait_for_line(proc.stdout_lines(), lambda l: "listening" in l, timeout=10)
+    # or poll any (sync or async) condition:
+    # await wait_for(lambda: health_check_passes(), timeout=10, interval=0.1)
 ```
 
 ## Build a shell-free pipeline

@@ -54,11 +54,11 @@ async def main():
     result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
     print(result.stdout.strip(), result.code)
 
-    # Stream a child's stdout line by line.
-    proc = await Command("ping", ["-c", "3", "127.0.0.1"]).astart()
-    async for line in proc.stdout_lines():
-        print(line)
-    await proc.wait()
+    # Stream a child's stdout line by line; the context manager reaps the whole
+    # tree on exit (even on exception) — no reliance on Python's GC.
+    async with await Command("ping", ["-c", "3", "127.0.0.1"]).astart() as proc:
+        async for line in proc.stdout_lines():
+            print(line)
 
     # Kill-on-exit container for a whole tree.
     async with ProcessGroup() as group:

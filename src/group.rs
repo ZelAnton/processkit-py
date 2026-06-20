@@ -1,0 +1,270 @@
+//! The `ProcessGroup` containment container and its `ProcessGroupStats`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use processkit::Mechanism;
+use processkit::ProcessGroup as PkProcessGroup;
+use processkit::ProcessGroupOptions;
+use pyo3::prelude::*;
+
+use crate::command::PyCommand;
+use crate::convert::{nonnegative_duration, parse_signal};
+use crate::errors::{map_err, ProcessError};
+use crate::running::PyRunningProcess;
+use crate::runtime::block_on_interruptible;
+
+/// A snapshot of a `ProcessGroup`'s resource usage.
+#[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
+pub(crate) struct PyProcessGroupStats {
+    active_process_count: usize,
+    peak_memory_bytes: Option<u64>,
+    total_cpu_time: Option<Duration>,
+}
+
+#[pymethods]
+impl PyProcessGroupStats {
+    /// Number of live processes currently in the group.
+    #[getter]
+    fn active_process_count(&self) -> usize {
+        self.active_process_count
+    }
+
+    /// Peak resident memory across the tree in bytes, if measurable.
+    #[getter]
+    fn peak_memory_bytes(&self) -> Option<u64> {
+        self.peak_memory_bytes
+    }
+
+    /// Total CPU time consumed by the tree in seconds, if measurable.
+    #[getter]
+    fn total_cpu_time_seconds(&self) -> Option<f64> {
+        self.total_cpu_time.map(|d| d.as_secs_f64())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProcessGroupStats(active_process_count={}, peak_memory_bytes={:?}, total_cpu_time_seconds={:?})",
+            self.active_process_count,
+            self.peak_memory_bytes,
+            self.total_cpu_time.map(|d| d.as_secs_f64()),
+        )
+    }
+}
+
+/// Tear the group down gracefully when we are its sole owner; if an `astart`
+/// future is still racing (another `Arc` ref alive), fall back to a hard kill of
+/// the whole tree so teardown still happens.
+async fn shutdown_group(group: Arc<PkProcessGroup>) -> processkit::Result<()> {
+    match Arc::try_unwrap(group) {
+        Ok(group) => group.shutdown().await,
+        Err(group) => group.terminate_all(),
+    }
+}
+
+/// A kill-on-drop container for a process *tree*. Use it as a context manager
+/// (`with` or `async with`): every process started inside, and everything those
+/// processes spawn, is torn down when the block exits.
+///
+/// The teardown asymmetry is load-bearing and honest: on Windows the Job Object
+/// reaps the tree when the last handle closes (kernel-enforced); on Linux/macOS
+/// teardown is driven from the `__exit__` path and is best-effort if the
+/// interpreter is hard-killed.
+#[pyclass(name = "ProcessGroup", module = "processkit")]
+pub(crate) struct PyProcessGroup {
+    // `None` after the group is shut down — every method then errors cleanly.
+    // `Arc` so the async `astart` can hold the group across the await without
+    // borrowing the pyclass.
+    inner: Option<Arc<PkProcessGroup>>,
+}
+
+impl PyProcessGroup {
+    fn group(&self) -> PyResult<&Arc<PkProcessGroup>> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| ProcessError::new_err("ProcessGroup is already closed"))
+    }
+}
+
+#[pymethods]
+impl PyProcessGroup {
+    #[new]
+    #[pyo3(signature = (
+        *,
+        memory_max=None,
+        max_processes=None,
+        cpu_quota=None,
+        shutdown_timeout=None,
+        escalate_to_kill=None,
+    ))]
+    fn new(
+        memory_max: Option<u64>,
+        max_processes: Option<u32>,
+        cpu_quota: Option<f64>,
+        shutdown_timeout: Option<f64>,
+        escalate_to_kill: Option<bool>,
+    ) -> PyResult<Self> {
+        // `ProcessGroup::new()` is exactly `with_options(default())`, so always
+        // build from defaults and apply whatever was passed — no branch needed.
+        let mut options = ProcessGroupOptions::default();
+        if let Some(bytes) = memory_max {
+            options = options.memory_max(bytes);
+        }
+        if let Some(n) = max_processes {
+            options = options.max_processes(n);
+        }
+        if let Some(cores) = cpu_quota {
+            options = options.cpu_quota(cores);
+        }
+        if let Some(seconds) = shutdown_timeout {
+            options = options.shutdown_timeout(nonnegative_duration(seconds, "shutdown_timeout")?);
+        }
+        if let Some(escalate) = escalate_to_kill {
+            options = options.escalate_to_kill(escalate);
+        }
+        let group = PkProcessGroup::with_options(options).map_err(map_err)?;
+        Ok(Self {
+            inner: Some(Arc::new(group)),
+        })
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
+    fn __exit__<'py>(
+        &mut self,
+        py: Python<'py>,
+        _exc_type: Option<Bound<'py, PyAny>>,
+        _exc_value: Option<Bound<'py, PyAny>>,
+        _traceback: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<bool> {
+        self.shutdown(py)?;
+        // Never suppress an exception raised inside the `with` block.
+        Ok(false)
+    }
+
+    fn __aenter__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
+    fn __aexit__<'py>(
+        &mut self,
+        py: Python<'py>,
+        _exc_type: Option<Bound<'py, PyAny>>,
+        _exc_value: Option<Bound<'py, PyAny>>,
+        _traceback: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.take();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(group) = group {
+                shutdown_group(group).await.map_err(map_err)?;
+            }
+            Ok(false)
+        })
+    }
+
+    /// Start a command inside the group and return a handle (sync). The process
+    /// runs concurrently; this does not wait for it to finish.
+    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
+        let group = self.group()?.clone();
+        let running = block_on_interruptible(py, group.start(&command.inner))?.map_err(map_err)?;
+        Ok(PyRunningProcess {
+            inner: Some(running),
+        })
+    }
+
+    /// Async counterpart of `start()`.
+    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.group()?.clone();
+        let cmd = command.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match group.start(&cmd).await {
+                Ok(running) => Ok(PyRunningProcess {
+                    inner: Some(running),
+                }),
+                Err(err) => Err(map_err(err)),
+            }
+        })
+    }
+
+    /// The containment mechanism in use: `"job_object"` (Windows),
+    /// `"cgroup_v2"` (Linux), or `"process_group"` (POSIX fallback).
+    #[getter]
+    fn mechanism(&self) -> PyResult<&'static str> {
+        let mechanism = match self.group()?.mechanism() {
+            Mechanism::JobObject => "job_object",
+            Mechanism::CgroupV2 => "cgroup_v2",
+            Mechanism::ProcessGroup => "process_group",
+            _ => "unknown",
+        };
+        Ok(mechanism)
+    }
+
+    /// The process ids currently contained by the group.
+    fn members(&self) -> PyResult<Vec<u32>> {
+        self.group()?.members().map_err(map_err)
+    }
+
+    /// Send a signal to every process in the tree. `name` is one of `term`,
+    /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2` (Windows emulates the
+    /// terminate/kill semantics).
+    fn signal(&self, name: &str) -> PyResult<()> {
+        let signal = parse_signal(name)?;
+        self.group()?.signal(signal).map_err(map_err)
+    }
+
+    /// Suspend every process in the tree.
+    fn suspend(&self) -> PyResult<()> {
+        self.group()?.suspend().map_err(map_err)
+    }
+
+    /// Resume every previously-suspended process in the tree.
+    fn resume(&self) -> PyResult<()> {
+        self.group()?.resume().map_err(map_err)
+    }
+
+    /// Immediately kill the whole tree (a hard kill, no graceful window).
+    fn terminate_all(&self) -> PyResult<()> {
+        self.group()?.terminate_all().map_err(map_err)
+    }
+
+    /// A snapshot of the group's resource usage.
+    fn stats(&self) -> PyResult<PyProcessGroupStats> {
+        let stats = self.group()?.stats().map_err(map_err)?;
+        Ok(PyProcessGroupStats {
+            active_process_count: stats.active_process_count,
+            peak_memory_bytes: stats.peak_memory_bytes,
+            total_cpu_time: stats.total_cpu_time,
+        })
+    }
+
+    /// Tear down the whole tree gracefully (sync). Idempotent — a second call is
+    /// a no-op.
+    fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
+        if let Some(group) = self.inner.take() {
+            block_on_interruptible(py, shutdown_group(group))?.map_err(map_err)?;
+        }
+        Ok(())
+    }
+
+    /// Async counterpart of `shutdown()`. Idempotent.
+    fn ashutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.take();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(group) = group {
+                shutdown_group(group).await.map_err(map_err)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            Some(_) => "ProcessGroup(open)".to_string(),
+            None => "ProcessGroup(closed)".to_string(),
+        }
+    }
+}

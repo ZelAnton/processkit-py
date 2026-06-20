@@ -77,6 +77,11 @@ def wait_until(predicate: Callable[[], bool], timeout: float) -> bool:
     return predicate()
 
 
+def wait_dead(pid: int, timeout: float) -> bool:
+    """Wait until the process with this PID is gone (no loop-variable closure)."""
+    return wait_until(lambda: not is_alive(pid), timeout)
+
+
 def read_pid_when_ready(path: os.PathLike[str] | str, timeout: float) -> int:
     """Wait for a PID file written by a child process and return the PID."""
     pid_path = pathlib.Path(path)

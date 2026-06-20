@@ -65,5 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results returned are genuine `ProcessResult` / `RunningProcess` objects.
 - A task-oriented [cookbook](docs/cookbook.md).
 - Type stubs (`_processkit.pyi`) for the compiled extension.
+- A [platform support & caveats](docs/platforms.md) matrix documenting per-OS
+  teardown, resource-limit, signal, and stats behaviour.
+- **Stability commitment:** as of 1.0 the public API follows SemVer — breaking
+  changes land only in a new major version.
+
+### Notes
+
+- This is the **1.0** release: the public API is frozen.
+- Distributed as abi3 wheels for CPython 3.10+ (standard/GIL builds);
+  free-threaded (PEP 703) support is tracked for a later release.
 
 [Unreleased]: https://github.com/ZelAnton/processkit-py/commits/main

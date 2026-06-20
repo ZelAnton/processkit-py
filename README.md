@@ -3,10 +3,10 @@
 Python bindings to the [`processkit`](https://crates.io/crates/processkit) Rust crate —
 asyncio-native, kernel-backed, no-orphan process containment.
 
-> **Status: Phase 4 — testing seam, typing, docs.** Not yet published to PyPI.
-> See [ROADMAP.md](ROADMAP.md) for the plan.
+> **Status: 1.0 — API frozen.** See [ROADMAP.md](ROADMAP.md) for how it was built.
 
-The [cookbook](docs/cookbook.md) has task-oriented snippets for every feature.
+The [cookbook](docs/cookbook.md) has task-oriented snippets for every feature;
+[platform support & caveats](docs/platforms.md) documents the per-OS behaviour.
 
 ## What it does
 
@@ -98,9 +98,17 @@ root**; under a container, systemd session, or other non-root cgroup the kernel
 forbids them and `ResourceLimit` is raised. Signals/`stats()` and limits raise
 `Unsupported` where the platform lacks them.
 
+## Stability
+
+processkit follows [Semantic Versioning](https://semver.org/). As of **1.0** the
+public API — everything re-exported from `import processkit` and declared in the
+type stubs — is stable: breaking changes land only in a new major version, so
+`1.x` upgrades are backward-compatible. Anything underscore-prefixed is internal.
+
 ## Requirements
 
 - Python 3.10 or later (abi3 wheel; [Rust toolchain](https://rustup.rs/) required to build from source)
+- See [platform support & caveats](docs/platforms.md) for per-OS behaviour.
 
 ## Installation
 

@@ -1,0 +1,97 @@
+name: Test release (TestPyPI)
+
+# Manual dry-run of the release packaging path: build the same cibuildwheel
+# matrix + sdist as the real release, then publish to TestPyPI. Unlike
+# release.yml it has NO side effects — no version bump, no commit/tag, no GitHub
+# Release — so it is safe to run repeatedly to verify the build + upload path.
+#
+# Requires the TESTPYPI_API_TOKEN secret (a TestPyPI API token). Uploads the
+# version currently in pyproject.toml with `--skip-existing`, so re-runs of the
+# same version are no-ops.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: test-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the TestPyPI token
+        env:
+          TESTPYPI_API_TOKEN: ${{ secrets.TESTPYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TESTPYPI_API_TOKEN:-}" ]]; then
+            echo "::error::TESTPYPI_API_TOKEN secret is not set. Add a TestPyPI API token under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "TestPyPI token present."
+
+  build_wheels:
+    needs: preflight
+    name: wheels (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - name: Build wheels
+        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build_sdist:
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - name: Build sdist
+        run: uvx maturin sdist --out dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish_testpypi:
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - name: Collect built distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ./dist
+          pattern: "{wheels-*,sdist}"
+          merge-multiple: true
+      - name: Check metadata
+        run: uvx twine check ./dist/*
+      - name: Upload to TestPyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TESTPYPI_API_TOKEN }}
+          TWINE_REPOSITORY_URL: https://test.pypi.org/legacy/
+        run: uvx twine upload --skip-existing ./dist/*.whl ./dist/*.tar.gz

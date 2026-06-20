@@ -118,7 +118,7 @@ flooding child with a `timeout()` instead.
 ## Stream output line by line (async)
 
 ```python
-proc = await Command("ping", ["-c", "3", "127.0.0.1"]).astart()
+proc = await Command("my-build", ["--watch"]).astart()
 async for line in proc.stdout_lines():
     print(line)
 finished = await proc.finish()   # outcome + captured stderr
@@ -218,7 +218,14 @@ async with ProcessGroup() as group:
 ```python
 top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
 # or: Command(...).pipe(Command(...)).run() / .arun()
+
+# Binary tail (e.g. `... | gzip`): capture raw bytes.
+blob = (Command("cat", ["big.txt"]) | Command("gzip")).output_bytes().stdout
 ```
+
+A pipeline is run-to-completion (no `astart()` streaming) and has no
+`output_limit` cap of its own — bound a flooding pipeline with `timeout()`. Set
+per-stage `env`/`cwd` on each `Command` before piping.
 
 ## Keep a service alive (supervision)
 
@@ -235,6 +242,12 @@ outcome = Supervisor(
 ).run()                        # or: await ....arun()
 print(outcome.restarts, outcome.stopped)
 ```
+
+The `stop_when=` predicate receives each run's `ProcessResult` and returns a
+bool; inspect the passed result rather than calling a synchronous run verb inside
+it (a nested sync call from within the supervisor's own loop is unsupported). A
+predicate that raises is reported via the unraisable hook and treated as "don't
+stop".
 
 ## Sandbox an untrusted tree with resource limits
 

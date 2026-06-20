@@ -85,6 +85,20 @@ def test_compiled_class_members_match_the_stub() -> None:
         assert not missing, f"{name}: members missing from stub: {sorted(missing)}"
 
 
+def test_stub_has_no_dead_class_members() -> None:
+    # Reverse of the member-parity check: every public method/property declared
+    # in the stub for a (non-exception) pyclass must exist at runtime, so a
+    # stub-only entry can't drift into stale documentation.
+    stub = _stub_classes()
+    for name, cls in _compiled_classes().items():
+        if issubclass(cls, BaseException):
+            continue
+        runtime = {m for m in vars(cls) if not m.startswith("_")}
+        declared = {m for m in _declared_members(stub[name]) if not m.startswith("_")}
+        extra = declared - runtime
+        assert not extra, f"{name}: stub declares members not present at runtime: {sorted(extra)}"
+
+
 def test_context_manager_protocol_is_declared() -> None:
     # The `__enter__`/`__exit__`/`__aenter__`/`__aexit__` dunders are excluded
     # from the member-parity check (leading underscore), so guard them explicitly

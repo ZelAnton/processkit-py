@@ -96,6 +96,28 @@ def test_aoutput_bytes_returns_raw_bytes() -> None:
     assert result.stdout == b"\x00\xff"
 
 
+def test_pipeline_output_bytes_captures_binary_tail() -> None:
+    # A pipeline ending in a binary producer can capture raw (non-UTF-8) bytes.
+    produce = Command(PY, ["-c", "import sys; sys.stdout.buffer.write(bytes([0, 1, 2, 255]))"])
+    echo = "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"
+    passthrough = Command(PY, ["-c", echo])
+    result = (produce | passthrough).output_bytes()
+    assert isinstance(result, BytesResult)
+    assert result.stdout == bytes([0, 1, 2, 255])
+    assert result.is_success
+
+
+def test_pipeline_aoutput_bytes_captures_binary_tail() -> None:
+    echo = "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"
+
+    async def scenario() -> BytesResult:
+        produce = Command(PY, ["-c", "import sys; sys.stdout.buffer.write(bytes([3, 4, 255]))"])
+        return await (produce | Command(PY, ["-c", echo])).aoutput_bytes()
+
+    result = asyncio.run(scenario())
+    assert result.stdout == bytes([3, 4, 255])
+
+
 # --- Output caps ------------------------------------------------------------
 
 

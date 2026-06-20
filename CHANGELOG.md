@@ -69,7 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `suspend()`, `resume()`, `terminate_all()`, and `stats()` →
     `ProcessGroupStats`.
   - **Pipelines**: `Command | Command` (or `.pipe()`) → `Pipeline`, with the
-    sync/async run verbs and `timeout()`.
+    sync/async run verbs (incl. `output_bytes()` / `aoutput_bytes()` for a binary
+    tail) and `timeout()`.
   - **Supervision**: `Supervisor(cmd, restart=…, max_restarts=…, backoff_initial=…,
     backoff_factor=…, max_backoff=…, jitter=…, stop_when=…)` with `run()` /
     `arun()` → `SupervisionOutcome`.

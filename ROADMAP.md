@@ -67,11 +67,11 @@ asyncio.run(main())
 
 - **Binding layer:** PyO3 + maturin.
 - **Async bridge:** `pyo3-async-runtimes` (tokio ↔ asyncio).
-- **Distribution:** abi3 wheels (cp39+) to keep the build matrix flat;
+- **Distribution:** abi3 wheels (cp310+) to keep the build matrix flat;
   `cibuildwheel` across Windows x64, manylinux x86_64 / aarch64,
   macOS x86_64 / arm64.
-- **Versioning:** the crate is pre-1.0. The binding pins an exact crate version
-  and tracks API churn deliberately, not transitively.
+- **Versioning:** the crate is at 1.0 (pinned exactly at `=1.0.1`). The binding
+  pins an exact crate version and tracks API churn deliberately, not transitively.
 
 ## Naming & publishing
 
@@ -192,8 +192,8 @@ Prioritised by Python demand, not crate order.
   lean on Windows `KILL_ON_JOB_CLOSE`; document Linux as best-effort, honestly.
 - **Async ecosystem fragmentation.** asyncio-only leaves trio / anyio users out.
   Mitigation: scope to asyncio for v1; revisit anyio later (or never).
-- **Binding tracks a pre-1.0 crate.** Mitigation: pin exact versions; keep the
-  binding thin so churn is cheap to absorb.
+- **Binding tracks the `processkit` crate.** Mitigation: pin an exact version
+  (`=1.0.1`); keep the binding thin so churn is cheap to absorb.
 - **Distribution.** cdylib + platform FFI across the wheel matrix is fiddly.
   Mitigation: abi3 to flatten the matrix; `cibuildwheel` from day one.
 - **Test seam doesn't port.** See Phase 4 — resolved by a Python-native
@@ -212,11 +212,15 @@ Prioritised by Python demand, not crate order.
 
 1. **Name — resolved.** Published as `processkit` (PyPI) / repo `processkit-py`.
    See *Naming & publishing*.
-2. **Async-only vs anyio-backed** for future trio reach.
-3. **Sync API as a first-class surface, or async-only?** (Leaning: keep sync as
-   a legitimate secondary surface — not everyone is in asyncio.)
-4. **abi3 vs version-specific wheels** (leaning abi3).
-5. **Exception aliasing** — alias `asyncio.CancelledError` / builtin
-   `TimeoutError`, or keep a fully independent hierarchy?
-6. **Publish order** — publish the crate to crates.io first and pin, or vendor
-   it as a git submodule during early development?
+2. **Async-only vs anyio-backed** for future trio reach — **still open**; shipped
+   asyncio-only for 1.0, anyio remains a possible later addition.
+3. **Sync API as a first-class surface, or async-only? — resolved.** Sync is a
+   first-class secondary surface (run-to-completion verbs + `ProcessGroup`);
+   streaming/interactive handles are async-only.
+4. **abi3 vs version-specific wheels — resolved.** abi3 (cp310+).
+5. **Exception aliasing — resolved.** Independent `ProcessError` hierarchy, with
+   `Timeout` also a builtin `TimeoutError` and `ProcessNotFound` also a
+   `FileNotFoundError`; `asyncio.CancelledError` surfaces natively on awaited
+   cancellation.
+6. **Publish order — resolved.** The crate is published to crates.io and pinned
+   exactly (`=1.0.1`).

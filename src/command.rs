@@ -315,6 +315,15 @@ impl PyPipeline {
         }
     }
 
+    /// Run the pipeline and capture the last stage's **raw bytes** stdout (sync);
+    /// for a pipeline ending in a binary producer (e.g. `... | gzip`).
+    fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
+        match block_on_interruptible(py, self.inner.output_bytes())? {
+            Ok(inner) => Ok(PyBytesResult { inner }),
+            Err(err) => Err(map_err(err)),
+        }
+    }
+
     /// Require success and return the last stage's trimmed stdout (sync).
     fn run(&self, py: Python<'_>) -> PyResult<String> {
         block_on_interruptible(py, self.inner.run())?.map_err(map_err)
@@ -336,6 +345,17 @@ impl PyPipeline {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match pipeline.output_string().await {
                 Ok(inner) => Ok(PyProcessResult { inner }),
+                Err(err) => Err(map_err(err)),
+            }
+        })
+    }
+
+    /// Async counterpart of `output_bytes()`.
+    fn aoutput_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pipeline = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match pipeline.output_bytes().await {
+                Ok(inner) => Ok(PyBytesResult { inner }),
                 Err(err) => Err(map_err(err)),
             }
         })

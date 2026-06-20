@@ -171,7 +171,10 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 let _ = value.setattr("total_lines", *total_lines);
                 let _ = value.setattr("total_bytes", *total_bytes);
             }
-            E::NotFound { program, .. } | E::Spawn { program, .. } | E::Cancelled { program } => {
+            E::NotFound { program, .. }
+            | E::Spawn { program, .. }
+            | E::Cancelled { program }
+            | E::Stdin { program, .. } => {
                 let _ = value.setattr("program", program.as_str());
             }
             _ => {}

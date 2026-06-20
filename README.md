@@ -56,7 +56,7 @@ async def main():
 
     # Stream a child's stdout line by line; the context manager reaps the whole
     # tree on exit (even on exception) — no reliance on Python's GC.
-    async with await Command("ping", ["-c", "3", "127.0.0.1"]).astart() as proc:
+    async with await Command("my-build", ["--watch"]).astart() as proc:
         async for line in proc.stdout_lines():
             print(line)
 
@@ -98,8 +98,8 @@ outcome = Supervisor(Command("flaky-worker"), restart="on_crash",
 
 Resource limits are enforced by the Windows Job Object or a Linux **cgroup-v2
 root**; under a container, systemd session, or other non-root cgroup the kernel
-forbids them and `ResourceLimit` is raised. Signals/`stats()` and limits raise
-`Unsupported` where the platform lacks them.
+forbids them and `ResourceLimit` is raised. Signals, `members()`, `stats()`, and
+limits raise `Unsupported` where the platform lacks them.
 
 ## Stability
 

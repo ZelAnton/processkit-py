@@ -14,23 +14,36 @@ use crate::result::PyProcessResult;
 use crate::runtime::block_on_interruptible;
 
 /// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
-/// callback. Errors / non-bool returns are treated as "do not stop".
+/// callback. The crate's predicate is infallible (`-> bool`), so a raising or
+/// non-bool predicate is treated as "do not stop" — but the error is surfaced
+/// via the unraisable hook (stderr) rather than silently swallowed, so a buggy
+/// predicate is visible instead of looping invisibly to `max_restarts`.
 fn make_stop_predicate(
     callback: Py<PyAny>,
 ) -> impl Fn(&PkProcessResult<String>) -> bool + Send + Sync + 'static {
     move |result| {
         Python::attach(|py| {
-            match Py::new(
+            let py_result = match Py::new(
                 py,
                 PyProcessResult {
                     inner: result.clone(),
                 },
             ) {
-                Ok(py_result) => callback
-                    .call1(py, (py_result,))
-                    .and_then(|value| value.extract::<bool>(py))
-                    .unwrap_or(false),
-                Err(_) => false,
+                Ok(py_result) => py_result,
+                Err(err) => {
+                    err.write_unraisable(py, None);
+                    return false;
+                }
+            };
+            match callback
+                .call1(py, (py_result,))
+                .and_then(|value| value.extract::<bool>(py))
+            {
+                Ok(stop) => stop,
+                Err(err) => {
+                    err.write_unraisable(py, Some(callback.bind(py)));
+                    false
+                }
             }
         })
     }

@@ -70,6 +70,26 @@ def test_dependency_injection_pattern() -> None:
     assert latest_commit(scripted) == "deadbeef"
 
 
+def test_async_runner_dependency_injection() -> None:
+    # Async code written against a runner is testable with a ScriptedRunner.
+    async def latest_commit(runner: Runner | ScriptedRunner) -> str:
+        return await runner.arun(Command("git", ["rev-parse", "HEAD"]))
+
+    async def scenario() -> str:
+        scripted = ScriptedRunner()
+        scripted.on(["git"], Reply.ok("cafebabe"))
+        return await latest_commit(scripted)
+
+    assert asyncio.run(scenario()) == "cafebabe"
+
+
+def test_real_runner_async() -> None:
+    async def scenario() -> str:
+        return await Runner().arun(Command(PY, ["-c", "print('async runner')"]))
+
+    assert asyncio.run(scenario()) == "async runner"
+
+
 def test_scripted_result_for_mocking() -> None:
     # ScriptedRunner is also a factory for genuine ProcessResult objects to feed
     # to unittest.mock-style fakes.

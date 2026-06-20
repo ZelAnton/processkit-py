@@ -1462,11 +1462,86 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
     })
 }
 
+// Async run verbs over an owned `Arc<R>` so the future can hold the runner with
+// no borrow of the pyclass.
+
+fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
+    py: Python<'py>,
+    runner: Arc<R>,
+    command: &PyCommand,
+) -> PyResult<Bound<'py, PyAny>> {
+    let cmd = command.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        match runner.output_string(&cmd).await {
+            Ok(inner) => Ok(PyProcessResult { inner }),
+            Err(err) => Err(Python::attach(|py| map_err(py, err))),
+        }
+    })
+}
+
+fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
+    py: Python<'py>,
+    runner: Arc<R>,
+    command: &PyCommand,
+) -> PyResult<Bound<'py, PyAny>> {
+    let cmd = command.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        runner
+            .run(&cmd)
+            .await
+            .map_err(|err| Python::attach(|py| map_err(py, err)))
+    })
+}
+
+fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
+    py: Python<'py>,
+    runner: Arc<R>,
+    command: &PyCommand,
+) -> PyResult<Bound<'py, PyAny>> {
+    let cmd = command.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        runner
+            .exit_code(&cmd)
+            .await
+            .map_err(|err| Python::attach(|py| map_err(py, err)))
+    })
+}
+
+fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
+    py: Python<'py>,
+    runner: Arc<R>,
+    command: &PyCommand,
+) -> PyResult<Bound<'py, PyAny>> {
+    let cmd = command.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        runner
+            .probe(&cmd)
+            .await
+            .map_err(|err| Python::attach(|py| map_err(py, err)))
+    })
+}
+
+fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
+    py: Python<'py>,
+    runner: Arc<R>,
+    command: &PyCommand,
+) -> PyResult<Bound<'py, PyAny>> {
+    let cmd = command.inner.clone();
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        match runner.start(&cmd).await {
+            Ok(running) => Ok(PyRunningProcess {
+                inner: Some(running),
+            }),
+            Err(err) => Err(Python::attach(|py| map_err(py, err))),
+        }
+    })
+}
+
 /// The real process runner. Inject it where you'd otherwise call `Command`
 /// verbs directly, so the same code can take a `ScriptedRunner` under test.
 #[pyclass(name = "Runner", module = "processkit")]
 struct PyRunner {
-    inner: JobRunner,
+    inner: Arc<JobRunner>,
 }
 
 #[pymethods]
@@ -1474,33 +1549,58 @@ impl PyRunner {
     #[new]
     fn new() -> Self {
         Self {
-            inner: JobRunner::new(),
+            inner: Arc::new(JobRunner::new()),
         }
     }
 
     /// Run a command and capture output (a non-zero exit is data).
     fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &self.inner, command)
+        runner_output(py, &*self.inner, command)
     }
 
     /// Require a zero exit and return trimmed stdout.
     fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &self.inner, command)
+        runner_run(py, &*self.inner, command)
     }
 
     /// The command's exit code.
     fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &self.inner, command)
+        runner_exit_code(py, &*self.inner, command)
     }
 
     /// Read a predicate command's exit code as a bool.
     fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &self.inner, command)
+        runner_probe(py, &*self.inner, command)
     }
 
     /// Start a command and return a `RunningProcess`.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &self.inner, command)
+        runner_start(py, &*self.inner, command)
+    }
+
+    /// Async counterpart of `output()`.
+    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aoutput(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `run()`.
+    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_arun(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `exit_code()`.
+    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aexit_code(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `probe()`.
+    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aprobe(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `start()`.
+    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_astart(py, self.inner.clone(), command)
     }
 
     fn __repr__(&self) -> String {
@@ -1513,7 +1613,32 @@ impl PyRunner {
 /// results it returns are genuine `ProcessResult` / `RunningProcess` objects.
 #[pyclass(name = "ScriptedRunner", module = "processkit")]
 struct PyScriptedRunner {
-    inner: PkScriptedRunner,
+    // `Arc` so the async run verbs can hold the runner across the await; builders
+    // reconfigure it via `Arc::try_unwrap`, which requires no in-flight call.
+    inner: Arc<PkScriptedRunner>,
+}
+
+impl PyScriptedRunner {
+    /// Apply a consuming builder to the wrapped runner. Requires sole ownership
+    /// (no async call holding a clone).
+    fn reconfigure(
+        &mut self,
+        build: impl FnOnce(PkScriptedRunner) -> PkScriptedRunner,
+    ) -> PyResult<()> {
+        let placeholder = Arc::new(PkScriptedRunner::new());
+        match Arc::try_unwrap(std::mem::replace(&mut self.inner, placeholder)) {
+            Ok(runner) => {
+                self.inner = Arc::new(build(runner));
+                Ok(())
+            }
+            Err(original) => {
+                self.inner = original;
+                Err(ProcessError::new_err(
+                    "cannot reconfigure a ScriptedRunner while a call is in flight",
+                ))
+            }
+        }
+    }
 }
 
 #[pymethods]
@@ -1521,40 +1646,65 @@ impl PyScriptedRunner {
     #[new]
     fn new() -> Self {
         Self {
-            inner: PkScriptedRunner::new(),
+            inner: Arc::new(PkScriptedRunner::new()),
         }
     }
 
     /// Reply with `reply` when a command's argv starts with `prefix`.
-    fn on(&mut self, prefix: Vec<String>, reply: &PyReply) {
-        let runner = std::mem::take(&mut self.inner);
-        self.inner = runner.on(prefix, reply.inner.clone());
+    fn on(&mut self, prefix: Vec<String>, reply: &PyReply) -> PyResult<()> {
+        let reply = reply.inner.clone();
+        self.reconfigure(move |runner| runner.on(prefix, reply))
     }
 
     /// The reply for any command not matched by an `on(...)` rule.
-    fn fallback(&mut self, reply: &PyReply) {
-        let runner = std::mem::take(&mut self.inner);
-        self.inner = runner.fallback(reply.inner.clone());
+    fn fallback(&mut self, reply: &PyReply) -> PyResult<()> {
+        let reply = reply.inner.clone();
+        self.reconfigure(move |runner| runner.fallback(reply))
     }
 
     fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &self.inner, command)
+        runner_output(py, &*self.inner, command)
     }
 
     fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &self.inner, command)
+        runner_run(py, &*self.inner, command)
     }
 
     fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &self.inner, command)
+        runner_exit_code(py, &*self.inner, command)
     }
 
     fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &self.inner, command)
+        runner_probe(py, &*self.inner, command)
     }
 
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &self.inner, command)
+        runner_start(py, &*self.inner, command)
+    }
+
+    /// Async counterpart of `output()`.
+    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aoutput(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `run()`.
+    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_arun(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `exit_code()`.
+    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aexit_code(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `probe()`.
+    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aprobe(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `start()`.
+    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_astart(py, self.inner.clone(), command)
     }
 
     fn __repr__(&self) -> String {

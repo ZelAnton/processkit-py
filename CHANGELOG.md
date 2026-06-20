@@ -58,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New types/exception: `Pipeline`, `ProcessGroupStats`, `Supervisor`,
     `SupervisionOutcome`, `ResourceLimit`.
 - Testing seam: a `Runner` (real) and a `ScriptedRunner` (test double) with a
-  uniform `output`/`run`/`exit_code`/`probe`/`start` interface, plus `Reply`
+  uniform sync + async (`a`-prefixed) `output`/`run`/`exit_code`/`probe`/`start`
+  interface, plus `Reply`
   (`ok`/`fail`/`timeout`/`signalled`/`lines`/`pending`). Inject a `Runner` in
   production and a `ScriptedRunner` in tests — no real processes spawned; the
   results returned are genuine `ProcessResult` / `RunningProcess` objects.

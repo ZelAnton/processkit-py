@@ -63,7 +63,50 @@ Command("sha256sum").stdin_bytes(b"\x00\x01\x02").run()
 ```python
 Command("ls").cwd("/tmp").output()
 Command("printenv", ["TOKEN"]).env("TOKEN", "secret").run()
+
+# Set several at once, or drop an inherited one:
+Command("worker").envs({"HOST": "127.0.0.1", "PORT": "8080"}).run()
+Command("worker").env_remove("HTTP_PROXY").run()
+
+# Start from an empty environment (reproducible / locked-down child), then add
+# back only what you need:
+Command("untrusted-tool").env_clear().env("PATH", "/usr/bin").run()
 ```
+
+## Capture binary (non-UTF-8) output
+
+`output_bytes()` returns a `BytesResult` whose `stdout` is `bytes` (stderr stays
+decoded text):
+
+```python
+result = Command("convert", ["in.png", "out:-"]).output_bytes()   # or: await ....aoutput_bytes()
+png = result.stdout            # bytes
+print(result.code, result.is_success)
+```
+
+## Cap captured output (untrusted children)
+
+Bound how much output is retained. To bound the parent's **memory**, cap
+`max_bytes` — a `max_lines`-only cap doesn't, because one newline-free flood is a
+single (unbounded) line:
+
+```python
+from processkit import Command, OutputTooLarge
+
+# Keep only the most recent 1 MiB; older output is dropped (the default):
+tail = Command("chatty-tool").output_limit(max_bytes=1024 * 1024).output()
+
+# For an untrusted child, treat hitting the byte cap as a failure:
+try:
+    Command("untrusted-tool").output_limit(max_bytes=8 * 1024 * 1024, on_overflow="error").run()
+except OutputTooLarge as e:
+    print(e.total_bytes, e.byte_limit)
+```
+
+`on_overflow` is `"drop_oldest"` (keep most recent, the default), `"drop_newest"`
+(keep earliest), or `"error"` (raise `OutputTooLarge`). The cap applies to
+line-captured output; raw `output_bytes()` stdout is never line-capped — bound a
+flooding child with a `timeout()` instead.
 
 ## Stream output line by line (async)
 
@@ -200,6 +243,13 @@ except Timeout as e:
 except ProcessNotFound as e:
     print("missing:", e.program)
 ```
+
+Every exception derives from `ProcessError`. Two also derive from the builtin
+the stdlib raises for the same condition, so familiar `except` clauses work:
+`Timeout` is also a `TimeoutError` (as `asyncio.TimeoutError` is) and
+`ProcessNotFound` is also a `FileNotFoundError` (as `subprocess` raises). The
+async readiness helpers (`wait_for_port` / `wait_for_line`) raise builtin
+`TimeoutError`, so `except TimeoutError` catches both run and readiness timeouts.
 
 ## Test code without spawning processes
 

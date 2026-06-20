@@ -20,6 +20,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from ._aio import wait_for_line, wait_for_port
 from ._processkit import (
+    BytesResult,
     Cancelled,
     Command,
     Finished,
@@ -27,6 +28,7 @@ from ._processkit import (
     Outcome,
     OutputEvent,
     OutputEvents,
+    OutputTooLarge,
     Pipeline,
     ProcessError,
     ProcessGroup,
@@ -53,6 +55,7 @@ except PackageNotFoundError:  # not installed (e.g. running from a source tree)
     __version__ = "unknown"
 
 __all__ = [
+    "BytesResult",
     "Cancelled",
     "Command",
     "Finished",
@@ -60,6 +63,7 @@ __all__ = [
     "Outcome",
     "OutputEvent",
     "OutputEvents",
+    "OutputTooLarge",
     "Pipeline",
     "ProcessError",
     "ProcessGroup",

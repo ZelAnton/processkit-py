@@ -7,7 +7,7 @@ Keep this in sync with `src/lib.rs`.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from types import TracebackType
 from typing import Literal
 
@@ -33,7 +33,37 @@ class ProcessResult:
     def program(self) -> str: ...
     @property
     def duration_seconds(self) -> float: ...
+    @property
+    def truncated(self) -> bool: ...
     def combined(self) -> str: ...
+    def __repr__(self) -> str: ...
+
+class BytesResult:
+    """The captured result of a run with raw-bytes stdout (`Command.output_bytes()`);
+    stderr stays decoded text. A non-zero exit, a timeout, and a signal-kill are
+    all data here, never raised."""
+
+    @property
+    def stdout(self) -> bytes: ...
+    @property
+    def stderr(self) -> str: ...
+    @property
+    def code(self) -> int | None: ...
+    @property
+    def is_success(self) -> bool: ...
+    @property
+    def timed_out(self) -> bool: ...
+    @property
+    def signal(self) -> int | None: ...
+    @property
+    def program(self) -> str: ...
+    @property
+    def duration_seconds(self) -> float: ...
+    @property
+    def truncated(self) -> bool:
+        """Whether captured *stderr* was truncated by an ``output_limit`` cap;
+        raw bytes stdout is never line-capped."""
+
     def __repr__(self) -> str: ...
 
 class Command:
@@ -44,15 +74,27 @@ class Command:
     def args(self, args: Sequence[str]) -> Command: ...
     def cwd(self, path: StrPath) -> Command: ...
     def env(self, key: str, value: str) -> Command: ...
+    def envs(self, vars: Mapping[str, str]) -> Command: ...
+    def env_remove(self, key: str) -> Command: ...
+    def env_clear(self) -> Command: ...
     def stdin_bytes(self, data: bytes) -> Command: ...
     def stdin_text(self, text: str) -> Command: ...
     def keep_stdin_open(self) -> Command: ...
     def timeout(self, seconds: float) -> Command: ...
+    def output_limit(
+        self,
+        *,
+        max_bytes: int | None = ...,
+        max_lines: int | None = ...,
+        on_overflow: Literal["drop_oldest", "drop_newest", "error"] = ...,
+    ) -> Command: ...
     def output(self) -> ProcessResult: ...
+    def output_bytes(self) -> BytesResult: ...
     def run(self) -> str: ...
     def exit_code(self) -> int: ...
     def probe(self) -> bool: ...
     async def aoutput(self) -> ProcessResult: ...
+    async def aoutput_bytes(self) -> BytesResult: ...
     async def arun(self) -> str: ...
     async def aexit_code(self) -> int: ...
     async def aprobe(self) -> bool: ...
@@ -294,8 +336,11 @@ class NonZeroExit(ProcessError):
     stdout: str
     stderr: str
 
-class Timeout(ProcessError):
-    """A run exceeded its configured timeout."""
+class Timeout(ProcessError, TimeoutError):
+    """A run exceeded its configured timeout.
+
+    Also a builtin `TimeoutError`, so `except TimeoutError` catches it too.
+    """
 
     program: str
     timeout_seconds: float
@@ -319,8 +364,12 @@ class Signalled(ProcessError):
     stdout: str
     stderr: str
 
-class ProcessNotFound(ProcessError):
-    """The program could not be found / spawned."""
+class ProcessNotFound(ProcessError, FileNotFoundError):
+    """The program could not be found / spawned.
+
+    Also a builtin `FileNotFoundError` (what `subprocess` raises), so
+    `except FileNotFoundError` catches it too.
+    """
 
     program: str
 
@@ -329,3 +378,12 @@ class ResourceLimit(ProcessError):
 
 class Unsupported(ProcessError):
     """The operation is not supported on this platform."""
+
+class OutputTooLarge(ProcessError):
+    """Captured output hit an `output_limit(..., on_overflow="error")` ceiling."""
+
+    program: str
+    line_limit: int | None
+    byte_limit: int | None
+    total_lines: int
+    total_bytes: int

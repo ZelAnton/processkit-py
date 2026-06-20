@@ -5,215 +5,55 @@
 //! released around every blocking call so other Python threads run, and the
 //! wait is broken into ticks so that `Ctrl+C` interrupts a blocked call.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use processkit::testing::{Reply as PkReply, ScriptedRunner as PkScriptedRunner};
 use processkit::Command as PkCommand;
 use processkit::JobRunner;
 use processkit::Mechanism;
 use processkit::Outcome as PkOutcome;
+use processkit::OutputBufferPolicy;
 use processkit::OutputEvent as PkOutputEvent;
 use processkit::OutputEvents as PkOutputEvents;
+use processkit::OverflowMode;
 use processkit::Pipeline as PkPipeline;
 use processkit::ProcessGroup as PkProcessGroup;
 use processkit::ProcessGroupOptions;
 use processkit::ProcessResult as PkProcessResult;
-use processkit::ProcessRunner;
-use processkit::ProcessRunnerExt;
 use processkit::ProcessStdin as PkProcessStdin;
-use processkit::RestartPolicy;
 use processkit::RunningProcess as PkRunningProcess;
-use processkit::Signal as PkSignal;
 use processkit::Stdin as PkStdin;
 use processkit::StdoutLines as PkStdoutLines;
-use processkit::StopReason;
 use processkit::StreamExt;
 use processkit::SupervisionOutcome;
 use processkit::Supervisor as PkSupervisor;
-use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyOSError, PyStopAsyncIteration, PyValueError};
+use pyo3::exceptions::{PyOSError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use tokio::sync::Mutex;
 
-/// The one tokio runtime the binding owns, shared by the sync surface
-/// (`block_on`) and the async surface (`future_into_py`).
-fn rt() -> &'static tokio::runtime::Runtime {
-    pyo3_async_runtimes::tokio::get_runtime()
-}
+mod convert;
+mod errors;
+mod runner;
+mod runtime;
 
-/// How often a blocked sync call surfaces to check for pending Python signals.
-const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// Drive a future to completion with the GIL released, re-acquiring it on a
-/// fixed tick to honour pending signals (notably `Ctrl+C`). A fast future
-/// returns on the first tick with no added latency; a slow one yields every
-/// `SIGNAL_POLL_INTERVAL` so `Python::check_signals` can raise. When it raises,
-/// `fut` is dropped here — which, for a run that owns its process group, tears
-/// the tree down.
-fn block_on_interruptible<F, T>(py: Python<'_>, fut: F) -> PyResult<T>
-where
-    F: std::future::Future<Output = T> + Send,
-    T: Send,
-{
-    let mut fut = std::pin::pin!(fut);
-    loop {
-        let step = py.detach(|| {
-            rt().block_on(async { tokio::time::timeout(SIGNAL_POLL_INTERVAL, fut.as_mut()).await })
-        });
-        match step {
-            Ok(value) => return Ok(value),
-            // The tick elapsed without completion — let Python run its signal
-            // handlers, then keep waiting.
-            Err(_elapsed) => py.check_signals()?,
-        }
-    }
-}
-
-// Exception hierarchy: a single `ProcessError` root with one subclass per
-// failure mode the crate distinguishes. Builtin/asyncio aliasing is layered in
-// the Python package (`__init__.py`), not here.
-create_exception!(_processkit, ProcessError, PyException);
-create_exception!(_processkit, NonZeroExit, ProcessError);
-create_exception!(_processkit, Timeout, ProcessError);
-create_exception!(_processkit, Cancelled, ProcessError);
-create_exception!(_processkit, Signalled, ProcessError);
-create_exception!(_processkit, ProcessNotFound, ProcessError);
-create_exception!(_processkit, ResourceLimit, ProcessError);
-create_exception!(_processkit, Unsupported, ProcessError);
-
-/// Validate and convert a positive number of seconds into a `Duration`.
-fn positive_duration(seconds: f64, what: &str) -> PyResult<Duration> {
-    if !seconds.is_finite() || seconds <= 0.0 {
-        return Err(PyValueError::new_err(format!(
-            "{what} must be a positive, finite number of seconds"
-        )));
-    }
-    Duration::try_from_secs_f64(seconds)
-        .map_err(|err| PyValueError::new_err(format!("invalid {what}: {err}")))
-}
-
-/// Parse a restart policy name into a crate `RestartPolicy`.
-fn parse_restart_policy(name: &str) -> PyResult<RestartPolicy> {
-    match name.to_ascii_lowercase().as_str() {
-        "always" => Ok(RestartPolicy::Always),
-        "never" => Ok(RestartPolicy::Never),
-        "on_crash" | "on-crash" | "oncrash" => Ok(RestartPolicy::OnCrash),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown restart policy {name:?}; use one of: always, never, on_crash"
-        ))),
-    }
-}
-
-/// Render a `StopReason` as a stable lowercase string.
-fn stop_reason_str(reason: StopReason) -> &'static str {
-    match reason {
-        StopReason::PolicySatisfied => "policy_satisfied",
-        StopReason::Predicate => "predicate",
-        StopReason::RestartsExhausted => "restarts_exhausted",
-        _ => "unknown",
-    }
-}
-
-/// Parse a signal name (`"term"`, `"kill"`, `"int"`, `"hup"`, `"quit"`,
-/// `"usr1"`, `"usr2"`; a `"sig"` prefix is accepted) into a crate `Signal`.
-fn parse_signal(name: &str) -> PyResult<PkSignal> {
-    let key = name.to_ascii_lowercase();
-    let key = key.strip_prefix("sig").unwrap_or(&key);
-    match key {
-        "term" => Ok(PkSignal::Term),
-        "kill" => Ok(PkSignal::Kill),
-        "int" => Ok(PkSignal::Int),
-        "hup" => Ok(PkSignal::Hup),
-        "quit" => Ok(PkSignal::Quit),
-        "usr1" => Ok(PkSignal::Usr1),
-        "usr2" => Ok(PkSignal::Usr2),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown signal {name:?}; use one of: term, kill, int, hup, quit, usr1, usr2"
-        ))),
-    }
-}
-
-/// Map a crate `Error` onto the Python exception hierarchy and attach the
-/// structured fields the variant carries (`code`, `stdout`, `stderr`,
-/// `program`, `signal`, `timeout_seconds`) so callers can inspect a failure
-/// programmatically, not just read its message.
-///
-/// `Error` is `#[non_exhaustive]`, so the wildcard arm both covers the rarer
-/// variants (`Io`, `Parse`, `Stdin`, `OutputTooLarge`, …) and stays
-/// forward-compatible.
-fn map_err(py: Python<'_>, error: processkit::Error) -> PyErr {
-    use processkit::Error as E;
-    use std::io::ErrorKind;
-
-    let message = error.to_string();
-    let err = match &error {
-        E::Timeout { .. } => Timeout::new_err(message),
-        E::Cancelled { .. } => Cancelled::new_err(message),
-        E::Exit { .. } => NonZeroExit::new_err(message),
-        E::Signalled { .. } => Signalled::new_err(message),
-        E::NotFound { .. } => ProcessNotFound::new_err(message),
-        // The real spawn path reports a missing program as `Spawn` carrying an
-        // `io::Error` of kind `NotFound`; surface that as `ProcessNotFound` too.
-        E::Spawn { source, .. } if source.kind() == ErrorKind::NotFound => {
-            ProcessNotFound::new_err(message)
-        }
-        E::ResourceLimit { .. } => ResourceLimit::new_err(message),
-        E::Unsupported { .. } => Unsupported::new_err(message),
-        _ => ProcessError::new_err(message),
-    };
-
-    // Attach structured fields. `setattr` failures are ignored: the typed
-    // exception with its message is already a faithful error.
-    let value = err.value(py);
-    match &error {
-        E::Exit {
-            code,
-            program,
-            stdout,
-            stderr,
-        } => {
-            let _ = value.setattr("program", program.as_str());
-            let _ = value.setattr("code", *code);
-            let _ = value.setattr("stdout", stdout.as_str());
-            let _ = value.setattr("stderr", stderr.as_str());
-        }
-        E::Signalled {
-            program,
-            signal,
-            stdout,
-            stderr,
-        } => {
-            let _ = value.setattr("program", program.as_str());
-            let _ = value.setattr("signal", *signal);
-            let _ = value.setattr("stdout", stdout.as_str());
-            let _ = value.setattr("stderr", stderr.as_str());
-        }
-        E::Timeout {
-            program,
-            timeout,
-            stdout,
-            stderr,
-        } => {
-            let _ = value.setattr("program", program.as_str());
-            let _ = value.setattr("timeout_seconds", timeout.as_secs_f64());
-            let _ = value.setattr("stdout", stdout.as_str());
-            let _ = value.setattr("stderr", stderr.as_str());
-        }
-        E::NotFound { program, .. } | E::Spawn { program, .. } | E::Cancelled { program } => {
-            let _ = value.setattr("program", program.as_str());
-        }
-        _ => {}
-    }
-    err
-}
+use crate::convert::{
+    nonnegative_duration, parse_restart_policy, parse_signal, positive_duration, stop_reason_str,
+};
+use crate::errors::{
+    init_dual_exceptions, map_err, Cancelled, NonZeroExit, OutputTooLarge, ProcessError,
+    ResourceLimit, Signalled, Unsupported,
+};
+use crate::runner::{PyReply, PyRunner, PyScriptedRunner};
+use crate::runtime::{block_on_interruptible, rt};
 
 /// The captured result of a finished run. A non-zero exit, a timeout, and a
 /// signal-kill are all *data* here — `output()` never raises on them.
 #[pyclass(name = "ProcessResult", frozen, module = "processkit")]
-struct PyProcessResult {
-    inner: PkProcessResult<String>,
+pub(crate) struct PyProcessResult {
+    pub(crate) inner: PkProcessResult<String>,
 }
 
 #[pymethods]
@@ -259,6 +99,12 @@ impl PyProcessResult {
         self.inner.duration().as_secs_f64()
     }
 
+    /// Whether captured output was truncated by an `output_limit(...)` cap.
+    #[getter]
+    fn truncated(&self) -> bool {
+        self.inner.truncated()
+    }
+
     /// stdout and stderr interleaved into one string (stdout first).
     fn combined(&self) -> String {
         self.inner.combined()
@@ -270,6 +116,76 @@ impl PyProcessResult {
             self.inner.program(),
             self.inner.code(),
             self.inner.is_success(),
+        )
+    }
+}
+
+/// The captured result of a finished run with **raw bytes** stdout (produced by
+/// `Command.output_bytes()`); stderr stays decoded text. As with `ProcessResult`,
+/// a non-zero exit, a timeout, and a signal-kill are all *data* here.
+#[pyclass(name = "BytesResult", frozen, module = "processkit")]
+struct PyBytesResult {
+    inner: PkProcessResult<Vec<u8>>,
+}
+
+#[pymethods]
+impl PyBytesResult {
+    #[getter]
+    fn stdout<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.inner.stdout().as_slice())
+    }
+
+    #[getter]
+    fn stderr(&self) -> &str {
+        self.inner.stderr()
+    }
+
+    /// The exit code, or `None` for a timeout / signal-kill.
+    #[getter]
+    fn code(&self) -> Option<i32> {
+        self.inner.code()
+    }
+
+    #[getter]
+    fn is_success(&self) -> bool {
+        self.inner.is_success()
+    }
+
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.inner.timed_out()
+    }
+
+    #[getter]
+    fn signal(&self) -> Option<i32> {
+        self.inner.signal()
+    }
+
+    #[getter]
+    fn program(&self) -> &str {
+        self.inner.program()
+    }
+
+    #[getter]
+    fn duration_seconds(&self) -> f64 {
+        self.inner.duration().as_secs_f64()
+    }
+
+    /// Whether captured stderr was truncated by an `output_limit(...)` cap.
+    /// (Raw stdout from `output_bytes()` is never line-capped — bound a flooding
+    /// child with a `timeout` instead.)
+    #[getter]
+    fn truncated(&self) -> bool {
+        self.inner.truncated()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BytesResult(program={:?}, code={:?}, success={}, stdout_len={})",
+            self.inner.program(),
+            self.inner.code(),
+            self.inner.is_success(),
+            self.inner.stdout().len(),
         )
     }
 }
@@ -527,8 +443,8 @@ impl PyOutputEvents {
 /// A command builder. Builder methods return a new `Command`, so a configured
 /// command is reusable and chains read left to right.
 #[pyclass(name = "Command", module = "processkit")]
-struct PyCommand {
-    inner: PkCommand,
+pub(crate) struct PyCommand {
+    pub(crate) inner: PkCommand,
 }
 
 #[pymethods]
@@ -569,6 +485,29 @@ impl PyCommand {
         }
     }
 
+    /// Set several environment variables at once from a mapping.
+    fn envs(&self, vars: HashMap<String, String>) -> Self {
+        Self {
+            inner: self.inner.clone().envs(vars),
+        }
+    }
+
+    /// Remove a variable from the child's environment (drops any inherited value).
+    fn env_remove(&self, key: &str) -> Self {
+        Self {
+            inner: self.inner.clone().env_remove(key),
+        }
+    }
+
+    /// Start from an empty environment instead of inheriting the parent's; add
+    /// back only what `env()` / `envs()` set. Use for reproducible or locked-down
+    /// (sandboxed) children.
+    fn env_clear(&self) -> Self {
+        Self {
+            inner: self.inner.clone().env_clear(),
+        }
+    }
+
     /// Feed the given bytes to the child's stdin, then close it (EOF).
     fn stdin_bytes(&self, data: Vec<u8>) -> Self {
         Self {
@@ -594,17 +533,53 @@ impl PyCommand {
     /// Set a wall-clock timeout. On expiry the whole tree is killed; `output()`
     /// reports it as `timed_out`, while `run()` / `exit_code()` raise `Timeout`.
     fn timeout(&self, seconds: f64) -> PyResult<Self> {
-        if !seconds.is_finite() || seconds <= 0.0 {
-            return Err(PyValueError::new_err(
-                "timeout must be a positive, finite number of seconds",
-            ));
-        }
-        // `try_from_secs_f64` (not `from_secs_f64`) so a finite-but-huge value
-        // that overflows `Duration` is a clean error, not a Rust panic.
-        let duration = Duration::try_from_secs_f64(seconds)
-            .map_err(|err| PyValueError::new_err(format!("invalid timeout: {err}")))?;
+        let duration = positive_duration(seconds, "timeout")?;
         Ok(Self {
             inner: self.inner.clone().timeout(duration),
+        })
+    }
+
+    /// Cap how much captured output is retained. Pass at least one of
+    /// `max_bytes` / `max_lines`. To bound the parent's *memory* against an
+    /// untrusted child, use `max_bytes` — a `max_lines`-only cap does not, since
+    /// a single newline-free flood is one (unbounded) line. `on_overflow`
+    /// decides what happens at the cap: `"drop_oldest"` keeps the most recent
+    /// output, `"drop_newest"` keeps the earliest, `"error"` raises
+    /// `OutputTooLarge`. The cap applies to line-captured output (`output()` /
+    /// streamed `finish()`); raw `output_bytes()` stdout is never line-capped
+    /// (only its stderr is) — bound a flooding child with a `timeout` instead.
+    #[pyo3(signature = (*, max_bytes=None, max_lines=None, on_overflow="drop_oldest"))]
+    fn output_limit(
+        &self,
+        max_bytes: Option<usize>,
+        max_lines: Option<usize>,
+        on_overflow: &str,
+    ) -> PyResult<Self> {
+        if max_bytes.is_none() && max_lines.is_none() {
+            return Err(PyValueError::new_err(
+                "output_limit requires at least one of max_bytes or max_lines",
+            ));
+        }
+        let overflow = match on_overflow {
+            "drop_oldest" => OverflowMode::DropOldest,
+            "drop_newest" => OverflowMode::DropNewest,
+            "error" => OverflowMode::Error,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown on_overflow {other:?}; use one of: drop_oldest, drop_newest, error"
+                )))
+            }
+        };
+        let mut policy = match max_lines {
+            Some(n) => OutputBufferPolicy::bounded(n),
+            None => OutputBufferPolicy::unbounded(),
+        };
+        if let Some(bytes) = max_bytes {
+            policy = policy.with_max_bytes(bytes);
+        }
+        policy = policy.with_overflow(overflow);
+        Ok(Self {
+            inner: self.inner.clone().output_buffer(policy),
         })
     }
 
@@ -613,26 +588,36 @@ impl PyCommand {
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
         match block_on_interruptible(py, self.inner.output_string())? {
             Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(map_err(py, err)),
+            Err(err) => Err(map_err(err)),
+        }
+    }
+
+    /// Run to completion and capture **raw bytes** stdout (stderr stays decoded
+    /// text). Use for binary output that isn't valid UTF-8. A non-zero exit is
+    /// data, returned as a `BytesResult`.
+    fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
+        match block_on_interruptible(py, self.inner.output_bytes())? {
+            Ok(inner) => Ok(PyBytesResult { inner }),
+            Err(err) => Err(map_err(err)),
         }
     }
 
     /// Require a zero exit and return stdout, trailing whitespace trimmed.
     /// Raises `NonZeroExit` (or `Timeout` / `Signalled`) otherwise.
     fn run(&self, py: Python<'_>) -> PyResult<String> {
-        block_on_interruptible(py, self.inner.run())?.map_err(|err| map_err(py, err))
+        block_on_interruptible(py, self.inner.run())?.map_err(map_err)
     }
 
     /// The exit code; a timeout / signal-kill raises rather than returning a
     /// sentinel.
     fn exit_code(&self, py: Python<'_>) -> PyResult<i32> {
-        block_on_interruptible(py, self.inner.exit_code())?.map_err(|err| map_err(py, err))
+        block_on_interruptible(py, self.inner.exit_code())?.map_err(map_err)
     }
 
     /// Run a predicate command and read its exit code as a bool: `0` → `True`,
     /// `1` → `False`, anything else raises.
     fn probe(&self, py: Python<'_>) -> PyResult<bool> {
-        block_on_interruptible(py, self.inner.probe())?.map_err(|err| map_err(py, err))
+        block_on_interruptible(py, self.inner.probe())?.map_err(map_err)
     }
 
     /// Async counterpart of `output()`. Awaitable under asyncio; cancelling the
@@ -643,7 +628,18 @@ impl PyCommand {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match cmd.output_string().await {
                 Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
+            }
+        })
+    }
+
+    /// Async counterpart of `output_bytes()`.
+    fn aoutput_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cmd = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            match cmd.output_bytes().await {
+                Ok(inner) => Ok(PyBytesResult { inner }),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -651,31 +647,27 @@ impl PyCommand {
     /// Async counterpart of `run()`. See `aoutput` for cancellation semantics.
     fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            cmd.run()
-                .await
-                .map_err(|err| Python::attach(|py| map_err(py, err)))
-        })
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move { cmd.run().await.map_err(map_err) },
+        )
     }
 
     /// Async counterpart of `exit_code()`.
     fn aexit_code<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            cmd.exit_code()
-                .await
-                .map_err(|err| Python::attach(|py| map_err(py, err)))
+            cmd.exit_code().await.map_err(map_err)
         })
     }
 
     /// Async counterpart of `probe()`.
     fn aprobe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            cmd.probe()
-                .await
-                .map_err(|err| Python::attach(|py| map_err(py, err)))
-        })
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move { cmd.probe().await.map_err(map_err) },
+        )
     }
 
     /// Start the command and return a `RunningProcess` for streaming and
@@ -688,7 +680,7 @@ impl PyCommand {
                 Ok(running) => Ok(PyRunningProcess {
                     inner: Some(running),
                 }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -732,13 +724,7 @@ impl PyPipeline {
 
     /// Set a wall-clock timeout for the whole pipeline.
     fn timeout(&self, seconds: f64) -> PyResult<Self> {
-        if !seconds.is_finite() || seconds <= 0.0 {
-            return Err(PyValueError::new_err(
-                "timeout must be a positive, finite number of seconds",
-            ));
-        }
-        let duration = Duration::try_from_secs_f64(seconds)
-            .map_err(|err| PyValueError::new_err(format!("invalid timeout: {err}")))?;
+        let duration = positive_duration(seconds, "timeout")?;
         Ok(Self {
             inner: self.inner.clone().timeout(duration),
         })
@@ -748,23 +734,23 @@ impl PyPipeline {
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
         match block_on_interruptible(py, self.inner.output_string())? {
             Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(map_err(py, err)),
+            Err(err) => Err(map_err(err)),
         }
     }
 
     /// Require success and return the last stage's trimmed stdout (sync).
     fn run(&self, py: Python<'_>) -> PyResult<String> {
-        block_on_interruptible(py, self.inner.run())?.map_err(|err| map_err(py, err))
+        block_on_interruptible(py, self.inner.run())?.map_err(map_err)
     }
 
     /// The pipeline's exit code (sync).
     fn exit_code(&self, py: Python<'_>) -> PyResult<i32> {
-        block_on_interruptible(py, self.inner.exit_code())?.map_err(|err| map_err(py, err))
+        block_on_interruptible(py, self.inner.exit_code())?.map_err(map_err)
     }
 
     /// Run a predicate pipeline and read its exit code as a bool (sync).
     fn probe(&self, py: Python<'_>) -> PyResult<bool> {
-        block_on_interruptible(py, self.inner.probe())?.map_err(|err| map_err(py, err))
+        block_on_interruptible(py, self.inner.probe())?.map_err(map_err)
     }
 
     /// Async counterpart of `output()`.
@@ -773,7 +759,7 @@ impl PyPipeline {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match pipeline.output_string().await {
                 Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -782,10 +768,7 @@ impl PyPipeline {
     fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            pipeline
-                .run()
-                .await
-                .map_err(|err| Python::attach(|py| map_err(py, err)))
+            pipeline.run().await.map_err(map_err)
         })
     }
 
@@ -793,10 +776,7 @@ impl PyPipeline {
     fn aexit_code<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            pipeline
-                .exit_code()
-                .await
-                .map_err(|err| Python::attach(|py| map_err(py, err)))
+            pipeline.exit_code().await.map_err(map_err)
         })
     }
 
@@ -804,10 +784,7 @@ impl PyPipeline {
     fn aprobe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            pipeline
-                .probe()
-                .await
-                .map_err(|err| Python::attach(|py| map_err(py, err)))
+            pipeline.probe().await.map_err(map_err)
         })
     }
 
@@ -820,9 +797,9 @@ impl PyPipeline {
 /// await its completion. The consuming methods (`wait`, `finish`, `output`,
 /// `shutdown`) leave the handle spent; using it afterwards raises.
 #[pyclass(name = "RunningProcess", module = "processkit")]
-struct PyRunningProcess {
+pub(crate) struct PyRunningProcess {
     // `None` after a consuming method has taken ownership of the process.
-    inner: Option<PkRunningProcess>,
+    pub(crate) inner: Option<PkRunningProcess>,
 }
 
 impl PyRunningProcess {
@@ -849,26 +826,20 @@ impl PyRunningProcess {
 
     /// An async iterator over stdout, line by line:
     /// `async for line in proc.stdout_lines(): ...`.
-    fn stdout_lines(&mut self, py: Python<'_>) -> PyResult<PyStdoutLines> {
+    fn stdout_lines(&mut self) -> PyResult<PyStdoutLines> {
         // Setting up the stream spawns a pump task, so it must run inside the
         // tokio runtime context.
         let _guard = rt().enter();
-        let lines = self
-            .running_mut()?
-            .stdout_lines()
-            .map_err(|err| map_err(py, err))?;
+        let lines = self.running_mut()?.stdout_lines().map_err(map_err)?;
         Ok(PyStdoutLines {
             inner: Arc::new(Mutex::new(lines)),
         })
     }
 
     /// An async iterator over stdout and stderr as interleaved `OutputEvent`s.
-    fn output_events(&mut self, py: Python<'_>) -> PyResult<PyOutputEvents> {
+    fn output_events(&mut self) -> PyResult<PyOutputEvents> {
         let _guard = rt().enter();
-        let events = self
-            .running_mut()?
-            .output_events()
-            .map_err(|err| map_err(py, err))?;
+        let events = self.running_mut()?.output_events().map_err(map_err)?;
         Ok(PyOutputEvents {
             inner: Arc::new(Mutex::new(events)),
         })
@@ -887,11 +858,9 @@ impl PyRunningProcess {
 
     /// Begin tearing the tree down without waiting. (Dropping the handle, or the
     /// owning group, also kills it; this just starts it early.)
-    fn start_kill(&mut self, py: Python<'_>) -> PyResult<()> {
+    fn start_kill(&mut self) -> PyResult<()> {
         let _guard = rt().enter();
-        self.running_mut()?
-            .start_kill()
-            .map_err(|err| map_err(py, err))
+        self.running_mut()?.start_kill().map_err(map_err)
     }
 
     /// Await exit and return the `Outcome`. Consumes the handle.
@@ -900,7 +869,7 @@ impl PyRunningProcess {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match running.wait().await {
                 Ok(outcome) => Ok(PyOutcome { inner: outcome }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -915,7 +884,7 @@ impl PyRunningProcess {
                     outcome: finished.outcome,
                     stderr: finished.stderr,
                 }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -926,7 +895,7 @@ impl PyRunningProcess {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match running.output_string().await {
                 Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -938,18 +907,12 @@ impl PyRunningProcess {
         py: Python<'py>,
         grace_seconds: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        if !grace_seconds.is_finite() || grace_seconds < 0.0 {
-            return Err(PyValueError::new_err(
-                "grace_seconds must be a non-negative, finite number",
-            ));
-        }
-        let grace = Duration::try_from_secs_f64(grace_seconds)
-            .map_err(|err| PyValueError::new_err(format!("invalid grace_seconds: {err}")))?;
+        let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
         let running = self.take_running()?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match running.shutdown(grace).await {
                 Ok(outcome) => Ok(PyOutcome { inner: outcome }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -1046,47 +1009,31 @@ impl PyProcessGroup {
         escalate_to_kill=None,
     ))]
     fn new(
-        py: Python<'_>,
         memory_max: Option<u64>,
         max_processes: Option<u32>,
         cpu_quota: Option<f64>,
         shutdown_timeout: Option<f64>,
         escalate_to_kill: Option<bool>,
     ) -> PyResult<Self> {
-        let configured = memory_max.is_some()
-            || max_processes.is_some()
-            || cpu_quota.is_some()
-            || shutdown_timeout.is_some()
-            || escalate_to_kill.is_some();
-        let group = if configured {
-            let mut options = ProcessGroupOptions::default();
-            if let Some(bytes) = memory_max {
-                options = options.memory_max(bytes);
-            }
-            if let Some(n) = max_processes {
-                options = options.max_processes(n);
-            }
-            if let Some(cores) = cpu_quota {
-                options = options.cpu_quota(cores);
-            }
-            if let Some(seconds) = shutdown_timeout {
-                if !seconds.is_finite() || seconds < 0.0 {
-                    return Err(PyValueError::new_err(
-                        "shutdown_timeout must be a non-negative, finite number of seconds",
-                    ));
-                }
-                let duration = Duration::try_from_secs_f64(seconds).map_err(|err| {
-                    PyValueError::new_err(format!("invalid shutdown_timeout: {err}"))
-                })?;
-                options = options.shutdown_timeout(duration);
-            }
-            if let Some(escalate) = escalate_to_kill {
-                options = options.escalate_to_kill(escalate);
-            }
-            PkProcessGroup::with_options(options).map_err(|err| map_err(py, err))?
-        } else {
-            PkProcessGroup::new().map_err(|err| map_err(py, err))?
-        };
+        // `ProcessGroup::new()` is exactly `with_options(default())`, so always
+        // build from defaults and apply whatever was passed — no branch needed.
+        let mut options = ProcessGroupOptions::default();
+        if let Some(bytes) = memory_max {
+            options = options.memory_max(bytes);
+        }
+        if let Some(n) = max_processes {
+            options = options.max_processes(n);
+        }
+        if let Some(cores) = cpu_quota {
+            options = options.cpu_quota(cores);
+        }
+        if let Some(seconds) = shutdown_timeout {
+            options = options.shutdown_timeout(nonnegative_duration(seconds, "shutdown_timeout")?);
+        }
+        if let Some(escalate) = escalate_to_kill {
+            options = options.escalate_to_kill(escalate);
+        }
+        let group = PkProcessGroup::with_options(options).map_err(map_err)?;
         Ok(Self {
             inner: Some(Arc::new(group)),
         })
@@ -1124,9 +1071,7 @@ impl PyProcessGroup {
         let group = self.inner.take();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             if let Some(group) = group {
-                shutdown_group(group)
-                    .await
-                    .map_err(|err| Python::attach(|py| map_err(py, err)))?;
+                shutdown_group(group).await.map_err(map_err)?;
             }
             Ok(false)
         })
@@ -1136,8 +1081,7 @@ impl PyProcessGroup {
     /// runs concurrently; this does not wait for it to finish.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
         let group = self.group()?.clone();
-        let running = block_on_interruptible(py, group.start(&command.inner))?
-            .map_err(|err| map_err(py, err))?;
+        let running = block_on_interruptible(py, group.start(&command.inner))?.map_err(map_err)?;
         Ok(PyRunningProcess {
             inner: Some(running),
         })
@@ -1152,7 +1096,7 @@ impl PyProcessGroup {
                 Ok(running) => Ok(PyRunningProcess {
                     inner: Some(running),
                 }),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
     }
@@ -1171,38 +1115,36 @@ impl PyProcessGroup {
     }
 
     /// The process ids currently contained by the group.
-    fn members(&self, py: Python<'_>) -> PyResult<Vec<u32>> {
-        self.group()?.members().map_err(|err| map_err(py, err))
+    fn members(&self) -> PyResult<Vec<u32>> {
+        self.group()?.members().map_err(map_err)
     }
 
     /// Send a signal to every process in the tree. `name` is one of `term`,
     /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2` (Windows emulates the
     /// terminate/kill semantics).
-    fn signal(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+    fn signal(&self, name: &str) -> PyResult<()> {
         let signal = parse_signal(name)?;
-        self.group()?.signal(signal).map_err(|err| map_err(py, err))
+        self.group()?.signal(signal).map_err(map_err)
     }
 
     /// Suspend every process in the tree.
-    fn suspend(&self, py: Python<'_>) -> PyResult<()> {
-        self.group()?.suspend().map_err(|err| map_err(py, err))
+    fn suspend(&self) -> PyResult<()> {
+        self.group()?.suspend().map_err(map_err)
     }
 
     /// Resume every previously-suspended process in the tree.
-    fn resume(&self, py: Python<'_>) -> PyResult<()> {
-        self.group()?.resume().map_err(|err| map_err(py, err))
+    fn resume(&self) -> PyResult<()> {
+        self.group()?.resume().map_err(map_err)
     }
 
     /// Immediately kill the whole tree (a hard kill, no graceful window).
-    fn terminate_all(&self, py: Python<'_>) -> PyResult<()> {
-        self.group()?
-            .terminate_all()
-            .map_err(|err| map_err(py, err))
+    fn terminate_all(&self) -> PyResult<()> {
+        self.group()?.terminate_all().map_err(map_err)
     }
 
     /// A snapshot of the group's resource usage.
-    fn stats(&self, py: Python<'_>) -> PyResult<PyProcessGroupStats> {
-        let stats = self.group()?.stats().map_err(|err| map_err(py, err))?;
+    fn stats(&self) -> PyResult<PyProcessGroupStats> {
+        let stats = self.group()?.stats().map_err(map_err)?;
         Ok(PyProcessGroupStats {
             active_process_count: stats.active_process_count,
             peak_memory_bytes: stats.peak_memory_bytes,
@@ -1214,7 +1156,7 @@ impl PyProcessGroup {
     /// a no-op.
     fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(group) = self.inner.take() {
-            block_on_interruptible(py, shutdown_group(group))?.map_err(|err| map_err(py, err))?;
+            block_on_interruptible(py, shutdown_group(group))?.map_err(map_err)?;
         }
         Ok(())
     }
@@ -1224,9 +1166,7 @@ impl PyProcessGroup {
         let group = self.inner.take();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             if let Some(group) = group {
-                shutdown_group(group)
-                    .await
-                    .map_err(|err| Python::attach(|py| map_err(py, err)))?;
+                shutdown_group(group).await.map_err(map_err)?;
             }
             Ok(())
         })
@@ -1392,8 +1332,7 @@ impl PySupervisor {
     /// Run supervision to completion (sync). Consumes the supervisor.
     fn run(&mut self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
         let supervisor = self.take_supervisor()?;
-        let outcome =
-            block_on_interruptible(py, supervisor.run())?.map_err(|err| map_err(py, err))?;
+        let outcome = block_on_interruptible(py, supervisor.run())?.map_err(map_err)?;
         Ok(convert_supervision_outcome(&outcome))
     }
 
@@ -1403,381 +1342,9 @@ impl PySupervisor {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match supervisor.run().await {
                 Ok(outcome) => Ok(convert_supervision_outcome(&outcome)),
-                Err(err) => Err(Python::attach(|py| map_err(py, err))),
+                Err(err) => Err(map_err(err)),
             }
         })
-    }
-}
-
-// --- Runner seam: a `ProcessRunner` abstraction so callers can inject a real
-// `Runner` in production and a `ScriptedRunner` in tests. The run verbs are
-// generic over the crate's `ProcessRunner` so the two pyclasses share one impl.
-
-fn runner_output<R: ProcessRunner + Sync + ?Sized>(
-    py: Python<'_>,
-    runner: &R,
-    command: &PyCommand,
-) -> PyResult<PyProcessResult> {
-    match block_on_interruptible(py, runner.output_string(&command.inner))? {
-        Ok(inner) => Ok(PyProcessResult { inner }),
-        Err(err) => Err(map_err(py, err)),
-    }
-}
-
-fn runner_run<R: ProcessRunner + Sync + ?Sized>(
-    py: Python<'_>,
-    runner: &R,
-    command: &PyCommand,
-) -> PyResult<String> {
-    block_on_interruptible(py, runner.run(&command.inner))?.map_err(|err| map_err(py, err))
-}
-
-fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
-    py: Python<'_>,
-    runner: &R,
-    command: &PyCommand,
-) -> PyResult<i32> {
-    block_on_interruptible(py, runner.exit_code(&command.inner))?.map_err(|err| map_err(py, err))
-}
-
-fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
-    py: Python<'_>,
-    runner: &R,
-    command: &PyCommand,
-) -> PyResult<bool> {
-    block_on_interruptible(py, runner.probe(&command.inner))?.map_err(|err| map_err(py, err))
-}
-
-fn runner_start<R: ProcessRunner + Sync + ?Sized>(
-    py: Python<'_>,
-    runner: &R,
-    command: &PyCommand,
-) -> PyResult<PyRunningProcess> {
-    // `start()` is async, so `block_on_interruptible` provides the runtime
-    // context while it (and its pump spawn) is polled — no `enter()` needed.
-    let running = block_on_interruptible(py, runner.start(&command.inner))?
-        .map_err(|err| map_err(py, err))?;
-    Ok(PyRunningProcess {
-        inner: Some(running),
-    })
-}
-
-// Async run verbs over an owned `Arc<R>` so the future can hold the runner with
-// no borrow of the pyclass.
-
-fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
-    py: Python<'py>,
-    runner: Arc<R>,
-    command: &PyCommand,
-) -> PyResult<Bound<'py, PyAny>> {
-    let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        match runner.output_string(&cmd).await {
-            Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(Python::attach(|py| map_err(py, err))),
-        }
-    })
-}
-
-fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
-    py: Python<'py>,
-    runner: Arc<R>,
-    command: &PyCommand,
-) -> PyResult<Bound<'py, PyAny>> {
-    let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        runner
-            .run(&cmd)
-            .await
-            .map_err(|err| Python::attach(|py| map_err(py, err)))
-    })
-}
-
-fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
-    py: Python<'py>,
-    runner: Arc<R>,
-    command: &PyCommand,
-) -> PyResult<Bound<'py, PyAny>> {
-    let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        runner
-            .exit_code(&cmd)
-            .await
-            .map_err(|err| Python::attach(|py| map_err(py, err)))
-    })
-}
-
-fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
-    py: Python<'py>,
-    runner: Arc<R>,
-    command: &PyCommand,
-) -> PyResult<Bound<'py, PyAny>> {
-    let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        runner
-            .probe(&cmd)
-            .await
-            .map_err(|err| Python::attach(|py| map_err(py, err)))
-    })
-}
-
-fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
-    py: Python<'py>,
-    runner: Arc<R>,
-    command: &PyCommand,
-) -> PyResult<Bound<'py, PyAny>> {
-    let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        match runner.start(&cmd).await {
-            Ok(running) => Ok(PyRunningProcess {
-                inner: Some(running),
-            }),
-            Err(err) => Err(Python::attach(|py| map_err(py, err))),
-        }
-    })
-}
-
-/// The real process runner. Inject it where you'd otherwise call `Command`
-/// verbs directly, so the same code can take a `ScriptedRunner` under test.
-#[pyclass(name = "Runner", module = "processkit")]
-struct PyRunner {
-    inner: Arc<JobRunner>,
-}
-
-#[pymethods]
-impl PyRunner {
-    #[new]
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(JobRunner::new()),
-        }
-    }
-
-    /// Run a command and capture output (a non-zero exit is data).
-    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &*self.inner, command)
-    }
-
-    /// Require a zero exit and return trimmed stdout.
-    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &*self.inner, command)
-    }
-
-    /// The command's exit code.
-    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &*self.inner, command)
-    }
-
-    /// Read a predicate command's exit code as a bool.
-    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &*self.inner, command)
-    }
-
-    /// Start a command and return a `RunningProcess`.
-    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &*self.inner, command)
-    }
-
-    /// Async counterpart of `output()`.
-    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `run()`.
-    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `exit_code()`.
-    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `probe()`.
-    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `start()`.
-    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_astart(py, self.inner.clone(), command)
-    }
-
-    fn __repr__(&self) -> String {
-        "Runner()".to_string()
-    }
-}
-
-/// A scripted test double for a `Runner`: configure canned replies for argv
-/// prefixes, then run commands through it without spawning real processes. The
-/// results it returns are genuine `ProcessResult` / `RunningProcess` objects.
-#[pyclass(name = "ScriptedRunner", module = "processkit")]
-struct PyScriptedRunner {
-    // `Arc` so the async run verbs can hold the runner across the await; builders
-    // reconfigure it via `Arc::try_unwrap`, which requires no in-flight call.
-    inner: Arc<PkScriptedRunner>,
-}
-
-impl PyScriptedRunner {
-    /// Apply a consuming builder to the wrapped runner. Requires sole ownership
-    /// (no async call holding a clone).
-    fn reconfigure(
-        &mut self,
-        build: impl FnOnce(PkScriptedRunner) -> PkScriptedRunner,
-    ) -> PyResult<()> {
-        let placeholder = Arc::new(PkScriptedRunner::new());
-        match Arc::try_unwrap(std::mem::replace(&mut self.inner, placeholder)) {
-            Ok(runner) => {
-                self.inner = Arc::new(build(runner));
-                Ok(())
-            }
-            Err(original) => {
-                self.inner = original;
-                Err(ProcessError::new_err(
-                    "cannot reconfigure a ScriptedRunner while a call is in flight",
-                ))
-            }
-        }
-    }
-}
-
-#[pymethods]
-impl PyScriptedRunner {
-    #[new]
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(PkScriptedRunner::new()),
-        }
-    }
-
-    /// Reply with `reply` when a command's argv starts with `prefix`.
-    fn on(&mut self, prefix: Vec<String>, reply: &PyReply) -> PyResult<()> {
-        let reply = reply.inner.clone();
-        self.reconfigure(move |runner| runner.on(prefix, reply))
-    }
-
-    /// The reply for any command not matched by an `on(...)` rule.
-    fn fallback(&mut self, reply: &PyReply) -> PyResult<()> {
-        let reply = reply.inner.clone();
-        self.reconfigure(move |runner| runner.fallback(reply))
-    }
-
-    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &*self.inner, command)
-    }
-
-    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &*self.inner, command)
-    }
-
-    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &*self.inner, command)
-    }
-
-    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &*self.inner, command)
-    }
-
-    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &*self.inner, command)
-    }
-
-    /// Async counterpart of `output()`.
-    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `run()`.
-    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `exit_code()`.
-    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `probe()`.
-    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `start()`.
-    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_astart(py, self.inner.clone(), command)
-    }
-
-    fn __repr__(&self) -> String {
-        "ScriptedRunner()".to_string()
-    }
-}
-
-/// A canned reply for a `ScriptedRunner` rule.
-#[pyclass(name = "Reply", module = "processkit")]
-struct PyReply {
-    inner: PkReply,
-}
-
-#[pymethods]
-impl PyReply {
-    /// A successful run with the given stdout (exit code 0).
-    #[staticmethod]
-    fn ok(stdout: String) -> Self {
-        Self {
-            inner: PkReply::ok(stdout),
-        }
-    }
-
-    /// A failed run with the given exit code and stderr.
-    #[staticmethod]
-    fn fail(code: i32, stderr: String) -> Self {
-        Self {
-            inner: PkReply::fail(code, stderr),
-        }
-    }
-
-    /// A run that times out.
-    #[staticmethod]
-    fn timeout() -> Self {
-        Self {
-            inner: PkReply::timeout(),
-        }
-    }
-
-    /// A run killed by a signal (`signal=None` for an unknown signal).
-    #[staticmethod]
-    #[pyo3(signature = (signal=None))]
-    fn signalled(signal: Option<i32>) -> Self {
-        Self {
-            inner: PkReply::signalled(signal),
-        }
-    }
-
-    /// A run that never exits on its own (cancel / timeout still ends it).
-    #[staticmethod]
-    fn pending() -> Self {
-        Self {
-            inner: PkReply::pending(),
-        }
-    }
-
-    /// A successful run emitting the given stdout lines.
-    #[staticmethod]
-    fn lines(lines: Vec<String>) -> Self {
-        Self {
-            inner: PkReply::lines(lines),
-        }
-    }
-
-    /// Attach stdout to this reply (e.g. to a failure).
-    fn with_stdout(&self, stdout: String) -> Self {
-        Self {
-            inner: self.inner.clone().with_stdout(stdout),
-        }
-    }
-
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
     }
 }
 
@@ -1785,6 +1352,7 @@ impl PyReply {
 fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
     m.add_class::<PyProcessResult>()?;
+    m.add_class::<PyBytesResult>()?;
     m.add_class::<PyProcessGroup>()?;
     m.add_class::<PyRunningProcess>()?;
     m.add_class::<PyOutcome>()?;
@@ -1802,13 +1370,24 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReply>()?;
 
     let py = m.py();
-    m.add("ProcessError", py.get_type::<ProcessError>())?;
-    m.add("NonZeroExit", py.get_type::<NonZeroExit>())?;
-    m.add("Timeout", py.get_type::<Timeout>())?;
-    m.add("Cancelled", py.get_type::<Cancelled>())?;
-    m.add("Signalled", py.get_type::<Signalled>())?;
-    m.add("ProcessNotFound", py.get_type::<ProcessNotFound>())?;
-    m.add("ResourceLimit", py.get_type::<ResourceLimit>())?;
-    m.add("Unsupported", py.get_type::<Unsupported>())?;
+    // Register the single-base exceptions, normalizing `__module__` to the
+    // public package so reprs/tracebacks read `processkit.X` rather than leaking
+    // the private `_processkit` extension name (the dual-base ones below set it
+    // at construction, and the pyclasses use `module = "processkit"`).
+    for (name, ty) in [
+        ("ProcessError", py.get_type::<ProcessError>()),
+        ("NonZeroExit", py.get_type::<NonZeroExit>()),
+        ("Cancelled", py.get_type::<Cancelled>()),
+        ("Signalled", py.get_type::<Signalled>()),
+        ("ResourceLimit", py.get_type::<ResourceLimit>()),
+        ("Unsupported", py.get_type::<Unsupported>()),
+        ("OutputTooLarge", py.get_type::<OutputTooLarge>()),
+    ] {
+        ty.setattr("__module__", "processkit")?;
+        m.add(name, ty)?;
+    }
+    // `Timeout` and `ProcessNotFound` are dual-base (also `TimeoutError` /
+    // `FileNotFoundError`); built and registered here.
+    init_dual_exceptions(m)?;
     Ok(())
 }

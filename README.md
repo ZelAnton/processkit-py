@@ -33,9 +33,11 @@ with ProcessGroup() as group:
 `output()` captures a non-zero exit, a timeout, and a signal-kill as data
 (`result.code`, `result.timed_out`, `result.signal`); `run()` returns trimmed
 stdout and raises on failure. The raised exceptions carry structured fields
-(`NonZeroExit.code` / `.stdout` / `.stderr`, `Timeout.timeout_seconds`, …), and
-a blocked sync call honours `Ctrl+C` — it raises `KeyboardInterrupt` and reaps
-the process tree rather than hanging.
+(`NonZeroExit.code` / `.stdout` / `.stderr`, `Timeout.timeout_seconds`, …) and
+derive from the matching builtin where one exists (`Timeout` is a `TimeoutError`,
+`ProcessNotFound` is a `FileNotFoundError`), so stdlib `except` clauses work. A
+blocked sync call honours `Ctrl+C` — it raises `KeyboardInterrupt` and reaps the
+process tree rather than hanging. Use `output_bytes()` for raw binary stdout.
 
 ### Async & streaming
 
@@ -80,9 +82,10 @@ from processkit import Command, ProcessGroup, Supervisor, wait_for_port
 top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
 
 # Resource-limited sandbox for an untrusted tree (Windows Job Object /
-# Linux cgroup-v2 root).
+# Linux cgroup-v2 root). Lock down the environment and cap retained output too.
+sandboxed = Command("untrusted-tool").env_clear().output_limit(max_bytes=1024 * 1024)
 with ProcessGroup(memory_max=512 * 1024 * 1024, max_processes=64) as group:
-    group.start(Command("untrusted-tool"))
+    group.start(sandboxed)
     print(group.stats().active_process_count)
 
 # Keep a service alive with restart + backoff.

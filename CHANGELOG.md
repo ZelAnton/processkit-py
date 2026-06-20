@@ -10,28 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Synchronous `Command` builder over the `processkit` Rust crate (pinned at
   `=1.0.1`): `output()` (captures a non-zero exit, timeout, and signal-kill as
-  data), `run()` (returns trimmed stdout, raises on failure), `exit_code()`, and
-  `probe()`, with `arg`/`args`/`cwd`/`env`/`timeout` configuration. The program
-  and working directory accept any `os.PathLike`, not only `str`.
+  data), `output_bytes()` (raw-bytes stdout → `BytesResult`), `run()` (returns
+  trimmed stdout, raises on failure), `exit_code()`, and `probe()`, configured
+  with `arg`/`args`/`cwd`/`env`/`envs`/`env_remove`/`env_clear`/`timeout`/
+  `output_limit`. The program and working directory accept any `os.PathLike`, not
+  only `str`.
+- Full environment control on `Command`: `envs(mapping)` (set many at once),
+  `env_remove(key)`, and `env_clear()` (start from an empty environment) — for
+  reproducible or locked-down (sandboxed) children.
+- Output caps on `Command`: `output_limit(max_bytes=…, max_lines=…,
+  on_overflow="drop_oldest"|"drop_newest"|"error")` bounds how much captured
+  output is retained (cap `max_bytes` to bound the parent's memory against an
+  untrusted child; a `max_lines`-only cap does not); on `"error"` overflow the
+  run raises `OutputTooLarge`.
 - `ProcessResult` with `stdout`, `stderr`, `code`, `is_success`, `timed_out`,
-  `signal`, `program`, `duration_seconds`, and `combined()`.
+  `signal`, `program`, `duration_seconds`, `truncated`, and `combined()`; plus a
+  `BytesResult` (raw-bytes `stdout`, text `stderr`) from `output_bytes()` /
+  `aoutput_bytes()`.
 - `ProcessGroup` context manager — a kill-on-drop container for a process tree;
   `start()` a command into it, inspect `mechanism` / `members()`, and the whole
   tree (grandchildren included) is reaped on `with`-exit or `shutdown()`.
 - `RunningProcess` handle exposing the child `pid`.
 - Exception hierarchy rooted at `ProcessError`: `NonZeroExit`, `Timeout`,
-  `Cancelled`, `Signalled`, `ProcessNotFound`, `Unsupported`. The data-carrying
-  ones expose structured fields — e.g. `NonZeroExit.code` / `.stdout` / `.stderr`
-  / `.program`, `Timeout.timeout_seconds`, `Signalled.signal` — so a failure can
-  be inspected programmatically, not just read as a message.
+  `Cancelled`, `Signalled`, `ProcessNotFound`, `Unsupported`, `OutputTooLarge`.
+  `Timeout` is also a builtin `TimeoutError` and `ProcessNotFound` is also a
+  `FileNotFoundError` (matching `asyncio` / `subprocess`), so the stdlib `except`
+  clauses catch them. The data-carrying ones expose structured fields — e.g.
+  `NonZeroExit.code` / `.stdout` / `.stderr` / `.program`,
+  `Timeout.timeout_seconds`, `Signalled.signal`, `OutputTooLarge.byte_limit` /
+  `.total_bytes` — so a failure can be inspected programmatically, not just read
+  as a message.
 - Blocking synchronous calls are interruptible: `Ctrl+C` (SIGINT) raises
   `KeyboardInterrupt` promptly and tears down the run's process tree, instead of
   hanging until the child exits.
 - Asyncio-native surface (tokio ↔ asyncio bridge). Cancelling an awaited run —
   directly, or via `asyncio.wait_for` / `asyncio.timeout` — tears down the whole
   process tree and raises `asyncio.CancelledError`.
-  - `Command`: `aoutput()`, `arun()`, `aexit_code()`, `aprobe()`, and `astart()`
-    (returns a `RunningProcess` for streaming/interactive I/O).
+  - `Command`: `aoutput()`, `aoutput_bytes()`, `arun()`, `aexit_code()`,
+    `aprobe()`, and `astart()` (returns a `RunningProcess` for
+    streaming/interactive I/O).
   - `RunningProcess`: `async for line in proc.stdout_lines()`, `output_events()`
     (stdout+stderr as `OutputEvent`s), interactive `take_stdin()` →
     `ProcessStdin` (`write`/`write_line`/`flush`/`close`), and `await`able

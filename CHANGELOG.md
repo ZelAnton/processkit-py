@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   teardown, resource-limit, signal, and stats behaviour.
 - **Stability commitment:** as of 1.0 the public API follows SemVer — breaking
   changes land only in a new major version.
+- Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.13, the
+  supported operating systems, topics) and project URLs (Documentation, Issues).
 
 ### Notes
 

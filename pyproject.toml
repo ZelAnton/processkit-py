@@ -14,10 +14,23 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Anton Zhelezniakou", email = "github@zelanton.net" }]
 keywords = ["process", "subprocess", "asyncio", "containment", "pyo3"]
+# No "License ::" classifier — the SPDX `license` field above is the PEP 639 form.
 classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Rust",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Framework :: AsyncIO",
+  "Topic :: System :: Systems Administration",
+  "Topic :: Software Development :: Libraries :: Python Modules",
   "Typing :: Typed",
 ]
 
@@ -26,7 +39,9 @@ dependencies = []
 [project.urls]
 Homepage = "https://github.com/ZelAnton/processkit-py"
 Repository = "https://github.com/ZelAnton/processkit-py"
+Documentation = "https://github.com/ZelAnton/processkit-py/tree/main/docs"
 Changelog = "https://github.com/ZelAnton/processkit-py/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ZelAnton/processkit-py/issues"
 
 [dependency-groups]
 dev = [
@@ -34,6 +49,7 @@ dev = [
   "pytest>=9.0.3",
   "mypy>=2.1.0",
   "ruff>=0.15.16",
+  "pre-commit>=4.0.0",
 ]
 
 [tool.maturin]

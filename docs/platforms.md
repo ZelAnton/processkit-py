@@ -52,3 +52,18 @@ multiple platforms.
 - **Free-threaded CPython (3.13+, PEP 703):** the published wheels target the
   standard (GIL) build. Free-threaded support tracks PyO3's no-GIL work and will
   arrive in a later release; until then, run processkit on a GIL build.
+
+## Wheel availability
+
+Prebuilt wheels are published for:
+
+| Platform | Architectures |
+|---|---|
+| **Linux** (manylinux, glibc) | x86_64, aarch64 |
+| **macOS** | x86_64 (Intel), arm64 (Apple Silicon) |
+| **Windows** | x64 |
+
+Not currently prebuilt: **musllinux** (Alpine), Windows on ARM, and 32-bit
+targets. On those, `pip install processkit` builds from the sdist, which needs a
+[Rust toolchain](https://rustup.rs/). An sdist is published alongside the wheels
+for source builds anywhere.

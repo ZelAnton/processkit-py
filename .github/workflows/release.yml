@@ -78,6 +78,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0 # full history + tags, for version math and git-cliff
+          persist-credentials: false
 
       - name: Determine next version
         id: version
@@ -339,6 +340,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
+          persist-credentials: false
       # Host toolchain for the Windows/macOS builds; the Linux manylinux container
       # installs its own Rust via the cibuildwheel `before-all` hook (pyproject.toml).
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
@@ -370,6 +372,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
+          persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true

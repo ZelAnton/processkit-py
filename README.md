@@ -1,5 +1,11 @@
 # processkit
 
+[![CI](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<!-- Once published, add: [![PyPI](https://img.shields.io/pypi/v/processkit.svg)](https://pypi.org/project/processkit/) -->
+
 Python bindings to the [`processkit`](https://crates.io/crates/processkit) Rust crate —
 asyncio-native, kernel-backed, no-orphan process containment.
 
@@ -115,7 +121,8 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 ## Installation
 
-Not yet on PyPI. To build from source:
+The first release to PyPI is pending (`pip install processkit` will be the
+supported path once published). Until then, build from source:
 
 ```sh
 git clone https://github.com/ZelAnton/processkit-py

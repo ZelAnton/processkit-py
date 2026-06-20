@@ -22,6 +22,21 @@ uv run maturin build --release --out dist  # build a release abi3 wheel
 
 `ruff check`, `mypy --strict`, and `pytest` (with warnings promoted to errors)
 are the gates CI enforces, so run them locally before opening a pull request.
+CI additionally runs `cargo fmt --check` and `cargo clippy -- -D warnings`.
+
+## Pre-commit (optional but recommended)
+
+A [pre-commit](https://pre-commit.com/) config mirrors the formatting/lint gates
+so they run automatically on `git commit`:
+
+```sh
+uv run pre-commit install        # set up the git hook (once)
+uv run pre-commit run --all-files  # run against the whole tree
+```
+
+It runs ruff (lint + format) and `cargo fmt`; `cargo clippy` and the test suite
+stay in CI (too slow for a commit hook). Keep hook versions current with
+`uv run pre-commit autoupdate`.
 
 ## Testing on Linux with Docker
 

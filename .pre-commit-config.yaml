@@ -1,0 +1,36 @@
+# Optional but recommended local gate. Install with:
+#   uv run pre-commit install
+# Run against everything with:
+#   uv run pre-commit run --all-files
+# Keep hook versions current with `uv run pre-commit autoupdate`.
+#
+# These mirror the CI gates (ruff, ruff-format, cargo fmt). `cargo clippy` and
+# the test suite are intentionally left to CI — too slow for a commit hook.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.16
+    hooks:
+      # Lint (with --fix) before formatting, per ruff's guidance: a fix can emit
+      # code that then needs reformatting.
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false

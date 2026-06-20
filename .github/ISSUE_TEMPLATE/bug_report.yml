@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a defect in processkit
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report. Please **do not** report
+        security vulnerabilities here — see
+        [SECURITY.md](https://github.com/ZelAnton/processkit-py/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+      placeholder: A clear description of the bug and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest code snippet (and command) that reproduces it.
+      render: python
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: processkit version
+      description: "Output of `python -c \"import processkit; print(processkit.__version__)\"`"
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (glibc)
+        - Linux (musl / Alpine)
+        - macOS
+        - Windows
+        - Other (note in the description)
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.x"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Environment notes
+      description: >-
+        Anything relevant — container/cgroup setup, `ProcessGroup.mechanism`
+        value, installed from a wheel or built from source, etc.
+    validations:
+      required: false

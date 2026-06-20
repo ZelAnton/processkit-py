@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a capability or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        processkit is a thin binding to the [`processkit`](https://crates.io/crates/processkit)
+        Rust crate, deliberately scoped to process containment (not a general
+        subprocess-convenience library). Requests that fit that niche are most
+        likely to land.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do, and what's missing or awkward today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behavior
+      description: A sketch of the API surface or behavior you'd like.
+      render: python
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other designs you weighed.
+    validations:
+      required: false

@@ -1,0 +1,5 @@
+# Pin the toolchain channel and ensure the components used by the lint gate are
+# present, so `cargo fmt` / `cargo clippy` work the same locally and in CI.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

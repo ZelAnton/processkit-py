@@ -211,7 +211,7 @@ signal name in `timeout_signal` is one of `term | kill | int | hup | quit | usr1
 Spawn-time controls for sandboxing and service launch:
 
 ```python
-# POSIX: drop privileges (gid first, then groups, then uid) and detach.
+# POSIX: drop privileges (groups and gid before uid) and detach.
 (
     Command("worker")
     .gid(1000).groups([1000]).uid(1000)   # a correct drop sets all three
@@ -318,6 +318,17 @@ condition, so familiar `except` clauses keep working: `Timeout` is also a
 `PermissionError`. Note that cancelling an *awaited*
 run via asyncio (`task.cancel()`, `asyncio.wait_for`, `asyncio.timeout`) surfaces
 as `asyncio.CancelledError` — not `Cancelled` — and still reaps the tree.
+
+### Secrets in diagnostics
+
+These exceptions' `stdout` / `stderr` fields carry the child's **raw output
+verbatim**, and the exception *message* appends a bounded last-line excerpt of it
+— so if a tool echoes a token on failure, it can land in both. Don't forward
+exception text/fields to a low-trust log sink unredacted. Likewise,
+`repr(Command(...))` shows the full **argv** (so a `--password=…` flag is visible
+in a REPL echo or a traceback frame). Pass secrets via `env(...)` — whose *value*
+is kept out of the `repr` and out of record/replay cassettes (only the variable
+name is recorded) — rather than as command-line flags.
 
 ## Pipelines
 

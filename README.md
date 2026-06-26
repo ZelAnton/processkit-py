@@ -311,14 +311,16 @@ stderr, and reported program come from the first stage that didn't exit cleanly.
 ### Environment and privileges
 
 ```python
-Command("worker").inherit_env(["PATH", "HOME", "LANG"]).run()   # allow-list on a cleared env
-Command("worker").uid(1000).gid(1000).setsid().run()            # POSIX: drop privileges, new session
-Command("helper").create_no_window().run()                      # Windows: no console window
-Command("daemonish").kill_on_parent_death().astart()            # die with a hard-killed parent
+Command("worker").inherit_env(["PATH", "HOME", "LANG"]).run()        # allow-list on a cleared env
+Command("worker").gid(1000).groups([1000]).uid(1000).setsid().run()  # POSIX: drop privileges, new session
+Command("helper").create_no_window().run()                           # Windows: no console window
+Command("daemonish").kill_on_parent_death().astart()                 # die with a hard-killed parent
 ```
 
 `uid`/`gid`/`groups`/`setsid` are POSIX-only — on Windows the run raises
-`Unsupported` rather than silently skipping a privilege drop.
+`Unsupported` rather than silently skipping a privilege drop. When dropping
+privileges, set **all three** of `gid`/`groups`/`uid` — `uid` alone leaves the
+child holding the parent's (often root's) supplementary groups.
 *Deeper: [Running commands → privileges](docs/commands.md).*
 
 ### Cancelling a run

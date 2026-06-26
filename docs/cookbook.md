@@ -268,6 +268,11 @@ results = output_all([Command("git", ["-C", d, "rev-parse", "HEAD"]) for d in re
 heads = [r.stdout.strip() for r in results if isinstance(r, ProcessResult) and r.is_success]
 ```
 
+`concurrency` bounds how many run *at once*, but every result is retained until the
+whole batch returns — peak memory is the sum of all captured outputs, not just
+`concurrency` of them. For a large or untrusted batch, cap each command's output
+(`.output_limit(max_bytes=…)`).
+
 ## Wrap a CLI tool
 
 `CliClient` binds a program to default timeout/env, so repeated calls pass only
@@ -329,10 +334,25 @@ with ProcessGroup(memory_max=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0)
     print(stats.active_process_count, stats.peak_memory_bytes)
 ```
 
-On POSIX you can also drop privileges with `.uid(65534).gid(65534)` (run as
-`nobody`) — but those builders make the **run raise `Unsupported` on Windows**
-(a privilege drop is never silently skipped), so apply them only when targeting
-POSIX.
+On POSIX you can also drop privileges to run as an unprivileged user — but set
+**all three** of `gid` / `groups` / `uid` (builder order doesn't matter; the
+crate applies them in the kernel-correct order, supplementary groups and gid
+before uid):
+
+```python
+nobody = (
+    Command("untrusted-tool")
+    .gid(65534).groups([65534]).uid(65534)   # run as nobody:nogroup
+)
+```
+
+Setting `uid` (and `gid`) **without** `groups([...])` leaves the child holding the
+*parent's* supplementary groups — often including privileged ones (`0`/root,
+`docker`, `wheel`, `sudo`) when launched from root or in CI — which is a real
+sandbox escape. Always clear/replace the supplementary groups with `groups([...])`
+(pass the unprivileged group, or `groups([])` to drop them entirely). These
+builders make the **run raise `Unsupported` on Windows** (a privilege drop is
+never silently skipped), so apply them only when targeting POSIX.
 
 ## Signal, suspend, or resume a tree
 

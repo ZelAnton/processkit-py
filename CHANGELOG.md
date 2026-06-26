@@ -160,6 +160,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `wait_for_port()` no longer leaks the probe socket if the awaiting task is
   cancelled just after the connection is accepted.
 
+### Security
+- Documentation hardening: the sandbox/privilege-drop guidance now sets all of
+  `gid` / `groups` / `uid` (dropping `uid` alone leaves the child holding the
+  parent's supplementary groups — a sandbox-escape footgun); documents that
+  record/replay cassettes are written owner-only (`0600`, no symlink follow) on
+  Unix; and warns that exception `stdout`/`stderr` and `repr(Command(...))` (argv)
+  carry raw values — pass secrets via `env(...)`, not flags.
+
 ### Notes
 
 - This is the **1.0** release: the public API is frozen.

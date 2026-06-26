@@ -65,8 +65,9 @@ Until then, build from source (`uv run maturin develop`) — see the
 [README](../README.md#building-from-source).
 
 Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on
-every supported minor version). See [Platform support](platforms.md) for the
-wheel matrix and the free-threaded-CPython note.
+every supported minor version, 3.14 included), plus a **version-specific
+free-threaded wheel** for CPython 3.14t (PEP 703). See
+[Platform support](platforms.md) for the wheel matrix and the free-threaded note.
 
 ## The 60-second tour
 

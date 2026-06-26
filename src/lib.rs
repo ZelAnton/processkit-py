@@ -33,7 +33,13 @@ use crate::runner::{PyRecordReplayRunner, PyReply, PyRunner, PyScriptedRunner};
 use crate::running::{PyOutputEvents, PyProcessStdin, PyRunningProcess, PyStdoutLines};
 use crate::supervisor::{PySupervisionOutcome, PySupervisor};
 
-#[pymodule]
+// `gil_used = false` opts the module into PEP 703 free-threaded CPython: on a
+// free-threaded build importing it does NOT re-enable the GIL. Sound here because
+// the binding holds no unsynchronized shared state — the tokio runtime is a
+// managed singleton, the exception caches use `PyOnceLock`, stream handles are
+// `Arc<Mutex<…>>`, and every pyclass is guarded by PyO3's own per-object borrow
+// checking. A no-op on the standard (GIL) build.
+#[pymodule(gil_used = false)]
 fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
     m.add_class::<PyProcessResult>()?;

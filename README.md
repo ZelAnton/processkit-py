@@ -84,9 +84,11 @@ exposes a typed, asyncio-native surface with context-manager teardown.
 pip install processkit
 ```
 
-Distributed as **abi3 wheels for CPython 3.10+** — one wheel per OS/arch runs on
-every supported minor version. (Until the first PyPI release lands, build from
-source — see [below](#building-from-source).)
+Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on
+every supported minor version, 3.14 included), plus a **version-specific
+free-threaded wheel** for CPython 3.14t ([PEP 703](https://peps.python.org/pep-0703/)
+— importing the extension does not re-enable the GIL). (Until the first PyPI
+release lands, build from source — see [below](#building-from-source).)
 
 ## Picking a verb
 
@@ -394,7 +396,8 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 ## Requirements
 
-- Python 3.10 or later (abi3 wheel).
+- Python 3.10 or later (abi3 wheel), including CPython 3.14 and the **free-threaded**
+  (PEP 703) build 3.14t.
 - See [platform support & caveats](docs/platforms.md) for per-OS behaviour and
   the wheel/architecture matrix.
 

@@ -102,6 +102,29 @@ jobs:
       # extension via `maturin develop`), then runs pytest.
       - run: uv run pytest
 
+  test-freethreaded:
+    name: test-freethreaded (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # Free-threaded CPython (PEP 703). `--python 3.14t` makes uv provision the
+      # free-threaded interpreter and build the version-specific (non-abi3)
+      # extension for it; the suite then runs with the GIL disabled. This is the
+      # forward-looking matrix entry — the abi3 `test` job above covers GIL builds.
+      - run: uv run --python 3.14t pytest
+
   build:
     name: build (${{ matrix.os }})
     strategy:
@@ -125,6 +148,19 @@ jobs:
       # The sdist is platform-independent; build it once.
       - if: matrix.os == 'ubuntu-latest'
         run: uv run maturin sdist --out dist
+      # Assert the release cibuildwheel selector resolves to exactly the intended
+      # wheel families — the abi3 GIL wheel (cp310) and the free-threaded cp314t
+      # wheel — so a renamed/dropped identifier (or a bad enable group) surfaces
+      # here at PR time, not at release. cibuildwheel is only otherwise invoked in
+      # release.yml, so without this nothing exercises the config until a release.
+      - if: matrix.os == 'ubuntu-latest'
+        name: Verify cibuildwheel build selector
+        run: |
+          ids=$(uvx 'cibuildwheel>=4,<5' --print-build-identifiers --platform linux)
+          echo "$ids"
+          for fam in cp310-manylinux cp314t-manylinux; do
+            echo "$ids" | grep -q "^$fam" || { echo "::error::$fam wheel not in cibuildwheel selector"; exit 1; }
+          done
 
   audit:
     name: pip-audit

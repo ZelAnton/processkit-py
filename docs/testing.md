@@ -160,6 +160,11 @@ Only env **values** are redacted. `program`, `args`, `cwd`, `stdout`, and
 a token echoed to output — so **review a fixture before committing it**, and
 keep secret-bearing cassettes out of shared, world-readable trees.
 
+Record from a single thread. The capture buffer is per-runner; recording the same
+`RecordReplayRunner` from several threads at once (only possible on a free-threaded
+build) can interleave entries non-deterministically. Replay is read-only and has no
+such constraint.
+
 *Deeper: how a `ProcessResult` is shaped before it's captured — [the Cookbook](cookbook.md).*
 
 ## Wrapping a CLI tool: CliClient

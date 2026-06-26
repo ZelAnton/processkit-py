@@ -48,10 +48,17 @@ multiple platforms.
 ## Python build
 
 - Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on
-  every supported minor version).
-- **Free-threaded CPython (3.13+, PEP 703):** the published wheels target the
-  standard (GIL) build. Free-threaded support tracks PyO3's no-GIL work and will
-  arrive in a later release; until then, run processkit on a GIL build.
+  every supported minor version, 3.14 included).
+- **Free-threaded CPython (PEP 703) is supported.** The extension declares
+  `gil_used = false`, so importing it on a free-threaded build does *not* re-enable
+  the GIL. Because the limited API (abi3) isn't available on free-threaded builds,
+  this ships as a **version-specific wheel** for CPython 3.14t (where free-threading
+  is officially supported, per PEP 779) alongside the abi3 GIL wheel. The full test
+  suite runs on the free-threaded interpreter in CI. The binding holds no
+  unsynchronized shared state, so calling it from many threads is memory-safe —
+  PyO3's per-object borrow checking still serializes *mutating* calls on a single
+  shared handle (a concurrent mutate raises rather than racing), so give each
+  thread its own `Command` / `RunningProcess` / runner as you would any object.
 
 ## Wheel availability
 

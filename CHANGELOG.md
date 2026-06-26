@@ -116,14 +116,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   teardown, resource-limit, signal, and stats behaviour.
 - **Stability commitment:** as of 1.0 the public API follows SemVer — breaking
   changes land only in a new major version.
-- Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.13, the
+- **Free-threaded CPython (PEP 703):** the extension declares `gil_used = false`,
+  so importing it on a free-threaded build (CPython 3.14t) does **not** re-enable
+  the GIL. Shipped as a version-specific free-threaded wheel alongside the
+  abi3 (GIL) wheel, and the full test suite runs on the free-threaded interpreter
+  in CI. Also adds CPython **3.14** to the supported set (the abi3 wheel already
+  runs there).
+- Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.14, the
   supported operating systems, topics) and project URLs (Documentation, Issues).
 
 ### Notes
 
 - This is the **1.0** release: the public API is frozen.
-- Distributed as abi3 wheels for CPython 3.10+ (standard/GIL builds);
-  free-threaded (PEP 703) support is tracked for a later release.
+- Distributed as abi3 wheels for CPython 3.10+ (standard/GIL builds), **plus a
+  version-specific free-threaded wheel** for CPython 3.14t (PEP 703).
 - The `RecordReplayRunner` test double enables the crate's `record` feature,
   which pulls `serde` / `serde_json` into the compiled wheel.
 

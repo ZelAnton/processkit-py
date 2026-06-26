@@ -23,6 +23,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Rust",
   "Operating System :: POSIX :: Linux",
@@ -85,9 +86,15 @@ filterwarnings = ["error"]
 testpaths = ["tests"]
 
 [tool.cibuildwheel]
-# One build with cp310 yields an abi3 wheel that runs on CPython 3.10+, so the
-# release matrix produces a single wheel per OS/arch instead of one per Python.
-build = "cp310-*"
+# Two wheel families per OS/arch:
+#   * cp310-*   → one abi3 wheel that runs on every GIL CPython 3.10+ (incl. 3.14),
+#                 so the GIL matrix stays a single wheel instead of one per version.
+#   * cp314t-*  → free-threaded CPython (PEP 703), officially supported as of 3.14.
+#                 The limited API (abi3) is unavailable on free-threaded builds, so
+#                 maturin emits a version-specific wheel. (cibuildwheel ships only
+#                 the officially-supported free-threaded interpreter, 3.14t — there
+#                 is no cp313t build; 3.13's free-threaded build was experimental.)
+build = "cp310-* cp314t-*"
 # manylinux covers the common Linux case (revisit musllinux on demand); 32-bit
 # Windows is not a target. Each matrix runner builds its own native arch.
 skip = "*-musllinux* *-win32"

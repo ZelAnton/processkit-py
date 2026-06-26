@@ -9,7 +9,8 @@ name: Release
 # Pipeline:
 #   prepare       — compute the version, fill/extract release notes, bump the
 #                   manifests (uploaded as the `release-meta` artifact).
-#   build_wheels  — cibuildwheel matrix: one abi3 wheel per OS/arch.
+#   build_wheels  — cibuildwheel matrix: one abi3 wheel (GIL) plus a free-threaded
+#                   cp314t wheel per OS/arch.
 #   build_sdist   — the source distribution.
 #   publish       — the single irreversible PyPI pivot, then push + GitHub Release.
 #
@@ -323,8 +324,9 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Build one abi3 wheel per OS/arch with cibuildwheel. Each runner builds its
-  # own native arch (no cross-compile): Linux x86_64 (manylinux), Linux aarch64
+  # Build the abi3 wheel (cp310, runs on every GIL CPython 3.10+) plus a
+  # free-threaded cp314t wheel per OS/arch with cibuildwheel. Each runner builds
+  # its own native arch (no cross-compile): Linux x86_64 (manylinux), Linux aarch64
   # (manylinux, native ARM runner), Windows x64, macOS x86_64 (macos-13) and
   # arm64 (macos-14).
   # ---------------------------------------------------------------------------

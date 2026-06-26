@@ -67,9 +67,9 @@ asyncio.run(main())
 
 - **Binding layer:** PyO3 + maturin.
 - **Async bridge:** `pyo3-async-runtimes` (tokio ↔ asyncio).
-- **Distribution:** abi3 wheels (cp310+) to keep the build matrix flat;
-  `cibuildwheel` across Windows x64, manylinux x86_64 / aarch64,
-  macOS x86_64 / arm64.
+- **Distribution:** abi3 wheels (cp310+) to keep the GIL matrix flat, plus a
+  version-specific free-threaded wheel (cp314t, PEP 703); `cibuildwheel` across
+  Windows x64, manylinux x86_64 / aarch64, macOS x86_64 / arm64.
 - **Versioning:** the crate is at 1.0 (pinned exactly at `=1.0.1`). The binding
   pins an exact crate version and tracks API churn deliberately, not transitively.
 
@@ -175,8 +175,11 @@ Prioritised by Python demand, not crate order.
 - Platform-caveat matrix documented end to end (mirror the crate's honesty).
 - Stress / leak tests: parent `SIGKILL`, panic paths, interpreter shutdown,
   `KeyboardInterrupt`, on every mechanism.
-- **Free-threaded CPython (3.13+, PEP 703)** compatibility pass — track PyO3's
-  no-GIL support.
+- **Free-threaded CPython (PEP 703)** — **done**: the module declares
+  `gil_used = false` (no GIL re-enable on import), ships a version-specific
+  free-threaded wheel for 3.14t (officially supported per PEP 779) next to the abi3
+  wheel, and runs the full suite on a free-threaded interpreter in CI. CPython 3.14
+  added to the matrix.
 - Performance sanity — syscall-bound work; just confirm the bridge adds no
   silly overhead.
 - API-stability commitment + semver.
@@ -217,7 +220,9 @@ Prioritised by Python demand, not crate order.
 3. **Sync API as a first-class surface, or async-only? — resolved.** Sync is a
    first-class secondary surface (run-to-completion verbs + `ProcessGroup`);
    streaming/interactive handles are async-only.
-4. **abi3 vs version-specific wheels — resolved.** abi3 (cp310+).
+4. **abi3 vs version-specific wheels — resolved.** abi3 (cp310+) for the GIL
+   builds, plus a version-specific free-threaded wheel (cp314t) where abi3 isn't
+   available.
 5. **Exception aliasing — resolved.** Independent `ProcessError` hierarchy, with
    `Timeout` also a builtin `TimeoutError` and `ProcessNotFound` also a
    `FileNotFoundError`; `asyncio.CancelledError` surfaces natively on awaited

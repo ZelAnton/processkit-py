@@ -28,7 +28,7 @@ tears it down.
 |---|---|
 | **Windows** | Job Object enforces memory / active-process / CPU-rate caps |
 | **Linux** | cgroup v2 — **only when this process runs at the cgroup-v2 root**. Under a container, a systemd session/scope/service, or any non-root cgroup, the kernel's "no internal processes" rule forbids it and `ResourceLimit` is raised |
-| **macOS / BSD** | Not supported — raises `Unsupported` |
+| **macOS / BSD** | No whole-tree limit primitive — requesting any limit raises `ResourceLimit` (a fail-fast, never a silently-unbounded group) |
 
 If you need limits inside a container, run the process at the container's cgroup
 root (the create-leaf / migrate-self / enable-controllers dance), or use a
@@ -38,9 +38,9 @@ runtime that grants cgroup delegation.
 
 | | `signal()` / `suspend()` / `resume()` | `stats()` |
 |---|---|---|
-| **Windows** | Emulated: `term`/`kill` terminate the job; suspend/resume freeze/thaw it; other names may raise `Unsupported` | Memory + process count via the OS process APIs |
+| **Windows** | Only `kill` is deliverable — it terminates the job; **every other name, including `term`, raises `Unsupported`**. suspend/resume freeze/thaw the job | Memory + process count via the OS process APIs |
 | **Linux** | Real signals to the cgroup/process group; freeze via cgroup or `SIGSTOP`/`SIGCONT` | cgroup + `/proc` |
-| **macOS / BSD** | Real signals to the process group | Limited; may raise `Unsupported` |
+| **macOS / BSD** | Real signals to the process group | Process count only; CPU / peak-memory are `None` (no whole-tree kernel accounting) |
 
 Operations a platform can't perform raise `Unsupported` — catch it if you target
 multiple platforms.

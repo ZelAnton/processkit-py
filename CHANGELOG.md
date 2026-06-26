@@ -104,7 +104,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ok`/`fail`/`timeout`/`signalled`/`lines`/`pending`). Inject a `Runner` in
   production and a `ScriptedRunner` in tests — no real processes spawned; the
   results returned are genuine `ProcessResult` / `RunningProcess` objects.
-- A task-oriented [cookbook](docs/cookbook.md).
+- A full [documentation guide set](docs/README.md): a task-oriented
+  [cookbook](docs/cookbook.md) plus deep guides for
+  [running commands](docs/commands.md), [process groups](docs/process-groups.md),
+  [streaming & interactive I/O](docs/streaming.md), [pipelines](docs/pipelines.md),
+  [timeouts & cancellation](docs/timeouts-and-cancellation.md),
+  [supervision](docs/supervision.md), and [testing](docs/testing.md), tied
+  together by a progressively-disclosed README with a cover illustration.
 - Type stubs (`_processkit.pyi`) for the compiled extension.
 - A [platform support & caveats](docs/platforms.md) matrix documenting per-OS
   teardown, resource-limit, signal, and stats behaviour.

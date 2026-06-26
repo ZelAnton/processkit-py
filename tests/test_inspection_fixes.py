@@ -163,3 +163,35 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
 
     asyncio.run(scenario())
     assert called, "wait_for_port should route cleanup through _close_pending_connection"
+
+
+# --- Stage 2: interface ergonomics ------------------------------------------
+
+
+@pytest.mark.parametrize("label", ["latin_1", "latin-1", "utf_8", "euc_jp", "utf_16", "UTF_8"])
+def test_encoding_accepts_python_aliases(label: str) -> None:
+    # Common Python codec spellings the WHATWG label table doesn't contain
+    # verbatim must still resolve (no exception).
+    Command("x").encoding(label)
+
+
+def test_encoding_unknown_label_gives_guidance() -> None:
+    with pytest.raises(ValueError, match="WHATWG"):
+        Command("x").encoding("cp437")  # no encoding_rs equivalent
+
+
+def test_arg_args_accept_path_like() -> None:
+    p = pathlib.Path("sub/file")
+    cmd = Command("tool").arg(p).args([p, "literal"])
+    assert "sub" in repr(cmd)  # the path argument made it into the command line
+    Command("tool", [p, "x"])  # the constructor accepts path-likes in args too
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX exec-bit permission semantics")
+def test_permission_denied_on_non_executable(tmp_path: pathlib.Path) -> None:
+    script = tmp_path / "not_exec.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    script.chmod(0o644)  # readable but not executable
+    with pytest.raises(PermissionError) as excinfo:  # PermissionDenied is a PermissionError
+        Command(str(script)).run()
+    assert isinstance(excinfo.value, ProcessError)

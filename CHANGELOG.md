@@ -51,9 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tree (grandchildren included) is reaped on `with`-exit or `shutdown()`.
 - `RunningProcess` handle exposing the child `pid`.
 - Exception hierarchy rooted at `ProcessError`: `NonZeroExit`, `Timeout`,
-  `Cancelled`, `Signalled`, `ProcessNotFound`, `Unsupported`, `OutputTooLarge`.
-  `Timeout` is also a builtin `TimeoutError` and `ProcessNotFound` is also a
-  `FileNotFoundError` (matching `asyncio` / `subprocess`), so the stdlib `except`
+  `Cancelled`, `Signalled`, `ProcessNotFound`, `PermissionDenied`, `Unsupported`,
+  `OutputTooLarge`. `Timeout` is also a builtin `TimeoutError`, `ProcessNotFound`
+  is also a `FileNotFoundError`, and `PermissionDenied` is also a
+  `PermissionError` (matching `asyncio` / `subprocess`), so the stdlib `except`
   clauses catch them. The data-carrying ones expose structured fields — e.g.
   `NonZeroExit.code` / `.stdout` / `.stderr` / `.program`,
   `Timeout.timeout_seconds`, `Signalled.signal`, `OutputTooLarge.byte_limit` /
@@ -124,6 +125,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs there).
 - Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.14, the
   supported operating systems, topics) and project URLs (Documentation, Issues).
+
+### Changed
+- `Command.encoding()` / `stdout_encoding` / `stderr_encoding` now also accept
+  common **Python codec aliases** (`latin_1`, `utf_8`, `euc_jp`, …) in addition to
+  WHATWG labels, normalized to the WHATWG form; an unmappable label raises
+  `ValueError` naming the WHATWG equivalent. (WHATWG `iso-8859-1` / Python
+  `latin_1` decode as windows-1252.)
+- `Command.arg()` / `args()` and the `Command(...)` constructor's args accept any
+  `os.PathLike` (not only `str`), so a `pathlib.Path` argument needs no `str()`.
+- Closed-set string parameters and return values are typed as `Literal` in the
+  stubs (signal names, `restart`, `mechanism`, `SupervisionOutcome.stopped`,
+  `OutputEvent.stream`) for editor autocomplete and `mypy` typo-catching.
 
 ### Fixed
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no

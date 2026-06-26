@@ -81,7 +81,7 @@ def test_group_signal() -> None:
 
 def test_group_signal_unknown_name_rejected() -> None:
     with ProcessGroup() as group, pytest.raises(ValueError):
-        group.signal("not-a-signal")
+        group.signal("not-a-signal")  # type: ignore[arg-type]  # invalid on purpose
 
 
 def test_group_stats() -> None:

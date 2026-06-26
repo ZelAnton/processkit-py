@@ -360,12 +360,13 @@ except ProcessNotFound as e:
     print("missing:", e.program)
 ```
 
-Every exception derives from `ProcessError`. Two also derive from the builtin
+Every exception derives from `ProcessError`. Three also derive from the builtin
 the stdlib raises for the same condition, so familiar `except` clauses work:
-`Timeout` is also a `TimeoutError` (as `asyncio.TimeoutError` is) and
-`ProcessNotFound` is also a `FileNotFoundError` (as `subprocess` raises). The
-async readiness helpers (`wait_for_port` / `wait_for_line`) raise builtin
-`TimeoutError`, so `except TimeoutError` catches both run and readiness timeouts.
+`Timeout` is also a `TimeoutError` (as `asyncio.TimeoutError` is),
+`ProcessNotFound` is also a `FileNotFoundError` (as `subprocess` raises), and
+`PermissionDenied` is also a `PermissionError`. The async readiness helpers
+(`wait_for_port` / `wait_for_line`) raise builtin `TimeoutError`, so
+`except TimeoutError` catches both run and readiness timeouts.
 
 ## Test code without spawning processes
 

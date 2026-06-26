@@ -65,8 +65,9 @@ print(result.code, result.is_success, result.stdout)   # nothing raised
 
 Arguments are a list — there is **no shell** between you and the child, so no
 quoting, no word-splitting, and no injection surface. Build them up one at a time
-or in bulk; `cwd` sets the working directory. The program and any path argument
-accept anything `os.fspath` takes (`str`, `bytes`, or an `os.PathLike`).
+or in bulk; `cwd` sets the working directory. The program, the arguments, and
+`cwd` accept a `str` or any `os.PathLike[str]` (e.g. `pathlib.Path`) — so a `Path`
+argument needs no `str()`. (`bytes` paths are not accepted.)
 
 ```python
 from pathlib import Path
@@ -143,9 +144,14 @@ streams only when you intend to stream or to discard.
 
 Output is decoded line by line, UTF-8 by default; invalid bytes become `U+FFFD`
 rather than raising. Legacy-encoding tools can override per stream. Labels are
-**WHATWG encoding labels** (as the web platform uses), *not* Python codec
-aliases — `"latin_1"` and `"mbcs"` won't resolve; use `"iso-8859-1"` and an
-explicit name like `"windows-1252"`. An unknown label raises `ValueError`.
+**WHATWG encoding labels** (as the web platform uses) — e.g. `"iso-8859-1"`,
+`"windows-1252"`, `"windows-1251"`, `"shift_jis"`. Common **Python codec
+aliases** are accepted too (`"latin_1"`, `"utf_8"`, `"euc_jp"`, …), normalized to
+the WHATWG form. One caveat to know: WHATWG's `"iso-8859-1"` (and the Python
+`"latin_1"` that maps to it) decodes as **windows-1252**, which differs from
+strict ISO-8859-1 only in the `0x80`–`0x9F` range. The Windows ANSI code page
+(`"mbcs"`/`"ansi"`) has no portable label — pass it explicitly (e.g.
+`"windows-1251"`). An unmappable label raises `ValueError` naming the WHATWG form.
 
 ```python
 out = Command("legacy-tool").encoding("shift_jis").output()        # both streams
@@ -286,6 +292,7 @@ capturing verbs do not. Each carries **structured fields**, not just a message:
 | `Timeout` | the run's deadline killed it | `program`, `timeout_seconds`, `stdout`, `stderr` |
 | `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr` |
 | `ProcessNotFound` | the program couldn't be located / spawned | `program` |
+| `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file) | `program` |
 | `Cancelled` | in the hierarchy, but **not raised by any bound verb** (see the note below) | `program` |
 | `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `line_limit`, `byte_limit`, `total_lines`, `total_bytes` |
 | `ResourceLimit` | a memory / process / CPU cap was invalid or exceeded | — |
@@ -304,10 +311,11 @@ except ProcessNotFound as e:
     print("missing:", e.program)
 ```
 
-Two exceptions also derive from the builtin the stdlib raises for the same
+Three exceptions also derive from the builtin the stdlib raises for the same
 condition, so familiar `except` clauses keep working: `Timeout` is also a
-`TimeoutError` (as `asyncio.TimeoutError` is), and `ProcessNotFound` is also a
-`FileNotFoundError` (what `subprocess` raises). Note that cancelling an *awaited*
+`TimeoutError` (as `asyncio.TimeoutError` is), `ProcessNotFound` is also a
+`FileNotFoundError` (what `subprocess` raises), and `PermissionDenied` is also a
+`PermissionError`. Note that cancelling an *awaited*
 run via asyncio (`task.cancel()`, `asyncio.wait_for`, `asyncio.timeout`) surfaces
 as `asyncio.CancelledError` — not `Cancelled` — and still reaps the tree.
 

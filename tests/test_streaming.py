@@ -62,7 +62,7 @@ def test_stdout_lines_streams_in_order() -> None:
 def test_output_events_cover_both_streams() -> None:
     async def scenario() -> list[tuple[str, str]]:
         proc = await Command(PY, ["-c", _BOTH_STREAMS]).astart()
-        events = [(e.stream, e.text.rstrip()) async for e in proc.output_events()]
+        events = [(str(e.stream), e.text.rstrip()) async for e in proc.output_events()]
         await proc.wait()
         return events
 

@@ -31,10 +31,41 @@ fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
     }
 }
 
-/// Resolve an encoding label (e.g. `"iso-8859-1"`, `"shift_jis"`) to an `Encoding`.
+/// Resolve a label to an `Encoding`, accepting both WHATWG labels and the common
+/// Python codec aliases (e.g. `"latin_1"`, `"utf_8"`, `"euc_jp"`) that the WHATWG
+/// table doesn't spell the same way.
+fn resolve_encoding(label: &str) -> Option<&'static Encoding> {
+    // The WHATWG label table (encoding_rs) already accepts a lot — `utf-8`,
+    // `windows-1252`, `cp1251`, `shift_jis`, `latin1`, `iso-8859-1`, … — and
+    // matches case-insensitively. Try it verbatim first.
+    if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
+        return Some(encoding);
+    }
+    // Fall back to common Python codec aliases the table doesn't contain.
+    let lower = label.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        // WHATWG's `iso-8859-1` *is* windows-1252; map the Python latin-1 family
+        // (which the table only accepts as `latin1`) to it.
+        "latin" | "latin-1" | "latin_1" => Encoding::for_label(b"iso-8859-1"),
+        // Python spells many labels with `_` where WHATWG uses `-`
+        // (`utf_8`->`utf-8`, `euc_jp`->`euc-jp`, `utf_16`->`utf-16le`, …).
+        other => Encoding::for_label(other.replace('_', "-").as_bytes()),
+    }
+}
+
+/// Resolve an encoding label (e.g. `"iso-8859-1"`, `"shift_jis"`, `"latin_1"`) to
+/// an `Encoding`, raising `ValueError` with guidance when it can't be mapped.
 fn parse_encoding(label: &str) -> PyResult<&'static Encoding> {
-    Encoding::for_label(label.as_bytes())
-        .ok_or_else(|| PyValueError::new_err(format!("unknown encoding label {label:?}")))
+    resolve_encoding(label).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "unknown encoding label {label:?}. Labels follow the WHATWG Encoding \
+             Standard — e.g. \"utf-8\", \"iso-8859-1\", \"windows-1252\", \
+             \"windows-1251\", \"shift_jis\". Common Python codec aliases \
+             (\"latin_1\", \"utf_8\", \"euc_jp\") are accepted too; the Windows ANSI \
+             code page (\"mbcs\"/\"ansi\") has no portable label — pass it explicitly, \
+             e.g. \"windows-1251\"."
+        ))
+    })
 }
 
 /// A command builder. Builder methods return a new `Command`, so a configured
@@ -48,9 +79,10 @@ pub(crate) struct PyCommand {
 impl PyCommand {
     #[new]
     #[pyo3(signature = (program, args = None))]
-    fn new(program: PathBuf, args: Option<Vec<String>>) -> Self {
-        // `PathBuf` so a `str`, `bytes`, or any `os.PathLike` is accepted —
-        // matching how Python's own subprocess APIs take a program.
+    fn new(program: PathBuf, args: Option<Vec<PathBuf>>) -> Self {
+        // `PathBuf` so a `str` or any `os.PathLike[str]` is accepted — for the
+        // program and for each argument (so a `pathlib.Path` argument needs no
+        // `str()`). `bytes` paths are not accepted (PyO3 decodes through `str`).
         let mut inner = PkCommand::new(program);
         if let Some(args) = args {
             inner = inner.args(args);
@@ -58,13 +90,13 @@ impl PyCommand {
         Self { inner }
     }
 
-    fn arg(&self, arg: &str) -> Self {
+    fn arg(&self, arg: PathBuf) -> Self {
         Self {
             inner: self.inner.clone().arg(arg),
         }
     }
 
-    fn args(&self, args: Vec<String>) -> Self {
+    fn args(&self, args: Vec<PathBuf>) -> Self {
         Self {
             inner: self.inner.clone().args(args),
         }
@@ -192,8 +224,12 @@ impl PyCommand {
 
     /// Decode captured stdout *and* stderr with the named encoding instead of
     /// UTF-8. `label` is a WHATWG Encoding label (e.g. `"iso-8859-1"`,
-    /// `"shift_jis"`, `"windows-1251"`) — **not** a Python codec alias, so
-    /// `"latin_1"` / `"mbcs"` won't resolve; an unknown label raises `ValueError`.
+    /// `"shift_jis"`, `"windows-1251"`); common Python codec aliases (`"latin_1"`,
+    /// `"utf_8"`, `"euc_jp"`, …) are accepted too and normalized to the WHATWG
+    /// form. Note WHATWG `"iso-8859-1"` (and Python `"latin_1"`) decode as
+    /// windows-1252. The Windows ANSI code page (`"mbcs"`/`"ansi"`) has no portable
+    /// label — pass it explicitly (e.g. `"windows-1251"`). An unmappable label
+    /// raises `ValueError`.
     fn encoding(&self, label: &str) -> PyResult<Self> {
         Ok(Self {
             inner: self.inner.clone().encoding(parse_encoding(label)?),

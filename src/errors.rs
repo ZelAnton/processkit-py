@@ -1,7 +1,7 @@
 //! The exception hierarchy and the crate-error -> Python-exception mapping.
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyFileNotFoundError, PyTimeoutError};
+use pyo3::exceptions::{PyException, PyFileNotFoundError, PyPermissionError, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTuple, PyType};
@@ -25,6 +25,7 @@ create_exception!(_processkit, OutputTooLarge, ProcessError);
 // for `map_err` to instantiate.
 static TIMEOUT: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 static PROCESS_NOT_FOUND: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static PERMISSION_DENIED: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 
 /// Build a `ProcessError` subclass that also inherits `native_base` (a builtin
 /// exception), so `except <native_base>` catches it too — `type(name, bases, {})`.
@@ -60,12 +61,21 @@ pub(crate) fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<PyFileNotFoundError>(),
         "The program could not be found / spawned. Also a `FileNotFoundError`.",
     )?;
+    let permission_denied = make_dual_exception(
+        py,
+        "PermissionDenied",
+        py.get_type::<PyPermissionError>(),
+        "The program could not be spawned because of insufficient permissions \
+         (e.g. a non-executable file). Also a `PermissionError`.",
+    )?;
     m.add("Timeout", &timeout)?;
     m.add("ProcessNotFound", &not_found)?;
+    m.add("PermissionDenied", &permission_denied)?;
     // First write wins; the module is initialized once per interpreter (abi3
     // extension-module), so the discarded-`Err` case is unreachable in practice.
     let _ = TIMEOUT.set(py, timeout.unbind());
     let _ = PROCESS_NOT_FOUND.set(py, not_found.unbind());
+    let _ = PERMISSION_DENIED.set(py, permission_denied.unbind());
     Ok(())
 }
 
@@ -85,6 +95,14 @@ fn process_not_found_type(py: Python<'_>) -> Bound<'_, PyType> {
         .clone()
 }
 
+fn permission_denied_type(py: Python<'_>) -> Bound<'_, PyType> {
+    PERMISSION_DENIED
+        .get(py)
+        .expect("PermissionDenied type initialized at module init")
+        .bind(py)
+        .clone()
+}
+
 /// Map a crate `Error` onto the Python exception hierarchy and attach the
 /// structured fields the variant carries (`code`, `stdout`, `stderr`,
 /// `program`, `signal`, `timeout_seconds`, output-cap counters) so callers can
@@ -95,7 +113,7 @@ fn process_not_found_type(py: Python<'_>) -> Bound<'_, PyType> {
 /// error with a uniform `.map_err(map_err)` — no caller-threaded `py` token.
 ///
 /// `Error` is `#[non_exhaustive]`, so the wildcard arm both covers the rarer
-/// variants (`Io`, `Parse`, `Stdin`, `NotReady`, …) and stays
+/// variants (`CassetteMiss`, `Parse`, `NotReady`, …) and stays
 /// forward-compatible.
 pub(crate) fn map_err(error: processkit::Error) -> PyErr {
     use processkit::Error as E;
@@ -111,9 +129,13 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             E::NotFound { .. } => PyErr::from_type(process_not_found_type(py), message),
             // The real spawn path reports a missing program as `Spawn` carrying
             // an `io::Error` of kind `NotFound`; surface that as
-            // `ProcessNotFound` too.
+            // `ProcessNotFound` too. A permission failure (a non-executable file,
+            // EACCES) maps to `PermissionDenied` for the same stdlib-parity reason.
             E::Spawn { source, .. } if source.kind() == ErrorKind::NotFound => {
                 PyErr::from_type(process_not_found_type(py), message)
+            }
+            E::Spawn { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
+                PyErr::from_type(permission_denied_type(py), message)
             }
             E::ResourceLimit { .. } => ResourceLimit::new_err(message),
             E::Unsupported { .. } => Unsupported::new_err(message),

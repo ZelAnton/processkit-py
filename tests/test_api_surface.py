@@ -114,10 +114,11 @@ def test_context_manager_protocol_is_declared() -> None:
 
 
 def test_dual_base_exceptions_match_stdlib_and_stub() -> None:
-    # The stdlib aliasing is the whole point of these two exceptions; assert it
-    # both at runtime and in the stub so neither can regress silently.
+    # The stdlib aliasing is the whole point of these exceptions; assert it
+    # both at runtime and in the stub so none can regress silently.
     assert issubclass(processkit.Timeout, TimeoutError)
     assert issubclass(processkit.ProcessNotFound, FileNotFoundError)
+    assert issubclass(processkit.PermissionDenied, PermissionError)
     stub = _stub_classes()
 
     def stub_bases(classdef: ast.ClassDef) -> set[str]:
@@ -125,3 +126,4 @@ def test_dual_base_exceptions_match_stdlib_and_stub() -> None:
 
     assert {"ProcessError", "TimeoutError"} <= stub_bases(stub["Timeout"])
     assert {"ProcessError", "FileNotFoundError"} <= stub_bases(stub["ProcessNotFound"])
+    assert {"ProcessError", "PermissionError"} <= stub_bases(stub["PermissionDenied"])

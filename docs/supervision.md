@@ -49,7 +49,7 @@ loop, written once and correctly.
 
 `restart=` decides what is worth restarting. A **crash** is any run that is not a
 success — an exit code outside the accepted set (default `{0}`, widened by the
-command's [`ok_codes`](commands.md)), a timeout, or a signal-kill:
+command's [`success_codes`](commands.md)), a timeout, or a signal-kill:
 
 | `restart=` | Restarts after… |
 |---|---|
@@ -57,7 +57,7 @@ command's [`ok_codes`](commands.md)), a timeout, or a signal-kill:
 | `"always"` | every completed run, clean or not — pair with `stop_when=`/`max_restarts=` or it loops forever |
 | `"never"` | nothing: one run, reported as-is |
 
-Because `ok_codes` defines success, a command built with `.ok_codes([0, 2])` that
+Because `success_codes` defines success, a command built with `.success_codes([0, 2])` that
 exits `2` is *clean*, so `"on_crash"` treats it as a satisfied policy, not a crash.
 
 ## Backoff and jitter

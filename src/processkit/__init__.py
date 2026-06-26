@@ -56,6 +56,7 @@ from ._processkit import (
     output_all,
     output_all_bytes,
 )
+from ._runner import ProcessRunner
 
 try:
     __version__ = version("processkit")
@@ -80,6 +81,7 @@ __all__ = [
     "ProcessGroupStats",
     "ProcessNotFound",
     "ProcessResult",
+    "ProcessRunner",
     "ProcessStdin",
     "RecordReplayRunner",
     "Reply",

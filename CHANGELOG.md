@@ -23,8 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output is retained (cap `max_bytes` to bound the parent's memory against an
   untrusted child; a `max_lines`-only cap does not); on `"error"` overflow the
   run raises `OutputTooLarge`.
-- More `Command` knobs: `ok_codes([…])` (treat the given exit codes as success,
-  replacing the default `{0}` — for `grep`/`diff`-style tools), `inherit_env([…])`
+- More `Command` knobs: `success_codes([…])` (treat the given exit codes as
+  success, replacing the default `{0}` — for `grep`/`diff`-style tools),
+  `inherit_env([…])`
   (allowlist inheritance), `timeout_grace()` / `timeout_signal()` (graceful
   timeout), `stdout("inherit"|"null")` / `stderr(…)` redirection, `encoding(…)` /
   `stdout_encoding` / `stderr_encoding` (decode non-UTF-8 output),
@@ -104,7 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interface, plus `Reply`
   (`ok`/`fail`/`timeout`/`signalled`/`lines`/`pending`). Inject a `Runner` in
   production and a `ScriptedRunner` in tests — no real processes spawned; the
-  results returned are genuine `ProcessResult` / `RunningProcess` objects.
+  results returned are genuine `ProcessResult` / `RunningProcess` objects. The
+  injected runner is typed by the `ProcessRunner` `typing.Protocol`, which
+  `Runner` / `ScriptedRunner` / `RecordReplayRunner` all satisfy structurally.
 - A full [documentation guide set](docs/README.md): a task-oriented
   [cookbook](docs/cookbook.md) plus deep guides for
   [running commands](docs/commands.md), [process groups](docs/process-groups.md),
@@ -127,13 +130,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supported operating systems, topics) and project URLs (Documentation, Issues).
 
 ### Changed
+- Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the
+  whole success set, not an addition), and an empty sequence now raises
+  `ValueError` instead of being silently ignored.
 - `Command.encoding()` / `stdout_encoding` / `stderr_encoding` now also accept
   common **Python codec aliases** (`latin_1`, `utf_8`, `euc_jp`, …) in addition to
   WHATWG labels, normalized to the WHATWG form; an unmappable label raises
   `ValueError` naming the WHATWG equivalent. (WHATWG `iso-8859-1` / Python
   `latin_1` decode as windows-1252.)
 - `Command.arg()` / `args()` and the `Command(...)` constructor's args accept any
-  `os.PathLike` (not only `str`), so a `pathlib.Path` argument needs no `str()`.
+  `os.PathLike[str]` (e.g. `pathlib.Path`), not only `str`, so a `Path` argument
+  needs no `str()`. (`bytes` paths are not accepted; `StrPath` was narrowed to
+  `str | os.PathLike[str]` to match.)
 - Closed-set string parameters and return values are typed as `Literal` in the
   stubs (signal names, `restart`, `mechanism`, `SupervisionOutcome.stopped`,
   `OutputEvent.stream`) for editor autocomplete and `mypy` typo-catching.

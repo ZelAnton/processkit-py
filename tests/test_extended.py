@@ -37,13 +37,16 @@ NO_SUCH = "processkit-no-such-binary-xyzzy"
 # --- Command knobs ----------------------------------------------------------
 
 
-def test_ok_codes_replaces_success_set() -> None:
-    # ok_codes replaces the default {0}: [0, 3] accepts both.
-    assert Command(PY, ["-c", "import sys; sys.exit(3)"]).ok_codes([0, 3]).output().is_success
-    assert Command(PY, ["-c", "print(1)"]).ok_codes([0, 3]).run() == "1"
+def test_success_codes_replaces_success_set() -> None:
+    # success_codes replaces the default {0}: [0, 3] accepts both.
+    assert Command(PY, ["-c", "import sys; sys.exit(3)"]).success_codes([0, 3]).output().is_success
+    assert Command(PY, ["-c", "print(1)"]).success_codes([0, 3]).run() == "1"
     # [3] alone makes exit 0 a failure.
     with pytest.raises(NonZeroExit):
-        Command(PY, ["-c", "print(1)"]).ok_codes([3]).run()
+        Command(PY, ["-c", "print(1)"]).success_codes([3]).run()
+    # An empty sequence is rejected (it would accept nothing).
+    with pytest.raises(ValueError):
+        Command(PY, ["-c", "print(1)"]).success_codes([])
 
 
 def test_encoding_decodes_non_utf8() -> None:

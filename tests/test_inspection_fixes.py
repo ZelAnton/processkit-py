@@ -15,9 +15,13 @@ import sys
 import pytest
 
 from processkit import (
+    CliClient,
     Command,
     ProcessError,
+    ProcessRunner,
     RecordReplayRunner,
+    Runner,
+    ScriptedRunner,
     Supervisor,
     wait_for_port,
 )
@@ -195,3 +199,30 @@ def test_permission_denied_on_non_executable(tmp_path: pathlib.Path) -> None:
     with pytest.raises(PermissionError) as excinfo:  # PermissionDenied is a PermissionError
         Command(str(script)).run()
     assert isinstance(excinfo.value, ProcessError)
+
+
+# --- Stage 3: interface stability -------------------------------------------
+
+
+def _accepts_runner(runner: ProcessRunner) -> None:
+    # The annotation is the test: if this type-checks for the calls below, the
+    # concrete runners structurally satisfy the protocol.
+    assert runner is not None
+
+
+def test_runner_classes_satisfy_process_runner() -> None:
+    _accepts_runner(Runner())  # static conformance (mypy) + runtime use
+    _accepts_runner(ScriptedRunner())
+    assert isinstance(Runner(), ProcessRunner)
+    assert isinstance(ScriptedRunner(), ProcessRunner)
+
+
+def test_record_replay_runner_satisfies_process_runner(tmp_path: pathlib.Path) -> None:
+    rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
+    assert isinstance(rec, ProcessRunner)
+
+
+def test_cli_client_is_not_a_process_runner() -> None:
+    # CliClient verbs take per-call args (not a Command) and it has no start()/
+    # astart() — so it is deliberately NOT a ProcessRunner.
+    assert not isinstance(CliClient("git"), ProcessRunner)

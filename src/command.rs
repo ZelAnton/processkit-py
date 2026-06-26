@@ -198,12 +198,18 @@ impl PyCommand {
     /// just `0`, so pass every code you accept (e.g. `[0, 1]`). For tools whose
     /// non-zero exit is a normal result, like `grep` (`1` = no match) or `diff`
     /// (`1` = differs). Affects `run()` and `ProcessResult.is_success`;
-    /// `exit_code()` (raw) and `probe()` (0/1) are unchanged. An empty list is
-    /// ignored.
-    fn ok_codes(&self, codes: Vec<i32>) -> Self {
-        Self {
-            inner: self.inner.clone().ok_codes(codes),
+    /// `exit_code()` (raw) and `probe()` (0/1) are unchanged. An empty sequence
+    /// raises `ValueError` (it would accept nothing, which is never intended).
+    fn success_codes(&self, codes: Vec<i32>) -> PyResult<Self> {
+        if codes.is_empty() {
+            return Err(PyValueError::new_err(
+                "success_codes requires at least one code; pass the exit codes you \
+                 accept (e.g. [0, 1])",
+            ));
         }
+        Ok(Self {
+            inner: self.inner.clone().ok_codes(codes),
+        })
     }
 
     /// Where the child's stdout goes: `"pipe"` (capture — the default), `"inherit"`

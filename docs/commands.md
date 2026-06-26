@@ -254,7 +254,7 @@ r.stdout            # str (decoded)
 r.stderr            # str
 r.code              # int | None — None means killed (timeout / signal), no code
 r.signal            # int | None — the signal number on Unix, else None
-r.is_success        # code is in ok_codes (default {0})
+r.is_success        # code is in success_codes (default {0})
 r.timed_out         # the run's own deadline expired
 r.program           # the program name, for diagnostics
 r.duration_seconds  # wall-clock duration
@@ -270,15 +270,15 @@ to **stderr** only — the raw bytes stdout is never line-capped.
 png = Command("convert", ["in.png", "png:-"]).output_bytes().stdout   # bytes
 ```
 
-By default the success set is `{0}`. `ok_codes([...])` **replaces** it — list
+By default the success set is `{0}`. `success_codes([...])` **replaces** it — list
 every code you accept. It affects `run()` and `is_success`, but **not**
-`exit_code()` (always the raw int) or `probe()` (always 0/1). An empty list is
-ignored.
+`exit_code()` (always the raw int) or `probe()` (always 0/1). An empty sequence
+raises `ValueError` (it would accept nothing).
 
 ```python
 # diff exits 1 when files differ; treat that as success, not a failure.
-differs = not Command("diff", ["a.txt", "b.txt"]).ok_codes([0, 1]).probe()
-Command("grep", ["needle", "log"]).ok_codes([0, 1]).run()   # 1 (no match) is OK
+differs = not Command("diff", ["a.txt", "b.txt"]).success_codes([0, 1]).probe()
+Command("grep", ["needle", "log"]).success_codes([0, 1]).run()   # 1 (no match) is OK
 ```
 
 ## Errors

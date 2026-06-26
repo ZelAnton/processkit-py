@@ -63,15 +63,15 @@ code = Command("mytool").exit_code()                   # the raw exit code
 ## Accept non-zero exit codes
 
 Some tools use non-zero as a normal result (`grep` 1 = no match, `diff` 1 =
-differs). `ok_codes` **replaces** the success set (default `{0}`) — list every
+differs). `success_codes` **replaces** the success set (default `{0}`) — list every
 code you accept:
 
 ```python
-differs = not Command("diff", ["a", "b"]).ok_codes([0, 1]).probe()  # 0 same, 1 differs
-Command("grep", ["needle", "file"]).ok_codes([0, 1]).run()          # 1 (no match) is OK
+differs = not Command("diff", ["a", "b"]).success_codes([0, 1]).probe()  # 0 same, 1 differs
+Command("grep", ["needle", "file"]).success_codes([0, 1]).run()          # 1 (no match) is OK
 ```
 
-`ok_codes` affects `run()` and `result.is_success`; `exit_code()` (raw) and
+`success_codes` affects `run()` and `result.is_success`; `exit_code()` (raw) and
 `probe()` (0/1) are unchanged.
 
 ## Set a timeout

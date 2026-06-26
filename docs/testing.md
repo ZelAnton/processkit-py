@@ -35,14 +35,20 @@ surface**, so swapping one in is the whole technique. Each verb takes a
 Write production code against the seam; hand it the real runner there:
 
 ```python
-from processkit import Command, Runner
+from processkit import Command, ProcessRunner, Runner
 
-def current_branch(runner):
+def current_branch(runner: ProcessRunner) -> str:
     return runner.run(Command("git", ["branch", "--show-current"]))
 
 # Production: the real runner, which actually spawns git.
 branch = current_branch(Runner())
 ```
+
+Annotate the injected runner as **`ProcessRunner`** — a `typing.Protocol` that
+describes the verb surface. `Runner`, `ScriptedRunner`, and `RecordReplayRunner`
+all satisfy it structurally, so the annotation type-checks (strict `mypy`) against
+any of them, and against a custom double you write yourself. (`CliClient` is *not*
+a `ProcessRunner` — its verbs take per-call args, not a `Command`.)
 
 The sync and async surfaces are twins (`run` ↔ `arun`), so async code injects
 the very same runner objects and awaits the `a`-prefixed verbs.

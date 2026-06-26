@@ -114,8 +114,15 @@ except KeyboardInterrupt:
 ```
 
 This holds for every sync verb (`output()`, `run()`, `exit_code()`, `probe()`,
-…) — no orphaned grandchildren are left behind. The async surface uses task
-cancellation instead, below.
+…) — no orphaned grandchildren are left behind.
+
+> **Main-thread only.** CPython delivers signals to the main thread, so this
+> prompt `Ctrl+C` interruption works only when the sync verb runs on the main
+> thread. A sync verb called from a `threading.Thread` (more tempting on a
+> free-threaded build) blocks until the child exits — it cannot observe the
+> signal. Off the main thread, prefer the async API and cancel the task.
+
+The async surface uses task cancellation instead, below.
 
 ## Cancelling an awaited async run
 

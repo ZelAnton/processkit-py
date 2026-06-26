@@ -3,7 +3,10 @@
 //! single tokio runtime (`pyo3-async-runtimes`' managed runtime) and drives the
 //! crate's futures to completion for the synchronous surface. The GIL is
 //! released around every blocking call so other Python threads run, and the
-//! wait is broken into ticks so that `Ctrl+C` interrupts a blocked call.
+//! wait is broken into ticks so that `Ctrl+C` interrupts a blocked call — on the
+//! **main thread** only, since CPython delivers signals there (a sync verb run on
+//! a worker thread blocks un-interruptibly; use the async API off the main
+//! thread).
 
 use pyo3::prelude::*;
 

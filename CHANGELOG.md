@@ -125,6 +125,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.14, the
   supported operating systems, topics) and project URLs (Documentation, Issues).
 
+### Fixed
+- A synchronous verb called from inside a `Supervisor` `stop_when` predicate no
+  longer re-enters the tokio runtime and panics (the panic was previously
+  swallowed, so the predicate silently never fired); it now raises a clear
+  `ProcessError`. Documented that the predicate must read the result handed to it
+  rather than run new verbs.
+- `Supervisor(backoff_factor=…)` is now applied (and validated) independently of
+  `backoff_initial` — previously the factor was silently dropped unless
+  `backoff_initial` was also passed.
+- A `RecordReplayRunner.replay()` cassette miss now carries the `.program` field,
+  matching every other program-bearing `ProcessError`.
+- `wait_for_port()` no longer leaks the probe socket if the awaiting task is
+  cancelled just after the connection is accepted.
+
 ### Notes
 
 - This is the **1.0** release: the public API is frozen.

@@ -174,6 +174,7 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             E::NotFound { program, .. }
             | E::Spawn { program, .. }
             | E::Cancelled { program }
+            | E::CassetteMiss { program }
             | E::Stdin { program, .. } => {
                 let _ = value.setattr("program", program.as_str());
             }

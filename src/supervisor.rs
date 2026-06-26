@@ -1,5 +1,7 @@
 //! The `Supervisor` (restart/backoff) and its `SupervisionOutcome`.
 
+use std::time::Duration;
+
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::SupervisionOutcome;
@@ -151,8 +153,15 @@ impl PySupervisor {
         if let Some(n) = max_restarts {
             supervisor = supervisor.max_restarts(n);
         }
-        if let Some(initial) = backoff_initial {
-            let initial = positive_duration(initial, "backoff_initial")?;
+        // `backoff_initial` and `backoff_factor` are independent knobs: setting
+        // EITHER applies a custom backoff curve, with the unspecified side falling
+        // back to the crate default (0.2 s base, 2.0 factor) rather than being
+        // silently dropped.
+        if backoff_initial.is_some() || backoff_factor.is_some() {
+            let initial = match backoff_initial {
+                Some(seconds) => positive_duration(seconds, "backoff_initial")?,
+                None => Duration::from_millis(200),
+            };
             let factor = backoff_factor.unwrap_or(2.0);
             if !factor.is_finite() || factor < 1.0 {
                 return Err(PyValueError::new_err(

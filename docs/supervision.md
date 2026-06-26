@@ -104,8 +104,14 @@ Three gates are checked, in order, after every completed run:
 Two honest caveats about `stop_when=`:
 
 - **Inspect the passed result — don't call a synchronous run verb inside it.** Read
-  `r.code` / `r.is_success` / `r.stdout` off the argument; a nested sync call
-  (`Command(...).run()`) from within the supervisor's own loop is unsupported.
+  `r.code` / `r.is_success` / `r.stdout` off the argument. The predicate runs *on*
+  the runtime, so a nested sync call (`Command(...).run()`/`.probe()`/…) can't drive
+  the runtime again — it raises a clear `ProcessError` ("cannot call a synchronous
+  processkit verb from inside an async context or a callback"). That error is then
+  surfaced through the unraisable hook (next bullet), so the supervisor keeps going
+  rather than stopping — i.e. a sync verb in the predicate is a no-op stop gate, not
+  a crash. If you must run a check, precompute it before the supervised run, or use
+  the result handed to the predicate.
 - **A predicate that raises does not stop supervision.** The exception is surfaced
   through Python's [unraisable hook](https://docs.python.org/3/library/sys.html#sys.unraisablehook)
   and treated as "don't stop" — a buggy predicate degrades to *keep going*, it does

@@ -45,6 +45,25 @@ async def wait_for(
         await asyncio.sleep(min(interval, remaining))
 
 
+_Connection = tuple[asyncio.StreamReader, asyncio.StreamWriter]
+
+
+def _close_pending_connection(task: asyncio.Task[_Connection]) -> None:
+    """Close a probe transport that ``open_connection`` produced but that we never
+    took ownership of — e.g. a timeout or cancellation that raced a successful
+    connect (the classic ``asyncio.wait_for`` leak, where the established
+    connection is dropped on the floor). If the task hasn't finished, cancel it so
+    it can't produce an orphan transport later.
+    """
+    if not task.done():
+        task.cancel()
+        return
+    if task.cancelled() or task.exception() is not None:
+        return
+    _reader, writer = task.result()
+    writer.close()
+
+
 async def wait_for_port(
     host: str,
     port: int,
@@ -65,17 +84,23 @@ async def wait_for_port(
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise TimeoutError(f"port {host}:{port} not ready within {timeout}s")
+        # Own the connect as a task: if a timeout or a cancellation races a
+        # successful connect, `asyncio.wait_for` can drop the established transport
+        # on the floor (a known leak). Owning the task lets us close it instead.
+        conn = asyncio.ensure_future(asyncio.open_connection(host, port))
         try:
-            _reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=remaining
-            )
+            _reader, writer = await asyncio.wait_for(conn, timeout=remaining)
         except (OSError, asyncio.TimeoutError):
+            _close_pending_connection(conn)
             if loop.time() >= deadline:
                 raise TimeoutError(f"port {host}:{port} not ready within {timeout}s") from None
             await asyncio.sleep(interval)
             continue
+        except asyncio.CancelledError:
+            _close_pending_connection(conn)
+            raise
+        # Connected — close the probe socket (best-effort) and succeed.
         writer.close()
-        # The probe connection closing is best-effort.
         with contextlib.suppress(OSError):
             await writer.wait_closed()
         return

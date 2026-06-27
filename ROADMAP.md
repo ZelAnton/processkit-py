@@ -69,7 +69,7 @@ asyncio.run(main())
 - **Async bridge:** `pyo3-async-runtimes` (tokio ↔ asyncio).
 - **Distribution:** abi3 wheels (cp310+) to keep the GIL matrix flat, plus a
   version-specific free-threaded wheel (cp314t, PEP 703); `cibuildwheel` across
-  Windows x64, manylinux x86_64 / aarch64, macOS x86_64 / arm64.
+  Windows x64, manylinux + musllinux x86_64 / aarch64, macOS x86_64 / arm64.
 - **Versioning:** the crate is at 1.0 (pinned exactly at `=1.0.1`). The binding
   pins an exact crate version and tracks API churn deliberately, not transitively.
 

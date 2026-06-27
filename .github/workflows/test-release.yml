@@ -57,7 +57,7 @@ jobs:
           pattern: "{wheels-*,sdist}"
           merge-multiple: true
       - name: Check metadata
-        run: uvx twine check ./dist/*
+        run: uvx twine check --strict ./dist/*
       - name: Upload to TestPyPI
         env:
           TWINE_USERNAME: __token__

@@ -438,6 +438,16 @@ jobs:
           git commit -m "Release ${{ needs.prepare.outputs.tag }}"
           git tag "${{ needs.prepare.outputs.tag }}"
 
+      # uv is not preinstalled on the GitHub runner image; install it so the
+      # `uvx twine` calls below resolve (the test-release dry-run does the same).
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # Validate package metadata BEFORE the irreversible upload — a render/metadata
+      # break caught here is free; once on PyPI a bad file can only be yanked.
+      - name: Check distribution metadata
+        run: uvx twine check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
+
       # === PIVOT: the single irreversible step ===
       # `twine upload --skip-existing` treats an already-published file (HTTP 409) as
       # success — PyPI's own version-scoped "already published == success" signal — so

@@ -59,6 +59,5 @@ installed on the repo and is actually listed in the ruleset's bypass list, and
 that `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY` are set on the repo (not the
 org, unless the App is org-owned).
 
-> This recipe is referenced from `AGENTS.md` and `TEMPLATE.md`. It is ordinary
-> setup documentation for the generated repo, so the init script keeps it (it is
-> not one of the template-only files that init deletes).
+> This recipe is referenced from `AGENTS.md` and [`RELEASING.md`](RELEASING.md).
+> It is ordinary setup documentation for the repo, kept (not a template-only file).

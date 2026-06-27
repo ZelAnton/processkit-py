@@ -13,10 +13,10 @@ the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
 - [Streaming stdout](#streaming-stdout)
-- [Interleaved stdout + stderr](#interleaved-stdout--stderr)
+- [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
 - [Interactive stdin](#interactive-stdin)
 - [Readiness probes](#readiness-probes)
-- [Live introspection & per-run telemetry](#live-introspection--per-run-telemetry)
+- [Live introspection and per-run telemetry](#live-introspection-and-per-run-telemetry)
 - [Deterministic teardown](#deterministic-teardown)
 
 ## Lifecycle
@@ -102,7 +102,7 @@ to know:
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*
 
-## Interleaved stdout + stderr
+## Interleaved stdout and stderr
 
 When the *interleaving* matters — a `--watch` build that prints progress to
 stdout and diagnostics to stderr — `output_events()` merges both streams in
@@ -223,7 +223,7 @@ Semantics, deliberately uniform:
 *Deeper: bounding the whole run (not just the wait) is
 [Timeouts & cancellation](timeouts-and-cancellation.md).*
 
-## Live introspection & per-run telemetry
+## Live introspection and per-run telemetry
 
 A running child reports its own resource usage live; the getters are properties
 (not calls), and each returns `None` once the handle is consumed:

@@ -1,0 +1,61 @@
+name: Docs
+
+# Build the mkdocs-material site from docs/ and (opt-in) deploy it to GitHub Pages.
+# The build runs on every docs change as a strict link/anchor check; the deploy is
+# gated on the DOCS_DEPLOY repository variable so there are no red runs before a
+# maintainer turns Pages on. To publish the site: enable GitHub Pages with
+# "Source: GitHub Actions" (repo Settings -> Pages), then set the DOCS_DEPLOY
+# repository variable to `true` (Settings -> Secrets and variables -> Actions ->
+# Variables). See RELEASING.md.
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', mkdocs.yml, .github/workflows/docs.yml]
+  pull_request:
+    branches: [main]
+    paths: ['docs/**', mkdocs.yml, .github/workflows/docs.yml]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # `--strict` fails on a broken cross-page or in-page anchor link (see the
+      # `validation:` block in mkdocs.yml), so a renamed heading can't ship a broken
+      # guide. Renders markdown only — no Rust extension build needed.
+      - name: Build site (strict)
+        run: uvx --with mkdocs-material mkdocs build --strict
+      # Upload only when we will actually deploy (push to main, opt-in via DOCS_DEPLOY).
+      - if: github.event_name == 'push' && vars.DOCS_DEPLOY == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && vars.DOCS_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # deploy to GitHub Pages
+      id-token: write # OIDC for the Pages deployment
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

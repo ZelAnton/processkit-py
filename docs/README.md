@@ -44,7 +44,7 @@ ship: it collects every per-OS caveat in one place.
 | [Running commands](commands.md) | The `Command` builder end to end — args, env/sandboxing, stdin, stdout/stderr redirection, encodings, output caps, timeouts, privileges — and every consuming verb (`output`, `run`, `probe`, …) with its error semantics |
 | [Process groups](process-groups.md) | Kill-on-drop containment: creating groups, spawning, teardown, whole-tree signals, suspend/resume, member listing, resource limits, stats |
 | [Streaming & interactive I/O](streaming.md) | `astart()` and the live `RunningProcess`: line streaming, interactive stdin, readiness probes (`wait_for_line` / `wait_for_port` / `wait_for`), per-run profiling |
-| [Pipelines](pipelines.md) | `a \| b \| c` without a shell (the `\|` operator works too): wiring, pipefail attribution, chain timeouts, binary tails |
+| [Pipelines](pipelines.md) | Shell-free command pipelines — chain with `.pipe()` or the pipe operator: wiring, pipefail attribution, chain timeouts, binary tails |
 | [Timeouts & cancellation](timeouts-and-cancellation.md) | How a deadline is *captured* vs when it raises, interrupting a blocked sync call (Ctrl+C), and asyncio cancellation that reaps the whole tree |
 | [Supervision](supervision.md) | Keeping a child alive: restart policies, backoff & jitter, stop conditions, outcomes |
 | [Testing your code](testing.md) | The `ProcessRunner` seam — `ScriptedRunner` (incl. scripted streaming `start()`), record/replay cassettes, the `RecordingRunner` spy, and the `CliClient` wrapper |
@@ -62,7 +62,7 @@ pip install processkit   # supported path once the first PyPI release lands
 ```
 
 Until then, build from source (`uv run maturin develop`) — see the
-[README](../README.md#building-from-source).
+[README](https://github.com/ZelAnton/processkit-py#building-from-source).
 
 Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on
 every supported minor version, 3.14 included), plus a **version-specific

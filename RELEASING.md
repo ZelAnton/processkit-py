@@ -57,6 +57,21 @@ GitHub Release (wheels + sdist + `SHA256SUMS`).
    refresh the README prose that still says the release is pending (the
    build-from-source intro and the "first release to PyPI is pending" note).
 
+## Docs site
+
+The guides in `docs/` render as a [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/)
+site via `.github/workflows/docs.yml`. The build (`mkdocs build --strict`) runs on
+every docs change as a link/anchor check; **deployment is opt-in** so there are no
+red runs before Pages is set up. To publish the site:
+
+1. Repo **Settings → Pages → Source: GitHub Actions**.
+2. Repo **Settings → Secrets and variables → Actions → Variables**: add
+   `DOCS_DEPLOY` = `true`.
+
+The next push to `main` that touches `docs/` or `mkdocs.yml` then deploys to
+`https://zelanton.github.io/processkit-py/`. Preview locally with
+`uvx --with mkdocs-material mkdocs serve`.
+
 ## If a release fails
 
 The ordering is built so failures are safe to recover:

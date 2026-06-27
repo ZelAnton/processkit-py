@@ -61,19 +61,10 @@ jobs:
           fi
           echo "Dispatched from main."
 
-      - name: Preflight — required secrets present before any external action
-        env:
-          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Fail fast, before any build or publish, if the publish credential is
-          # missing. If you switch to PyPI Trusted Publishing (OIDC), drop this
-          # check and add `id-token: write` to the publish job instead.
-          if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
-            echo "::error::PYPI_API_TOKEN secret is not set. Add it under Settings -> Secrets and variables -> Actions before releasing."
-            exit 1
-          fi
-          echo "Required secrets present."
+      # No publish-credential preflight: with Trusted Publishing the credential is
+      # minted per run (no PYPI_API_TOKEN to check), and a missing trusted publisher
+      # can't be verified from here — it surfaces at the publish pivot with a clear
+      # error + a setup link, before anything reaches the remote or the registry.
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -366,17 +357,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the release commit + tag, and create the Release
+      id-token: write # PyPI Trusted Publishing (OIDC); also enables the token fallback path
+    # (Trusted-publishing best practice is a dedicated, minimal `id-token: write`
+    # job. It is kept inline here because the pivot ordering — publish, THEN push the
+    # tag, THEN create the Release — is the load-bearing invariant; splitting it
+    # across jobs to isolate the token scope would risk that ordering for a marginal
+    # gain, since the OIDC credential is only usable against this repo's PyPI
+    # trusted publisher.)
     steps:
-      - name: Preflight — required secrets present before the pivot
-        env:
-          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
-            echo "::error::PYPI_API_TOKEN secret is not set."
-            exit 1
-          fi
-          echo "Required secrets present."
+      # No secret preflight: with Trusted Publishing the credential is minted per
+      # run (no PYPI_API_TOKEN needed), and the OIDC config can't be checked from
+      # here — a missing publisher surfaces at the pivot with a clear error + a
+      # setup link, before anything is pushed to the remote.
 
       # Mint a short-lived GitHub App installation token so the push to `main` runs as
       # the App (which sits in the branch-protection ruleset's bypass list). Skipped
@@ -411,6 +403,10 @@ jobs:
           pattern: "{wheels-*,sdist}"
           merge-multiple: true
 
+      # Write SHA256SUMS to the workspace root, NOT into ./artifacts: the publish
+      # action below uploads every file in its packages-dir, and a non-distribution
+      # file there would make twine reject the batch. It is a GitHub Release asset
+      # only, never a PyPI upload.
       - name: Generate SHA256SUMS
         run: |
           set -euo pipefail
@@ -421,8 +417,8 @@ jobs:
             echo "::error::No package files to hash in ./artifacts. Did the build jobs run?"
             exit 1
           fi
-          sha256sum "${files[@]}" > SHA256SUMS
-          cat SHA256SUMS
+          sha256sum "${files[@]}" > ../SHA256SUMS
+          cat ../SHA256SUMS
 
       # Create the release commit and tag LOCALLY, but do NOT push yet: the push is a
       # VCS write and must happen AFTER the irreversible PyPI publish (the pivot below).
@@ -439,43 +435,33 @@ jobs:
           git tag "${{ needs.prepare.outputs.tag }}"
 
       # uv is not preinstalled on the GitHub runner image; install it so the
-      # `uvx twine` calls below resolve (the test-release dry-run does the same).
+      # `uvx twine check` below resolves. (The publish action does its own
+      # metadata check, but this strict pre-pivot gate catches a render/metadata
+      # break BEFORE the irreversible step — free here, un-yankable once on PyPI.)
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
-      # Validate package metadata BEFORE the irreversible upload — a render/metadata
-      # break caught here is free; once on PyPI a bad file can only be yanked.
       - name: Check distribution metadata
         run: uvx twine check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
 
       # === PIVOT: the single irreversible step ===
-      # `twine upload --skip-existing` treats an already-published file (HTTP 409) as
-      # success — PyPI's own version-scoped "already published == success" signal — so
-      # a re-run after a post-publish failure sails through. The loop retries only
-      # transient (network) failures.
-      #
-      # MORE SECURE ALTERNATIVE — PyPI Trusted Publishing (OIDC): instead of a
-      # long-lived PYPI_API_TOKEN secret, mint a short-lived credential per run. Add
-      # `id-token: write` to this job's permissions, configure a trusted publisher on
-      # pypi.org for this repo+workflow, then swap the step below for the
-      # `pypa/gh-action-pypi-publish` action (drop the preflight token check).
-      # See https://docs.pypi.org/trusted-publishers/
+      # PyPI Trusted Publishing (OIDC) by default: with NO PYPI_API_TOKEN secret set,
+      # the action mints a short-lived credential per run (needs the `id-token: write`
+      # permission above + a trusted publisher configured on pypi.org for this
+      # repo + this workflow filename — https://docs.pypi.org/trusted-publishers/).
+      # If PYPI_API_TOKEN *is* set, the action uses that token instead (a clean
+      # fallback for a first release before the publisher is configured). `skip-existing`
+      # makes a re-run idempotent — an already-published file counts as success — so
+      # after a transient upload failure it is safe to re-run the whole workflow:
+      # nothing has been pushed to the remote yet. The action verifies metadata and,
+      # under OIDC, attaches PEP 740 attestations automatically. (No auto-retry on a
+      # transient network error; re-run the workflow — `skip-existing` covers it.)
       - name: Publish to PyPI (irreversible pivot)
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if uvx twine upload --skip-existing ./artifacts/*.whl ./artifacts/*.tar.gz; then
-              echo "PyPI upload succeeded (attempt $attempt)."
-              exit 0
-            fi
-            echo "::warning::PyPI upload attempt $attempt failed; retrying after backoff..."
-            sleep $((attempt * 15))
-          done
-          echo "::error::PyPI upload failed after 3 attempts. Nothing was pushed to the remote and no Release was created — it is safe to re-run this workflow."
-          exit 1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: artifacts
+          skip-existing: true
+          password: ${{ secrets.PYPI_API_TOKEN }}
 
       # Reversible VCS write, AFTER the pivot. --atomic guarantees the branch and tag
       # move together (or neither does), so we never advance main while losing the tag.
@@ -494,7 +480,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          assets=(./artifacts/*.whl ./artifacts/*.tar.gz ./artifacts/SHA256SUMS)
+          assets=(./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS)
           for attempt in 1 2 3; do
             if gh release view "$TAG" >/dev/null 2>&1; then
               if gh release edit "$TAG" --title "$TAG" --notes-file release-notes.md \
@@ -511,5 +497,5 @@ jobs:
             echo "::warning::GitHub Release step attempt $attempt failed; retrying after backoff..."
             sleep $((attempt * 10))
           done
-          echo "::error::Failed to create/update the GitHub Release after 3 attempts. The package is ALREADY on PyPI and the tag is ALREADY on main. Do NOT re-run this workflow (a re-run computes the NEXT version and orphans this release). Finish by hand: if the Release does not exist yet, 'gh release create $TAG --title $TAG --notes-file release-notes.md ./artifacts/*.whl ./artifacts/*.tar.gz ./artifacts/SHA256SUMS'; if it already exists, 'gh release edit $TAG --notes-file release-notes.md && gh release upload $TAG ./artifacts/*.whl ./artifacts/*.tar.gz ./artifacts/SHA256SUMS --clobber'."
+          echo "::error::Failed to create/update the GitHub Release after 3 attempts. The package is ALREADY on PyPI and the tag is ALREADY on main. Do NOT re-run this workflow (a re-run computes the NEXT version and orphans this release). Finish by hand: if the Release does not exist yet, 'gh release create $TAG --title $TAG --notes-file release-notes.md ./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS'; if it already exists, 'gh release edit $TAG --notes-file release-notes.md && gh release upload $TAG ./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS --clobber'."
           exit 1

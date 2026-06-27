@@ -5,9 +5,11 @@ name: Test release (TestPyPI)
 # release.yml it has NO side effects — no version bump, no commit/tag, no GitHub
 # Release — so it is safe to run repeatedly to verify the build + upload path.
 #
-# Requires the TESTPYPI_API_TOKEN secret (a TestPyPI API token). Uploads the
-# version currently in pyproject.toml with `--skip-existing`, so re-runs of the
-# same version are no-ops.
+# Publishes via TestPyPI Trusted Publishing (OIDC) by default — configure a
+# trusted publisher on test.pypi.org for this repo + this workflow filename
+# (https://docs.pypi.org/trusted-publishers/). If the TESTPYPI_API_TOKEN secret is
+# set instead, the publish action uses that token. Uploads the version currently in
+# pyproject.toml with `skip-existing`, so re-runs of the same version are no-ops.
 
 on:
   workflow_dispatch:
@@ -20,25 +22,13 @@ permissions:
   contents: read
 
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require the TestPyPI token
-        env:
-          TESTPYPI_API_TOKEN: ${{ secrets.TESTPYPI_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${TESTPYPI_API_TOKEN:-}" ]]; then
-            echo "::error::TESTPYPI_API_TOKEN secret is not set. Add a TestPyPI API token under Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-          echo "TestPyPI token present."
-
+  # No token preflight: Trusted Publishing mints the credential per run (and a
+  # missing publisher / token surfaces at the upload with a clear error). The
+  # dry-run has no side effects, so there is nothing to gate before the build.
   # Build the same wheels matrix + sdist as the real release, via the shared
   # reusable workflow. No release-meta overlay: the dry-run packages the version
   # currently in pyproject.toml. Uploads `wheels-<os>` + `sdist` for publish.
   build_dists:
-    needs: preflight
     uses: ./.github/workflows/_build-dists.yml
     with:
       overlay-release-meta: false
@@ -46,6 +36,8 @@ jobs:
   publish_testpypi:
     needs: [build_dists]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # TestPyPI Trusted Publishing (OIDC); also enables the token fallback
     steps:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
@@ -58,9 +50,11 @@ jobs:
           merge-multiple: true
       - name: Check metadata
         run: uvx twine check --strict ./dist/*
+      # OIDC by default (no TESTPYPI_API_TOKEN set); the token is used if present.
       - name: Upload to TestPyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.TESTPYPI_API_TOKEN }}
-          TWINE_REPOSITORY_URL: https://test.pypi.org/legacy/
-        run: uvx twine upload --skip-existing ./dist/*.whl ./dist/*.tar.gz
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true
+          password: ${{ secrets.TESTPYPI_API_TOKEN }}

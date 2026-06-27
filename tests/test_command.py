@@ -11,6 +11,7 @@ without assuming any system binary is present.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pathlib
 import sys
@@ -28,7 +29,7 @@ from processkit import (
     Unsupported,
 )
 
-PY = sys.executable
+from .conftest import NO_SUCH_PROGRAM, PY
 
 
 def test_output_captures_stdout_and_code() -> None:
@@ -78,7 +79,7 @@ def test_probe_true_and_false() -> None:
 
 def test_missing_program_raises_process_not_found() -> None:
     with pytest.raises(ProcessNotFound):
-        Command("processkit-no-such-binary-xyzzy").output()
+        Command(NO_SUCH_PROGRAM).output()
 
 
 def test_timeout_is_captured_by_output() -> None:
@@ -244,6 +245,28 @@ def test_output_limit_truncate_marks_truncated() -> None:
     assert result.truncated
 
 
+def test_output_limit_drop_newest_keeps_earliest_lines() -> None:
+    # The default (drop_oldest) keeps the LATEST max_lines as new ones arrive;
+    # drop_newest is the opposite — it keeps the EARLIEST lines and discards
+    # anything past the cap. Previously untested (only drop_oldest/error had
+    # coverage). Distinguishable content (line numbers) proves which end won.
+    code = "import sys\nfor i in range(20):\n    print(i)"
+    result = Command(PY, ["-c", code]).output_limit(max_lines=5, on_overflow="drop_newest").output()
+    assert result.is_success
+    assert result.truncated
+    assert result.stdout.split() == ["0", "1", "2", "3", "4"]
+
+
+def test_output_bytes_truncated_reflects_stderr_cap() -> None:
+    # `BytesResult.truncated` tracks only *stderr* capping — raw stdout bytes
+    # are never line-capped (see the stub's `truncated` docstring) — so an
+    # output_limit breach must still surface via stderr overflow.
+    code = "import sys\nfor i in range(1000):\n    sys.stderr.write('x' * 80 + chr(10))"
+    result = Command(PY, ["-c", code]).output_limit(max_lines=10).output_bytes()
+    assert result.is_success
+    assert result.truncated
+
+
 def test_output_limit_requires_a_cap() -> None:
     with pytest.raises(ValueError):
         Command(PY, ["-c", "pass"]).output_limit()
@@ -360,6 +383,29 @@ def test_builder_knobs_chain_builds() -> None:
     assert isinstance(cmd, Command)
     # The cross-platform lifetime knobs actually run.
     assert "ok" in Command(PY, ["-c", "print('ok')"]).kill_on_parent_death().run()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() != 0,
+    reason="dropping privilege requires starting as root on POSIX (e.g. the Docker test harness)",
+)
+def test_privilege_drop_args_actually_drop_privilege() -> None:
+    # `test_builder_knobs_chain_builds` only pins that `.uid()/.gid()/.groups()/
+    # .setsid()` chain and build a valid Command (name-pinned); this actually
+    # RUNS with them active and checks the child's real effective ids — only
+    # possible when the calling process starts as root (this repo's `docker/`
+    # harness runs as root by default; CI's native runners do not, hence the
+    # euid guard above rather than a bare POSIX skip).
+    code = "import json, os; print(json.dumps([os.getuid(), os.getgid(), os.getgroups()]))"
+    # 65534 is the conventional nobody:nogroup uid/gid on Debian-family images
+    # (this repo's Docker harness is `rust:1-bookworm`).
+    out = Command(PY, ["-c", code]).uid(65534).gid(65534).groups([65534]).run()
+    uid, gid, groups = json.loads(out)
+    assert uid == 65534, "the child did not drop to the requested uid"
+    assert gid == 65534, "the child did not drop to the requested gid"
+    assert groups == [65534], (
+        "the child's supplementary groups were not replaced with the requested set"
+    )
 
 
 @pytest.mark.skipif(

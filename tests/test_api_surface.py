@@ -14,12 +14,13 @@ import inspect
 import pathlib
 import re
 import types
+from collections.abc import Callable
 
 import pytest
 
 import processkit
 import processkit.testing
-from processkit import _processkit
+from processkit import _aio, _processkit, _runner, _types
 
 # The runner test doubles live in the `processkit.testing` submodule, not the
 # top-level surface; both re-export from the same compiled `_processkit`.
@@ -117,6 +118,17 @@ def test_every_compiled_export_is_reexported() -> None:
     reexported = set(processkit.__all__) | set(processkit.testing.__all__)
     missing = _public_names(_processkit) - reexported
     assert not missing, f"compiled names not re-exported: {sorted(missing)}"
+
+
+def test_top_level_all_covers_every_shim_modules_all() -> None:
+    # The pure-Python "shim" modules (`_aio.py`, `_runner.py`, `_types.py`) each
+    # declare their own `__all__`, folded into the top-level `processkit.__all__`
+    # by `__init__.py`'s re-exports. Nothing enforces that fold-in automatically
+    # — a new helper added to a shim's `__all__` but forgotten from the
+    # top-level list would otherwise ship silently unexported.
+    shim_all = set(_aio.__all__) | set(_runner.__all__) | set(_types.__all__)
+    missing = shim_all - set(processkit.__all__)
+    assert not missing, f"shim-module exports missing from processkit.__all__: {sorted(missing)}"
 
 
 def test_testing_submodule_exports_the_doubles_only() -> None:
@@ -267,6 +279,96 @@ def _section_version(text: str, section: str) -> str | None:
             if match:
                 return match.group(1)
     return None
+
+
+# --- parameter-level signature drift (E2) -----------------------------------
+
+# A normalized parameter: (name, `inspect._ParameterKind` name, has-a-default).
+_Param = tuple[str, str, bool]
+
+
+def _runtime_params(sig: inspect.Signature) -> list[_Param]:
+    params = [p for p in sig.parameters.values() if p.name not in ("self", "cls")]
+    return [(p.name, p.kind.name, p.default is not inspect.Parameter.empty) for p in params]
+
+
+def _stub_params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[_Param]:
+    a = fn.args
+    result: list[_Param] = []
+    for arg in a.posonlyargs:
+        result.append((arg.arg, "POSITIONAL_ONLY", False))
+    n_no_default = len(a.args) - len(a.defaults)
+    for i, arg in enumerate(a.args):
+        result.append((arg.arg, "POSITIONAL_OR_KEYWORD", i >= n_no_default))
+    if a.vararg:
+        result.append((a.vararg.arg, "VAR_POSITIONAL", False))
+    for arg, default in zip(a.kwonlyargs, a.kw_defaults, strict=True):
+        result.append((arg.arg, "KEYWORD_ONLY", default is not None))
+    if a.kwarg:
+        result.append((a.kwarg.arg, "VAR_KEYWORD", False))
+    return [p for p in result if p[0] not in ("self", "cls")]
+
+
+_StubFn = ast.FunctionDef | ast.AsyncFunctionDef
+_CallablePair = tuple[str, Callable[..., object], _StubFn]
+
+
+def _stub_funcdefs(body: list[ast.stmt]) -> dict[str, _StubFn]:
+    return {
+        node.name: node for node in body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _iter_callables_with_stub_defs() -> list[_CallablePair]:
+    """Every (qualified name, runtime callable, stub AST def) pair worth a
+    parameter-level signature comparison: module-level functions, plus every
+    non-property, non-dunder method of every non-exception compiled class."""
+    stub_classes = _stub_classes()
+    pairs: list[_CallablePair] = []
+
+    stub_path = pathlib.Path(processkit.__file__).with_name("_processkit.pyi")
+    tree = ast.parse(stub_path.read_text(encoding="utf-8"))
+    module_stub_fns = _stub_funcdefs(tree.body)
+    for name in _compiled_functions():
+        runtime_fn = getattr(_processkit, name)
+        stub_fn = module_stub_fns.get(name)
+        if stub_fn is not None:
+            pairs.append((name, runtime_fn, stub_fn))
+
+    for cls_name, cls in _compiled_classes().items():
+        if issubclass(cls, BaseException):
+            continue
+        stub_methods = _stub_funcdefs(stub_classes[cls_name].body)
+        for member in vars(cls):
+            if member.startswith("_"):
+                continue
+            if _runtime_is_data_descriptor(cls, member):
+                continue  # properties/getters have no call signature
+            stub_fn = stub_methods.get(member)
+            if stub_fn is None:
+                continue  # already caught by test_compiled_class_members_match_the_stub
+            pairs.append((f"{cls_name}.{member}", getattr(cls, member), stub_fn))
+    return pairs
+
+
+def test_signature_parameters_match_the_stub() -> None:
+    # The AST-based drift guards above only compare NAMES (methods, classes,
+    # module functions); this compares each callable's actual PARAMETER LIST
+    # (name, positional/keyword kind, and whether it has a default) against the
+    # stub's declared parameters — the level a renamed/reordered/reworked
+    # kwarg, or a dropped default, drifts at, invisible to the name-only guards.
+    mismatches = []
+    for qualname, runtime_fn, stub_fn in _iter_callables_with_stub_defs():
+        try:
+            sig = inspect.signature(runtime_fn)
+        except (TypeError, ValueError) as exc:
+            mismatches.append(f"{qualname}: could not read a runtime signature ({exc})")
+            continue
+        runtime_params = _runtime_params(sig)
+        stub_params = _stub_params(stub_fn)
+        if runtime_params != stub_params:
+            mismatches.append(f"{qualname}: runtime {runtime_params} != stub {stub_params}")
+    assert not mismatches, "signature drift vs the stub:\n" + "\n".join(mismatches)
 
 
 def test_pyproject_and_cargo_versions_agree() -> None:

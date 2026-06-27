@@ -7,16 +7,23 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import sys
 
 import pytest
 
-from processkit import BytesResult, Command, ProcessError, ProcessGroup, Runner, RunProfile
+from processkit import (
+    BytesResult,
+    Command,
+    Finished,
+    Outcome,
+    ProcessError,
+    ProcessGroup,
+    ProcessResult,
+    Runner,
+    RunProfile,
+)
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead
-from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
-
-PY = sys.executable
+from .conftest import PY, spawn_grandchild_command
 
 # Prints N lines (flushed so they stream) then exits.
 _PRINT_LINES = "[print(f'line{i}', flush=True) for i in range(5)]"
@@ -49,7 +56,7 @@ while True:
 
 
 def test_stdout_lines_streams_in_order() -> None:
-    async def scenario() -> tuple[list[str], object]:
+    async def scenario() -> tuple[list[str], Finished]:
         proc = await Command(PY, ["-c", _PRINT_LINES]).astart()
         lines = [line.rstrip() async for line in proc.stdout_lines()]
         finished = await proc.finish()
@@ -57,11 +64,11 @@ def test_stdout_lines_streams_in_order() -> None:
 
     lines, finished = asyncio.run(scenario())
     assert lines == [f"line{i}" for i in range(5)]
-    assert finished.exited_zero  # type: ignore[attr-defined]
+    assert finished.exited_zero
     # Finished adds captured stderr over a bare Outcome; pin its accessors.
-    assert isinstance(finished.stderr, str)  # type: ignore[attr-defined]
-    assert finished.code == 0  # type: ignore[attr-defined]
-    assert finished.outcome.exited_zero  # type: ignore[attr-defined]
+    assert isinstance(finished.stderr, str)
+    assert finished.code == 0
+    assert finished.outcome.exited_zero
 
 
 def test_output_events_cover_both_streams() -> None:
@@ -110,6 +117,26 @@ def test_stdin_bytes_feeds_input() -> None:
     assert asyncio.run(scenario()) == "XYZ"
 
 
+def test_interactive_stdin_write_bytes_and_flush() -> None:
+    # `write(bytes)` + an explicit `flush()` were previously never exercised
+    # (only `write_line`/`close` had coverage). `write` takes raw bytes (no
+    # newline added), so terminate the lines ourselves for the echo-by-line
+    # child to see each one before EOF.
+    async def scenario() -> list[str]:
+        proc = await Command(PY, ["-c", _ECHO_UPPER]).keep_stdin_open().astart()
+        stdin = proc.take_stdin()
+        await stdin.write(b"raw-hello\n")
+        await stdin.flush()
+        await stdin.write(b"raw-world\n")
+        await stdin.flush()
+        await stdin.close()
+        lines = [line.rstrip() async for line in proc.stdout_lines()]
+        await proc.wait()
+        return lines
+
+    assert asyncio.run(scenario()) == ["RAW-HELLO", "RAW-WORLD"]
+
+
 def test_take_stdin_is_once() -> None:
     # The first take hands over the handle; a second take raises (consumed).
     async def scenario() -> None:
@@ -136,49 +163,49 @@ def test_take_stdin_without_keep_open_raises() -> None:
 
 
 def test_running_process_output_captures() -> None:
-    async def scenario() -> object:
+    async def scenario() -> ProcessResult:
         proc = await Command(PY, ["-c", "print('captured')"]).astart()
         return await proc.output()
 
     result = asyncio.run(scenario())
-    assert result.stdout.strip() == "captured"  # type: ignore[attr-defined]
-    assert result.is_success  # type: ignore[attr-defined]
+    assert result.stdout.strip() == "captured"
+    assert result.is_success
 
 
 def test_kill_then_wait_returns_promptly() -> None:
     # kill() must actually terminate the child — a no-op would leave wait() blocking
     # on the 60s sleeper until the bounded wait_for trips. Pins the effect, not just
     # the renamed name.
-    async def scenario() -> object:
+    async def scenario() -> Outcome:
         proc = await Command(PY, ["-c", "import time; time.sleep(60)"]).astart()
         proc.kill()
         return await asyncio.wait_for(proc.wait(), timeout=15.0)
 
     outcome = asyncio.run(scenario())
-    assert not outcome.exited_zero  # type: ignore[attr-defined]  # killed, not a clean exit
+    assert not outcome.exited_zero  # killed, not a clean exit
 
 
 def test_shutdown_grace_terminates_and_returns_outcome() -> None:
     # shutdown() = graceful signal -> wait grace -> hard kill, consuming the handle.
     # A no-op would hang on the 60s sleeper past the bounded wait_for.
-    async def scenario() -> object:
+    async def scenario() -> Outcome:
         proc = await Command(PY, ["-c", "import time; time.sleep(60)"]).astart()
         return await asyncio.wait_for(proc.shutdown(grace_seconds=0.5), timeout=15.0)
 
     outcome = asyncio.run(scenario())
-    assert not outcome.exited_zero  # type: ignore[attr-defined]  # terminated, not clean
+    assert not outcome.exited_zero  # terminated, not clean
 
 
 def test_running_process_wait_reports_exit_code() -> None:
-    async def scenario() -> object:
+    async def scenario() -> Outcome:
         proc = await Command(PY, ["-c", "import sys; sys.exit(3)"]).astart()
         return await proc.wait()
 
     outcome = asyncio.run(scenario())
-    assert outcome.code == 3  # type: ignore[attr-defined]
-    assert not outcome.exited_zero  # type: ignore[attr-defined]
-    assert outcome.signal is None  # type: ignore[attr-defined]  # clean exit, not a signal
-    assert not outcome.timed_out  # type: ignore[attr-defined]
+    assert outcome.code == 3
+    assert not outcome.exited_zero
+    assert outcome.signal is None  # clean exit, not a signal
+    assert not outcome.timed_out
 
 
 def test_consumed_handle_raises() -> None:
@@ -214,9 +241,7 @@ def test_async_verb_without_running_loop_leaves_handle_usable() -> None:
     assert wait_dead(pid, timeout=10.0)
 
 
-def test_cancel_mid_stream_kills_tree(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "grandchild.pid"
-
+def test_cancel_mid_stream_kills_tree(pid_file: pathlib.Path) -> None:
     async def stream_forever() -> None:
         proc = await Command(PY, ["-c", _STREAM_AND_SPAWN, str(pid_file)]).astart()
         async for _line in proc.stdout_lines():
@@ -276,6 +301,47 @@ def test_profile_returns_runprofile() -> None:
     assert rp.outcome.timed_out is False
 
 
+@pytest.mark.parametrize("bad_interval", [0.0, -1.0])
+def test_profile_rejects_non_positive_interval(bad_interval: float) -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "pass"]).astart()
+        await proc.profile(bad_interval)
+
+    with pytest.raises(ValueError):
+        asyncio.run(scenario())
+
+
+def test_profile_tiny_interval_is_clamped_not_a_hang() -> None:
+    # The crate clamps a sub-millisecond sampling period to 1ms internally
+    # (tokio panics on a zero interval; a tiny-but-positive one would otherwise
+    # spin the sampler as fast as the scheduler allows) — this must complete
+    # promptly with a well-formed profile, not hang or flood.
+    async def scenario() -> RunProfile:
+        proc = await Command(PY, ["-c", "import time; time.sleep(0.1)"]).astart()
+        return await asyncio.wait_for(proc.profile(1e-9), timeout=10.0)
+
+    rp = asyncio.run(scenario())
+    assert isinstance(rp, RunProfile)
+    assert rp.code == 0
+    assert rp.samples >= 1
+
+
+def test_profile_of_a_timed_out_run() -> None:
+    # profile() is a superset of wait(): it must still report a well-formed
+    # profile when the run ends via Command.timeout() rather than a clean
+    # exit, with `timed_out`/`outcome.timed_out` reflecting that.
+    async def scenario() -> RunProfile:
+        proc = await Command(PY, ["-c", "import time; time.sleep(30)"]).timeout(0.3).astart()
+        return await proc.profile(0.05)
+
+    rp = asyncio.run(scenario())
+    assert isinstance(rp, RunProfile)
+    assert rp.timed_out is True
+    assert rp.outcome.timed_out is True
+    assert rp.code is None
+    assert rp.duration_seconds >= 0.0
+
+
 def test_running_process_output_bytes() -> None:
     async def scenario() -> BytesResult:
         code = "import sys; sys.stdout.buffer.write(bytes([1, 2, 255]))"
@@ -289,29 +355,25 @@ def test_running_process_output_bytes() -> None:
 # --- context-manager teardown (standalone start() owns a private tree) -------
 
 
-def test_running_process_sync_with_reaps_tree(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "gc.pid"
+def test_running_process_sync_with_reaps_tree(pid_file: pathlib.Path) -> None:
     # A standalone start() owns a private tree; the `with` exit must kill it.
-    with Runner().start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)])):
+    with Runner().start(spawn_grandchild_command(pid_file)):
         grandchild = read_pid_when_ready(pid_file, timeout=10.0)
     assert wait_dead(grandchild, timeout=10.0), "grandchild survived the with-block exit"
 
 
-def test_command_start_is_sync_twin_of_astart(tmp_path: pathlib.Path) -> None:
+def test_command_start_is_sync_twin_of_astart(pid_file: pathlib.Path) -> None:
     # Command.start() is the synchronous counterpart of astart(): sync setup
     # returning a RunningProcess that owns a private tree and reaps it on exit —
     # no detour through Runner() needed.
-    pid_file = tmp_path / "gc.pid"
-    with Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).start():
+    with spawn_grandchild_command(pid_file).start():
         grandchild = read_pid_when_ready(pid_file, timeout=10.0)
     assert wait_dead(grandchild, timeout=10.0), "Command().start() handle didn't reap on exit"
 
 
-def test_running_process_async_with_reaps_tree(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "gc.pid"
-
+def test_running_process_async_with_reaps_tree(pid_file: pathlib.Path) -> None:
     async def scenario() -> int:
-        async with await Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).astart():
+        async with await spawn_grandchild_command(pid_file).astart():
             return read_pid_when_ready(pid_file, timeout=10.0)
 
     grandchild = asyncio.run(scenario())
@@ -328,12 +390,11 @@ def test_context_manager_is_noop_after_consuming() -> None:
     asyncio.run(scenario())
 
 
-def test_with_reaps_tree_even_when_block_raises(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "gc.pid"
+def test_with_reaps_tree_even_when_block_raises(pid_file: pathlib.Path) -> None:
     grandchild = -1
     with (
         pytest.raises(RuntimeError, match="boom"),
-        Runner().start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)])),
+        Runner().start(spawn_grandchild_command(pid_file)),
     ):
         grandchild = read_pid_when_ready(pid_file, timeout=10.0)
         raise RuntimeError("boom")
@@ -341,12 +402,11 @@ def test_with_reaps_tree_even_when_block_raises(tmp_path: pathlib.Path) -> None:
     assert wait_dead(grandchild, timeout=10.0), "grandchild survived a raising with-block"
 
 
-def test_async_with_reaps_tree_even_when_block_raises(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "gc.pid"
+def test_async_with_reaps_tree_even_when_block_raises(pid_file: pathlib.Path) -> None:
     captured: dict[str, int] = {}
 
     async def scenario() -> None:
-        async with await Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).astart():
+        async with await spawn_grandchild_command(pid_file).astart():
             captured["pid"] = read_pid_when_ready(pid_file, timeout=10.0)
             raise RuntimeError("boom")
 

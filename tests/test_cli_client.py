@@ -8,14 +8,13 @@ and it has no `start()`), so it is not interchangeable with the runner seam.
 from __future__ import annotations
 
 import asyncio
-import sys
 
 import pytest
 
 from processkit import CliClient, ProcessRunner
 from processkit.testing import Reply, ScriptedRunner
 
-PY = sys.executable
+from .conftest import NO_SUCH_PROGRAM, PY
 
 
 def test_cli_client_run_and_defaults() -> None:
@@ -62,6 +61,26 @@ def test_cli_client_default_env_remove(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out == "GONE"
 
 
+def test_cli_client_default_env_overrides_inherited(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `default_env` must MERGE over the inherited environment (override an
+    # existing value), not just add a key that was previously absent —
+    # previously untested (the only default_env test used a brand-new key).
+    monkeypatch.setenv("PK_CLI_OVERRIDE", "inherited")
+    client = CliClient(PY, default_env={"PK_CLI_OVERRIDE": "overridden"})
+    out = client.run(["-c", "import os; print(os.environ['PK_CLI_OVERRIDE'])"])
+    assert out == "overridden"
+
+
+def test_cli_client_default_env_remove_wins_over_default_env_same_key() -> None:
+    # Same-key precedence between the two *static* channels: the binding
+    # applies every `default_env` entry, then every `default_env_remove` entry
+    # (matching the crate's "last registration wins" rule for the static
+    # channel) — so a key present in both ends up removed, not set.
+    client = CliClient(PY, default_env={"PK_CLI_BOTH": "set"}, default_env_remove=["PK_CLI_BOTH"])
+    out = client.run(["-c", "import os; print(os.environ.get('PK_CLI_BOTH', 'GONE'))"])
+    assert out == "GONE"
+
+
 def test_cli_client_is_not_a_process_runner() -> None:
     # CliClient verbs take per-call args (not a Command) and it has no start()/
     # astart() — so it is deliberately NOT a ProcessRunner.
@@ -77,7 +96,7 @@ def test_cli_client_accepts_injected_runner() -> None:
     # scripted reply is what comes back.
     runner = ScriptedRunner()
     runner.fallback(Reply.ok("cli-scripted"))
-    client = CliClient("processkit-no-such-cli-tool", runner=runner)
+    client = CliClient(NO_SUCH_PROGRAM, runner=runner)
     assert client.run(["--version"]) == "cli-scripted"
 
 

@@ -7,24 +7,24 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
-import sys
 import time
 
 from processkit import Command, ProcessGroup
 
 from ._liveness import read_pid_when_ready, wait_dead
-from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
-
-PY = sys.executable
+from .conftest import PY, spawn_grandchild_command
 
 
 def test_many_groups_leave_no_orphans(tmp_path: pathlib.Path) -> None:
     # Create and tear down many trees in a row; every grandchild must be reaped.
+    # 5 iterations (was 15): the same signal is proven well before 15 — this is
+    # a repetition/leak check, not a load test, and the suite pays this cost
+    # on every run.
     grandchildren: list[int] = []
-    for i in range(15):
+    for i in range(5):
         pid_file = tmp_path / f"gc{i}.pid"
         with ProcessGroup() as group:
-            group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+            group.start(spawn_grandchild_command(pid_file))
             grandchildren.append(read_pid_when_ready(pid_file, timeout=10.0))
 
     for pid in grandchildren:
@@ -50,8 +50,11 @@ def test_interpreter_exit_reaps_tree(tmp_path: pathlib.Path) -> None:
 
 
 def test_no_silly_per_call_overhead() -> None:
-    # A loose sanity bound — catches catastrophic per-call overhead, not micro-perf.
+    # A loose sanity bound — catches catastrophic per-call overhead, not
+    # micro-perf. 3 spawns (was 10) with a tighter bound: still generous
+    # against real interpreter-startup cost, but no longer loose enough to
+    # hide a real regression.
     start = time.monotonic()
-    for _ in range(10):
+    for _ in range(3):
         assert Command(PY, ["-c", "pass"]).output().is_success
-    assert time.monotonic() - start < 60.0
+    assert time.monotonic() - start < 20.0

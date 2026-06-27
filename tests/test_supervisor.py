@@ -9,11 +9,10 @@ import sys
 
 import pytest
 
-from processkit import Command, ProcessError, Supervisor
+from processkit import Command, ProcessError, SupervisionOutcome, Supervisor
 from processkit.testing import Reply, ScriptedRunner
 
-PY = sys.executable
-
+from .conftest import NO_SUCH_PROGRAM, PY
 
 # --- restart policies + stop predicate --------------------------------------
 
@@ -24,8 +23,19 @@ def test_supervisor_never_restarts_on_success() -> None:
     assert outcome.final_result.is_success
 
 
+def test_supervisor_on_crash_clean_exit_reports_policy_satisfied() -> None:
+    # `stopped == "policy_satisfied"` was previously never observed by any
+    # test: `restart="on_crash"` decides NOT to restart a clean (non-crash)
+    # exit, which is exactly the policy-satisfied outcome (distinct from
+    # "predicate" and "restarts_exhausted", the only two values pinned so far).
+    outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="on_crash").run()
+    assert outcome.restarts == 0
+    assert outcome.stopped == "policy_satisfied"
+    assert outcome.final_result.is_success
+
+
 def test_supervisor_exhausts_restarts_on_crash() -> None:
-    async def scenario() -> object:
+    async def scenario() -> SupervisionOutcome:
         crash = Command(PY, ["-c", "import sys; sys.exit(1)"])
         sup = Supervisor(
             crash, restart="on_crash", max_restarts=2, backoff_initial=0.01, backoff_factor=1.0
@@ -33,8 +43,8 @@ def test_supervisor_exhausts_restarts_on_crash() -> None:
         return await sup.arun()
 
     outcome = asyncio.run(scenario())
-    assert outcome.restarts == 2  # type: ignore[attr-defined]
-    assert outcome.stopped == "restarts_exhausted"  # type: ignore[attr-defined]
+    assert outcome.restarts == 2
+    assert outcome.stopped == "restarts_exhausted"
 
 
 def test_supervisor_stop_when_predicate() -> None:
@@ -139,6 +149,23 @@ def test_max_backoff_kwarg_accepted_and_validated() -> None:
         Supervisor(Command(PY, ["-c", "pass"]), max_backoff=0.0)
 
 
+def test_supervisor_jitter_true_smoke() -> None:
+    # `jitter=True` is the crate default, but every other test in this file
+    # sets `jitter=False` for deterministic timing — leaving the default path
+    # itself never exercised. A tiny bound keeps this fast regardless of the
+    # random jitter added to each backoff.
+    outcome = Supervisor(
+        Command(PY, ["-c", "import sys; sys.exit(1)"]),
+        restart="on_crash",
+        max_restarts=2,
+        backoff_initial=0.01,
+        backoff_factor=1.0,
+        jitter=True,
+    ).run()
+    assert outcome.restarts == 2
+    assert outcome.stopped == "restarts_exhausted"
+
+
 # --- failure-storm guard ----------------------------------------------------
 
 
@@ -186,9 +213,7 @@ def test_supervisor_accepts_injected_runner() -> None:
     # the scripted reply decides the outcome.
     runner = ScriptedRunner()
     runner.fallback(Reply.ok("supervised"))
-    outcome = Supervisor(
-        Command("processkit-no-such-supervisor-program"), restart="never", runner=runner
-    ).run()
+    outcome = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner).run()
     assert outcome.final_result.is_success
     assert outcome.final_result.stdout == "supervised"
 

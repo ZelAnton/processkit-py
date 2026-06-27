@@ -9,22 +9,51 @@ so they are pinned here by actually raising each exception.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import sys
 
 import pytest
 
+import processkit
 from processkit import (
     Command,
     NonZeroExit,
     OutputTooLarge,
+    PermissionDenied,
     ProcessError,
     ProcessNotFound,
     Signalled,
     Timeout,
 )
 
-PY = sys.executable
+from .conftest import NO_SUCH_DIRECTORY, NO_SUCH_PROGRAM, PY
+
+
+def _stub_declared_attrs(exc_type: type) -> set[str]:
+    """Attribute names the stub declares for this exception class (AnnAssign
+    class-body statements only — methods/dunders excluded)."""
+    stub_path = pathlib.Path(processkit.__file__).with_name("_processkit.pyi")
+    tree = ast.parse(stub_path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == exc_type.__name__:
+            return {
+                stmt.target.id
+                for stmt in node.body
+                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+            }
+    raise AssertionError(f"{exc_type.__name__} not found in _processkit.pyi")
+
+
+def _assert_no_phantom_stub_attrs(exc: BaseException) -> None:
+    """Every attribute the stub declares for this exception's type must
+    actually be present on the raised instance — a stub-only "phantom"
+    attribute (declared in the `.pyi` but never actually `setattr`'d by
+    `map_err`) would type-check yet raise `AttributeError` at runtime."""
+    declared = _stub_declared_attrs(type(exc))
+    actual = set(vars(exc))
+    missing = declared - actual
+    assert not missing, f"{type(exc).__name__}: stub declares phantom attrs {sorted(missing)}"
 
 
 # --- hierarchy + stdlib aliasing --------------------------------------------
@@ -46,7 +75,7 @@ def test_process_not_found_is_a_file_not_found_error() -> None:
     assert issubclass(ProcessNotFound, FileNotFoundError)
     assert issubclass(ProcessNotFound, ProcessError)
     with pytest.raises(FileNotFoundError):
-        Command("processkit-definitely-no-such-program-xyz").run()
+        Command(NO_SUCH_PROGRAM).run()
 
 
 # --- structured fields per exception ----------------------------------------
@@ -61,6 +90,7 @@ def test_nonzero_exit_carries_structured_fields() -> None:
     assert "to-out" in err.stdout
     assert "to-err" in err.stderr
     assert "python" in err.program.lower() or err.program == PY
+    _assert_no_phantom_stub_attrs(err)
 
 
 def test_timeout_error_carries_timeout_seconds() -> None:
@@ -75,12 +105,14 @@ def test_timeout_error_carries_timeout_seconds() -> None:
     assert isinstance(excinfo.value.stdout, str)
     assert isinstance(excinfo.value.stderr, str)
     assert excinfo.value.program
+    _assert_no_phantom_stub_attrs(excinfo.value)
 
 
 def test_process_not_found_carries_program() -> None:
     with pytest.raises(ProcessNotFound) as excinfo:
-        Command("processkit-no-such-binary-xyzzy").output()
-    assert "processkit-no-such-binary-xyzzy" in excinfo.value.program
+        Command(NO_SUCH_PROGRAM).output()
+    assert NO_SUCH_PROGRAM in excinfo.value.program
+    _assert_no_phantom_stub_attrs(excinfo.value)
 
 
 def test_bad_cwd_is_not_misclassified_as_process_not_found() -> None:
@@ -89,7 +121,7 @@ def test_bad_cwd_is_not_misclassified_as_process_not_found() -> None:
     # (which would mislead an `except FileNotFoundError` "program is optional" path).
     # The program here exists; only its cwd does not.
     with pytest.raises(ProcessError) as excinfo:
-        Command(PY, ["-c", "pass"]).cwd("processkit-no-such-directory-xyzzy").run()
+        Command(PY, ["-c", "pass"]).cwd(NO_SUCH_DIRECTORY).run()
     assert not isinstance(excinfo.value, ProcessNotFound)
     assert not isinstance(excinfo.value, FileNotFoundError)
 
@@ -105,6 +137,7 @@ def test_signalled_carries_structured_fields() -> None:
     assert exc.signal is not None and exc.signal > 0
     assert isinstance(exc.stdout, str) and isinstance(exc.stderr, str)
     assert exc.program
+    _assert_no_phantom_stub_attrs(exc)
 
 
 def test_output_too_large_carries_byte_fields() -> None:
@@ -118,6 +151,7 @@ def test_output_too_large_carries_byte_fields() -> None:
     assert exc.max_bytes == 1024
     assert exc.total_bytes >= 1024
     assert exc.program
+    _assert_no_phantom_stub_attrs(exc)
 
 
 # --- message redaction (security boundary) ----------------------------------
@@ -145,7 +179,11 @@ def test_permission_denied_on_non_executable(tmp_path: pathlib.Path) -> None:
     script = tmp_path / "not_exec.sh"
     script.write_text("#!/bin/sh\necho hi\n")
     script.chmod(0o644)  # readable but not executable
-    with pytest.raises(PermissionError) as excinfo:  # PermissionDenied is a PermissionError
+    # `PermissionDenied` (concrete, not the builtin `PermissionError` it also
+    # subclasses) so mypy sees `.program` directly, with no `type: ignore` needed.
+    with pytest.raises(PermissionDenied) as excinfo:
         Command(str(script)).run()
     assert isinstance(excinfo.value, ProcessError)
-    assert excinfo.value.program  # type: ignore[attr-defined]  # PermissionDenied carries .program
+    assert isinstance(excinfo.value, PermissionError)  # the stdlib-aliased base
+    assert excinfo.value.program
+    _assert_no_phantom_stub_attrs(excinfo.value)

@@ -11,6 +11,7 @@ operations, skipping where the platform cannot enforce them.
 from __future__ import annotations
 
 import gc
+import os
 import pathlib
 import sys
 import time
@@ -20,9 +21,7 @@ import pytest
 from processkit import Command, ProcessError, ProcessGroup, ResourceLimit, Unsupported
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
-from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
-
-PY = sys.executable
+from .conftest import PY, spawn_grandchild_command
 
 
 def test_group_reports_a_mechanism() -> None:
@@ -30,11 +29,9 @@ def test_group_reports_a_mechanism() -> None:
         assert group.mechanism in {"job_object", "cgroup_v2", "process_group"}
 
 
-def test_group_teardown_kills_grandchild(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "grandchild.pid"
-
+def test_group_teardown_kills_grandchild(pid_file: pathlib.Path) -> None:
     with ProcessGroup() as group:
-        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        group.start(spawn_grandchild_command(pid_file))
         grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
         assert is_alive(grandchild_pid)
 
@@ -44,10 +41,9 @@ def test_group_teardown_kills_grandchild(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_explicit_shutdown_is_idempotent(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "grandchild.pid"
+def test_explicit_shutdown_is_idempotent(pid_file: pathlib.Path) -> None:
     group = ProcessGroup()
-    group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+    group.start(spawn_grandchild_command(pid_file))
     grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
     assert is_alive(grandchild_pid)
     group.shutdown()
@@ -71,15 +67,14 @@ def test_start_returns_handle_with_pid() -> None:
         assert running.pid > 0
 
 
-def test_teardown_runs_when_exception_escapes_block(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "grandchild.pid"
+def test_teardown_runs_when_exception_escapes_block(pid_file: pathlib.Path) -> None:
     grandchild_pid: int | None = None
 
     # try/except (not `pytest.raises`) so static analysis can see that the
     # post-block assertions are reachable after the exception is handled.
     try:
         with ProcessGroup() as group:
-            group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+            group.start(spawn_grandchild_command(pid_file))
             grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
             assert is_alive(grandchild_pid)
             raise KeyboardInterrupt  # the `__exit__` teardown must still fire
@@ -94,13 +89,11 @@ def test_teardown_runs_when_exception_escapes_block(tmp_path: pathlib.Path) -> N
     )
 
 
-def test_teardown_on_garbage_collection(tmp_path: pathlib.Path) -> None:
-    pid_file = tmp_path / "grandchild.pid"
-
+def test_teardown_on_garbage_collection(pid_file: pathlib.Path) -> None:
     # No `with`: drop the only reference and force collection. The Rust `Drop`
     # of the dropped ProcessGroup must reap the tree.
     group = ProcessGroup()
-    group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+    group.start(spawn_grandchild_command(pid_file))
     grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
     assert is_alive(grandchild_pid)
 
@@ -147,7 +140,22 @@ def test_resource_limited_group_runs() -> None:
         pytest.skip("resource limits not enforceable in this environment")
 
 
-def test_group_shutdown_grace_kwarg_tears_down(tmp_path: pathlib.Path) -> None:
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Job Object active-process limit is Windows-specific"
+)
+def test_max_processes_enforcement_rejects_second_spawn() -> None:
+    # `test_resource_limited_group_runs` only pins construction-time
+    # acceptance of `max_processes` — this pins actual OS-level ENFORCEMENT:
+    # the Windows Job Object's active-process ceiling really rejects a spawn
+    # that would exceed it, rather than silently letting it through.
+    with ProcessGroup(max_processes=1) as group:
+        first = group.start(Command(PY, ["-c", "import time; time.sleep(5)"]))
+        assert first.pid is not None
+        with pytest.raises(ProcessError):
+            group.start(Command(PY, ["-c", "import time; time.sleep(5)"]))
+
+
+def test_group_shutdown_grace_kwarg_tears_down(pid_file: pathlib.Path) -> None:
     # The teardown-policy ceilings (`shutdown_grace`, `escalate_to_kill`) are not
     # resource limits, so construction needs no Job Object / cgroup root. This is
     # the only call site that passes `shutdown_grace=` — it pins the renamed kwarg
@@ -156,10 +164,8 @@ def test_group_shutdown_grace_kwarg_tears_down(tmp_path: pathlib.Path) -> None:
     # the whole tree. Liveness is checked on the *grandchild* (reparented to init
     # and reaped on death); a direct child can linger as an unreaped POSIX zombie
     # that still answers `kill(pid, 0)`, so it is not a portable death signal.
-    pid_file = tmp_path / "grandchild.pid"
-
     with ProcessGroup(shutdown_grace=0.5, escalate_to_kill=True) as group:
-        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        group.start(spawn_grandchild_command(pid_file))
         grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
         assert is_alive(grandchild_pid)
         group.shutdown()  # signal -> wait shutdown_grace -> escalate to hard kill
@@ -167,6 +173,63 @@ def test_group_shutdown_grace_kwarg_tears_down(tmp_path: pathlib.Path) -> None:
     assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived shutdown_grace teardown"
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="escalate_to_kill=False needs SIGTERM-trapping")
+def test_escalate_to_kill_false_spares_a_surviving_child(tmp_path: pathlib.Path) -> None:
+    # `escalate_to_kill=False`: graceful shutdown sends the signal, waits
+    # `shutdown_grace`, and — unlike the default (True) — does NOT follow up
+    # with a hard kill. A child that traps and ignores the signal must
+    # therefore still be alive once `shutdown()` returns (previously zero
+    # coverage: every other teardown test uses the `escalate_to_kill=True`
+    # default, which always ends in a hard kill either way).
+    marker = tmp_path / "got_term"
+    code = (
+        "import signal, time\n"
+        f"signal.signal(signal.SIGTERM, lambda *a: open({str(marker)!r}, 'w').write('x'))\n"
+        "time.sleep(30)\n"
+    )
+    group = ProcessGroup(shutdown_grace=0.3, escalate_to_kill=False)
+    running = group.start(Command(PY, ["-c", code]))
+    survivor_pid = running.pid
+    assert survivor_pid is not None
+
+    group.shutdown()  # signal -> wait shutdown_grace -> NO escalation (spared)
+
+    assert wait_until(marker.exists, timeout=5.0), "the child never ran its SIGTERM handler"
+    assert is_alive(survivor_pid), "escalate_to_kill=False must spare a surviving child"
+
+    # The Python wrapper is now closed (mirrors the crate's shutdown_ref call),
+    # dropping its Arc<ProcessGroup> reference. Force collection and re-check:
+    # the crate's Drop backstop must NOT retroactively kill the survivor it
+    # just chose to spare (a group "left untouched" after a graceful shutdown
+    # keeps its survivors, per the crate's own `shutdown_ref` docs).
+    del group, running
+    gc.collect()
+    assert is_alive(survivor_pid), (
+        "the spared survivor must not be killed by dropping the ProcessGroup afterwards"
+    )
+
+    # A literal same-object "shutdown, then spawn a new child into the SAME
+    # group" reuse (the crate-level scenario 1.2.0's re-arm fix addresses) is
+    # NOT exercisable through this binding: `ProcessGroup.shutdown()` always
+    # closes the Python wrapper (`self.inner.take()`), so no further `.start()`
+    # is possible on the same object — `test_use_after_close_raises` already
+    # pins that. What IS verified here, and reachable: a brand-new
+    # `ProcessGroup` still behaves normally afterwards (no cross-instance
+    # state corruption from the prior group's spared survivor).
+    with ProcessGroup() as fresh_group:
+        fresh = fresh_group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
+        fresh_pid = fresh.pid
+        assert fresh_pid is not None
+    assert wait_dead(fresh_pid, timeout=10.0), (
+        "a fresh ProcessGroup's teardown must still hard-kill"
+    )
+
+    # Clean up the spared survivor so it doesn't leak past the test (this test
+    # only runs on POSIX, per the skipif above).
+    os.kill(survivor_pid, 9)
+    assert wait_dead(survivor_pid, timeout=10.0)
 
 
 def test_group_cpu_quota_kwarg_accepted() -> None:
@@ -184,14 +247,13 @@ def test_group_cpu_quota_kwarg_accepted() -> None:
 # --- signals / suspend / resume / terminate / stats -------------------------
 
 
-def test_group_suspend_resume_terminate(tmp_path: pathlib.Path) -> None:
+def test_group_suspend_resume_terminate(tmp_path: pathlib.Path, pid_file: pathlib.Path) -> None:
     # A ticking child gives suspend/resume an observable effect (the tick file
     # must stall while suspended and advance again after resume); a separate
     # grandchild-spawning child proves kill_all reaches the whole tree, not just
     # the direct child (reparented to init and reaped, so its death is portable
     # — the killed direct child can persist as an unreaped zombie for the
     # lifetime of the still-open group handle).
-    pid_file = tmp_path / "grandchild.pid"
     tick_file = tmp_path / "ticks"
     tick_code = (
         "import sys, time\n"
@@ -203,7 +265,7 @@ def test_group_suspend_resume_terminate(tmp_path: pathlib.Path) -> None:
     )
     with ProcessGroup() as group:
         group.start(Command(PY, ["-c", tick_code, str(tick_file)]))
-        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        group.start(spawn_grandchild_command(pid_file))
         grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
         assert wait_until(tick_file.exists, timeout=5.0), "tick file was never written"
 
@@ -225,13 +287,12 @@ def test_group_suspend_resume_terminate(tmp_path: pathlib.Path) -> None:
         )
 
 
-def test_group_signal(tmp_path: pathlib.Path) -> None:
+def test_group_signal(pid_file: pathlib.Path) -> None:
     # Assert on the grandchild (reparented to init and reaped) rather than the
     # direct child, which can persist as an unreaped zombie that still answers
     # `kill(pid, 0)` for the lifetime of the still-open group handle.
-    pid_file = tmp_path / "grandchild.pid"
     with ProcessGroup() as group:
-        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        group.start(spawn_grandchild_command(pid_file))
         grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
         try:
             group.signal("term")

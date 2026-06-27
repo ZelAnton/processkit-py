@@ -23,9 +23,9 @@ from processkit import (
 )
 from processkit.testing import Reply, ScriptedRunner
 
-PY = sys.executable
+from .conftest import NO_SUCH_PROGRAM
 
-NO_SUCH = "processkit-no-such-binary-xyzzy"
+PY = sys.executable
 
 
 def test_output_all_returns_results_in_order() -> None:
@@ -38,7 +38,7 @@ def test_output_all_returns_results_in_order() -> None:
 
 
 def test_output_all_puts_spawn_failure_in_its_slot() -> None:
-    results = output_all([Command(PY, ["-c", "print(1)"]), Command(NO_SUCH)])
+    results = output_all([Command(PY, ["-c", "print(1)"]), Command(NO_SUCH_PROGRAM)])
     ok, failed = results[0], results[1]
     assert isinstance(ok, ProcessResult)
     assert ok.stdout.strip() == "1"
@@ -75,17 +75,33 @@ def test_aoutput_all_bytes() -> None:
     assert first.stdout == b"\x02\x03"
 
 
+def test_aoutput_all_puts_spawn_failure_in_its_slot() -> None:
+    # The async twin of test_output_all_puts_spawn_failure_in_its_slot — a real
+    # (not ScriptedRunner-injected) spawn failure alongside a real success,
+    # each landing correctly in its own result slot. Previously only the sync
+    # `output_all` had this exact real-spawn-failure coverage.
+    async def scenario() -> list[ProcessResult | ProcessError]:
+        return await aoutput_all([Command(PY, ["-c", "print(1)"]), Command(NO_SUCH_PROGRAM)])
+
+    results = asyncio.run(scenario())
+    ok, failed = results[0], results[1]
+    assert isinstance(ok, ProcessResult)
+    assert ok.stdout.strip() == "1"
+    assert isinstance(failed, ProcessNotFound)
+    assert isinstance(failed, ProcessError)
+
+
 # --- runner injection (C1) ---------------------------------------------------
 
 
 def test_output_all_accepts_injected_runner() -> None:
-    # A NO_SUCH program would fail to spawn for real; with a ScriptedRunner
+    # A NO_SUCH_PROGRAM program would fail to spawn for real; with a ScriptedRunner
     # fallback wired in, no real process runs at all and the scripted reply
     # surfaces — proving the batch actually drove every command through the
     # injected runner, not the real one.
     runner = ScriptedRunner()
     runner.fallback(Reply.ok("scripted"))
-    results = output_all([Command(NO_SUCH), Command(NO_SUCH)], runner=runner)
+    results = output_all([Command(NO_SUCH_PROGRAM), Command(NO_SUCH_PROGRAM)], runner=runner)
     assert all(isinstance(r, ProcessResult) for r in results)
     assert [r.stdout for r in results if isinstance(r, ProcessResult)] == ["scripted", "scripted"]
 
@@ -93,7 +109,7 @@ def test_output_all_accepts_injected_runner() -> None:
 def test_output_all_bytes_accepts_injected_runner() -> None:
     runner = ScriptedRunner()
     runner.fallback(Reply.ok("bytes-scripted"))
-    results = output_all_bytes([Command(NO_SUCH)], runner=runner)
+    results = output_all_bytes([Command(NO_SUCH_PROGRAM)], runner=runner)
     first = results[0]
     assert isinstance(first, BytesResult)
     assert first.stdout == b"bytes-scripted"
@@ -104,7 +120,7 @@ def test_aoutput_all_accepts_injected_runner() -> None:
     runner.fallback(Reply.ok("async-scripted"))
 
     async def scenario() -> list[ProcessResult | ProcessError]:
-        return await aoutput_all([Command(NO_SUCH)], runner=runner)
+        return await aoutput_all([Command(NO_SUCH_PROGRAM)], runner=runner)
 
     results = asyncio.run(scenario())
     first = results[0]
@@ -117,7 +133,7 @@ def test_aoutput_all_bytes_accepts_injected_runner() -> None:
     runner.fallback(Reply.ok("async-bytes-scripted"))
 
     async def scenario() -> list[BytesResult | ProcessError]:
-        return await aoutput_all_bytes([Command(NO_SUCH)], runner=runner)
+        return await aoutput_all_bytes([Command(NO_SUCH_PROGRAM)], runner=runner)
 
     results = asyncio.run(scenario())
     first = results[0]

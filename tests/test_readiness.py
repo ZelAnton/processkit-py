@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from processkit import Command, ProcessGroup, wait_for, wait_for_line, wait_for_port
+from processkit import Command, ProcessError, ProcessGroup, wait_for, wait_for_line, wait_for_port
 
 from ._programs import free_port, refused_port
 
@@ -346,6 +346,54 @@ def test_wait_for_line_propagates_predicate_own_timeout_error() -> None:
             await wait_for_line(lines(), boom, timeout=10.0)
 
     asyncio.run(scenario())
+
+
+def test_wait_for_line_times_out_when_no_line_matches() -> None:
+    # The genuine timeout branch: lines keep arriving (the stream doesn't end)
+    # but none ever match, and the deadline passes first — a real TimeoutError,
+    # distinct from both the predicate's-own-exception and stream-ended paths.
+    async def endless_non_matching_lines() -> AsyncIterator[str]:
+        while True:
+            yield "nope"
+            await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError, match="no matching line"):
+            await wait_for_line(
+                endless_non_matching_lines(), lambda line: "READY" in line, timeout=0.2
+            )
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_line_stream_ended_raises_process_error() -> None:
+    # The stream-ended branch: the iterator exhausts (EOF) before any line
+    # matches and before the deadline — this is a ProcessError, not a
+    # TimeoutError (there was no timeout; the source simply ran out).
+    async def few_non_matching_lines() -> AsyncIterator[str]:
+        yield "one"
+        yield "two"
+
+    async def scenario() -> None:
+        with pytest.raises(ProcessError, match="stream ended"):
+            await wait_for_line(
+                few_non_matching_lines(), lambda line: "READY" in line, timeout=10.0
+            )
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_line_recovers_match_at_zero_timeout() -> None:
+    # Symmetry with wait_for's "evaluate at least once": a line already
+    # available in the iterator must still be found even at timeout=0 (the
+    # done-at-deadline recovery path), not discarded as a timeout.
+    async def one_line() -> AsyncIterator[str]:
+        yield "READY now"
+
+    async def scenario() -> str:
+        return await wait_for_line(one_line(), lambda line: "READY" in line, timeout=0.0)
+
+    assert asyncio.run(scenario()) == "READY now"
 
 
 def test_wait_for_line_matches() -> None:

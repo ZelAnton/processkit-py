@@ -63,9 +63,9 @@ fate (`owns_group` is `False`); see [Process groups](process-groups.md).
 
 ## Streaming stdout
 
-`stdout_lines()` is a synchronous setup call that returns an async iterator of
-decoded lines, yielded as the child produces them — no waiting for exit, no
-full-output buffering:
+`stdout_lines()` is a synchronous setup call that returns a `StdoutLines` async
+iterator of decoded lines, yielded as the child produces them — no waiting for
+exit, no full-output buffering:
 
 ```python
 from processkit import Command
@@ -105,8 +105,8 @@ to know:
 ## Interleaved stdout and stderr
 
 When the *interleaving* matters — a `--watch` build that prints progress to
-stdout and diagnostics to stderr — `output_events()` merges both streams in
-arrival order:
+stdout and diagnostics to stderr — `output_events()` returns an `OutputEvents`
+async iterator that merges both streams in arrival order:
 
 ```python
 proc = await Command("vite", ["build", "--watch"]).astart()

@@ -275,6 +275,9 @@ whole batch returns — peak memory is the sum of all captured outputs, not just
 `concurrency` of them. For a large or untrusted batch, cap each command's output
 (`.output_limit(max_bytes=…)`).
 
+For raw-bytes output use `output_all_bytes` / `aoutput_all_bytes` — the same
+batch, with each slot a `BytesResult` (or a `ProcessError`).
+
 ## Wrap a CLI tool
 
 `CliClient` binds a program to default timeout/env, so repeated calls pass only

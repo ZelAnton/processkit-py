@@ -9,9 +9,9 @@ name: Release
 # Pipeline:
 #   prepare       — compute the version, fill/extract release notes, bump the
 #                   manifests (uploaded as the `release-meta` artifact).
-#   build_wheels  — cibuildwheel matrix: one abi3 wheel (GIL) plus a free-threaded
-#                   cp314t wheel per OS/arch.
-#   build_sdist   — the source distribution.
+#   build_dists   — the shared reusable workflow (_build-dists.yml): the
+#                   cibuildwheel matrix (abi3 GIL + free-threaded cp314t wheels)
+#                   plus the sdist, built with the bumped manifests overlaid.
 #   publish       — the single irreversible PyPI pivot, then push + GitHub Release.
 #
 # Actions are pinned to a full commit SHA (supply-chain hardening); the trailing
@@ -338,72 +338,17 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Build the abi3 wheel (cp310, runs on every GIL CPython 3.10+) plus a
-  # free-threaded cp314t wheel per OS/arch with cibuildwheel. Each runner builds
-  # its own native arch (no cross-compile): Linux x86_64 (manylinux), Linux aarch64
-  # (manylinux, native ARM runner), Windows x64, macOS x86_64 (macos-13) and
-  # arm64 (macos-14).
+  # Build the release artifacts (wheels matrix + sdist) via the shared reusable
+  # workflow. `overlay-release-meta` overlays the version-bumped manifests from
+  # `prepare` so the artifacts carry the release version; `ref: main` matches the
+  # branch `prepare` bumped. Uploads `wheels-<os>` + `sdist`, consumed by publish.
   # ---------------------------------------------------------------------------
-  build_wheels:
+  build_dists:
     needs: prepare
-    name: wheels (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-13, macos-14]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: main
-          persist-credentials: false
-      # Host toolchain for the Windows/macOS builds; the Linux manylinux container
-      # installs its own Rust via the cibuildwheel `before-all` hook (pyproject.toml).
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          enable-cache: true
-      # Overlay the version-bumped manifests so the wheel carries the release version.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-meta
-          path: .
-      - name: Build wheels
-        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wheels-${{ matrix.os }}
-          path: wheelhouse/*.whl
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # Build the platform-independent source distribution once.
-  # ---------------------------------------------------------------------------
-  build_sdist:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: main
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          enable-cache: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-meta
-          path: .
-      # `maturin sdist` packages source only (no compile), so no Rust toolchain here.
-      - name: Build sdist
-        run: uvx maturin sdist --out dist
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sdist
-          path: dist/*.tar.gz
-          if-no-files-found: error
+    uses: ./.github/workflows/_build-dists.yml
+    with:
+      ref: main
+      overlay-release-meta: true
 
   # ---------------------------------------------------------------------------
   # The single irreversible step (PyPI publish) and the reversible writes around
@@ -417,7 +362,7 @@ jobs:
   # the post-pivot steps idempotent.
   # ---------------------------------------------------------------------------
   publish:
-    needs: [prepare, build_wheels, build_sdist]
+    needs: [prepare, build_dists]
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the release commit + tag, and create the Release

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.14.1,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -46,10 +46,10 @@ Issues = "https://github.com/ZelAnton/processkit-py/issues"
 
 [dependency-groups]
 dev = [
-  "maturin>=1.0,<2.0",
-  "pytest>=9.0.3",
+  "maturin>=1.14.1,<2.0",
+  "pytest>=9.1.1",
   "mypy>=2.1.0",
-  "ruff>=0.15.16",
+  "ruff>=0.15.20",
   "pre-commit>=4.0.0",
 ]
 

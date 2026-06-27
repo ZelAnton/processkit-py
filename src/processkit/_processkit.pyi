@@ -558,8 +558,10 @@ class RunProfile:
 
 @final
 class CliClient:
-    """A program bound to default timeout/env, run with the real `Runner`. The
-    verbs take just the per-call arguments."""
+    """A program bound to default timeout/env, run with the real `Runner` by
+    default or an injected `runner=` (a `ScriptedRunner` and friends, for
+    testable code with no real spawns). The verbs take just the per-call
+    arguments."""
 
     def __init__(
         self,

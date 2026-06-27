@@ -379,8 +379,8 @@ head = git.run(["rev-parse", "HEAD"])     # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 ```
 
-For testable code, inject a `Runner` / `ScriptedRunner` at the `Command` level
-instead — `CliClient` always uses the real runner.
+For testable code, pass `runner=` (a `ScriptedRunner` and friends) to
+`CliClient` itself, the same way `Command` accepts an injected runner.
 *Deeper: [Testing your code](docs/testing.md).*
 
 ### Testing without spawning processes

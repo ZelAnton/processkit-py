@@ -15,6 +15,7 @@ test can't tell the difference.
 - [Scripting replies: ScriptedRunner](#scripting-replies-scriptedrunner)
 - [Scripted streaming: a live handle, no child](#scripted-streaming-a-live-handle-no-child)
 - [Record/replay cassettes: RecordReplayRunner](#recordreplay-cassettes-recordreplayrunner)
+- [Asserting on calls: RecordingRunner](#asserting-on-calls-recordingrunner)
 - [Wrapping a CLI tool: CliClient](#wrapping-a-cli-tool-cliclient)
 
 ## The runner seam
@@ -177,6 +178,48 @@ build) can interleave entries non-deterministically. Replay is read-only and has
 such constraint.
 
 *Deeper: how a `ProcessResult` is shaped before it's captured — [the Cookbook](cookbook.md).*
+
+## Asserting on calls: RecordingRunner
+
+`RecordingRunner` is the *spy*: it replies to every command with one canned
+`Reply` and records each call, so a test can assert on **what** your code ran —
+not just react to a reply. It shares the `Runner` verb surface.
+
+```python
+from processkit import Command, RecordingRunner, Reply
+
+
+def deploy(runner) -> None:
+    runner.run(Command("git", ["push", "--tags"]))
+
+
+def test_deploy_pushes_tags() -> None:
+    runner = RecordingRunner.replying(Reply.ok(""))
+    deploy(runner)
+
+    inv = runner.only_call()            # the one call (raises unless exactly one)
+    assert inv.program == "git"
+    assert inv.args == ["push", "--tags"]
+    assert inv.has_flag("--tags")
+```
+
+- **`replying(reply)`** — every command gets `reply`, built with the same `Reply`
+  factories as `ScriptedRunner`.
+- **`calls()`** — every recorded `Invocation`, in call order.
+- **`only_call()`** — the single invocation, or a `ProcessError` if there wasn't
+  exactly one.
+
+Each `Invocation` exposes `program`, `args`, `cwd`, `env` (a `dict[str, str |
+None]`; a `None` value is an `env_remove`), `has_stdin`, and a `has_flag(flag)`
+helper. The values are there for your assertions, but its `repr` is **redacted**
+(program, arg count, cwd, env names, has_stdin — never argv or env values), like
+`Command`'s — a failing assertion that prints the invocation won't leak a
+secret-bearing flag.
+
+Reach for `RecordingRunner` when the *call* is what matters (did my code push the
+tags?); for canned per-command replies use
+[`ScriptedRunner`](#scripting-replies-scriptedrunner), and to replay real output
+offline use [`RecordReplayRunner`](#recordreplay-cassettes-recordreplayrunner).
 
 ## Wrapping a CLI tool: CliClient
 

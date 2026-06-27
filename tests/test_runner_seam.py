@@ -1,7 +1,7 @@
 """The runner test seam: `Runner` (real), `ScriptedRunner` (test double), the
 `Reply` variants (ok/fail/timeout/signalled/pending/with_stdout/lines), the
-`RecordReplayRunner` record/replay cassette runner, and `ProcessRunner` protocol
-conformance.
+`RecordReplayRunner` record/replay cassette runner, the `RecordingRunner` spy
+(+ its `Invocation`), and `ProcessRunner` protocol conformance.
 
 Code written against a runner can be exercised with scripted replies — no real
 process — while production passes a real `Runner`.
@@ -18,9 +18,11 @@ import pytest
 from processkit import (
     BytesResult,
     Command,
+    Invocation,
     NonZeroExit,
     ProcessError,
     ProcessRunner,
+    RecordingRunner,
     RecordReplayRunner,
     Reply,
     Runner,
@@ -224,3 +226,76 @@ def test_runner_classes_satisfy_process_runner() -> None:
 def test_record_replay_runner_satisfies_process_runner(tmp_path: pathlib.Path) -> None:
     rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
     assert isinstance(rec, ProcessRunner)
+
+
+# --- RecordingRunner spy ----------------------------------------------------
+
+
+def test_recording_runner_replies_and_records() -> None:
+    # `replying` gives a canned reply to every command AND records each call, so a
+    # test can assert what its code ran without spawning anything.
+    rec = RecordingRunner.replying(Reply.ok("canned"))
+    assert rec.run(Command("git", ["rev-parse", "HEAD"])) == "canned"
+    assert rec.exit_code(Command("ls", ["-la"])) == 0
+
+    calls = rec.calls()
+    assert [c.program for c in calls] == ["git", "ls"]
+    assert calls[0].args == ["rev-parse", "HEAD"]
+    assert calls[1].has_flag("-la")
+    assert not calls[0].has_flag("--nope")
+
+
+def test_recording_runner_only_call() -> None:
+    rec = RecordingRunner.replying(Reply.ok(""))
+    rec.run(Command("solo", ["once"]))
+    invocation = rec.only_call()
+    assert isinstance(invocation, Invocation)
+    assert invocation.program == "solo"
+    assert invocation.args == ["once"]
+
+
+def test_recording_runner_only_call_raises_unless_exactly_one() -> None:
+    rec = RecordingRunner.replying(Reply.ok(""))
+    with pytest.raises(ProcessError):
+        rec.only_call()  # zero calls
+    rec.run(Command("a"))
+    rec.run(Command("b"))
+    with pytest.raises(ProcessError):
+        rec.only_call()  # two calls
+
+
+def test_invocation_captures_cwd_env_stdin(tmp_path: pathlib.Path) -> None:
+    rec = RecordingRunner.replying(Reply.ok(""))
+    command = (
+        Command("tool", ["--flag"])
+        .cwd(tmp_path)
+        .env("LOG", "info")
+        .env_remove("DROP")
+        .stdin_text("input")
+    )
+    rec.run(command)
+    inv = rec.only_call()
+    assert inv.cwd == str(tmp_path)
+    assert inv.env == {"LOG": "info", "DROP": None}
+    assert inv.has_stdin is True
+    # repr is redacted: program + env NAMES are shown, argv values + env VALUES are not.
+    text = repr(inv)
+    assert "tool" in text  # program shown
+    assert "LOG" in text  # env name shown
+    assert "--flag" not in text  # argv value hidden
+    assert "info" not in text  # env value hidden
+
+
+def test_recording_runner_async_records() -> None:
+    # The async verbs record too (they route through the same recorded path).
+    rec = RecordingRunner.replying(Reply.ok("async-canned"))
+
+    async def scenario() -> str:
+        return await rec.arun(Command("deploy", ["--now"]))
+
+    assert asyncio.run(scenario()) == "async-canned"
+    assert rec.only_call().program == "deploy"
+
+
+def test_recording_runner_satisfies_process_runner() -> None:
+    assert isinstance(RecordingRunner.replying(Reply.ok("")), ProcessRunner)

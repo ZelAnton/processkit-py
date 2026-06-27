@@ -5,13 +5,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use processkit::testing::{
-    RecordReplayRunner as PkRecordReplayRunner, Reply as PkReply,
-    ScriptedRunner as PkScriptedRunner,
+    Invocation, RecordReplayRunner as PkRecordReplayRunner, RecordingRunner as PkRecordingRunner,
+    Reply as PkReply, ScriptedRunner as PkScriptedRunner,
 };
 use processkit::JobRunner;
 use processkit::ProcessRunner;
 use processkit::ProcessRunnerExt;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use crate::errors::{map_err, ProcessError};
 use crate::runtime::{block_on_interruptible, drive_async};
@@ -504,5 +505,177 @@ impl PyRecordReplayRunner {
 
     fn __repr__(&self) -> String {
         "RecordReplayRunner()".to_string()
+    }
+}
+
+/// One call captured by a `RecordingRunner`: the program, args, working
+/// directory, environment overrides, and whether stdin was supplied. The values
+/// are inspectable (this is your own test data) for assertions; the `repr` stays
+/// redacted (program, arg count, cwd, env names, has_stdin — never argv or env
+/// values) like `Command`'s.
+#[pyclass(name = "Invocation", module = "processkit")]
+pub(crate) struct PyInvocation {
+    inner: Invocation,
+}
+
+impl From<Invocation> for PyInvocation {
+    fn from(inner: Invocation) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyInvocation {
+    /// The program that was run.
+    #[getter]
+    fn program(&self) -> String {
+        self.inner.program.to_string_lossy().into_owned()
+    }
+
+    /// The arguments, in order.
+    #[getter]
+    fn args(&self) -> Vec<String> {
+        self.inner.args_str()
+    }
+
+    /// The working directory, if one was set.
+    #[getter]
+    fn cwd(&self) -> Option<String> {
+        self.inner
+            .cwd
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// The environment overrides as a dict; a `None` value is a removal
+    /// (`env_remove`). Later settings of the same key win (the effective value).
+    #[getter]
+    fn env<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (key, value) in &self.inner.envs {
+            let key = key.to_string_lossy().into_owned();
+            let value = value.as_ref().map(|v| v.to_string_lossy().into_owned());
+            dict.set_item(key, value)?;
+        }
+        Ok(dict)
+    }
+
+    /// Whether a (non-empty) stdin source was supplied.
+    #[getter]
+    fn has_stdin(&self) -> bool {
+        self.inner.has_stdin
+    }
+
+    /// Whether `flag` appears among the arguments.
+    fn has_flag(&self, flag: &str) -> bool {
+        self.inner.has_flag(flag)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
+/// A recording test double: replies to every command with a canned `Reply` and
+/// records each call, so a test can assert on *what* its code ran. Inspect the
+/// captured calls with `calls()` / `only_call()` (each an `Invocation`).
+#[pyclass(name = "RecordingRunner", module = "processkit")]
+pub(crate) struct PyRecordingRunner {
+    inner: Arc<PkRecordingRunner<PkScriptedRunner>>,
+}
+
+#[pymethods]
+impl PyRecordingRunner {
+    /// A recorder whose inner runner replies with `reply` to everything.
+    #[staticmethod]
+    fn replying(reply: &PyReply) -> Self {
+        Self {
+            inner: Arc::new(PkRecordingRunner::replying(reply.inner.clone())),
+        }
+    }
+
+    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
+        runner_output(py, &*self.inner, command)
+    }
+
+    fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
+        runner_output_bytes(py, &*self.inner, command)
+    }
+
+    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
+        runner_run(py, &*self.inner, command)
+    }
+
+    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
+        runner_exit_code(py, &*self.inner, command)
+    }
+
+    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
+        runner_probe(py, &*self.inner, command)
+    }
+
+    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
+        runner_start(py, &*self.inner, command)
+    }
+
+    /// Async counterpart of `output()`.
+    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aoutput(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `output_bytes()`.
+    fn aoutput_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        command: &PyCommand,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        runner_aoutput_bytes(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `run()`.
+    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_arun(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `exit_code()`.
+    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aexit_code(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `probe()`.
+    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aprobe(py, self.inner.clone(), command)
+    }
+
+    /// Async counterpart of `start()`.
+    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_astart(py, self.inner.clone(), command)
+    }
+
+    /// A snapshot of every recorded invocation, in call order.
+    fn calls(&self) -> Vec<PyInvocation> {
+        self.inner
+            .calls()
+            .into_iter()
+            .map(PyInvocation::from)
+            .collect()
+    }
+
+    /// The single recorded invocation; raises `ProcessError` unless exactly one
+    /// call was made.
+    fn only_call(&self) -> PyResult<PyInvocation> {
+        let calls = self.inner.calls();
+        match calls.len() {
+            1 => Ok(PyInvocation::from(
+                calls.into_iter().next().expect("length checked above"),
+            )),
+            n => Err(ProcessError::new_err(format!(
+                "expected exactly one call, got {n}"
+            ))),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("RecordingRunner(calls={})", self.inner.calls().len())
     }
 }

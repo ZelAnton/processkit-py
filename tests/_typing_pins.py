@@ -25,12 +25,14 @@ if TYPE_CHECKING:
         CliClient,
         Command,
         Finished,
+        Invocation,
         NonZeroExit,
         Outcome,
         Pipeline,
         ProcessError,
         ProcessNotFound,
         ProcessResult,
+        RecordingRunner,
         ResourceLimit,
         Runner,
         RunningProcess,
@@ -69,6 +71,17 @@ if TYPE_CHECKING:
 
     def _supervisor_return_type(sup: Supervisor) -> None:
         assert_type(sup.run(), SupervisionOutcome)
+
+    def _recording_runner_types(rec: RecordingRunner, inv: Invocation) -> None:
+        assert_type(rec.output(Command("x")), ProcessResult)
+        assert_type(rec.calls(), list[Invocation])
+        assert_type(rec.only_call(), Invocation)
+        assert_type(inv.program, str)
+        assert_type(inv.args, list[str])
+        assert_type(inv.cwd, str | None)
+        assert_type(inv.env, dict[str, str | None])
+        assert_type(inv.has_stdin, bool)
+        assert_type(inv.has_flag("x"), bool)
 
     async def _running_process_return_types(proc: RunningProcess) -> None:
         assert_type(await proc.wait(), Outcome)

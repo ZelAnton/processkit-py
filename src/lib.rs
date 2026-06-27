@@ -32,7 +32,9 @@ use crate::group::{PyProcessGroup, PyProcessGroupStats};
 use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
-use crate::runner::{PyRecordReplayRunner, PyReply, PyRunner, PyScriptedRunner};
+use crate::runner::{
+    PyInvocation, PyRecordReplayRunner, PyRecordingRunner, PyReply, PyRunner, PyScriptedRunner,
+};
 use crate::running::{PyOutputEvents, PyProcessStdin, PyRunningProcess, PyStdoutLines};
 use crate::supervisor::{PySupervisionOutcome, PySupervisor};
 
@@ -64,6 +66,8 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScriptedRunner>()?;
     m.add_class::<PyReply>()?;
     m.add_class::<PyRecordReplayRunner>()?;
+    m.add_class::<PyRecordingRunner>()?;
+    m.add_class::<PyInvocation>()?;
     m.add_class::<PyCliClient>()?;
 
     m.add_function(pyo3::wrap_pyfunction!(batch::output_all, m)?)?;

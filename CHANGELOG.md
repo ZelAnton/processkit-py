@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`.
 - `RecordReplayRunner` test double — `record(path)` real runs then `save()`, and
   `replay(path)` offline; plus `output_bytes` on `Runner` / `ScriptedRunner`.
+- `RecordingRunner` spy test double — `RecordingRunner.replying(reply)` answers
+  every command with one canned `Reply` and records each call, so a test can
+  assert on *what* its code ran: `calls()` returns every `Invocation` (in order)
+  and `only_call()` the single one. Each `Invocation` exposes `program`, `args`,
+  `cwd`, `env`, `has_stdin`, and `has_flag(flag)`; its `repr` is redacted (program
+  + arg count + env names, never values). Completes the test-double set.
 - `ProcessResult` with `stdout`, `stderr`, `code`, `is_success`, `timed_out`,
   `signal`, `program`, `duration_seconds`, `truncated`, and `combined`; plus a
   `BytesResult` (raw-bytes `stdout`, text `stderr`) from `output_bytes()` /

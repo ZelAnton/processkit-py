@@ -1,0 +1,142 @@
+"""`Supervisor` — the keep-alive loop: restart policies, the stop predicate,
+backoff validation, and the failure-storm guard.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+
+import pytest
+
+from processkit import Command, ProcessError, Supervisor
+
+PY = sys.executable
+
+
+# --- restart policies + stop predicate --------------------------------------
+
+
+def test_supervisor_never_restarts_on_success() -> None:
+    outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    assert outcome.restarts == 0
+    assert outcome.final_result.is_success
+
+
+def test_supervisor_exhausts_restarts_on_crash() -> None:
+    async def scenario() -> object:
+        crash = Command(PY, ["-c", "import sys; sys.exit(1)"])
+        sup = Supervisor(
+            crash, restart="on_crash", max_restarts=2, backoff_initial=0.01, backoff_factor=1.0
+        )
+        return await sup.arun()
+
+    outcome = asyncio.run(scenario())
+    assert outcome.restarts == 2  # type: ignore[attr-defined]
+    assert outcome.stopped == "restarts_exhausted"  # type: ignore[attr-defined]
+
+
+def test_supervisor_stop_when_predicate() -> None:
+    calls: list[int] = []
+
+    def stop(result: object) -> bool:
+        calls.append(1)
+        return True  # stop after the first run
+
+    outcome = Supervisor(Command(PY, ["-c", "print('x')"]), restart="always", stop_when=stop).run()
+    assert outcome.stopped == "predicate"
+    assert outcome.restarts == 0
+    assert calls  # the predicate was actually invoked
+
+
+def test_supervisor_run_is_once() -> None:
+    sup = Supervisor(Command(PY, ["-c", "pass"]), restart="never")
+    sup.run()
+    with pytest.raises(ProcessError):
+        sup.run()
+
+
+def test_sync_verb_in_stop_when_surfaces_clear_error() -> None:
+    # Calling a synchronous verb from inside the supervisor's stop_when predicate
+    # used to re-enter the tokio runtime and PANIC ("Cannot start a runtime from
+    # within a runtime"); the panic was swallowed into "do not stop", so the
+    # predicate silently never fired. It must now surface a clear `ProcessError`.
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        Supervisor(
+            Command(PY, ["-c", "import sys; sys.exit(1)"]),
+            restart="always",
+            max_restarts=1,
+            jitter=False,
+            backoff_initial=0.001,
+            stop_when=lambda r: Command(PY, ["-c", "pass"]).probe(),  # a SYNC verb
+        ).run()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert captured, "the predicate's error should reach the unraisable hook"
+    assert all(isinstance(e, ProcessError) for e in captured), (
+        f"expected ProcessError, got {[type(e).__name__ for e in captured]}"
+    )
+    assert "async context" in str(captured[0]), str(captured[0])
+
+
+# --- backoff validation -----------------------------------------------------
+
+
+def test_backoff_factor_validated_without_backoff_initial() -> None:
+    # backoff_factor used to be silently ignored unless backoff_initial was also
+    # passed. It is now applied/validated independently, so an out-of-range factor
+    # raises even on its own.
+    with pytest.raises(ValueError):
+        Supervisor(Command(PY, ["-c", "pass"]), backoff_factor=0.5)
+
+
+def test_backoff_factor_alone_is_accepted() -> None:
+    outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never", backoff_factor=3.0).run()
+    assert outcome.final_result.is_success
+
+
+# --- failure-storm guard ----------------------------------------------------
+
+
+def test_supervisor_storm_pause_enables_guard() -> None:
+    # With the failure-storm guard enabled (storm_pause set) + a low threshold, a
+    # rapidly crash-looping command takes collective storm pauses (the field is no
+    # longer permanently 0).
+    out = Supervisor(
+        Command(PY, ["-c", "import sys; sys.exit(1)"]),
+        restart="always",
+        max_restarts=30,
+        backoff_initial=0.001,
+        backoff_factor=1.0,
+        jitter=False,
+        storm_pause=0.01,
+        failure_threshold=1.5,
+        failure_decay=100.0,
+    ).run()
+    assert out.storm_pauses >= 1
+
+
+def test_supervisor_storm_knobs_validate() -> None:
+    base = Command(PY, ["-c", "pass"])
+    with pytest.raises(ValueError):
+        Supervisor(base, storm_pause=-1.0)
+    with pytest.raises(ValueError):
+        Supervisor(base, failure_threshold=0.0)
+    with pytest.raises(ValueError):
+        Supervisor(base, failure_decay=-1.0)
+
+
+def test_supervisor_zero_failure_decay_is_accepted() -> None:
+    # A zero half-life is a valid crate config (no history; every failure scores
+    # 1.0) — the binding must not reject it.
+    Supervisor(Command(PY, ["-c", "pass"]), restart="never", storm_pause=0.01, failure_decay=0.0)

@@ -1,4 +1,7 @@
-"""The runner test seam: `Runner` (real) and `ScriptedRunner` (test double).
+"""The runner test seam: `Runner` (real), `ScriptedRunner` (test double), the
+`Reply` variants (ok/fail/timeout/signalled/pending/with_stdout/lines), the
+`RecordReplayRunner` record/replay cassette runner, and `ProcessRunner` protocol
+conformance.
 
 Code written against a runner can be exercised with scripted replies — no real
 process — while production passes a real `Runner`.
@@ -7,11 +10,24 @@ process — while production passes a real `Runner`.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import sys
 
 import pytest
 
-from processkit import Command, NonZeroExit, Reply, Runner, ScriptedRunner, Signalled, Timeout
+from processkit import (
+    BytesResult,
+    Command,
+    NonZeroExit,
+    ProcessError,
+    ProcessRunner,
+    RecordReplayRunner,
+    Reply,
+    Runner,
+    ScriptedRunner,
+    Signalled,
+    Timeout,
+)
 
 PY = sys.executable
 
@@ -139,3 +155,72 @@ def test_reply_pending_never_exits() -> None:
             await asyncio.wait_for(proc.wait(), timeout=0.3)
 
     asyncio.run(scenario())
+
+
+# --- runner bytes -----------------------------------------------------------
+
+
+def test_runner_output_bytes() -> None:
+    result = Runner().output_bytes(Command(PY, ["-c", "print('rb')"]))
+    assert isinstance(result, BytesResult)
+    assert result.stdout.strip() == b"rb"
+
+
+def test_scripted_runner_output_bytes() -> None:
+    scripted = ScriptedRunner()
+    scripted.on(["git"], Reply.ok("deadbeef"))
+    result = scripted.output_bytes(Command("git", ["rev-parse", "HEAD"]))
+    assert isinstance(result, BytesResult)
+    assert result.stdout == b"deadbeef"
+
+
+# --- record / replay --------------------------------------------------------
+
+
+def test_replay_serves_recorded_output_without_respawning(tmp_path: pathlib.Path) -> None:
+    cassette = tmp_path / "cassette.json"
+    # Record a real run whose output is non-deterministic, then persist it.
+    recorder = RecordReplayRunner.record(str(cassette))
+    cmd = Command(PY, ["-c", "import random; print(random.random())"])
+    first = recorder.run(cmd)
+    recorder.save()
+    assert cassette.is_file()
+
+    # Replaying the same argv returns the *recorded* value — a real re-spawn would
+    # print a new random number, so equality proves nothing was spawned.
+    replayer = RecordReplayRunner.replay(str(cassette))
+    replayed = replayer.run(Command(PY, ["-c", "import random; print(random.random())"]))
+    assert replayed == first
+
+
+def test_cassette_miss_carries_program(tmp_path: pathlib.Path) -> None:
+    cassette = str(tmp_path / "cassette.json")
+    rec = RecordReplayRunner.record(cassette)
+    rec.run(Command(PY, ["-c", "print('a')"]))
+    rec.save()
+
+    rep = RecordReplayRunner.replay(cassette)
+    with pytest.raises(ProcessError) as excinfo:
+        rep.run(Command(PY, ["-c", "print('DIFFERENT')"]))  # absent from the cassette
+    assert getattr(excinfo.value, "program", None), "cassette miss should carry .program"
+
+
+# --- ProcessRunner protocol conformance -------------------------------------
+
+
+def _accepts_runner(runner: ProcessRunner) -> None:
+    # The annotation is the test: if this type-checks for the calls below, the
+    # concrete runners structurally satisfy the protocol.
+    assert runner is not None
+
+
+def test_runner_classes_satisfy_process_runner() -> None:
+    _accepts_runner(Runner())  # static conformance (mypy) + runtime use
+    _accepts_runner(ScriptedRunner())
+    assert isinstance(Runner(), ProcessRunner)
+    assert isinstance(ScriptedRunner(), ProcessRunner)
+
+
+def test_record_replay_runner_satisfies_process_runner(tmp_path: pathlib.Path) -> None:
+    rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
+    assert isinstance(rec, ProcessRunner)

@@ -14,7 +14,7 @@ import pytest
 
 from processkit import Command, NonZeroExit, ProcessGroup
 
-from ._liveness import is_alive, read_pid_when_ready, wait_until
+from ._liveness import is_alive, read_pid_when_ready, wait_dead
 from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
@@ -65,7 +65,7 @@ def test_cancelling_awaited_run_kills_tree(tmp_path: pathlib.Path) -> None:
         return grandchild_pid
 
     grandchild_pid = asyncio.run(scenario())
-    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+    assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived task cancellation"
     )
 
@@ -95,7 +95,7 @@ def test_async_group_teardown_kills_grandchild(tmp_path: pathlib.Path) -> None:
             return grandchild_pid
 
     grandchild_pid = asyncio.run(scenario())
-    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+    assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived async ProcessGroup teardown"
     )
 
@@ -114,7 +114,7 @@ def test_explicit_ashutdown_reaps_tree(tmp_path: pathlib.Path) -> None:
         return grandchild_pid
 
     grandchild_pid = asyncio.run(scenario())
-    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+    assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived explicit ashutdown()"
     )
 
@@ -133,6 +133,6 @@ def test_wait_for_timeout_kills_tree(tmp_path: pathlib.Path) -> None:
         return grandchild_pid
 
     grandchild_pid = asyncio.run(scenario())
-    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+    assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived asyncio.wait_for timeout"
     )

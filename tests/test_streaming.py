@@ -11,9 +11,10 @@ import sys
 
 import pytest
 
-from processkit import Command, ProcessError
+from processkit import BytesResult, Command, ProcessError, Runner, RunProfile
 
-from ._liveness import is_alive, read_pid_when_ready, wait_until
+from ._liveness import is_alive, read_pid_when_ready, wait_dead
+from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
 
@@ -167,8 +168,6 @@ def test_running_process_wait_reports_exit_code() -> None:
 
 
 def test_consumed_handle_raises() -> None:
-    from processkit import ProcessError
-
     async def scenario() -> None:
         proc = await Command(PY, ["-c", "pass"]).astart()
         await proc.wait()
@@ -197,6 +196,102 @@ def test_cancel_mid_stream_kills_tree(tmp_path: pathlib.Path) -> None:
         return grandchild_pid
 
     grandchild_pid = asyncio.run(driver())
-    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+    assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived cancellation of the streaming task"
     )
+
+
+# --- live introspection + profile -------------------------------------------
+
+
+def test_running_process_live_getters() -> None:
+    async def scenario() -> None:
+        async with await Command(PY, ["-c", "import time; time.sleep(5)"]).astart() as proc:
+            assert proc.pid is not None
+            assert proc.owns_group is True  # standalone astart owns a private tree
+            assert (proc.elapsed_seconds or 0.0) >= 0.0
+            # No output captured yet — 0, or None if the counter isn't initialized.
+            assert proc.stdout_line_count in (0, None)
+
+    asyncio.run(scenario())
+
+
+def test_profile_returns_runprofile() -> None:
+    async def scenario() -> RunProfile:
+        proc = await Command(PY, ["-c", "import time; time.sleep(0.1)"]).astart()
+        return await proc.profile(0.02)
+
+    rp = asyncio.run(scenario())
+    assert isinstance(rp, RunProfile)
+    assert rp.code == 0
+    assert rp.duration_seconds >= 0.0
+    assert rp.samples >= 1
+
+
+def test_running_process_output_bytes() -> None:
+    async def scenario() -> BytesResult:
+        code = "import sys; sys.stdout.buffer.write(bytes([1, 2, 255]))"
+        proc = await Command(PY, ["-c", code]).astart()
+        return await proc.output_bytes()
+
+    result = asyncio.run(scenario())
+    assert result.stdout == bytes([1, 2, 255])
+
+
+# --- context-manager teardown (standalone start() owns a private tree) -------
+
+
+def test_running_process_sync_with_reaps_tree(tmp_path: pathlib.Path) -> None:
+    pid_file = tmp_path / "gc.pid"
+    # A standalone start() owns a private tree; the `with` exit must kill it.
+    with Runner().start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)])):
+        grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+    assert wait_dead(grandchild, timeout=10.0), "grandchild survived the with-block exit"
+
+
+def test_running_process_async_with_reaps_tree(tmp_path: pathlib.Path) -> None:
+    pid_file = tmp_path / "gc.pid"
+
+    async def scenario() -> int:
+        async with await Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).astart():
+            return read_pid_when_ready(pid_file, timeout=10.0)
+
+    grandchild = asyncio.run(scenario())
+    assert wait_dead(grandchild, timeout=10.0), "grandchild survived the async-with exit"
+
+
+def test_context_manager_is_noop_after_consuming() -> None:
+    async def scenario() -> None:
+        async with await Command(PY, ["-c", "print('hi')"]).astart() as proc:
+            result = await proc.output()  # consumes the handle
+            assert result.is_success
+        # __aexit__ sees a consumed handle and must not raise.
+
+    asyncio.run(scenario())
+
+
+def test_with_reaps_tree_even_when_block_raises(tmp_path: pathlib.Path) -> None:
+    pid_file = tmp_path / "gc.pid"
+    grandchild = -1
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        Runner().start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)])),
+    ):
+        grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+        raise RuntimeError("boom")
+    assert grandchild > 0
+    assert wait_dead(grandchild, timeout=10.0), "grandchild survived a raising with-block"
+
+
+def test_async_with_reaps_tree_even_when_block_raises(tmp_path: pathlib.Path) -> None:
+    pid_file = tmp_path / "gc.pid"
+    captured: dict[str, int] = {}
+
+    async def scenario() -> None:
+        async with await Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).astart():
+            captured["pid"] = read_pid_when_ready(pid_file, timeout=10.0)
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(scenario())
+    assert wait_dead(captured["pid"], timeout=10.0), "grandchild survived a raising async-with"

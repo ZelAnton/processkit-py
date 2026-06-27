@@ -1,10 +1,12 @@
 # Allowlist for `python -m mypy.stubtest processkit` (run with --ignore-disjoint-bases).
 #
 # Every entry below suppresses a finding that is an irreducible PyO3 / stub-only
-# convention, NOT a real stub bug. stubtest still fully checks method signatures,
-# member existence (both directions), and attribute types for the whole surface.
-# Keep this list minimal; an unused entry fails CI (--ignore-unused-allowlist is
-# NOT passed), so a stale suppression surfaces immediately.
+# convention, NOT a real stub bug. stubtest still checks method signature SHAPE
+# (parameter names/kinds/defaults) and member existence (both directions) across
+# the whole surface; return / property / attribute *types* carry no runtime
+# annotations on a compiled module, so those are pinned separately by mypy in
+# tests/_typing_pins.py. Keep this list minimal; an unused entry fails CI
+# (--ignore-unused-allowlist is NOT passed), so a stale suppression surfaces.
 
 # --- PyO3 constructor convention -------------------------------------------
 # PyO3 builds instances via __new__ (the generated runtime __init__ takes no

@@ -10,7 +10,9 @@ that wasn't reflected in the stub or the re-exports.
 from __future__ import annotations
 
 import ast
+import inspect
 import pathlib
+import types
 
 import processkit
 from processkit import _processkit
@@ -35,6 +37,21 @@ def _declared_members(classdef: ast.ClassDef) -> set[str]:
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
             members.add(stmt.target.id)
     return members
+
+
+def _stub_member_is_property(classdef: ast.ClassDef, name: str) -> bool:
+    """Whether the stub declares `name` with an `@property` decorator."""
+    for stmt in classdef.body:
+        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name == name:
+            return any(isinstance(d, ast.Name) and d.id == "property" for d in stmt.decorator_list)
+    return False
+
+
+def _runtime_is_data_descriptor(cls: type, name: str) -> bool:
+    """Whether `cls.name` is a read accessor at runtime — a Python `property` or a
+    PyO3 `#[getter]` (which is a `getset_descriptor`, NOT a `property`)."""
+    attr = inspect.getattr_static(cls, name)
+    return isinstance(attr, property | types.GetSetDescriptorType)
 
 
 def _compiled_classes() -> dict[str, type]:
@@ -141,6 +158,37 @@ def test_context_manager_protocol_is_declared() -> None:
         for dunder in protocol:
             assert hasattr(cls, dunder), f"{name} lost {dunder} at runtime"
             assert dunder in declared, f"{name}.{dunder} missing from the stub"
+
+
+def test_every_package_exception_subclasses_process_error() -> None:
+    # The "except ProcessError catches everything" contract: every exported
+    # exception must remain a `ProcessError` subclass. The name-only member guard
+    # cannot see a changed base, so a `Signalled`/`ResourceLimit`/… that regressed
+    # to a different base would otherwise ship green.
+    for name, cls in _compiled_classes().items():
+        if not issubclass(cls, BaseException) or cls is processkit.ProcessError:
+            continue
+        assert issubclass(cls, processkit.ProcessError), f"{name} is no longer a ProcessError"
+
+
+def test_property_vs_method_matches_stub() -> None:
+    # A getter (`#[getter]`/`@property`) and a plain method share a member name, so
+    # the name-only parity checks can't tell a property↔method flip apart. Compare
+    # the descriptor *kind* at runtime against the stub's `@property` decorator, so
+    # e.g. `combined` silently reverting from a property to a method fails here.
+    stub = _stub_classes()
+    for name, cls in _compiled_classes().items():
+        if issubclass(cls, BaseException):
+            continue
+        for member in vars(cls):
+            if member.startswith("_"):
+                continue
+            runtime_prop = _runtime_is_data_descriptor(cls, member)
+            stub_prop = _stub_member_is_property(stub[name], member)
+            assert runtime_prop == stub_prop, (
+                f"{name}.{member}: property/method mismatch "
+                f"(runtime property={runtime_prop}, stub @property={stub_prop})"
+            )
 
 
 def test_dual_base_exceptions_match_stdlib_and_stub() -> None:

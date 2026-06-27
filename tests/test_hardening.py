@@ -13,15 +13,9 @@ import time
 from processkit import Command, ProcessGroup
 
 from ._liveness import read_pid_when_ready, wait_dead
+from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
-
-_SPAWN_GRANDCHILD = (
-    "import subprocess, sys, time;"
-    "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
-    "open(sys.argv[1], 'w').write(str(gc.pid));"
-    "time.sleep(60)"
-)
 
 
 def test_many_groups_leave_no_orphans(tmp_path: pathlib.Path) -> None:

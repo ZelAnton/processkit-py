@@ -16,17 +16,9 @@ import pytest
 from processkit import Command, ProcessError, ProcessGroup
 
 from ._liveness import is_alive, read_pid_when_ready, wait_until
+from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
-
-# Spawn a grandchild that sleeps, record its PID to argv[1], then sleep too.
-# Both child and grandchild outlive the program unless the group reaps them.
-_SPAWN_GRANDCHILD = (
-    "import subprocess, sys, time;"
-    "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
-    "open(sys.argv[1], 'w').write(str(gc.pid));"
-    "time.sleep(60)"
-)
 
 
 def test_group_reports_a_mechanism() -> None:

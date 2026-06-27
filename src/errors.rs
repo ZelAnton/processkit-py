@@ -10,7 +10,6 @@ use pyo3::types::{PyDict, PyTuple, PyType};
 // failure mode the crate distinguishes.
 create_exception!(_processkit, ProcessError, PyException);
 create_exception!(_processkit, NonZeroExit, ProcessError);
-create_exception!(_processkit, Cancelled, ProcessError);
 create_exception!(_processkit, Signalled, ProcessError);
 create_exception!(_processkit, ResourceLimit, ProcessError);
 create_exception!(_processkit, Unsupported, ProcessError);
@@ -79,26 +78,12 @@ pub(crate) fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-fn timeout_type(py: Python<'_>) -> Bound<'_, PyType> {
-    TIMEOUT
-        .get(py)
-        .expect("Timeout type initialized at module init")
-        .bind(py)
-        .clone()
-}
-
-fn process_not_found_type(py: Python<'_>) -> Bound<'_, PyType> {
-    PROCESS_NOT_FOUND
-        .get(py)
-        .expect("ProcessNotFound type initialized at module init")
-        .bind(py)
-        .clone()
-}
-
-fn permission_denied_type(py: Python<'_>) -> Bound<'_, PyType> {
-    PERMISSION_DENIED
-        .get(py)
-        .expect("PermissionDenied type initialized at module init")
+/// Fetch a dual-base exception type cached at module init. The `expect` is
+/// unreachable in practice: the module is initialized once per interpreter
+/// before any `map_err` can run.
+fn cached<'py>(lock: &PyOnceLock<Py<PyType>>, py: Python<'py>) -> Bound<'py, PyType> {
+    lock.get(py)
+        .expect("dual-base exception initialized at module init")
         .bind(py)
         .clone()
 }
@@ -122,20 +107,19 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
     Python::attach(|py| {
         let message = error.to_string();
         let err = match &error {
-            E::Timeout { .. } => PyErr::from_type(timeout_type(py), message),
-            E::Cancelled { .. } => Cancelled::new_err(message),
+            E::Timeout { .. } => PyErr::from_type(cached(&TIMEOUT, py), message),
             E::Exit { .. } => NonZeroExit::new_err(message),
             E::Signalled { .. } => Signalled::new_err(message),
-            E::NotFound { .. } => PyErr::from_type(process_not_found_type(py), message),
+            E::NotFound { .. } => PyErr::from_type(cached(&PROCESS_NOT_FOUND, py), message),
             // The real spawn path reports a missing program as `Spawn` carrying
             // an `io::Error` of kind `NotFound`; surface that as
             // `ProcessNotFound` too. A permission failure (a non-executable file,
             // EACCES) maps to `PermissionDenied` for the same stdlib-parity reason.
             E::Spawn { source, .. } if source.kind() == ErrorKind::NotFound => {
-                PyErr::from_type(process_not_found_type(py), message)
+                PyErr::from_type(cached(&PROCESS_NOT_FOUND, py), message)
             }
             E::Spawn { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
-                PyErr::from_type(permission_denied_type(py), message)
+                PyErr::from_type(cached(&PERMISSION_DENIED, py), message)
             }
             E::ResourceLimit { .. } => ResourceLimit::new_err(message),
             E::Unsupported { .. } => Unsupported::new_err(message),
@@ -195,7 +179,6 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             }
             E::NotFound { program, .. }
             | E::Spawn { program, .. }
-            | E::Cancelled { program }
             | E::CassetteMiss { program }
             | E::NotReady { program, .. }
             | E::Parse { program, .. }

@@ -2,8 +2,11 @@
 
 use std::time::Duration;
 
+use processkit::Encoding;
+use processkit::OverflowMode;
 use processkit::RestartPolicy;
 use processkit::Signal as PkSignal;
+use processkit::StdioMode;
 use processkit::StopReason;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -53,6 +56,67 @@ pub(crate) fn stop_reason_str(reason: StopReason) -> &'static str {
         StopReason::RestartsExhausted => "restarts_exhausted",
         _ => "unknown",
     }
+}
+
+/// Map a Python stdio-mode label to the crate `StdioMode`.
+pub(crate) fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
+    match mode {
+        "pipe" | "piped" => Ok(StdioMode::Piped),
+        "inherit" => Ok(StdioMode::Inherit),
+        "null" | "discard" => Ok(StdioMode::Null),
+        other => Err(PyValueError::new_err(format!(
+            "unknown stdio mode {other:?}; use one of: pipe, inherit, null"
+        ))),
+    }
+}
+
+/// Map an `output_limit(on_overflow=...)` label to the crate `OverflowMode`.
+pub(crate) fn parse_overflow_mode(on_overflow: &str) -> PyResult<OverflowMode> {
+    match on_overflow {
+        "drop_oldest" => Ok(OverflowMode::DropOldest),
+        "drop_newest" => Ok(OverflowMode::DropNewest),
+        "error" => Ok(OverflowMode::Error),
+        other => Err(PyValueError::new_err(format!(
+            "unknown on_overflow {other:?}; use one of: drop_oldest, drop_newest, error"
+        ))),
+    }
+}
+
+/// Resolve a label to an `Encoding`, accepting both WHATWG labels and the common
+/// Python codec aliases (e.g. `"latin_1"`, `"utf_8"`, `"euc_jp"`) that the WHATWG
+/// table doesn't spell the same way.
+fn resolve_encoding(label: &str) -> Option<&'static Encoding> {
+    // The WHATWG label table (encoding_rs) already accepts a lot — `utf-8`,
+    // `windows-1252`, `cp1251`, `shift_jis`, `latin1`, `iso-8859-1`, … — and
+    // matches case-insensitively. Try it verbatim first.
+    if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
+        return Some(encoding);
+    }
+    // Fall back to common Python codec aliases the table doesn't contain.
+    let lower = label.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        // WHATWG's `iso-8859-1` *is* windows-1252; map the Python latin-1 family
+        // (which the table only accepts as `latin1`) to it.
+        "latin" | "latin-1" | "latin_1" => Encoding::for_label(b"iso-8859-1"),
+        // Python spells many labels with `_` where WHATWG uses `-`
+        // (`utf_8`->`utf-8`, `euc_jp`->`euc-jp`, `utf_16`->`utf-16le`, …).
+        other => Encoding::for_label(other.replace('_', "-").as_bytes()),
+    }
+}
+
+/// Resolve an encoding label (e.g. `"iso-8859-1"`, `"shift_jis"`, `"latin_1"`) to
+/// an `Encoding`, raising `ValueError` with guidance when it can't be mapped.
+pub(crate) fn parse_encoding(label: &str) -> PyResult<&'static Encoding> {
+    resolve_encoding(label).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "unknown encoding label {label:?}. Labels follow the WHATWG Encoding \
+             Standard — e.g. \"utf-8\", \"iso-8859-1\", \"windows-1252\", \
+             \"windows-1251\", \"shift_jis\". Common Python codec aliases \
+             (\"latin_1\", \"utf_8\", \"euc_jp\") are accepted too; the Windows ANSI \
+             code page (\"mbcs\"/\"ansi\") has no portable label — pass it explicitly, \
+             e.g. \"windows-1251\"."
+        ))
+    })
 }
 
 /// Parse a signal name (`"term"`, `"kill"`, `"int"`, `"hup"`, `"quit"`,

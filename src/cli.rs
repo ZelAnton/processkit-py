@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use crate::convert::positive_duration;
 use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
-use crate::runtime::block_on_interruptible;
+use crate::runtime::{block_on_interruptible, drive_async};
 
 /// A program bound to default timeout/environment, run with the real `Runner`.
 ///
@@ -61,18 +61,16 @@ impl PyCliClient {
 
     /// Run with the given args and capture output (a non-zero exit is data).
     fn output(&self, py: Python<'_>, args: Vec<String>) -> PyResult<PyProcessResult> {
-        match block_on_interruptible(py, self.inner.output_string(args))? {
-            Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+        block_on_interruptible(py, self.inner.output_string(args))?
+            .map(PyProcessResult::from)
+            .map_err(map_err)
     }
 
     /// Run with the given args and capture raw-bytes stdout.
     fn output_bytes(&self, py: Python<'_>, args: Vec<String>) -> PyResult<PyBytesResult> {
-        match block_on_interruptible(py, self.inner.output_bytes(args))? {
-            Ok(inner) => Ok(PyBytesResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+        block_on_interruptible(py, self.inner.output_bytes(args))?
+            .map(PyBytesResult::from)
+            .map_err(map_err)
     }
 
     /// Run with the given args and return the exit code.
@@ -85,27 +83,17 @@ impl PyCliClient {
         block_on_interruptible(py, self.inner.probe(args))?.map_err(map_err)
     }
 
-    /// Run with the given args; require a zero exit, discard output.
-    fn run_unit(&self, py: Python<'_>, args: Vec<String>) -> PyResult<()> {
-        block_on_interruptible(py, self.inner.run_unit(args))?.map_err(map_err)
-    }
-
     /// Async counterpart of `run()`.
     fn arun<'py>(&self, py: Python<'py>, args: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client.run(args).await.map_err(map_err)
-        })
+        drive_async(py, async move { client.run(args).await })
     }
 
     /// Async counterpart of `output()`.
     fn aoutput<'py>(&self, py: Python<'py>, args: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match client.output_string(args).await {
-                Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            client.output_string(args).await.map(PyProcessResult::from)
         })
     }
 
@@ -116,36 +104,21 @@ impl PyCliClient {
         args: Vec<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match client.output_bytes(args).await {
-                Ok(inner) => Ok(PyBytesResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            client.output_bytes(args).await.map(PyBytesResult::from)
         })
     }
 
     /// Async counterpart of `exit_code()`.
     fn aexit_code<'py>(&self, py: Python<'py>, args: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client.exit_code(args).await.map_err(map_err)
-        })
+        drive_async(py, async move { client.exit_code(args).await })
     }
 
     /// Async counterpart of `probe()`.
     fn aprobe<'py>(&self, py: Python<'py>, args: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client.probe(args).await.map_err(map_err)
-        })
-    }
-
-    /// Async counterpart of `run_unit()`.
-    fn arun_unit<'py>(&self, py: Python<'py>, args: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            client.run_unit(args).await.map_err(map_err)
-        })
+        drive_async(py, async move { client.probe(args).await })
     }
 
     fn __repr__(&self) -> String {

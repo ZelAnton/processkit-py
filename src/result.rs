@@ -1,6 +1,7 @@
 //! The captured-result value types: `ProcessResult`, `BytesResult`, `Outcome`,
 //! `OutputEvent`, `Finished`, and `RunProfile`.
 
+use processkit::Finished as PkFinished;
 use processkit::Outcome as PkOutcome;
 use processkit::OutputEvent as PkOutputEvent;
 use processkit::ProcessResult as PkProcessResult;
@@ -12,6 +13,12 @@ use pyo3::types::PyBytes;
 #[pyclass(name = "RunProfile", frozen, module = "processkit")]
 pub(crate) struct PyRunProfile {
     pub(crate) inner: PkRunProfile,
+}
+
+impl From<PkRunProfile> for PyRunProfile {
+    fn from(inner: PkRunProfile) -> Self {
+        Self { inner }
+    }
 }
 
 #[pymethods]
@@ -72,6 +79,12 @@ pub(crate) struct PyProcessResult {
     pub(crate) inner: PkProcessResult<String>,
 }
 
+impl From<PkProcessResult<String>> for PyProcessResult {
+    fn from(inner: PkProcessResult<String>) -> Self {
+        Self { inner }
+    }
+}
+
 #[pymethods]
 impl PyProcessResult {
     #[getter]
@@ -121,7 +134,8 @@ impl PyProcessResult {
         self.inner.truncated()
     }
 
-    /// stdout and stderr interleaved into one string (stdout first).
+    /// stdout and stderr concatenated into one string (stdout first, then stderr).
+    #[getter]
     fn combined(&self) -> String {
         self.inner.combined()
     }
@@ -142,6 +156,12 @@ impl PyProcessResult {
 #[pyclass(name = "BytesResult", frozen, module = "processkit")]
 pub(crate) struct PyBytesResult {
     pub(crate) inner: PkProcessResult<Vec<u8>>,
+}
+
+impl From<PkProcessResult<Vec<u8>>> for PyBytesResult {
+    fn from(inner: PkProcessResult<Vec<u8>>) -> Self {
+        Self { inner }
+    }
 }
 
 #[pymethods]
@@ -212,6 +232,12 @@ pub(crate) struct PyOutcome {
     pub(crate) inner: PkOutcome,
 }
 
+impl From<PkOutcome> for PyOutcome {
+    fn from(inner: PkOutcome) -> Self {
+        Self { inner }
+    }
+}
+
 #[pymethods]
 impl PyOutcome {
     /// The exit code, or `None` for a signal-kill / timeout.
@@ -231,8 +257,12 @@ impl PyOutcome {
         self.inner.timed_out()
     }
 
+    /// Whether the process exited with code `0`. Named `exited_zero` (not
+    /// `is_success`) because an `Outcome` carries no `success_codes` context — for
+    /// the command's own success verdict use `ProcessResult.is_success`, or test
+    /// `code` against your accepted set.
     #[getter]
-    fn is_success(&self) -> bool {
+    fn exited_zero(&self) -> bool {
         self.inner.code() == Some(0)
     }
 
@@ -312,6 +342,15 @@ pub(crate) struct PyFinished {
     pub(crate) stderr: String,
 }
 
+impl From<PkFinished> for PyFinished {
+    fn from(finished: PkFinished) -> Self {
+        Self {
+            outcome: finished.outcome,
+            stderr: finished.stderr,
+        }
+    }
+}
+
 #[pymethods]
 impl PyFinished {
     #[getter]
@@ -331,8 +370,9 @@ impl PyFinished {
         self.outcome.code()
     }
 
+    /// Whether the process exited with code `0` (see `Outcome.exited_zero`).
     #[getter]
-    fn is_success(&self) -> bool {
+    fn exited_zero(&self) -> bool {
         self.outcome.code() == Some(0)
     }
 

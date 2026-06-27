@@ -114,7 +114,7 @@ async def becomes_ready(runner):
     async for line in proc.stdout_lines():
         if "listening" in line:
             break
-    return (await proc.finish()).is_success
+    return (await proc.finish()).exited_zero
 
 def test_server_becomes_ready():
     runner = ScriptedRunner()
@@ -182,7 +182,7 @@ such constraint.
 
 `CliClient` binds a program to per-call defaults, so repeated calls pass only
 their args. Its verbs (`run`, `output`, `output_bytes`, `exit_code`, `probe`,
-`run_unit`, plus the `a`-prefixed twins) each take just the per-call arguments:
+plus the `a`-prefixed twins) each take just the per-call arguments:
 
 ```python
 from processkit import CliClient
@@ -190,7 +190,7 @@ from processkit import CliClient
 git = CliClient("git", default_timeout=30.0)
 head = git.run(["rev-parse", "HEAD"])        # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
-git.run_unit(["fetch", "--quiet"])           # success-only; returns None
+git.run(["fetch", "--quiet"])                # raises on failure; ignore the stdout
 ```
 
 One important limit: **`CliClient` always uses the real `Runner` — it is not

@@ -82,11 +82,16 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
 
   test:
-    name: test (${{ matrix.os }})
+    # One matrix over (OS × interpreter): the empty `python` entry runs the abi3
+    # (GIL) build via the project's pinned interpreter; `3.14t` provisions the
+    # free-threaded CPython (PEP 703) and builds the version-specific (non-abi3)
+    # extension, exercising the suite with the GIL disabled.
+    name: test (${{ matrix.os }}, ${{ matrix.python || 'abi3' }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+        python: ['', '3.14t']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -99,31 +104,9 @@ jobs:
         with:
           enable-cache: true
       # `uv run` provisions the interpreter, syncs the env (building the Rust
-      # extension via `maturin develop`), then runs pytest.
-      - run: uv run pytest
-
-  test-freethreaded:
-    name: test-freethreaded (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
-        with:
-          toolchain: stable
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          enable-cache: true
-      # Free-threaded CPython (PEP 703). `--python 3.14t` makes uv provision the
-      # free-threaded interpreter and build the version-specific (non-abi3)
-      # extension for it; the suite then runs with the GIL disabled. This is the
-      # forward-looking matrix entry — the abi3 `test` job above covers GIL builds.
-      - run: uv run --python 3.14t pytest
+      # extension via `maturin develop`), then runs pytest. The `--python` flag is
+      # added only for the free-threaded entry.
+      - run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
 
   build:
     name: build (${{ matrix.os }})

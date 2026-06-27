@@ -15,7 +15,7 @@ use crate::convert::{
 };
 use crate::errors::{map_err, ProcessError};
 use crate::result::PyProcessResult;
-use crate::runtime::block_on_interruptible;
+use crate::runtime::{block_on_interruptible, drive_async};
 
 /// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
 /// callback. The crate's predicate is infallible (`-> bool`), so a raising or
@@ -215,18 +215,19 @@ impl PySupervisor {
     /// Run supervision to completion (sync). Consumes the supervisor.
     fn run(&mut self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
         let supervisor = self.take_supervisor()?;
-        let outcome = block_on_interruptible(py, supervisor.run())?.map_err(map_err)?;
-        Ok(convert_supervision_outcome(&outcome))
+        block_on_interruptible(py, supervisor.run())?
+            .map(|outcome| convert_supervision_outcome(&outcome))
+            .map_err(map_err)
     }
 
     /// Async counterpart of `run()`. Consumes the supervisor.
     fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let supervisor = self.take_supervisor()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match supervisor.run().await {
-                Ok(outcome) => Ok(convert_supervision_outcome(&outcome)),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            supervisor
+                .run()
+                .await
+                .map(|outcome| convert_supervision_outcome(&outcome))
         })
     }
 }

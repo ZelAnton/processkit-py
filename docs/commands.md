@@ -263,7 +263,7 @@ r.timed_out         # the run's own deadline expired
 r.program           # the program name, for diagnostics
 r.duration_seconds  # wall-clock duration
 r.truncated         # an output_limit cap dropped output
-r.combined()        # stdout + stderr concatenated
+r.combined          # stdout + stderr concatenated (property)
 ```
 
 `output_bytes()` returns a `BytesResult` with the same fields, except `stdout` is
@@ -297,10 +297,9 @@ capturing verbs do not. Each carries **structured fields**, not just a message:
 | `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr` |
 | `ProcessNotFound` | the program couldn't be located / spawned | `program` |
 | `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file) | `program` |
-| `Cancelled` | in the hierarchy, but **not raised by any bound verb** (see the note below) | `program` |
 | `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `line_limit`, `byte_limit`, `total_lines`, `total_bytes` |
-| `ResourceLimit` | a memory / process / CPU cap was invalid or exceeded | — |
-| `Unsupported` | the platform can't perform the requested operation | — |
+| `ResourceLimit` | a memory / process / CPU cap was invalid or couldn't be enforced | `message` |
+| `Unsupported` | the platform can't perform the requested operation | `operation` |
 
 ```python
 from processkit import Command, NonZeroExit, Timeout, ProcessNotFound
@@ -321,7 +320,7 @@ condition, so familiar `except` clauses keep working: `Timeout` is also a
 `FileNotFoundError` (what `subprocess` raises), and `PermissionDenied` is also a
 `PermissionError`. Note that cancelling an *awaited*
 run via asyncio (`task.cancel()`, `asyncio.wait_for`, `asyncio.timeout`) surfaces
-as `asyncio.CancelledError` — not `Cancelled` — and still reaps the tree.
+as `asyncio.CancelledError` and still reaps the tree.
 
 ### Secrets in diagnostics
 

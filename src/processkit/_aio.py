@@ -19,8 +19,8 @@ __all__ = ["wait_for", "wait_for_line", "wait_for_port"]
 
 async def wait_for(
     predicate: Callable[[], bool | Awaitable[bool]],
-    timeout: float,
     *,
+    timeout: float,
     interval: float = 0.05,
 ) -> None:
     """Poll ``predicate`` until it returns true, or ``timeout`` seconds elapse.
@@ -67,8 +67,8 @@ def _close_pending_connection(task: asyncio.Task[_Connection]) -> None:
 async def wait_for_port(
     host: str,
     port: int,
-    timeout: float,
     *,
+    timeout: float,
     interval: float = 0.05,
 ) -> None:
     """Wait until a TCP connection to ``(host, port)`` succeeds.
@@ -109,6 +109,7 @@ async def wait_for_port(
 async def wait_for_line(
     lines: AsyncIterator[str],
     predicate: Callable[[str], bool],
+    *,
     timeout: float,
 ) -> str:
     """Consume from an stdout line iterator until ``predicate(line)`` is true.

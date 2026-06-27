@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from processkit import Command
+from processkit import Command, ProcessError
 
 from ._liveness import is_alive, read_pid_when_ready, wait_until
 
@@ -56,7 +56,7 @@ def test_stdout_lines_streams_in_order() -> None:
 
     lines, finished = asyncio.run(scenario())
     assert lines == [f"line{i}" for i in range(5)]
-    assert finished.is_success  # type: ignore[attr-defined]
+    assert finished.exited_zero  # type: ignore[attr-defined]
 
 
 def test_output_events_cover_both_streams() -> None:
@@ -77,7 +77,6 @@ def test_interactive_stdin_echo() -> None:
     async def scenario() -> list[str]:
         proc = await Command(PY, ["-c", _ECHO_UPPER]).keep_stdin_open().astart()
         stdin = proc.take_stdin()
-        assert stdin is not None
         await stdin.write_line("hello")
         await stdin.write_line("world")
         await stdin.close()  # EOF — the child finishes and exits
@@ -97,16 +96,28 @@ def test_stdin_text_feeds_input() -> None:
 
 
 def test_take_stdin_is_once() -> None:
-    async def scenario() -> bool:
+    # The first take hands over the handle; a second take raises (consumed).
+    async def scenario() -> None:
         proc = await Command(PY, ["-c", _ECHO_UPPER]).keep_stdin_open().astart()
         first = proc.take_stdin()
-        second = proc.take_stdin()
-        if first is not None:
-            await first.close()
+        with pytest.raises(ProcessError):
+            proc.take_stdin()
+        await first.close()
         await proc.wait()
-        return first is not None and second is None
 
-    assert asyncio.run(scenario())
+    asyncio.run(scenario())
+
+
+def test_take_stdin_without_keep_open_raises() -> None:
+    # Forgetting keep_stdin_open() fails clearly at take_stdin(), not later with
+    # an AttributeError on a None.
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "pass"]).astart()
+        with pytest.raises(ProcessError):
+            proc.take_stdin()
+        await proc.wait()
+
+    asyncio.run(scenario())
 
 
 def test_running_process_output_captures() -> None:
@@ -119,6 +130,19 @@ def test_running_process_output_captures() -> None:
     assert result.is_success  # type: ignore[attr-defined]
 
 
+def test_kill_then_wait_returns_promptly() -> None:
+    # kill() must actually terminate the child — a no-op would leave wait() blocking
+    # on the 60s sleeper until the bounded wait_for trips. Pins the effect, not just
+    # the renamed name.
+    async def scenario() -> object:
+        proc = await Command(PY, ["-c", "import time; time.sleep(60)"]).astart()
+        proc.kill()
+        return await asyncio.wait_for(proc.wait(), timeout=15.0)
+
+    outcome = asyncio.run(scenario())
+    assert not outcome.exited_zero  # type: ignore[attr-defined]  # killed, not a clean exit
+
+
 def test_running_process_wait_reports_exit_code() -> None:
     async def scenario() -> object:
         proc = await Command(PY, ["-c", "import sys; sys.exit(3)"]).astart()
@@ -126,7 +150,7 @@ def test_running_process_wait_reports_exit_code() -> None:
 
     outcome = asyncio.run(scenario())
     assert outcome.code == 3  # type: ignore[attr-defined]
-    assert not outcome.is_success  # type: ignore[attr-defined]
+    assert not outcome.exited_zero  # type: ignore[attr-defined]
 
 
 def test_consumed_handle_raises() -> None:

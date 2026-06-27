@@ -15,15 +15,9 @@ import pytest
 from processkit import Command, NonZeroExit, ProcessGroup
 
 from ._liveness import is_alive, read_pid_when_ready, wait_until
+from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
-
-_SPAWN_GRANDCHILD = (
-    "import subprocess, sys, time;"
-    "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
-    "open(sys.argv[1], 'w').write(str(gc.pid));"
-    "time.sleep(60)"
-)
 
 
 def test_aoutput_awaits_to_a_result() -> None:

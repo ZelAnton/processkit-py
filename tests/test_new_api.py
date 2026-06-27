@@ -4,6 +4,7 @@ bytes output, and the stdlib-aliased exceptions."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import sys
 
@@ -20,18 +21,14 @@ from processkit import (
     Runner,
     Timeout,
     wait_for,
+    wait_for_line,
+    wait_for_port,
 )
 
 from ._liveness import read_pid_when_ready, wait_dead
+from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
-
-_SPAWN_GRANDCHILD = (
-    "import subprocess, sys, time;"
-    "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
-    "open(sys.argv[1], 'w').write(str(gc.pid));"
-    "time.sleep(60)"
-)
 
 
 # --- Environment control ----------------------------------------------------
@@ -260,6 +257,14 @@ def test_wait_for_returns_immediately_when_already_true() -> None:
         await wait_for(lambda: True, timeout=0.0)
 
     asyncio.run(scenario())
+
+
+def test_readiness_timeout_is_keyword_only() -> None:
+    # `timeout` is keyword-only across ALL three readiness helpers — pin each
+    # signature so dropping the `*` on any of them fails.
+    for fn in (wait_for, wait_for_port, wait_for_line):
+        kind = inspect.signature(fn).parameters["timeout"].kind
+        assert kind is inspect.Parameter.KEYWORD_ONLY, f"{fn.__name__}.timeout is {kind}"
 
 
 def test_wait_for_async_predicate_polls_until_true() -> None:

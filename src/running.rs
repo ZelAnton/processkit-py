@@ -17,7 +17,7 @@ use crate::errors::{map_err, ProcessError};
 use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
-use crate::runtime::{block_on_interruptible, rt};
+use crate::runtime::{block_on_interruptible, drive_async, rt};
 
 /// Map a stdin I/O failure (a broken pipe, a closed child) onto `OSError`.
 fn map_io_err(error: std::io::Error) -> PyErr {
@@ -141,6 +141,14 @@ pub(crate) struct PyRunningProcess {
     pub(crate) inner: Option<PkRunningProcess>,
 }
 
+impl From<PkRunningProcess> for PyRunningProcess {
+    fn from(running: PkRunningProcess) -> Self {
+        Self {
+            inner: Some(running),
+        }
+    }
+}
+
 impl PyRunningProcess {
     fn running_mut(&mut self) -> PyResult<&mut PkRunningProcess> {
         self.inner
@@ -254,12 +262,12 @@ impl PyRunningProcess {
         _traceback: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let running = self.inner.take();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async(py, async move {
             if let Some(mut running) = running {
-                running.start_kill().map_err(map_err)?;
-                running.wait().await.map_err(map_err)?;
+                running.start_kill()?;
+                running.wait().await?;
             }
-            Ok(false)
+            Ok::<bool, processkit::Error>(false)
         })
     }
 
@@ -284,20 +292,29 @@ impl PyRunningProcess {
         })
     }
 
-    /// Take the writable stdin handle. Returns `None` if stdin was not piped or
-    /// has already been taken.
-    fn take_stdin(&mut self) -> PyResult<Option<PyProcessStdin>> {
-        Ok(self
-            .running_mut()?
+    /// Take the writable stdin handle. Raises `ProcessError` if stdin was not
+    /// kept open (build the `Command` with `keep_stdin_open()`) or was already
+    /// taken — so a missing setup fails here with a clear message, not later with
+    /// an `AttributeError` on a `None`.
+    fn take_stdin(&mut self) -> PyResult<PyProcessStdin> {
+        self.running_mut()?
             .take_stdin()
             .map(|stdin| PyProcessStdin {
                 inner: Arc::new(Mutex::new(Some(stdin))),
-            }))
+            })
+            .ok_or_else(|| {
+                ProcessError::new_err(
+                    "stdin is not available — build the Command with keep_stdin_open() \
+                     and call take_stdin() only once (scripted test doubles never \
+                     provide stdin)",
+                )
+            })
     }
 
     /// Begin tearing the tree down without waiting. (Dropping the handle, or the
-    /// owning group, also kills it; this just starts it early.)
-    fn start_kill(&mut self) -> PyResult<()> {
+    /// owning group, also kills it; this just starts it early.) Mirrors
+    /// `subprocess.Popen.kill()`: fire-and-forget, does not wait for exit.
+    fn kill(&mut self) -> PyResult<()> {
         let _guard = rt().enter();
         self.running_mut()?.start_kill().map_err(map_err)
     }
@@ -305,48 +322,32 @@ impl PyRunningProcess {
     /// Await exit and return the `Outcome`. Consumes the handle.
     fn wait<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let running = self.take_running()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match running.wait().await {
-                Ok(outcome) => Ok(PyOutcome { inner: outcome }),
-                Err(err) => Err(map_err(err)),
-            }
-        })
+        drive_async(py, async move { running.wait().await.map(PyOutcome::from) })
     }
 
     /// Await exit and return `Finished` (outcome + captured stderr) without
     /// buffering stdout — use this after streaming stdout. Consumes the handle.
     fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let running = self.take_running()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match running.finish().await {
-                Ok(finished) => Ok(PyFinished {
-                    outcome: finished.outcome,
-                    stderr: finished.stderr,
-                }),
-                Err(err) => Err(map_err(err)),
-            }
-        })
+        drive_async(
+            py,
+            async move { running.finish().await.map(PyFinished::from) },
+        )
     }
 
     /// Await exit and capture the full `ProcessResult`. Consumes the handle.
     fn output<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let running = self.take_running()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match running.output_string().await {
-                Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            running.output_string().await.map(PyProcessResult::from)
         })
     }
 
     /// Await exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
     fn output_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let running = self.take_running()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match running.output_bytes().await {
-                Ok(inner) => Ok(PyBytesResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            running.output_bytes().await.map(PyBytesResult::from)
         })
     }
 
@@ -355,11 +356,8 @@ impl PyRunningProcess {
     fn profile<'py>(&mut self, py: Python<'py>, every_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         let running = self.take_running()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match running.profile(every).await {
-                Ok(profile) => Ok(PyRunProfile { inner: profile }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            running.profile(every).await.map(PyRunProfile::from)
         })
     }
 
@@ -372,11 +370,8 @@ impl PyRunningProcess {
     ) -> PyResult<Bound<'py, PyAny>> {
         let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
         let running = self.take_running()?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match running.shutdown(grace).await {
-                Ok(outcome) => Ok(PyOutcome { inner: outcome }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            running.shutdown(grace).await.map(PyOutcome::from)
         })
     }
 

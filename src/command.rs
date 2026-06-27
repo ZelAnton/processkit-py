@@ -4,69 +4,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use processkit::Command as PkCommand;
-use processkit::Encoding;
 use processkit::OutputBufferPolicy;
-use processkit::OverflowMode;
 use processkit::Pipeline as PkPipeline;
 use processkit::Stdin as PkStdin;
-use processkit::StdioMode;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::convert::{nonnegative_duration, parse_signal, positive_duration};
+use crate::convert::{
+    nonnegative_duration, parse_encoding, parse_overflow_mode, parse_signal, parse_stdio_mode,
+    positive_duration,
+};
 use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
-use crate::runtime::block_on_interruptible;
-
-/// Map a Python stdio-mode label to the crate `StdioMode`.
-fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
-    match mode {
-        "pipe" | "piped" => Ok(StdioMode::Piped),
-        "inherit" => Ok(StdioMode::Inherit),
-        "null" | "discard" => Ok(StdioMode::Null),
-        other => Err(PyValueError::new_err(format!(
-            "unknown stdio mode {other:?}; use one of: pipe, inherit, null"
-        ))),
-    }
-}
-
-/// Resolve a label to an `Encoding`, accepting both WHATWG labels and the common
-/// Python codec aliases (e.g. `"latin_1"`, `"utf_8"`, `"euc_jp"`) that the WHATWG
-/// table doesn't spell the same way.
-fn resolve_encoding(label: &str) -> Option<&'static Encoding> {
-    // The WHATWG label table (encoding_rs) already accepts a lot — `utf-8`,
-    // `windows-1252`, `cp1251`, `shift_jis`, `latin1`, `iso-8859-1`, … — and
-    // matches case-insensitively. Try it verbatim first.
-    if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
-        return Some(encoding);
-    }
-    // Fall back to common Python codec aliases the table doesn't contain.
-    let lower = label.trim().to_ascii_lowercase();
-    match lower.as_str() {
-        // WHATWG's `iso-8859-1` *is* windows-1252; map the Python latin-1 family
-        // (which the table only accepts as `latin1`) to it.
-        "latin" | "latin-1" | "latin_1" => Encoding::for_label(b"iso-8859-1"),
-        // Python spells many labels with `_` where WHATWG uses `-`
-        // (`utf_8`->`utf-8`, `euc_jp`->`euc-jp`, `utf_16`->`utf-16le`, …).
-        other => Encoding::for_label(other.replace('_', "-").as_bytes()),
-    }
-}
-
-/// Resolve an encoding label (e.g. `"iso-8859-1"`, `"shift_jis"`, `"latin_1"`) to
-/// an `Encoding`, raising `ValueError` with guidance when it can't be mapped.
-fn parse_encoding(label: &str) -> PyResult<&'static Encoding> {
-    resolve_encoding(label).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "unknown encoding label {label:?}. Labels follow the WHATWG Encoding \
-             Standard — e.g. \"utf-8\", \"iso-8859-1\", \"windows-1252\", \
-             \"windows-1251\", \"shift_jis\". Common Python codec aliases \
-             (\"latin_1\", \"utf_8\", \"euc_jp\") are accepted too; the Windows ANSI \
-             code page (\"mbcs\"/\"ansi\") has no portable label — pass it explicitly, \
-             e.g. \"windows-1251\"."
-        ))
-    })
-}
+use crate::runtime::{block_on_interruptible, drive_async};
 
 /// A command builder. Builder methods return a new `Command`, so a configured
 /// command is reusable and chains read left to right.
@@ -326,16 +277,7 @@ impl PyCommand {
                 "output_limit requires at least one of max_bytes or max_lines",
             ));
         }
-        let overflow = match on_overflow {
-            "drop_oldest" => OverflowMode::DropOldest,
-            "drop_newest" => OverflowMode::DropNewest,
-            "error" => OverflowMode::Error,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown on_overflow {other:?}; use one of: drop_oldest, drop_newest, error"
-                )))
-            }
-        };
+        let overflow = parse_overflow_mode(on_overflow)?;
         let mut policy = match max_lines {
             Some(n) => OutputBufferPolicy::bounded(n),
             None => OutputBufferPolicy::unbounded(),
@@ -352,20 +294,18 @@ impl PyCommand {
     /// Run to completion and capture output. A non-zero exit is data, not an
     /// error — inspect `code` / `is_success` on the result.
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
-        match block_on_interruptible(py, self.inner.output_string())? {
-            Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+        block_on_interruptible(py, self.inner.output_string())?
+            .map(PyProcessResult::from)
+            .map_err(map_err)
     }
 
     /// Run to completion and capture **raw bytes** stdout (stderr stays decoded
     /// text). Use for binary output that isn't valid UTF-8. A non-zero exit is
     /// data, returned as a `BytesResult`.
     fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
-        match block_on_interruptible(py, self.inner.output_bytes())? {
-            Ok(inner) => Ok(PyBytesResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+        block_on_interruptible(py, self.inner.output_bytes())?
+            .map(PyBytesResult::from)
+            .map_err(map_err)
     }
 
     /// Require a zero exit and return stdout, trailing whitespace trimmed.
@@ -391,49 +331,35 @@ impl PyCommand {
     /// dropped) and raises `asyncio.CancelledError`.
     fn aoutput<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match cmd.output_string().await {
-                Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            cmd.output_string().await.map(PyProcessResult::from)
         })
     }
 
     /// Async counterpart of `output_bytes()`.
     fn aoutput_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match cmd.output_bytes().await {
-                Ok(inner) => Ok(PyBytesResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            cmd.output_bytes().await.map(PyBytesResult::from)
         })
     }
 
     /// Async counterpart of `run()`. See `aoutput` for cancellation semantics.
     fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { cmd.run().await.map_err(map_err) },
-        )
+        drive_async(py, async move { cmd.run().await })
     }
 
     /// Async counterpart of `exit_code()`.
     fn aexit_code<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            cmd.exit_code().await.map_err(map_err)
-        })
+        drive_async(py, async move { cmd.exit_code().await })
     }
 
     /// Async counterpart of `probe()`.
     fn aprobe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { cmd.probe().await.map_err(map_err) },
-        )
+        drive_async(py, async move { cmd.probe().await })
     }
 
     /// Start the command and return a `RunningProcess` for streaming and
@@ -441,14 +367,10 @@ impl PyCommand {
     /// it has spawned, not when it finishes.
     fn astart<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match cmd.start().await {
-                Ok(running) => Ok(PyRunningProcess {
-                    inner: Some(running),
-                }),
-                Err(err) => Err(map_err(err)),
-            }
-        })
+        drive_async(
+            py,
+            async move { cmd.start().await.map(PyRunningProcess::from) },
+        )
     }
 
     /// Pipe this command's stdout into `other`'s stdin, returning a `Pipeline`.
@@ -503,19 +425,17 @@ impl PyPipeline {
 
     /// Run the pipeline and capture the last stage's output (sync).
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
-        match block_on_interruptible(py, self.inner.output_string())? {
-            Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+        block_on_interruptible(py, self.inner.output_string())?
+            .map(PyProcessResult::from)
+            .map_err(map_err)
     }
 
     /// Run the pipeline and capture the last stage's **raw bytes** stdout (sync);
     /// for a pipeline ending in a binary producer (e.g. `... | gzip`).
     fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
-        match block_on_interruptible(py, self.inner.output_bytes())? {
-            Ok(inner) => Ok(PyBytesResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+        block_on_interruptible(py, self.inner.output_bytes())?
+            .map(PyBytesResult::from)
+            .map_err(map_err)
     }
 
     /// Require success and return the last stage's trimmed stdout (sync).
@@ -536,47 +456,35 @@ impl PyPipeline {
     /// Async counterpart of `output()`.
     fn aoutput<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match pipeline.output_string().await {
-                Ok(inner) => Ok(PyProcessResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            pipeline.output_string().await.map(PyProcessResult::from)
         })
     }
 
     /// Async counterpart of `output_bytes()`.
     fn aoutput_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match pipeline.output_bytes().await {
-                Ok(inner) => Ok(PyBytesResult { inner }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            pipeline.output_bytes().await.map(PyBytesResult::from)
         })
     }
 
     /// Async counterpart of `run()`.
     fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            pipeline.run().await.map_err(map_err)
-        })
+        drive_async(py, async move { pipeline.run().await })
     }
 
     /// Async counterpart of `exit_code()`.
     fn aexit_code<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            pipeline.exit_code().await.map_err(map_err)
-        })
+        drive_async(py, async move { pipeline.exit_code().await })
     }
 
     /// Async counterpart of `probe()`.
     fn aprobe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let pipeline = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            pipeline.probe().await.map_err(map_err)
-        })
+        drive_async(py, async move { pipeline.probe().await })
     }
 
     fn __repr__(&self) -> String {

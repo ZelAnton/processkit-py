@@ -14,7 +14,7 @@ use processkit::ProcessRunnerExt;
 use pyo3::prelude::*;
 
 use crate::errors::{map_err, ProcessError};
-use crate::runtime::block_on_interruptible;
+use crate::runtime::{block_on_interruptible, drive_async};
 use crate::{PyBytesResult, PyCommand, PyProcessResult, PyRunningProcess};
 
 // The run verbs are generic over the crate's `ProcessRunner` so the real
@@ -25,10 +25,9 @@ fn runner_output<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyProcessResult> {
-    match block_on_interruptible(py, runner.output_string(&command.inner))? {
-        Ok(inner) => Ok(PyProcessResult { inner }),
-        Err(err) => Err(map_err(err)),
-    }
+    block_on_interruptible(py, runner.output_string(&command.inner))?
+        .map(PyProcessResult::from)
+        .map_err(map_err)
 }
 
 fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
@@ -36,10 +35,9 @@ fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyBytesResult> {
-    match block_on_interruptible(py, runner.output_bytes(&command.inner))? {
-        Ok(inner) => Ok(PyBytesResult { inner }),
-        Err(err) => Err(map_err(err)),
-    }
+    block_on_interruptible(py, runner.output_bytes(&command.inner))?
+        .map(PyBytesResult::from)
+        .map_err(map_err)
 }
 
 fn runner_run<R: ProcessRunner + Sync + ?Sized>(
@@ -73,10 +71,9 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
 ) -> PyResult<PyRunningProcess> {
     // `start()` is async, so `block_on_interruptible` provides the runtime
     // context while it (and its pump spawn) is polled — no `enter()` needed.
-    let running = block_on_interruptible(py, runner.start(&command.inner))?.map_err(map_err)?;
-    Ok(PyRunningProcess {
-        inner: Some(running),
-    })
+    block_on_interruptible(py, runner.start(&command.inner))?
+        .map(PyRunningProcess::from)
+        .map_err(map_err)
 }
 
 // Async run verbs over an owned `Arc<R>` so the future can hold the runner with
@@ -88,11 +85,8 @@ fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        match runner.output_string(&cmd).await {
-            Ok(inner) => Ok(PyProcessResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+    drive_async(py, async move {
+        runner.output_string(&cmd).await.map(PyProcessResult::from)
     })
 }
 
@@ -102,11 +96,8 @@ fn runner_aoutput_bytes<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        match runner.output_bytes(&cmd).await {
-            Ok(inner) => Ok(PyBytesResult { inner }),
-            Err(err) => Err(map_err(err)),
-        }
+    drive_async(py, async move {
+        runner.output_bytes(&cmd).await.map(PyBytesResult::from)
     })
 }
 
@@ -116,9 +107,7 @@ fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        runner.run(&cmd).await.map_err(map_err)
-    })
+    drive_async(py, async move { runner.run(&cmd).await })
 }
 
 fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
@@ -127,9 +116,7 @@ fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        runner.exit_code(&cmd).await.map_err(map_err)
-    })
+    drive_async(py, async move { runner.exit_code(&cmd).await })
 }
 
 fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
@@ -138,9 +125,7 @@ fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        runner.probe(&cmd).await.map_err(map_err)
-    })
+    drive_async(py, async move { runner.probe(&cmd).await })
 }
 
 fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
@@ -149,13 +134,8 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        match runner.start(&cmd).await {
-            Ok(running) => Ok(PyRunningProcess {
-                inner: Some(running),
-            }),
-            Err(err) => Err(map_err(err)),
-        }
+    drive_async(py, async move {
+        runner.start(&cmd).await.map(PyRunningProcess::from)
     })
 }
 

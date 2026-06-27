@@ -36,15 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProcessResult` — or a `ProcessError` for a spawn/I/O failure — in input order.
 - `CliClient(program, *, default_timeout=…, default_env=…, default_env_remove=…)`
   — a typed wrapper for a tool you call repeatedly, with `run` / `output` /
-  `output_bytes` / `exit_code` / `probe` / `run_unit` (+ async) taking just the
-  per-call args.
+  `output_bytes` / `exit_code` / `probe` (+ async) taking just the per-call args.
 - `RunningProcess` live introspection (`elapsed_seconds`, `cpu_time_seconds`,
   `peak_memory_bytes`, `stdout_line_count` / `stderr_line_count`, `owns_group`),
   plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`.
 - `RecordReplayRunner` test double — `record(path)` real runs then `save()`, and
   `replay(path)` offline; plus `output_bytes` on `Runner` / `ScriptedRunner`.
 - `ProcessResult` with `stdout`, `stderr`, `code`, `is_success`, `timed_out`,
-  `signal`, `program`, `duration_seconds`, `truncated`, and `combined()`; plus a
+  `signal`, `program`, `duration_seconds`, `truncated`, and `combined`; plus a
   `BytesResult` (raw-bytes `stdout`, text `stderr`) from `output_bytes()` /
   `aoutput_bytes()`.
 - `ProcessGroup` context manager — a kill-on-drop container for a process tree;
@@ -52,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tree (grandchildren included) is reaped on `with`-exit or `shutdown()`.
 - `RunningProcess` handle exposing the child `pid`.
 - Exception hierarchy rooted at `ProcessError`: `NonZeroExit`, `Timeout`,
-  `Cancelled`, `Signalled`, `ProcessNotFound`, `PermissionDenied`, `Unsupported`,
+  `Signalled`, `ProcessNotFound`, `PermissionDenied`, `Unsupported`,
   `OutputTooLarge`. `Timeout` is also a builtin `TimeoutError`, `ProcessNotFound`
   is also a `FileNotFoundError`, and `PermissionDenied` is also a
   `PermissionError` (matching `asyncio` / `subprocess`), so the stdlib `except`
@@ -74,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (stdout+stderr as `OutputEvent`s), interactive `take_stdin()` →
     `ProcessStdin` (`write`/`write_line`/`flush`/`close`), and `await`able
     `wait()` → `Outcome`, `finish()` → `Finished`, `output()` → `ProcessResult`,
-    plus `start_kill()` / `shutdown(grace_seconds)`. It is also a context manager
+    plus `kill()` / `shutdown(grace_seconds)`. It is also a context manager
     (`with` / `async with`): exiting the block tears the process down
     deterministically — a hard kill of the whole private tree for a standalone
     `start()`/`astart()` handle — without relying on Python's GC.
@@ -97,9 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     failure_threshold=…, failure_decay=…)` with `run()` / `arun()` →
     `SupervisionOutcome`. Setting `storm_pause` enables the failure-storm guard
     (crash-loop circuit-breaker), reported via `SupervisionOutcome.storm_pauses`.
-  - **Readiness probes**: `await wait_for_port(host, port, timeout)`,
-    `await wait_for_line(lines, predicate, timeout)`, and
-    `await wait_for(predicate, timeout)` (poll any sync-or-async condition).
+  - **Readiness probes**: `await wait_for_port(host, port, *, timeout)`,
+    `await wait_for_line(lines, predicate, *, timeout)`, and
+    `await wait_for(predicate, *, timeout)` (poll any sync-or-async condition).
   - New types/exception: `Pipeline`, `ProcessGroupStats`, `Supervisor`,
     `SupervisionOutcome`, `ResourceLimit`.
 - Testing seam: a `Runner` (real) and a `ScriptedRunner` (test double) with a
@@ -155,6 +154,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remains `memory_max()`.
 - Renamed `RunProfile.avg_cpu` → **`avg_cpu_cores`** (self-documenting: the value is
   CPU-cores, e.g. `1.7` ≈ 1.7 cores busy).
+- Renamed `RunningProcess.start_kill()` → **`kill()`**, matching
+  `subprocess.Popen.kill()` (fire-and-forget; does not wait for exit).
+- `ProcessResult.combined` is now a **property** (was `combined()`), matching the
+  other read accessors (`stdout`, `code`, …).
+- Renamed `Outcome.is_success` / `Finished.is_success` → **`exited_zero`**. These
+  test literal "exit code 0" and — unlike `ProcessResult.is_success` — carry no
+  `success_codes` context, so the new name no longer implies the command's own
+  success verdict. Use `ProcessResult.is_success`, or test `code` against your set.
+- `RunningProcess.take_stdin()` now **raises** `ProcessError` (instead of returning
+  `None`) when stdin was not kept open or was already taken — so a missing
+  `keep_stdin_open()` fails at the call, not later with an `AttributeError`. Its
+  return type is now `ProcessStdin` (no longer `... | None`).
+- The readiness helpers `wait_for()` / `wait_for_port()` / `wait_for_line()` now
+  take `timeout` as a **keyword-only** argument, for uniformity.
+
+### Removed
+- `Cancelled` exception. It was never raised from the Python surface (the binding
+  exposes no cancellation token; cancelling an awaited run surfaces as
+  `asyncio.CancelledError`), so it was pure catch-list clutter. Re-addable
+  (additive) if a token-style cancellation API is ever exposed.
+- `CliClient.run_unit()` / `arun_unit()`. The success-only `-> None` verb existed
+  nowhere else on the surface; use `run()` / `arun()` and ignore the returned
+  stdout for the same "run, raise on failure" behavior.
 
 ### Fixed
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no

@@ -44,6 +44,7 @@ class ProcessResult:
     def duration_seconds(self) -> float: ...
     @property
     def truncated(self) -> bool: ...
+    @property
     def combined(self) -> str: ...
     def __repr__(self) -> str: ...
 
@@ -148,9 +149,10 @@ class Pipeline:
 class Outcome:
     """How a process ended.
 
-    Note: `is_success` here is exactly "exit code 0" — unlike
-    `ProcessResult.is_success`, it does **not** consider the command's
-    `success_codes` (the streaming `Outcome` carries no success-set context).
+    There is no `is_success` here on purpose: an `Outcome` carries no
+    `success_codes` context, so it cannot give the command's own success verdict
+    the way `ProcessResult.is_success` does. Use `exited_zero` for the literal
+    "exit code 0" test, or compare `code` against your accepted set.
     """
 
     @property
@@ -160,14 +162,14 @@ class Outcome:
     @property
     def timed_out(self) -> bool: ...
     @property
-    def is_success(self) -> bool: ...
+    def exited_zero(self) -> bool: ...
     def __repr__(self) -> str: ...
 
 class Finished:
     """A process's outcome plus captured stderr (stdout was streamed).
 
-    Like `Outcome`, `is_success` is "exit code 0" and does not consider
-    `success_codes`.
+    Like `Outcome`, it exposes `exited_zero` (literal "exit code 0"), not an
+    `is_success` that would falsely imply `success_codes` were considered.
     """
 
     @property
@@ -177,7 +179,7 @@ class Finished:
     @property
     def code(self) -> int | None: ...
     @property
-    def is_success(self) -> bool: ...
+    def exited_zero(self) -> bool: ...
     def __repr__(self) -> str: ...
 
 class OutputEvent:
@@ -217,7 +219,7 @@ class RunningProcess:
     Usable as a (async) context manager — exiting the block tears the process
     down (a hard kill of the whole private tree for a standalone
     ``start()``/``astart()`` handle). ``stdout_lines()`` / ``output_events()`` /
-    ``take_stdin()`` / ``start_kill()`` are *synchronous* setup calls; the
+    ``take_stdin()`` / ``kill()`` are *synchronous* setup calls; the
     iterator / handle they return is what you await. ``wait`` / ``finish`` /
     ``output`` / ``output_bytes`` / ``profile`` / ``shutdown`` are coroutines that
     **consume** the handle — afterwards it is spent (``pid`` and the other
@@ -253,11 +255,15 @@ class RunningProcess:
     ) -> Literal[False]: ...
     def stdout_lines(self) -> StdoutLines: ...
     def output_events(self) -> OutputEvents: ...
-    def take_stdin(self) -> ProcessStdin | None:
-        """The writable stdin handle, or ``None`` if stdin was not kept open (the
-        `Command` must have used ``keep_stdin_open()``) or has already been taken."""
+    def take_stdin(self) -> ProcessStdin:
+        """The writable stdin handle. Raises `ProcessError` if stdin was not kept
+        open (build the `Command` with ``keep_stdin_open()``) or was already
+        taken — so a missing setup fails here, not with a later `AttributeError`."""
 
-    def start_kill(self) -> None: ...
+    def kill(self) -> None:
+        """Begin tearing the tree down without waiting (like
+        ``subprocess.Popen.kill()``: fire-and-forget)."""
+
     async def wait(self) -> Outcome: ...
     async def finish(self) -> Finished: ...
     async def output(self) -> ProcessResult: ...
@@ -464,13 +470,11 @@ class CliClient:
     def output_bytes(self, args: Sequence[str]) -> BytesResult: ...
     def exit_code(self, args: Sequence[str]) -> int: ...
     def probe(self, args: Sequence[str]) -> bool: ...
-    def run_unit(self, args: Sequence[str]) -> None: ...
     async def arun(self, args: Sequence[str]) -> str: ...
     async def aoutput(self, args: Sequence[str]) -> ProcessResult: ...
     async def aoutput_bytes(self, args: Sequence[str]) -> BytesResult: ...
     async def aexit_code(self, args: Sequence[str]) -> int: ...
     async def aprobe(self, args: Sequence[str]) -> bool: ...
-    async def arun_unit(self, args: Sequence[str]) -> None: ...
     def __repr__(self) -> str: ...
 
 class ProcessError(Exception):
@@ -494,17 +498,6 @@ class Timeout(ProcessError, TimeoutError):
     timeout_seconds: float
     stdout: str
     stderr: str
-
-class Cancelled(ProcessError):
-    """A run was cancelled via a crate cancellation token.
-
-    Reserved and rarely raised from Python: this binding exposes no cancellation
-    token, and cancelling an *awaited* run via asyncio surfaces as
-    `asyncio.CancelledError` (not this exception). Kept for taxonomy parity and
-    forward compatibility.
-    """
-
-    program: str
 
 class Signalled(ProcessError):
     """A run was killed by a signal."""

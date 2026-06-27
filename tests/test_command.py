@@ -31,6 +31,17 @@ def test_run_returns_trimmed_stdout() -> None:
     assert Command(PY, ["-c", "print('hi')"]).run() == "hi"
 
 
+def test_combined_is_a_property_with_both_streams() -> None:
+    code = "import sys; print('out'); print('err', file=sys.stderr)"
+    result = Command(PY, ["-c", code]).output()
+    # `combined` is a property (bare attribute, not a call): calling it would
+    # `TypeError` on the returned str — pins the method->property change, which the
+    # name-only drift guard cannot catch.
+    combined = result.combined
+    assert isinstance(combined, str)
+    assert "out" in combined and "err" in combined
+
+
 def test_output_nonzero_exit_is_data_not_error() -> None:
     result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output()
     assert result.code == 3

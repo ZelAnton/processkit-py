@@ -151,11 +151,11 @@ like `task.cancel()`, then translate the cancellation into a builtin
 `TimeoutError` at the `await` boundary — so *inside*, the run was cancelled, even
 though *you* catch `TimeoutError`. Either way the tree is gone.
 
-**Why `CancelledError`, not `Cancelled`?** The processkit hierarchy *does* define
-a `Cancelled` `ProcessError`, but it belongs to the Rust crate's token-style
-cancellation (`CancellationToken`), which the Python binding does **not** expose.
-In Python you cancel through asyncio, so a cancelled run surfaces asyncio's own
-`asyncio.CancelledError` — you will not see `Cancelled` from any bound verb.
+**Cancellation surfaces as `asyncio.CancelledError`.** The Rust crate has a
+token-style cancellation (`CancellationToken`) that the Python binding does
+**not** expose — in Python you cancel through asyncio, so a cancelled run surfaces
+asyncio's own `asyncio.CancelledError` (a `BaseException`, deliberately not a
+`ProcessError`). There is no separate processkit cancellation exception to catch.
 
 ## Timeout vs. cancellation
 

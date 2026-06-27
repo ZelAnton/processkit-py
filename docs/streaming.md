@@ -51,8 +51,10 @@ return `None` and a second consuming verb raises):
 | `await proc.shutdown(grace_seconds)` | `Outcome` | graceful signal → wait → hard-kill |
 
 `Outcome` carries `code: int | None`, `signal: int | None`, `timed_out: bool`,
-and `is_success: bool`. There is also a synchronous `proc.start_kill()` for
-"stop it now, I'll `await proc.wait()` for the code myself."
+and `exited_zero: bool` (literal "exit code 0" — it has no `success_codes`
+context; for the command's own verdict use `ProcessResult.is_success`). There is
+also a synchronous `proc.kill()` (like `subprocess.Popen.kill()`) for "stop it
+now, I'll `await proc.wait()` for the code myself."
 
 `astart()` and `Runner().start()` put the child in a **private group the handle
 owns**: tearing the handle down kills the whole tree. The shared-group variant —
@@ -77,12 +79,13 @@ async for line in proc.stdout_lines():
 # stderr was drained in the background the whole time, so a noisy child could
 # never block on a full pipe.
 finished = await proc.finish()
-if not finished.is_success:
+if not finished.exited_zero:
     print(finished.outcome.code, finished.stderr)
 ```
 
 `Finished` exposes `outcome`, `stderr: str`, `code: int | None`, and
-`is_success: bool`. Things to know:
+`exited_zero: bool` (same "exit code 0" meaning as `Outcome.exited_zero`). Things
+to know:
 
 - **Call `stdout_lines()` once.** stdout is consumed a single time; a second
   `stdout_lines()` / `output_events()` call, or a non-piped stdout, raises
@@ -127,7 +130,7 @@ open with `keep_stdin_open()` on the `Command`, then take the writer with
 ```python
 # bc evaluates each stdin line and prints the result.
 proc = await Command("bc").keep_stdin_open().astart()
-stdin = proc.take_stdin()          # ProcessStdin, or None if stdin wasn't kept open
+stdin = proc.take_stdin()          # ProcessStdin (raises if stdin wasn't kept open)
 answers = proc.stdout_lines()
 
 await stdin.write_line("2 + 2")    # writes "2 + 2\n", flushed
@@ -138,12 +141,13 @@ print("=", await anext(answers))   # 42
 
 await stdin.close()                # send EOF — bc exits (idempotent)
 finished = await proc.finish()
-assert finished.is_success
+assert finished.exited_zero
 ```
 
 `ProcessStdin` is fully awaitable: `await write(bytes)`, `write_line(str)`
-(newline + flush), `flush()`, and `close()` (EOF). `take_stdin()` returns `None`
-if the `Command` didn't `keep_stdin_open()` or the writer was already taken.
+(newline + flush), `flush()`, and `close()` (EOF). `take_stdin()` **raises**
+`ProcessError` if the `Command` didn't `keep_stdin_open()` or the writer was
+already taken — so a missing setup fails right here, not later on a `None`.
 
 **Avoid the full-duplex deadlock.** A child's stdout pipe has a finite OS
 buffer; once it fills, the child blocks *writing* stdout until something reads

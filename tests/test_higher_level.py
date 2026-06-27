@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import socket
 import sys
 
 import pytest
@@ -24,23 +23,18 @@ from processkit import (
     wait_for_port,
 )
 
+from ._programs import free_port
+
 PY = sys.executable
-
-
-def _free_port() -> int:
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = int(sock.getsockname()[1])
-    sock.close()
-    return port
 
 
 # --- resource limits ---
 
 
 def test_invalid_resource_limit_raises() -> None:
-    with pytest.raises(ResourceLimit):
+    with pytest.raises(ResourceLimit) as excinfo:
         ProcessGroup(max_processes=0)
+    assert excinfo.value.message  # the structured field carries the reason
     with pytest.raises(ResourceLimit):
         ProcessGroup(max_memory=0)
 
@@ -166,7 +160,7 @@ def test_supervisor_run_is_once() -> None:
 
 
 def test_wait_for_port_ready() -> None:
-    port = _free_port()
+    port = free_port()
     server = (
         f"import socket, time; "
         f"s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
@@ -182,7 +176,7 @@ def test_wait_for_port_ready() -> None:
 
 
 def test_wait_for_port_timeout() -> None:
-    port = _free_port()  # nothing is listening
+    port = free_port()  # nothing is listening
 
     async def scenario() -> None:
         with pytest.raises(TimeoutError):
@@ -201,7 +195,7 @@ def test_wait_for_line_matches() -> None:
         proc = await Command(PY, ["-c", code]).astart()
         lines = proc.stdout_lines()
         matched = await wait_for_line(lines, lambda line: "READY" in line, timeout=10.0)
-        proc.start_kill()
+        proc.kill()
         await proc.wait()
         return matched
 

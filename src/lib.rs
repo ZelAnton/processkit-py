@@ -25,8 +25,8 @@ mod supervisor;
 use crate::cli::PyCliClient;
 use crate::command::{PyCommand, PyPipeline};
 use crate::errors::{
-    init_dual_exceptions, Cancelled, NonZeroExit, OutputTooLarge, ProcessError, ResourceLimit,
-    Signalled, Unsupported,
+    init_dual_exceptions, NonZeroExit, OutputTooLarge, ProcessError, ResourceLimit, Signalled,
+    Unsupported,
 };
 use crate::group::{PyProcessGroup, PyProcessGroupStats};
 use crate::result::{
@@ -79,7 +79,6 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     for (name, ty) in [
         ("ProcessError", py.get_type::<ProcessError>()),
         ("NonZeroExit", py.get_type::<NonZeroExit>()),
-        ("Cancelled", py.get_type::<Cancelled>()),
         ("Signalled", py.get_type::<Signalled>()),
         ("ResourceLimit", py.get_type::<ResourceLimit>()),
         ("Unsupported", py.get_type::<Unsupported>()),

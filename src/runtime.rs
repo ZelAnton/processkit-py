@@ -5,12 +5,27 @@ use std::time::Duration;
 
 use pyo3::prelude::*;
 
-use crate::errors::ProcessError;
+use crate::errors::{map_err, ProcessError};
 
 /// The one tokio runtime the binding owns, shared by the sync surface
 /// (`block_on`) and the async surface (`future_into_py`).
 pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
     pyo3_async_runtimes::tokio::get_runtime()
+}
+
+/// Bridge a crate future to a Python awaitable: drive it on the shared runtime
+/// (`future_into_py`) and convert a crate error to the right Python exception
+/// with `map_err`. The caller maps the success value to its Python wrapper
+/// inside the future (e.g. `.map(PyProcessResult::from)`); a scalar result
+/// (`String` / `i32` / `bool`) passes through unchanged. This is the async twin
+/// of the sync `block_on_interruptible(...)?.map_err(map_err)` dance and keeps
+/// every `a`-prefixed verb a one-liner.
+pub(crate) fn drive_async<F, U>(py: Python<'_>, fut: F) -> PyResult<Bound<'_, PyAny>>
+where
+    F: std::future::Future<Output = Result<U, processkit::Error>> + Send + 'static,
+    U: for<'py> IntoPyObject<'py> + Send + 'static,
+{
+    pyo3_async_runtimes::tokio::future_into_py(py, async move { fut.await.map_err(map_err) })
 }
 
 /// How often a blocked sync call surfaces to check for pending Python signals.

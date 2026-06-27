@@ -12,7 +12,7 @@ use crate::command::PyCommand;
 use crate::convert::{nonnegative_duration, parse_signal};
 use crate::errors::{map_err, ProcessError};
 use crate::running::PyRunningProcess;
-use crate::runtime::block_on_interruptible;
+use crate::runtime::{block_on_interruptible, drive_async};
 
 /// A snapshot of a `ProcessGroup`'s resource usage.
 #[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
@@ -163,11 +163,11 @@ impl PyProcessGroup {
         _traceback: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let group = self.inner.take();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async(py, async move {
             if let Some(group) = group {
-                shutdown_group(group).await.map_err(map_err)?;
+                shutdown_group(group).await?;
             }
-            Ok(false)
+            Ok::<bool, processkit::Error>(false)
         })
     }
 
@@ -175,23 +175,17 @@ impl PyProcessGroup {
     /// runs concurrently; this does not wait for it to finish.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
         let group = self.group()?.clone();
-        let running = block_on_interruptible(py, group.start(&command.inner))?.map_err(map_err)?;
-        Ok(PyRunningProcess {
-            inner: Some(running),
-        })
+        block_on_interruptible(py, group.start(&command.inner))?
+            .map(PyRunningProcess::from)
+            .map_err(map_err)
     }
 
     /// Async counterpart of `start()`.
     fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
         let group = self.group()?.clone();
         let cmd = command.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match group.start(&cmd).await {
-                Ok(running) => Ok(PyRunningProcess {
-                    inner: Some(running),
-                }),
-                Err(err) => Err(map_err(err)),
-            }
+        drive_async(py, async move {
+            group.start(&cmd).await.map(PyRunningProcess::from)
         })
     }
 
@@ -258,11 +252,11 @@ impl PyProcessGroup {
     /// Async counterpart of `shutdown()`. Idempotent.
     fn ashutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let group = self.inner.take();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async(py, async move {
             if let Some(group) = group {
-                shutdown_group(group).await.map_err(map_err)?;
+                shutdown_group(group).await?;
             }
-            Ok(())
+            Ok::<(), processkit::Error>(())
         })
     }
 

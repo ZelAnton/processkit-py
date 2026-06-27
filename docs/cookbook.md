@@ -21,7 +21,7 @@ iterators are **async-only**. A `RunningProcess`'s *consuming* methods
 (`wait`/`finish`/`output`/`output_bytes`/`profile`/`shutdown`) are coroutines with
 no `a` prefix — they exist for streaming/interactive use, so there is no
 synchronous twin to disambiguate from. Its `stdout_lines()` / `output_events()` /
-`take_stdin()` / `start_kill()` are *synchronous* setup calls (it's the
+`take_stdin()` / `kill()` are *synchronous* setup calls (it's the
 iterator/handle they return that you await). A `RunningProcess` is still usable as
 a **sync or async context manager** for deterministic teardown.
 

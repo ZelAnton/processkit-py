@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import pathlib
-import socket
 import sys
 
 import pytest
@@ -28,15 +27,9 @@ from processkit import (
     wait_for_port,
 )
 
+from ._programs import free_port
+
 PY = sys.executable
-
-
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = int(s.getsockname()[1])
-    s.close()
-    return port
 
 
 # --- M1: a sync verb called from a stop_when predicate surfaces a clear error ---
@@ -110,7 +103,7 @@ def test_cassette_miss_carries_program(tmp_path: pathlib.Path) -> None:
 
 
 def test_wait_for_port_cancel_propagates() -> None:
-    port = _free_port()  # nothing is listening -> the helper stays in its retry loop
+    port = free_port()  # nothing is listening -> the helper stays in its retry loop
 
     async def scenario() -> None:
         task = asyncio.ensure_future(wait_for_port("127.0.0.1", port, timeout=10.0))
@@ -130,7 +123,7 @@ def test_wait_for_port_closes_raced_connection() -> None:
     from processkit._aio import _close_pending_connection
 
     async def scenario() -> None:
-        port = _free_port()
+        port = free_port()
         server = await asyncio.start_server(lambda _r, w: w.close(), "127.0.0.1", port)
         async with server:
             conn = asyncio.ensure_future(asyncio.open_connection("127.0.0.1", port))
@@ -158,7 +151,7 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
         real(task)
 
     monkeypatch.setattr(aio, "_close_pending_connection", spy)
-    port = _free_port()  # nothing listening -> the OSError path runs the cleanup
+    port = free_port()  # nothing listening -> the OSError path runs the cleanup
 
     async def scenario() -> None:
         task = asyncio.ensure_future(wait_for_port("127.0.0.1", port, timeout=10.0))
@@ -218,6 +211,7 @@ def test_permission_denied_on_non_executable(tmp_path: pathlib.Path) -> None:
     with pytest.raises(PermissionError) as excinfo:  # PermissionDenied is a PermissionError
         Command(str(script)).run()
     assert isinstance(excinfo.value, ProcessError)
+    assert excinfo.value.program  # type: ignore[attr-defined]  # PermissionDenied carries .program
 
 
 # --- Stage 3: interface stability -------------------------------------------

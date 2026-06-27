@@ -21,7 +21,6 @@ from importlib.metadata import PackageNotFoundError, version
 from ._aio import wait_for, wait_for_line, wait_for_port
 from ._processkit import (
     BytesResult,
-    Cancelled,
     CliClient,
     Command,
     Finished,
@@ -65,7 +64,6 @@ except PackageNotFoundError:  # not installed (e.g. running from a source tree)
 
 __all__ = [
     "BytesResult",
-    "Cancelled",
     "CliClient",
     "Command",
     "Finished",

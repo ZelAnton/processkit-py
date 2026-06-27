@@ -123,7 +123,7 @@ Validate the FFI, packaging, and error mapping **without** the async-bridge risk
 - Containment verified from Python on all three mechanisms (the Rust side
   already does the work; this is exposure + tests).
 - **Error mapping:** Rust `Error` enum → a Python exception hierarchy
-  (`ProcessError` base; `Timeout`, `Cancelled`, `ResourceLimit`, `Unsupported`).
+  (`ProcessError` base; `Timeout`, `Signalled`, `ResourceLimit`, `Unsupported`).
   Decide alias policy vs builtins / `asyncio` exceptions (see Open Decisions).
 - Packaging: maturin build, abi3 wheel, `cibuildwheel` matrix green.
 
@@ -142,7 +142,7 @@ path.
   `asyncio.wait_for` / `asyncio.timeout`.
 
 **Exit criteria:** stream a long-running child line by line; cancel the task
-mid-stream; prove the tree is reaped and the result reports `Cancelled`.
+mid-stream; prove the tree is reaped and `asyncio.CancelledError` propagates.
 
 ### Phase 3 — Higher-level features  *(effort: L, parity, demand-ordered)*
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import sys
 
+import pytest
+
 from processkit import (
     BytesResult,
     Command,
@@ -19,6 +21,7 @@ from processkit import (
     output_all,
     output_all_bytes,
 )
+from processkit.testing import Reply, ScriptedRunner
 
 PY = sys.executable
 
@@ -70,3 +73,58 @@ def test_aoutput_all_bytes() -> None:
     first = results[0]
     assert isinstance(first, BytesResult)
     assert first.stdout == b"\x02\x03"
+
+
+# --- runner injection (C1) ---------------------------------------------------
+
+
+def test_output_all_accepts_injected_runner() -> None:
+    # A NO_SUCH program would fail to spawn for real; with a ScriptedRunner
+    # fallback wired in, no real process runs at all and the scripted reply
+    # surfaces — proving the batch actually drove every command through the
+    # injected runner, not the real one.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("scripted"))
+    results = output_all([Command(NO_SUCH), Command(NO_SUCH)], runner=runner)
+    assert all(isinstance(r, ProcessResult) for r in results)
+    assert [r.stdout for r in results if isinstance(r, ProcessResult)] == ["scripted", "scripted"]
+
+
+def test_output_all_bytes_accepts_injected_runner() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("bytes-scripted"))
+    results = output_all_bytes([Command(NO_SUCH)], runner=runner)
+    first = results[0]
+    assert isinstance(first, BytesResult)
+    assert first.stdout == b"bytes-scripted"
+
+
+def test_aoutput_all_accepts_injected_runner() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("async-scripted"))
+
+    async def scenario() -> list[ProcessResult | ProcessError]:
+        return await aoutput_all([Command(NO_SUCH)], runner=runner)
+
+    results = asyncio.run(scenario())
+    first = results[0]
+    assert isinstance(first, ProcessResult)
+    assert first.stdout == "async-scripted"
+
+
+def test_aoutput_all_bytes_accepts_injected_runner() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("async-bytes-scripted"))
+
+    async def scenario() -> list[BytesResult | ProcessError]:
+        return await aoutput_all_bytes([Command(NO_SUCH)], runner=runner)
+
+    results = asyncio.run(scenario())
+    first = results[0]
+    assert isinstance(first, BytesResult)
+    assert first.stdout == b"async-bytes-scripted"
+
+
+def test_output_all_rejects_unsupported_runner_object() -> None:
+    with pytest.raises(TypeError):
+        output_all([Command(PY, ["-c", "pass"])], runner=object())  # type: ignore[arg-type]

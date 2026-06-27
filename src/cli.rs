@@ -4,38 +4,50 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use processkit::CliClient as PkCliClient;
 use processkit::JobRunner;
+use processkit::ProcessRunner;
 use pyo3::prelude::*;
 
 use crate::convert::positive_duration;
 use crate::result::{PyBytesResult, PyProcessResult};
+use crate::runner::extract_runner;
 use crate::runtime::{block_on, drive_async};
 
-/// A program bound to default timeout/environment, run with the real `Runner`.
-///
-/// For testable code, compose a `Command` with an injected `Runner` /
-/// `ScriptedRunner` instead — this client always uses the real runner.
+/// A program bound to default timeout/environment, run with the real `Runner`
+/// by default, or an injected `runner=` (a `ScriptedRunner` and friends, for
+/// testable code with no real spawns).
 #[pyclass(name = "CliClient", module = "processkit")]
 pub(crate) struct PyCliClient {
     // `CliClient` is `Clone` (since 1.1.0), so the async verbs clone an owned
-    // client to hold across the await — no `Arc` indirection. A clone shares the
-    // same default cancellation token (the correct shared-token semantic).
-    inner: PkCliClient<JobRunner>,
+    // client to hold across the await — no extra indirection beyond the `Arc`
+    // the type-erased runner already needs. A clone shares the same default
+    // cancellation token (the correct shared-token semantic).
+    inner: PkCliClient<Arc<dyn ProcessRunner + Send + Sync>>,
 }
 
 #[pymethods]
 impl PyCliClient {
     #[new]
-    #[pyo3(signature = (program, *, default_timeout=None, default_env=None, default_env_remove=None))]
+    #[pyo3(signature = (program, *, default_timeout=None, default_env=None, default_env_remove=None, runner=None))]
     fn new(
         program: PathBuf,
         default_timeout: Option<f64>,
         default_env: Option<HashMap<String, String>>,
         default_env_remove: Option<Vec<String>>,
+        runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
-        let mut client = PkCliClient::new(program.as_os_str());
+        // `CliClient::new` only exists for `CliClient<JobRunner>`; since this
+        // binding's field is always the type-erased `Arc<dyn ProcessRunner +
+        // Send + Sync>`, build the runner value first (real by default) and
+        // always go through `with_runner`.
+        let runner: Arc<dyn ProcessRunner + Send + Sync> = match runner {
+            Some(obj) => extract_runner(obj)?,
+            None => Arc::new(JobRunner::new()),
+        };
+        let mut client = PkCliClient::with_runner(program.as_os_str(), runner);
         if let Some(seconds) = default_timeout {
             client = client.default_timeout(positive_duration(seconds, "default_timeout")?);
         }

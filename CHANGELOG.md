@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differently-cased Windows duplicate (`"Path"`/`"PATH"`) survives as two
   separate entries — use `env_is()`/`has_env()` for the correct answer either
   way.
+- `runner=` keyword on `output_all` / `aoutput_all` / `output_all_bytes` /
+  `aoutput_all_bytes`, `Supervisor(...)`, and `CliClient(...)` — drives the
+  batch/supervision/client through an injected runner (`Runner`,
+  `ScriptedRunner`, `RecordingRunner`, or `RecordReplayRunner`) instead of the
+  real one, so a test double stands in with no real process spawned. Defaults
+  to the real `Runner` when omitted (no behavior change). `CliClient` was
+  previously locked to the real runner; it is now just as testable as raw
+  `Command` code.
+- `ScriptedRunner.on_sequence(prefix, replies)` — reply with each of `replies`
+  in turn on successive matching calls (fail a few times, then succeed), then
+  repeat the last reply once exhausted. The declarative form for retry/
+  supervision test scenarios.
 
 ### Changed
 - `[project.urls] Homepage` in `pyproject.toml` now points at the project
@@ -57,6 +69,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ProcessGroup.signal()`'s docstring no longer claims Windows "emulates" the
   POSIX signals — a Job Object only delivers `kill` there; every other name
   raises `Unsupported`, as it always has.
+- Error mapping now uses the `processkit` 1.2.0 crate's `Error` accessors
+  instead of hand-matching each variant, closing two gaps: a cancelled run's
+  exception now carries `.program` (previously missing); and a spawn/IO
+  failure refused for a permission reason is now consistently `PermissionDenied`
+  (previously only a spawn-time refusal was — e.g. an OS-refused
+  `ProcessGroup.signal()` used to surface as a plain `ProcessError`).
+- `docs/testing.md`/`docs/cookbook.md` no longer claim an unmatched
+  `ScriptedRunner` call with no fallback raises `ProcessNotFound` (it raises a
+  plain `ProcessError` — that was always the actual behavior, the docs were
+  wrong) or that `CliClient` is un-injectable (see `runner=` above).
 
 ## [1.0.0] - 2026-07-04
 

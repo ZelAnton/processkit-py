@@ -135,6 +135,38 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
     })
 }
 
+/// Downcast a Python `runner=` argument to a type-erased, shareable
+/// `ProcessRunner` — the single extraction point `output_all`/`aoutput_all`/
+/// `output_all_bytes`/`aoutput_all_bytes` (`batch.rs`), `Supervisor.__new__`
+/// (`supervisor.rs`), and `CliClient.__new__` (`cli.rs`) use to accept an
+/// injected runner instead of hardcoding the real `JobRunner`. Accepts any of
+/// the four runner pyclasses (`Runner`, `ScriptedRunner`, `RecordingRunner`,
+/// `RecordReplayRunner`); each already wraps its concrete runner in an `Arc`,
+/// so `.clone()` unsize-coerces to the trait object at this function's
+/// declared return type — no extra allocation beyond the `Arc` bump. The
+/// crate's `ProcessGroup` also implements `ProcessRunner`, but exposing that
+/// as an `extract_runner` target is out of scope here (the rest of C7 is a
+/// later stage).
+pub(crate) fn extract_runner(
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<Arc<dyn ProcessRunner + Send + Sync>> {
+    if let Ok(r) = obj.cast::<PyRunner>() {
+        return Ok(r.borrow().inner.clone());
+    }
+    if let Ok(r) = obj.cast::<PyScriptedRunner>() {
+        return Ok(r.borrow().inner.clone());
+    }
+    if let Ok(r) = obj.cast::<PyRecordingRunner>() {
+        return Ok(r.borrow().inner.clone());
+    }
+    if let Ok(r) = obj.cast::<PyRecordReplayRunner>() {
+        return Ok(r.borrow().inner.clone());
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "runner must be one of Runner, ScriptedRunner, RecordingRunner, RecordReplayRunner",
+    ))
+}
+
 /// Emit a runner pyclass's `#[pymethods]` block: the six sync + six async run-verb
 /// forwarders (every runner delegates these to the generic `runner_*` helpers
 /// over its `self.inner`), spliced together with the type's own methods. PyO3's
@@ -307,6 +339,29 @@ runner_pymethods!(PyScriptedRunner {
     fn fallback(&mut self, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.fallback(reply))
+    }
+
+    /// Reply with each of `replies` in turn on successive matching calls (the
+    /// first match gets the first reply, the second the second, …); once
+    /// exhausted, the last reply repeats forever. The declarative form for
+    /// retry scenarios (fail once, then succeed). Matches like `on()` (program
+    /// + argument prefix).
+    fn on_sequence(
+        &mut self,
+        py: Python<'_>,
+        prefix: Vec<String>,
+        replies: Vec<Py<PyReply>>,
+    ) -> PyResult<()> {
+        // The crate's `on_sequence` panics on an empty `replies` — a Python-
+        // reachable call must never trigger a Rust panic across the FFI
+        // boundary, so reject it here first.
+        if replies.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "on_sequence needs at least one reply",
+            ));
+        }
+        let replies: Vec<PkReply> = replies.iter().map(|r| r.borrow(py).inner.clone()).collect();
+        self.reconfigure(move |runner| runner.on_sequence(prefix, replies))
     }
 
     fn __repr__(&self) -> String {

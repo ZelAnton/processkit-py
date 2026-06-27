@@ -278,6 +278,10 @@ whole batch returns — peak memory is the sum of all captured outputs, not just
 For raw-bytes output use `output_all_bytes` / `aoutput_all_bytes` — the same
 batch, with each slot a `BytesResult` (or a `ProcessError`).
 
+All four accept `runner=` too, driving the whole batch through a double (see
+[Test code without spawning processes](#test-code-without-spawning-processes))
+instead of the real runner — no real processes spawned in a batch test.
+
 ## Wrap a CLI tool
 
 `CliClient` binds a program to default timeout/env, so repeated calls pass only
@@ -291,8 +295,9 @@ head = git.run(["rev-parse", "HEAD"])            # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 ```
 
-For testable code, inject a `Runner` / `ScriptedRunner` at the `Command` level
-instead — `CliClient` always uses the real runner.
+For testable code, pass `runner=` (a `ScriptedRunner` and friends from
+`processkit.testing`) to drive every verb through a double instead of the real
+runner — see [Testing your code](testing.md#wrapping-a-cli-tool-cliclient).
 
 ## Keep a service alive (supervision)
 
@@ -315,6 +320,10 @@ bool; inspect the passed result rather than calling a synchronous run verb insid
 it (a nested sync call from within the supervisor's own loop is unsupported). A
 predicate that raises is reported via the unraisable hook and treated as "don't
 stop".
+
+`Supervisor` also accepts `runner=` — pass a `ScriptedRunner` with
+`.on_sequence(...)` (fail a few times, then succeed) to test a restart/backoff
+policy hermetically, with no real flaky process behind it.
 
 ## Sandbox an untrusted tree with resource limits
 
@@ -416,7 +425,14 @@ assert latest_commit(scripted) == "deadbeef"
 
 `Reply.ok` / `.fail` / `.timeout` / `.signalled` / `.lines` / `.pending` cover
 the outcomes; `ScriptedRunner.start()` even returns a streamable scripted
-`RunningProcess`.
+`RunningProcess`. `.on_sequence(prefix, replies)` scripts a *sequence* of
+replies for successive matching calls (fail once, then succeed — the shape a
+retry/supervision test needs), repeating the last reply once exhausted.
+
+`output_all`/`aoutput_all` (and their `_bytes` twins), `Supervisor`, and
+`CliClient` all accept the same doubles via a `runner=` keyword, so batches,
+supervised commands, and CLI wrappers are just as testable as raw `Command`
+code — see [Testing your code](testing.md) for the full picture.
 
 To capture *real* tool output once and replay it deterministically offline, use
 `RecordReplayRunner` — both share the `Runner` verb surface:

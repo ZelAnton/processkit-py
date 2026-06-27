@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from processkit import Command, ProcessError, Supervisor
+from processkit.testing import Reply, ScriptedRunner
 
 PY = sys.executable
 
@@ -173,3 +174,25 @@ def test_supervisor_zero_failure_decay_is_accepted() -> None:
     # A zero half-life is a valid crate config (no history; every failure scores
     # 1.0) — the binding must not reject it.
     Supervisor(Command(PY, ["-c", "pass"]), restart="never", storm_pause=0.01, failure_decay=0.0)
+
+
+# --- runner injection (C1) ---------------------------------------------------
+
+
+def test_supervisor_accepts_injected_runner() -> None:
+    # The command names a program that would fail to spawn for real
+    # ("no-such-program"); with a ScriptedRunner injected, every incarnation is
+    # driven through it instead of the real Runner — no real process runs, and
+    # the scripted reply decides the outcome.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("supervised"))
+    outcome = Supervisor(
+        Command("processkit-no-such-supervisor-program"), restart="never", runner=runner
+    ).run()
+    assert outcome.final_result.is_success
+    assert outcome.final_result.stdout == "supervised"
+
+
+def test_supervisor_rejects_unsupported_runner_object() -> None:
+    with pytest.raises(TypeError):
+        Supervisor(Command(PY, ["-c", "pass"]), runner=object())  # type: ignore[arg-type]

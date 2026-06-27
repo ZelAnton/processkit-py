@@ -101,72 +101,86 @@ fn cached<'py>(lock: &PyOnceLock<Py<PyType>>, py: Python<'py>) -> Bound<'py, PyT
 /// is already held), so both the sync surface and the async futures can map an
 /// error with a uniform `.map_err(map_err)` — no caller-threaded `py` token.
 ///
-/// `Error` is `#[non_exhaustive]`, so the wildcard arm both covers the rarer
-/// variants (`CassetteMiss`, `Parse`, `NotReady`, …) and stays
-/// forward-compatible.
+/// Since crate 1.2.0, exception-type selection and field attachment are driven
+/// by `Error`'s own accessors (`program()`/`stdout()`/`stderr()`/`code()`/
+/// `signal()`/`is_timeout()`/`is_not_found()`/`is_permission_denied()`) instead
+/// of hand-destructuring every `#[non_exhaustive]` variant — new variants (or
+/// new stream-bearing/program-naming ones) are covered automatically as the
+/// crate extends its accessors, rather than silently missing a field. Only the
+/// handful of things with no accessor (`Timeout.timeout`'s `Duration`,
+/// `OutputTooLarge`'s counters, `Unsupported.operation`) still need a direct
+/// match on the variant.
 pub(crate) fn map_err(error: processkit::Error) -> PyErr {
     use processkit::Error as E;
-    use std::io::ErrorKind;
 
     Python::attach(|py| {
         let message = error.to_string();
-        let err = match &error {
-            E::Timeout { .. } => PyErr::from_type(cached(&TIMEOUT, py), message),
-            E::Exit { .. } => NonZeroExit::new_err(message),
-            E::Signalled { .. } => Signalled::new_err(message),
-            E::NotFound { .. } => PyErr::from_type(cached(&PROCESS_NOT_FOUND, py), message),
-            // A genuine missing program is *always* `E::NotFound` (the crate funnels
-            // every program-not-found case there — see its `is_not_found()`), handled
-            // above. A `Spawn` of `NotFound` kind is therefore NOT a missing program:
-            // it's a bad `cwd` or a file that's on `PATH` but not directly executable
-            // (a Windows `.cmd`/`.bat` needing `cmd.exe`). Those must fall through to
-            // the generic `ProcessError` — mapping them to `ProcessNotFound`/
-            // `FileNotFoundError` would mislead `except FileNotFoundError` fallbacks.
-            // A spawn-time permission failure (EACCES) still maps to `PermissionDenied`
-            // for stdlib parity — the crate has no up-front reclassification for it, so
-            // a `Spawn` of `PermissionDenied` kind really is a spawn EACCES.
-            E::Spawn { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
-                PyErr::from_type(cached(&PERMISSION_DENIED, py), message)
+        let err = if error.is_timeout() {
+            PyErr::from_type(cached(&TIMEOUT, py), message)
+        } else if error.is_not_found() {
+            // A genuine missing program is *always* `is_not_found()` (the crate
+            // funnels every program-not-found case into `E::NotFound`). A `Spawn`
+            // carrying `io::ErrorKind::NotFound` is therefore NOT a missing program
+            // — it's a bad `cwd` or a file that's on `PATH` but not directly
+            // executable (a Windows `.cmd`/`.bat` needing `cmd.exe`) — `is_not_found`
+            // correctly excludes it, so it falls through to the generic
+            // `ProcessError` below rather than misleading an
+            // `except FileNotFoundError` fallback.
+            PyErr::from_type(cached(&PROCESS_NOT_FOUND, py), message)
+        } else if error.is_permission_denied() {
+            // `is_permission_denied()` is broader than the old hand-matched arm
+            // (`Spawn` carrying `PermissionDenied` only): it also covers `Io`
+            // carrying `PermissionDenied` (e.g. a group signal the OS refused).
+            // Decided: upgrade every such case to `PermissionDenied` for stdlib
+            // parity (`except PermissionError` should catch all of them, not just
+            // the spawn-time subset) — there is no case where the broader
+            // classification would mislead a caller.
+            PyErr::from_type(cached(&PERMISSION_DENIED, py), message)
+        } else {
+            match &error {
+                E::Exit { .. } => NonZeroExit::new_err(message),
+                E::Signalled { .. } => Signalled::new_err(message),
+                E::ResourceLimit { .. } => ResourceLimit::new_err(message),
+                E::Unsupported { .. } => Unsupported::new_err(message),
+                E::OutputTooLarge { .. } => OutputTooLarge::new_err(message),
+                _ => ProcessError::new_err(message),
             }
-            E::ResourceLimit { .. } => ResourceLimit::new_err(message),
-            E::Unsupported { .. } => Unsupported::new_err(message),
-            E::OutputTooLarge { .. } => OutputTooLarge::new_err(message),
-            _ => ProcessError::new_err(message),
         };
 
-        // Attach structured fields. `setattr` failures are ignored: the typed
+        // Attach structured fields via the accessors — variant-generic, so a
+        // `Cancelled` error (previously omitted from the hand-matched
+        // program-attaching arm) now gets `.program` for free, like every other
+        // program-naming variant. `setattr` failures are ignored: the typed
         // exception with its message is already a faithful error.
         let value = err.value(py);
+        if let Some(program) = error.program() {
+            let _ = value.setattr("program", program);
+        }
+        if let Some(code) = error.code() {
+            let _ = value.setattr("code", code);
+        }
+        if let Some(stdout) = error.stdout() {
+            let _ = value.setattr("stdout", stdout);
+        }
+        if let Some(stderr) = error.stderr() {
+            let _ = value.setattr("stderr", stderr);
+        }
+
+        // The handful of fields with no `Error` accessor still need a direct match.
         match &error {
-            E::Exit {
-                code,
-                program,
-                stdout,
-                stderr,
-            } => {
-                let _ = value.setattr("program", program.as_str());
-                let _ = value.setattr("code", *code);
-                let _ = value.setattr("stdout", stdout.as_str());
-                let _ = value.setattr("stderr", stderr.as_str());
-            }
-            E::Signalled {
-                program,
-                signal,
-                stdout,
-                stderr,
-            } => {
-                let _ = value.setattr("program", program.as_str());
+            E::Signalled { signal, .. } => {
+                // Unlike `program`/`stdout`/`stderr`/`code` (attached above via the
+                // accessor block, `if let Some(...)`), `signal` must be set
+                // UNCONDITIONALLY here: `error.signal()` returns `None` both when
+                // this isn't a `Signalled` and when it IS one but the kernel/double
+                // didn't report a number (a real Unix signal-kill can do this, and
+                // `Reply.signalled()` with no argument always does) — the stub
+                // promises `Signalled.signal: int | None` is always present, so a
+                // conditional `setattr` would leave it missing (`AttributeError`)
+                // for exactly that no-number case instead of reading `None`.
                 let _ = value.setattr("signal", *signal);
-                let _ = value.setattr("stdout", stdout.as_str());
-                let _ = value.setattr("stderr", stderr.as_str());
             }
-            E::Timeout {
-                program,
-                timeout,
-                stdout,
-                stderr,
-            } => {
-                let _ = value.setattr("program", program.as_str());
+            E::Timeout { timeout, .. } => {
                 // A zero `Duration` means the deadline wasn't known to the checking
                 // verb (a scripted/cassette-replayed timeout with no `timeout()`
                 // configured) — leave the attribute unset (reads `None`) rather than
@@ -174,37 +188,27 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 if !timeout.is_zero() {
                     let _ = value.setattr("timeout_seconds", timeout.as_secs_f64());
                 }
-                let _ = value.setattr("stdout", stdout.as_str());
-                let _ = value.setattr("stderr", stderr.as_str());
             }
             E::OutputTooLarge {
-                program,
                 line_limit,
                 byte_limit,
                 total_lines,
                 total_bytes,
+                ..
             } => {
                 // Python attr names mirror the `output_limit(max_bytes=, max_lines=)`
                 // builder kwargs (the crate's struct fields are *_limit).
-                let _ = value.setattr("program", program.as_str());
                 let _ = value.setattr("max_lines", *line_limit);
                 let _ = value.setattr("max_bytes", *byte_limit);
                 let _ = value.setattr("total_lines", *total_lines);
                 let _ = value.setattr("total_bytes", *total_bytes);
             }
-            E::NotFound { program, .. }
-            | E::Spawn { program, .. }
-            | E::CassetteMiss { program }
-            | E::NotReady { program, .. }
-            | E::Parse { program, .. }
-            | E::Stdin { program, .. } => {
-                let _ = value.setattr("program", program.as_str());
-            }
             E::Unsupported { operation } => {
                 let _ = value.setattr("operation", operation.as_str());
             }
-            // `ResourceLimit` carries no structured field: its message is the whole
-            // payload, already available via `str(exc)` (no redundant `.message`).
+            // Every other variant's fields are already covered by the accessor
+            // block above, or (like `ResourceLimit`) carries no structured field
+            // beyond its message (already available via `str(exc)`).
             _ => {}
         }
         err

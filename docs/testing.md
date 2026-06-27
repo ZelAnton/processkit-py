@@ -107,8 +107,20 @@ Build the canned outcomes with the `Reply` factories:
 Prefix matching is element-wise over the program name then the arguments, so
 `on(["git", "branch"])` matches `git branch --show-current` but not `git
 branchx` (and not `hg branch`). An **unmatched command with no fallback raises
-`ProcessNotFound`** — the same loud error as a missing binary, so an unexpected
-invocation can't slip through a test silently.
+a plain `ProcessError`** (not `ProcessNotFound`/`FileNotFoundError` — a miss is
+a scripting gap, not a missing *program*) — loud enough that an unexpected
+invocation can't slip through a test silently, but distinguishable from a
+genuinely missing binary.
+
+Reply each of several successive calls in turn with **`.on_sequence(prefix,
+replies)`** — the declarative form for "fail once, then succeed" retry
+scenarios: the first matching call gets `replies[0]`, the second `replies[1]`,
+and so on; once exhausted, the **last** reply repeats forever.
+
+```python
+runner = ScriptedRunner()
+runner.on_sequence(["deploy"], [Reply.fail(1, "transient"), Reply.ok("deployed")])
+```
 
 *Deeper: outcome semantics and the exception hierarchy — [Running commands](commands.md).*
 
@@ -262,12 +274,25 @@ clean = git.probe(["diff", "--quiet"])
 git.run(["fetch", "--quiet"])                # raises on failure; ignore the stdout
 ```
 
-One important limit: **`CliClient` always uses the real `Runner` — it is not
-injectable.** It is convenience, not a seam. For hermetic tests, don't try to
-double a `CliClient`; instead structure the code under test around a `runner`
-parameter (as in [The runner seam](#the-runner-seam)) and inject a `Runner` /
-`ScriptedRunner` at the `Command` level. Reach for `CliClient` in glue code
-where you're content to call the real tool.
+`CliClient` accepts an optional `runner=` too, driving every verb through the
+given runner instead of the real one — a `ScriptedRunner` (or `RecordingRunner`
+/ `RecordReplayRunner`) makes a `CliClient`-based wrapper hermetically testable
+without restructuring it around a `runner` parameter of its own:
+
+```python
+from processkit import CliClient
+from processkit.testing import Reply, ScriptedRunner
+
+scripted = ScriptedRunner()
+scripted.on(["git", "rev-parse", "HEAD"], Reply.ok("deadbeef\n"))
+git = CliClient("git", runner=scripted)
+assert git.run(["rev-parse", "HEAD"]) == "deadbeef"   # no real git spawned
+```
+
+`output_all`/`aoutput_all` (and their `_bytes` twins) and `Supervisor` accept
+the same `runner=` keyword, for the same reason — a batch or a supervised
+command can be driven through a double in a test, with the real `JobRunner`
+the default when `runner=` is omitted.
 
 *Deeper: per-client defaults and the full verb set — [the Cookbook](cookbook.md) → "Wrap a CLI tool".*
 

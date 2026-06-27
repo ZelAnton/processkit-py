@@ -1,9 +1,11 @@
 //! The `Supervisor` (restart/backoff) and its `SupervisionOutcome`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
+use processkit::ProcessRunner;
 use processkit::SupervisionOutcome;
 use processkit::Supervisor as PkSupervisor;
 use pyo3::exceptions::PyValueError;
@@ -15,6 +17,7 @@ use crate::convert::{
 };
 use crate::errors::ProcessError;
 use crate::result::PyProcessResult;
+use crate::runner::extract_runner;
 use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
 
 /// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
@@ -112,11 +115,11 @@ impl PySupervisionOutcome {
 /// condition is met. Configure with keyword arguments, then `run()` / `arun()`.
 #[pyclass(name = "Supervisor", module = "processkit")]
 pub(crate) struct PySupervisor {
-    inner: Option<PkSupervisor<JobRunner>>,
+    inner: Option<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>>,
 }
 
 impl PySupervisor {
-    fn take_supervisor(&mut self) -> PyResult<PkSupervisor<JobRunner>> {
+    fn take_supervisor(&mut self) -> PyResult<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>> {
         self.inner
             .take()
             .ok_or_else(|| ProcessError::new_err("this Supervisor has already been run"))
@@ -139,6 +142,7 @@ impl PySupervisor {
         storm_pause=None,
         failure_threshold=None,
         failure_decay=None,
+        runner=None,
     ))]
     #[allow(clippy::too_many_arguments)] // a keyword-only builder constructor
     fn new(
@@ -153,6 +157,7 @@ impl PySupervisor {
         storm_pause: Option<f64>,
         failure_threshold: Option<f64>,
         failure_decay: Option<f64>,
+        runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let mut supervisor = PkSupervisor::new(command.inner.clone());
         if let Some(policy) = restart {
@@ -207,6 +212,18 @@ impl PySupervisor {
             // history — every failure scores exactly 1.0).
             supervisor = supervisor.failure_decay(nonnegative_duration(seconds, "failure_decay")?);
         }
+        // `Supervisor::new` only exists for `Supervisor<JobRunner>`; every builder
+        // call above is generic over `R` and works unchanged on that concrete
+        // type. `with_runner` is the one type-changing step, applied last so it
+        // always lands on this binding's field type
+        // (`Supervisor<Arc<dyn ProcessRunner + Send + Sync>>`) — the real
+        // `JobRunner` by default, or whatever `extract_runner` resolves an
+        // injected `runner=` to.
+        let runner: Arc<dyn ProcessRunner + Send + Sync> = match runner {
+            Some(obj) => extract_runner(obj)?,
+            None => Arc::new(JobRunner::new()),
+        };
+        let supervisor = supervisor.with_runner(runner);
         Ok(Self {
             inner: Some(supervisor),
         })

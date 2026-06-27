@@ -20,6 +20,7 @@ from processkit import (
     Command,
     NonZeroExit,
     ProcessError,
+    ProcessNotFound,
     ProcessRunner,
     Runner,
     Signalled,
@@ -175,6 +176,21 @@ def test_reply_signalled() -> None:
     assert runner.output(Command("x")).signal == 15
     with pytest.raises(Signalled):
         runner.run(Command("x"))
+
+
+def test_reply_signalled_with_no_number_reads_none_not_missing() -> None:
+    # Reply.signalled() with no argument models a real Unix signal-kill the
+    # kernel didn't report a number for. `.signal` must still be present and
+    # read `None` (per the stub's `signal: int | None`), not raise
+    # AttributeError — a regression the accessor-based map_err rewrite
+    # (map_err's field attachment now driven by Error's accessors rather than
+    # a per-variant setattr) could silently reintroduce, since `error.signal()`
+    # returns `None` for this exact case too.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.signalled())
+    with pytest.raises(Signalled) as excinfo:
+        runner.run(Command("x"))
+    assert excinfo.value.signal is None
 
 
 def test_reply_with_stdout_on_failure() -> None:
@@ -409,3 +425,55 @@ def test_recording_runner_satisfies_process_runner() -> None:
     rec = RecordingRunner.replying(Reply.ok(""))
     _accepts_runner(rec)  # static (mypy) signature conformance, not just isinstance
     assert isinstance(rec, ProcessRunner)
+
+
+# --- ScriptedRunner: miss/precedence/on_sequence (E1.5) ---------------------
+
+
+def test_scripted_runner_miss_with_no_fallback_raises_plain_process_error() -> None:
+    # A miss (no rule matched, no fallback()) must raise a plain ProcessError —
+    # NOT ProcessNotFound/FileNotFoundError. The crate reports this as a `Spawn`
+    # carrying `io::ErrorKind::NotFound`, which `errors.rs::map_err`'s
+    # `is_not_found()` check deliberately excludes (that predicate is true only
+    # for a genuine missing *program*, `Error::NotFound`) — pinning this closes
+    # the loop on that classification for the one case that could plausibly be
+    # confused with it.
+    runner = ScriptedRunner()
+    with pytest.raises(ProcessError) as excinfo:
+        runner.run(Command("unscripted"))
+    assert type(excinfo.value) is ProcessError
+    assert not isinstance(excinfo.value, ProcessNotFound)
+    assert not isinstance(excinfo.value, FileNotFoundError)
+
+
+def test_scripted_runner_multiple_on_rules_precedence() -> None:
+    # Rules are matched in REGISTRATION order (first match wins), not by
+    # specificity — a broader rule registered first shadows a narrower one
+    # registered after it, per the crate's documented `matched_reply` semantics.
+    runner = ScriptedRunner()
+    runner.on(["git"], Reply.ok("broad"))
+    runner.on(["git", "status"], Reply.ok("narrow"))
+    assert runner.run(Command("git", ["status"])) == "broad"
+
+    # Registering the more specific rule first lets it win instead.
+    specific_first = ScriptedRunner()
+    specific_first.on(["git", "status"], Reply.ok("narrow"))
+    specific_first.on(["git"], Reply.ok("broad"))
+    assert specific_first.run(Command("git", ["status"])) == "narrow"
+
+
+def test_scripted_runner_on_sequence_progresses_then_repeats_last() -> None:
+    runner = ScriptedRunner()
+    runner.on_sequence(["deploy"], [Reply.fail(1, "flaky"), Reply.ok("ok")])
+    with pytest.raises(NonZeroExit):
+        runner.run(Command("deploy"))
+    assert runner.run(Command("deploy")) == "ok"
+    # Exhausted: the last reply keeps repeating.
+    assert runner.run(Command("deploy")) == "ok"
+    assert runner.run(Command("deploy")) == "ok"
+
+
+def test_scripted_runner_on_sequence_rejects_empty_replies() -> None:
+    runner = ScriptedRunner()
+    with pytest.raises(ValueError):
+        runner.on_sequence(["deploy"], [])

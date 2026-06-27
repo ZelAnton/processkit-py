@@ -388,6 +388,12 @@ class Supervisor:
         storm_pause: float | None = ...,
         failure_threshold: float | None = ...,
         failure_decay: float | None = ...,
+        # Drives every incarnation through this runner instead of the real
+        # `Runner` — a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`
+        # for hermetic supervision tests, or a shared `&ProcessGroup`-backed
+        # `Runner`. (Inline union, not a named alias: only three call sites in
+        # the whole surface use this shape.)
+        runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
     ) -> None: ...
     def run(self) -> SupervisionOutcome: ...
     async def arun(self) -> SupervisionOutcome: ...
@@ -436,6 +442,10 @@ class ScriptedRunner:
 
     def __init__(self) -> None: ...
     def on(self, prefix: Sequence[str], reply: Reply) -> None: ...
+    # Reply with each of `replies` in turn on successive matching calls; the
+    # last one repeats once exhausted. Raises `ValueError` for an empty
+    # `replies` sequence.
+    def on_sequence(self, prefix: Sequence[str], replies: Sequence[Reply]) -> None: ...
     def fallback(self, reply: Reply) -> None: ...
     def output(self, command: Command) -> ProcessResult: ...
     def output_bytes(self, command: Command) -> BytesResult: ...
@@ -558,6 +568,10 @@ class CliClient:
         default_timeout: float | None = ...,
         default_env: Mapping[str, str] | None = ...,
         default_env_remove: Sequence[str] | None = ...,
+        # Drives every verb through this runner instead of the real `Runner` —
+        # a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner` for testable
+        # client code with no real spawns.
+        runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
     ) -> None: ...
     def run(self, args: Sequence[str]) -> str: ...
     def output(self, args: Sequence[str]) -> ProcessResult: ...
@@ -642,18 +656,33 @@ class OutputTooLarge(ProcessError):
 
 # Batch execution: run many commands with bounded concurrency, in input order.
 # A command that failed (a spawn or I/O error) appears as a `ProcessError` in its
-# result slot (a non-zero exit is data on the `ProcessResult`).
+# result slot (a non-zero exit is data on the `ProcessResult`). `runner=` drives
+# every command through the given runner instead of the real `Runner` — a
+# `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner` for a hermetic batch
+# test with no real spawns.
 def output_all(
-    commands: Sequence[Command], *, concurrency: int | None = ...
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = ...,
+    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
 ) -> list[ProcessResult | ProcessError]: ...
 async def aoutput_all(
-    commands: Sequence[Command], *, concurrency: int | None = ...
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = ...,
+    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
 ) -> list[ProcessResult | ProcessError]: ...
 def output_all_bytes(
-    commands: Sequence[Command], *, concurrency: int | None = ...
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = ...,
+    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
 ) -> list[BytesResult | ProcessError]: ...
 async def aoutput_all_bytes(
-    commands: Sequence[Command], *, concurrency: int | None = ...
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = ...,
+    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
 ) -> list[BytesResult | ProcessError]: ...
 
 # Opt-in observability: install a process-global subscriber that forwards the

@@ -13,6 +13,7 @@ import sys
 import pytest
 
 from processkit import CliClient, ProcessRunner
+from processkit.testing import Reply, ScriptedRunner
 
 PY = sys.executable
 
@@ -65,3 +66,21 @@ def test_cli_client_is_not_a_process_runner() -> None:
     # CliClient verbs take per-call args (not a Command) and it has no start()/
     # astart() — so it is deliberately NOT a ProcessRunner.
     assert not isinstance(CliClient("git"), ProcessRunner)
+
+
+# --- runner injection (C1) ---------------------------------------------------
+
+
+def test_cli_client_accepts_injected_runner() -> None:
+    # "no-such-tool" would fail to spawn for real; with a ScriptedRunner
+    # injected, every verb runs through it instead — no real process, and the
+    # scripted reply is what comes back.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("cli-scripted"))
+    client = CliClient("processkit-no-such-cli-tool", runner=runner)
+    assert client.run(["--version"]) == "cli-scripted"
+
+
+def test_cli_client_rejects_unsupported_runner_object() -> None:
+    with pytest.raises(TypeError):
+        CliClient(PY, runner=object())  # type: ignore[arg-type]

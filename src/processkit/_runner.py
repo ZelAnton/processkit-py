@@ -23,8 +23,9 @@ class ProcessRunner(Protocol):
     an injected runner as `ProcessRunner` so your code accepts any of them. A
     hand-rolled double can implement the capture/check verbs (`output`/`run`/…)
     easily, but `start`/`astart` must return a `RunningProcess`, which has no public
-    constructor — so a fully-conforming custom runner in practice means subclassing
-    or wrapping one of the built-ins (use `ScriptedRunner` for streaming doubles).
+    constructor — and the built-in runners are `@final`, so a fully-conforming custom
+    runner in practice means *wrapping* one (delegating `start`/`astart` to it; use
+    `ScriptedRunner` for streaming doubles).
     (`CliClient` is *not* a `ProcessRunner` — its verbs take per-call args, not a
     `Command`, and it has no `start`/`astart`.)
     """

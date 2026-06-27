@@ -1,0 +1,34 @@
+# Allowlist for `python -m mypy.stubtest processkit` (run with --ignore-disjoint-bases).
+#
+# Every entry below suppresses a finding that is an irreducible PyO3 / stub-only
+# convention, NOT a real stub bug. stubtest still fully checks method signatures,
+# member existence (both directions), and attribute types for the whole surface.
+# Keep this list minimal; an unused entry fails CI (--ignore-unused-allowlist is
+# NOT passed), so a stale suppression surfaces immediately.
+
+# --- PyO3 constructor convention -------------------------------------------
+# PyO3 builds instances via __new__ (the generated runtime __init__ takes no
+# args); the hand-written stub uses the conventional __init__ form. mypy
+# type-checks construction against that __init__ at every call site, and the test
+# suite constructs all four with real arguments, so the signatures are covered —
+# stubtest just sees the __new__/__init__ split as a mismatch.
+processkit._processkit.CliClient.__init__
+processkit._processkit.CliClient.__new__
+processkit._processkit.Command.__init__
+processkit._processkit.Command.__new__
+processkit._processkit.ProcessGroup.__init__
+processkit._processkit.ProcessGroup.__new__
+processkit._processkit.Supervisor.__init__
+processkit._processkit.Supervisor.__new__
+
+# --- stub-only type aliases -------------------------------------------------
+# Used only in annotations; not runtime attributes of the compiled module.
+processkit._processkit.SignalName
+processkit._processkit.StopReason
+processkit._processkit.StrPath
+
+# --- compiled-module __all__ ------------------------------------------------
+# PyO3 emits a module-level __all__ on the extension; the stub does not redeclare
+# it. The public surface is re-exported and __all__-listed by processkit/__init__.py
+# (and that __all__ is guarded by tests/test_api_surface.py).
+processkit._processkit.__all__

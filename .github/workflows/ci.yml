@@ -47,7 +47,7 @@ jobs:
       - run: uv run ruff check .
 
   typecheck:
-    name: mypy
+    name: mypy + stubtest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -60,6 +60,14 @@ jobs:
         with:
           enable-cache: true
       - run: uv run mypy
+      # stubtest checks the .pyi against the compiled module at runtime — it catches
+      # signature drift (params/types/defaults) the AST-based drift guard in
+      # tests/test_api_surface.py cannot see. The allowlist suppresses only
+      # irreducible PyO3 / stub-only conventions (see stubtest-allowlist.txt).
+      # --ignore-disjoint-bases keeps the gate stable across mypy upgrades: the
+      # dual-base exceptions (e.g. Timeout(ProcessError, TimeoutError)) are PEP 800
+      # disjoint-base candidates a future mypy could start flagging.
+      - run: uv run python -m mypy.stubtest processkit --ignore-disjoint-bases --allowlist stubtest-allowlist.txt
 
   rust-lint:
     name: rust-lint

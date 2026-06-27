@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from types import TracebackType
-from typing import Literal
+from typing import Literal, final
 
 # A program / path argument: a `str` or an `os.PathLike[str]` (e.g. `pathlib.Path`).
 # `bytes` paths are not accepted (the extension decodes through `str`).
@@ -22,6 +22,7 @@ SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
 # forward-compat fallback that the pinned crate version does not emit.
 StopReason = Literal["policy_satisfied", "predicate", "restarts_exhausted", "unknown"]
 
+@final
 class ProcessResult:
     """The captured result of a finished run. A non-zero exit, a timeout, and a
     signal-kill are all reported as data here — never raised by `output()`."""
@@ -48,6 +49,7 @@ class ProcessResult:
     def combined(self) -> str: ...
     def __repr__(self) -> str: ...
 
+@final
 class BytesResult:
     """The captured result of a run with raw-bytes stdout (`Command.output_bytes()`);
     stderr stays decoded text. A non-zero exit, a timeout, and a signal-kill are
@@ -76,6 +78,7 @@ class BytesResult:
 
     def __repr__(self) -> str: ...
 
+@final
 class Command:
     """A command builder. Builder methods return a new `Command`."""
 
@@ -125,14 +128,15 @@ class Command:
     async def aprobe(self) -> bool: ...
     async def astart(self) -> RunningProcess: ...
     def pipe(self, other: Command) -> Pipeline: ...
-    def __or__(self, other: Command) -> Pipeline: ...
+    def __or__(self, other: Command, /) -> Pipeline: ...
     def __repr__(self) -> str: ...
 
+@final
 class Pipeline:
     """A shell-free pipeline `a | b | c`."""
 
     def pipe(self, other: Command) -> Pipeline: ...
-    def __or__(self, other: Command) -> Pipeline: ...
+    def __or__(self, other: Command, /) -> Pipeline: ...
     def timeout(self, seconds: float) -> Pipeline: ...
     def output(self) -> ProcessResult: ...
     def output_bytes(self) -> BytesResult: ...
@@ -146,6 +150,7 @@ class Pipeline:
     async def aprobe(self) -> bool: ...
     def __repr__(self) -> str: ...
 
+@final
 class Outcome:
     """How a process ended.
 
@@ -165,6 +170,7 @@ class Outcome:
     def exited_zero(self) -> bool: ...
     def __repr__(self) -> str: ...
 
+@final
 class Finished:
     """A process's outcome plus captured stderr (stdout was streamed).
 
@@ -182,6 +188,7 @@ class Finished:
     def exited_zero(self) -> bool: ...
     def __repr__(self) -> str: ...
 
+@final
 class OutputEvent:
     """One captured line and the stream it came from."""
 
@@ -193,18 +200,21 @@ class OutputEvent:
     def text(self) -> str: ...
     def __repr__(self) -> str: ...
 
+@final
 class StdoutLines:
     """Async iterator over a process's stdout, line by line."""
 
     def __aiter__(self) -> AsyncIterator[str]: ...
     async def __anext__(self) -> str: ...
 
+@final
 class OutputEvents:
     """Async iterator over stdout + stderr as interleaved `OutputEvent`s."""
 
     def __aiter__(self) -> AsyncIterator[OutputEvent]: ...
     async def __anext__(self) -> OutputEvent: ...
 
+@final
 class ProcessStdin:
     """A writable handle to a running process's stdin (all methods awaitable)."""
 
@@ -213,6 +223,7 @@ class ProcessStdin:
     async def flush(self) -> None: ...
     async def close(self) -> None: ...
 
+@final
 class RunningProcess:
     """A handle to a started process: stream output, write stdin, await exit.
 
@@ -277,6 +288,7 @@ class RunningProcess:
 
     def __repr__(self) -> str: ...
 
+@final
 class ProcessGroupStats:
     """A snapshot of a `ProcessGroup`'s resource usage."""
 
@@ -288,6 +300,7 @@ class ProcessGroupStats:
     def total_cpu_time_seconds(self) -> float | None: ...
     def __repr__(self) -> str: ...
 
+@final
 class ProcessGroup:
     """A kill-on-drop container for a process tree; use as a (async) context manager."""
 
@@ -334,6 +347,7 @@ class ProcessGroup:
     async def ashutdown(self) -> None: ...
     def __repr__(self) -> str: ...
 
+@final
 class SupervisionOutcome:
     """The result of a `Supervisor.run()`."""
 
@@ -347,6 +361,7 @@ class SupervisionOutcome:
     def storm_pauses(self) -> int: ...
     def __repr__(self) -> str: ...
 
+@final
 class Supervisor:
     """Keep a command alive: restart per policy with backoff until a stop condition."""
 
@@ -368,6 +383,7 @@ class Supervisor:
     def run(self) -> SupervisionOutcome: ...
     async def arun(self) -> SupervisionOutcome: ...
 
+@final
 class Reply:
     """A canned reply for a `ScriptedRunner` rule."""
 
@@ -386,6 +402,7 @@ class Reply:
     def with_stdout(self, stdout: str) -> Reply: ...
     def __repr__(self) -> str: ...
 
+@final
 class Runner:
     """The real process runner — inject it for testable code."""
 
@@ -404,6 +421,7 @@ class Runner:
     async def astart(self, command: Command) -> RunningProcess: ...
     def __repr__(self) -> str: ...
 
+@final
 class ScriptedRunner:
     """A scripted test double for `Runner`."""
 
@@ -424,6 +442,7 @@ class ScriptedRunner:
     async def astart(self, command: Command) -> RunningProcess: ...
     def __repr__(self) -> str: ...
 
+@final
 class RecordReplayRunner:
     """Records real runs to a cassette file (`record`) and replays them without
     spawning (`replay`); shares the `Runner` run-verb surface."""
@@ -447,6 +466,7 @@ class RecordReplayRunner:
     async def astart(self, command: Command) -> RunningProcess: ...
     def __repr__(self) -> str: ...
 
+@final
 class RunProfile:
     """A resource-usage profile sampled across a run (`RunningProcess.profile`)."""
 
@@ -464,6 +484,7 @@ class RunProfile:
     def avg_cpu_cores(self) -> float | None: ...
     def __repr__(self) -> str: ...
 
+@final
 class CliClient:
     """A program bound to default timeout/env, run with the real `Runner`. The
     verbs take just the per-call arguments."""

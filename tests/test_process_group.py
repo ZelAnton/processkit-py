@@ -176,3 +176,4 @@ def test_group_stats() -> None:
             pytest.skip("stats unsupported on this platform")
         assert stats.active_process_count >= 1
         assert stats.peak_memory_bytes is None or stats.peak_memory_bytes >= 0
+        assert stats.total_cpu_time_seconds is None or stats.total_cpu_time_seconds >= 0.0

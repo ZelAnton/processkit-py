@@ -58,20 +58,26 @@ def test_stdout_lines_streams_in_order() -> None:
     lines, finished = asyncio.run(scenario())
     assert lines == [f"line{i}" for i in range(5)]
     assert finished.exited_zero  # type: ignore[attr-defined]
+    # Finished adds captured stderr over a bare Outcome; pin its accessors.
+    assert isinstance(finished.stderr, str)  # type: ignore[attr-defined]
+    assert finished.code == 0  # type: ignore[attr-defined]
+    assert finished.outcome.exited_zero  # type: ignore[attr-defined]
 
 
 def test_output_events_cover_both_streams() -> None:
-    async def scenario() -> list[tuple[str, str]]:
+    async def scenario() -> list[tuple[str, str, bool]]:
         proc = await Command(PY, ["-c", _BOTH_STREAMS]).astart()
-        events = [(str(e.stream), e.text.rstrip()) async for e in proc.output_events()]
+        events = [(str(e.stream), e.text.rstrip(), e.is_stderr) async for e in proc.output_events()]
         await proc.wait()
         return events
 
     events = asyncio.run(scenario())
-    streams = {s for s, _ in events}
-    texts = {t for _, t in events}
+    streams = {s for s, _, _ in events}
+    texts = {t for _, t, _ in events}
     assert {"out1", "out2", "err1"} <= texts
     assert streams == {"stdout", "stderr"}
+    # is_stderr is the boolean twin of the stream label.
+    assert all(is_err == (stream == "stderr") for stream, _, is_err in events)
 
 
 def test_interactive_stdin_echo() -> None:
@@ -94,6 +100,14 @@ def test_stdin_text_feeds_input() -> None:
         return await Command(PY, ["-c", _ECHO_UPPER]).stdin_text("abc\n").arun()
 
     assert asyncio.run(scenario()) == "ABC"
+
+
+def test_stdin_bytes_feeds_input() -> None:
+    async def scenario() -> str:
+        # Raw-bytes upfront input (the bytes twin of stdin_text).
+        return await Command(PY, ["-c", _ECHO_UPPER]).stdin_bytes(b"xyz\n").arun()
+
+    assert asyncio.run(scenario()) == "XYZ"
 
 
 def test_take_stdin_is_once() -> None:
@@ -212,6 +226,9 @@ def test_running_process_live_getters() -> None:
             assert (proc.elapsed_seconds or 0.0) >= 0.0
             # No output captured yet — 0, or None if the counter isn't initialized.
             assert proc.stdout_line_count in (0, None)
+            assert proc.stderr_line_count in (0, None)
+            assert proc.cpu_time_seconds is None or proc.cpu_time_seconds >= 0.0
+            assert proc.peak_memory_bytes is None or proc.peak_memory_bytes >= 0
 
     asyncio.run(scenario())
 
@@ -226,6 +243,9 @@ def test_profile_returns_runprofile() -> None:
     assert rp.code == 0
     assert rp.duration_seconds >= 0.0
     assert rp.samples >= 1
+    assert rp.cpu_time_seconds is None or rp.cpu_time_seconds >= 0.0
+    assert rp.peak_memory_bytes is None or rp.peak_memory_bytes >= 0
+    assert rp.avg_cpu_cores is None or rp.avg_cpu_cores >= 0.0
 
 
 def test_running_process_output_bytes() -> None:

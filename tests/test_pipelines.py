@@ -71,3 +71,12 @@ def test_pipeline_pipefail_propagates_non_last_stage_failure() -> None:
     with pytest.raises(NonZeroExit) as excinfo:
         (bad | tail).run()
     assert excinfo.value.code == 3
+
+
+def test_pipeline_timeout_is_captured() -> None:
+    # A pipeline-level timeout bounds the whole pipeline; a slow final stage trips
+    # it and the result reflects the timeout rather than hanging.
+    pipe = Command(PY, ["-c", "print('go')"]) | Command(PY, ["-c", "import time; time.sleep(5)"])
+    result = pipe.timeout(0.3).output()
+    assert result.timed_out
+    assert not result.is_success

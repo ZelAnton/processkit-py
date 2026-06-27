@@ -220,6 +220,11 @@ def test_output_bytes_returns_raw_bytes() -> None:
     assert result.code == 0
     assert result.is_success
     assert not result.truncated
+    # The remaining BytesResult accessors are populated like ProcessResult's.
+    assert not result.timed_out
+    assert result.signal is None
+    assert result.duration_seconds >= 0.0
+    assert "python" in result.program.lower() or result.program == PY
 
 
 def test_aoutput_bytes_returns_raw_bytes() -> None:
@@ -301,6 +306,16 @@ def test_encoding_unknown_label_gives_guidance() -> None:
         Command("x").encoding("cp437")  # no encoding_rs equivalent
 
 
+def test_per_stream_encoding_overrides() -> None:
+    # stdout_encoding / stderr_encoding decode a single stream (vs the
+    # whole-command encoding()). 0xe9 is 'é' in latin-1 but invalid UTF-8.
+    out_code = "import sys; sys.stdout.buffer.write(b'\\xe9\\n')"
+    assert Command(PY, ["-c", out_code]).stdout_encoding("iso-8859-1").run() == "é"
+    err_code = "import sys; sys.stderr.buffer.write(b'\\xe9\\n')"
+    result = Command(PY, ["-c", err_code]).stderr_encoding("iso-8859-1").output()
+    assert "é" in result.stderr
+
+
 # --- stdout/stderr redirection ----------------------------------------------
 
 
@@ -323,6 +338,17 @@ def test_stdout_rejects_unknown_mode() -> None:
     with pytest.raises(ValueError):
         # An invalid mode is the point of the test; mypy would flag the literal.
         Command(PY, ["-c", "pass"]).stdout("bogus")  # type: ignore[arg-type]
+
+
+def test_stderr_null_works_with_start_then_wait() -> None:
+    # stderr("null") is non-capturing (the twin of stdout("null")); start()+wait()
+    # still runs the child cleanly with stderr discarded.
+    async def scenario() -> int | None:
+        cmd = Command(PY, ["-c", "import sys; sys.stderr.write('x')"]).stderr("null")
+        proc = await cmd.astart()
+        return (await proc.wait()).code
+
+    assert asyncio.run(scenario()) == 0
 
 
 # --- lifetime / redirect / privilege knobs ----------------------------------

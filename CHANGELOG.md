@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in turn on successive matching calls (fail a few times, then succeed), then
   repeat the last reply once exhausted. The declarative form for retry/
   supervision test scenarios.
+- Prebuilt wheels for **Intel macOS** (x86_64), cross-compiled from the arm64
+  (Apple Silicon) runner. Previously Intel Mac users installed from the sdist
+  (needing a Rust toolchain); both macOS architectures are now covered.
 
 ### Changed
 - `[project.urls] Homepage` in `pyproject.toml` now points at the project

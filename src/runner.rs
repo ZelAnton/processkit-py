@@ -15,9 +15,11 @@ use processkit::ProcessRunnerExt;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use crate::command::PyCommand;
 use crate::errors::{map_err, ProcessError};
+use crate::result::{PyBytesResult, PyProcessResult};
+use crate::running::PyRunningProcess;
 use crate::runtime::{block_on, drive_async};
-use crate::{PyBytesResult, PyCommand, PyProcessResult, PyRunningProcess};
 
 // The run verbs are generic over the crate's `ProcessRunner` so the real
 // `Runner` and the `ScriptedRunner` share one implementation.
@@ -607,3 +609,15 @@ runner_pymethods!(PyRecordingRunner {
         format!("RecordingRunner(calls={})", self.inner.calls().len())
     }
 });
+
+/// Register this module's pyclasses (`Runner`, `ScriptedRunner`, `Reply`,
+/// `RecordReplayRunner`, `RecordingRunner`, `Invocation`) on `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRunner>()?;
+    m.add_class::<PyScriptedRunner>()?;
+    m.add_class::<PyReply>()?;
+    m.add_class::<PyRecordReplayRunner>()?;
+    m.add_class::<PyRecordingRunner>()?;
+    m.add_class::<PyInvocation>()?;
+    Ok(())
+}

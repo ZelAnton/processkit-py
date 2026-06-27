@@ -23,22 +23,6 @@ mod running;
 mod runtime;
 mod supervisor;
 
-use crate::cli::PyCliClient;
-use crate::command::{PyCommand, PyPipeline};
-use crate::errors::{
-    init_dual_exceptions, NonZeroExit, OutputTooLarge, ProcessError, ResourceLimit, Signalled,
-    Unsupported,
-};
-use crate::group::{PyProcessGroup, PyProcessGroupStats};
-use crate::result::{
-    PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
-};
-use crate::runner::{
-    PyInvocation, PyRecordReplayRunner, PyRecordingRunner, PyReply, PyRunner, PyScriptedRunner,
-};
-use crate::running::{PyOutputEvents, PyProcessStdin, PyRunningProcess, PyStdoutLines};
-use crate::supervisor::{PySupervisionOutcome, PySupervisor};
-
 // `gil_used = false` opts the module into PEP 703 free-threaded CPython: on a
 // free-threaded build importing it does NOT re-enable the GIL. Sound here because
 // the binding holds no unsynchronized shared state — the tokio runtime is a
@@ -47,58 +31,21 @@ use crate::supervisor::{PySupervisionOutcome, PySupervisor};
 // `tracing`'s internally-synchronized global dispatch (installed once via an
 // `OnceLock`, forwarding to thread-safe `logging`), and every pyclass is guarded
 // by PyO3's own per-object borrow checking. A no-op on the standard (GIL) build.
+//
+// Registration is delegated to each module's own `register(m)` fn (classes,
+// functions, and — for `errors` — the exception hierarchy), so adding a new
+// pyclass/function touches only its defining module, not this central list.
 #[pymodule(gil_used = false)]
 fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyCommand>()?;
-    m.add_class::<PyProcessResult>()?;
-    m.add_class::<PyBytesResult>()?;
-    m.add_class::<PyRunProfile>()?;
-    m.add_class::<PyProcessGroup>()?;
-    m.add_class::<PyRunningProcess>()?;
-    m.add_class::<PyOutcome>()?;
-    m.add_class::<PyFinished>()?;
-    m.add_class::<PyOutputEvent>()?;
-    m.add_class::<PyProcessStdin>()?;
-    m.add_class::<PyStdoutLines>()?;
-    m.add_class::<PyOutputEvents>()?;
-    m.add_class::<PyProcessGroupStats>()?;
-    m.add_class::<PyPipeline>()?;
-    m.add_class::<PySupervisor>()?;
-    m.add_class::<PySupervisionOutcome>()?;
-    m.add_class::<PyRunner>()?;
-    m.add_class::<PyScriptedRunner>()?;
-    m.add_class::<PyReply>()?;
-    m.add_class::<PyRecordReplayRunner>()?;
-    m.add_class::<PyRecordingRunner>()?;
-    m.add_class::<PyInvocation>()?;
-    m.add_class::<PyCliClient>()?;
-
-    m.add_function(pyo3::wrap_pyfunction!(batch::output_all, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(batch::aoutput_all, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(batch::output_all_bytes, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(batch::aoutput_all_bytes, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(logging::enable_logging, m)?)?;
-
-    let py = m.py();
-    // Register the single-base exceptions, normalizing `__module__` to the
-    // public package so reprs/tracebacks read `processkit.X` rather than leaking
-    // the private `_processkit` extension name (the dual-base ones below set it
-    // at construction; the pyclasses set `module = "processkit"`, except the
-    // testing doubles which set `module = "processkit.testing"`).
-    for (name, ty) in [
-        ("ProcessError", py.get_type::<ProcessError>()),
-        ("NonZeroExit", py.get_type::<NonZeroExit>()),
-        ("Signalled", py.get_type::<Signalled>()),
-        ("ResourceLimit", py.get_type::<ResourceLimit>()),
-        ("Unsupported", py.get_type::<Unsupported>()),
-        ("OutputTooLarge", py.get_type::<OutputTooLarge>()),
-    ] {
-        ty.setattr("__module__", "processkit")?;
-        m.add(name, ty)?;
-    }
-    // `Timeout`, `ProcessNotFound`, and `PermissionDenied` are dual-base (also
-    // `TimeoutError` / `FileNotFoundError` / `PermissionError`); built and
-    // registered here.
-    init_dual_exceptions(m)?;
+    command::register(m)?;
+    result::register(m)?;
+    group::register(m)?;
+    running::register(m)?;
+    supervisor::register(m)?;
+    runner::register(m)?;
+    cli::register(m)?;
+    batch::register(m)?;
+    logging::register(m)?;
+    errors::register(m)?;
     Ok(())
 }

@@ -62,6 +62,15 @@ async fn shutdown_group(group: Arc<PkProcessGroup>) -> processkit::Result<()> {
     group.shutdown_ref().await
 }
 
+/// Shared teardown for `ashutdown`/`__aexit__`: a no-op when the group is
+/// already closed (`None`), otherwise the same graceful `shutdown_group`.
+async fn shutdown_if_open(group: Option<Arc<PkProcessGroup>>) -> processkit::Result<()> {
+    if let Some(group) = group {
+        shutdown_group(group).await?;
+    }
+    Ok(())
+}
+
 /// A kill-on-drop container for a process *tree*. Use it as a context manager
 /// (`with` or `async with`): every process started inside, and everything those
 /// processes spawn, is torn down when the block exits.
@@ -167,9 +176,7 @@ impl PyProcessGroup {
         require_event_loop(py)?;
         let group = self.inner.take();
         drive_async(py, async move {
-            if let Some(group) = group {
-                shutdown_group(group).await?;
-            }
+            shutdown_if_open(group).await?;
             Ok::<bool, processkit::Error>(false)
         })
     }
@@ -260,12 +267,7 @@ impl PyProcessGroup {
     fn ashutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let group = self.inner.take();
-        drive_async(py, async move {
-            if let Some(group) = group {
-                shutdown_group(group).await?;
-            }
-            Ok::<(), processkit::Error>(())
-        })
+        drive_async(py, shutdown_if_open(group))
     }
 
     fn __repr__(&self) -> String {
@@ -274,4 +276,12 @@ impl PyProcessGroup {
             None => "ProcessGroup(closed)".to_string(),
         }
     }
+}
+
+/// Register this module's pyclasses (`ProcessGroup`, `ProcessGroupStats`) on
+/// `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyProcessGroup>()?;
+    m.add_class::<PyProcessGroupStats>()?;
+    Ok(())
 }

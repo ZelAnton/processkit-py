@@ -31,10 +31,12 @@ permissions:
 jobs:
   # ---------------------------------------------------------------------------
   # The abi3 wheel (cp310, runs on every GIL CPython 3.10+) plus a free-threaded
-  # cp314t wheel per OS/arch. Each runner builds its own native arch (no
-  # cross-compile): Linux x86_64 (manylinux), Linux aarch64 (native ARM runner),
-  # Windows x64, macOS arm64 (macos-14). Intel macOS (x86_64) is NOT built —
-  # GitHub retired the free `macos-13` Intel runner; Intel Macs install from the sdist.
+  # cp314t wheel per OS/arch. Each runner builds its own native arch: Linux
+  # x86_64 (manylinux), Linux aarch64 (native ARM runner), Windows x64. The
+  # macOS runner (macos-14, Apple Silicon) is the one exception — it CROSS-
+  # compiles both arm64 (native) and x86_64 (Intel), since GitHub retired the
+  # free `macos-13` Intel runner but Rust cross-compiles darwin-x86_64 from an
+  # arm64 host trivially (rustup target + cibuildwheel's `CIBW_ARCHS_MACOS`).
   # ---------------------------------------------------------------------------
   build_wheels:
     name: wheels (${{ matrix.os }})
@@ -53,6 +55,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
         with:
           toolchain: stable
+      # Add the Intel macOS cross-compile target — only meaningful on the
+      # macos-14 (arm64) runner; a no-op elsewhere (`rustup target add` on a
+      # target already implied by the host triple is harmless, but skip it
+      # outright to keep the step's purpose obvious in the log).
+      - if: matrix.os == 'macos-14'
+        run: rustup target add x86_64-apple-darwin
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true

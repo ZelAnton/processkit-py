@@ -93,6 +93,17 @@ def _compiled_functions() -> set[str]:
     }
 
 
+def test_package_importable() -> None:
+    assert isinstance(processkit.__all__, list)
+
+
+def test_version_is_exposed() -> None:
+    # `__version__` is lazy (module `__getattr__`, PEP 562) — this is also the
+    # one place that exercises it actually resolving to a real value.
+    assert isinstance(processkit.__version__, str)
+    assert processkit.__version__
+
+
 def test_all_is_sorted_unique_and_importable() -> None:
     assert processkit.__all__ == sorted(processkit.__all__)
     assert len(processkit.__all__) == len(set(processkit.__all__))

@@ -150,3 +150,13 @@ pub(crate) fn aoutput_all_bytes<'py>(
         Python::attach(|py| bytes_results_to_pylist(py, results))
     })
 }
+
+/// Register this module's functions (`output_all`, `aoutput_all`,
+/// `output_all_bytes`, `aoutput_all_bytes`) on `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(pyo3::wrap_pyfunction!(output_all, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(aoutput_all, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(output_all_bytes, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(aoutput_all_bytes, m)?)?;
+    Ok(())
+}

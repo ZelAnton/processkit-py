@@ -158,6 +158,22 @@ impl PyRunningProcess {
     }
 }
 
+/// Shared teardown for both `__exit__` and `__aexit__`: a hard kill of the
+/// direct child, then wait for it to be reaped.
+///
+/// Order is load-bearing: `start_kill` before `wait`. Killing first guarantees
+/// `wait` reaps promptly even when stdin was handed out via `take_stdin()`
+/// (the handle no longer owns the pipe to auto-close on a `keep_stdin_open`
+/// child). `start_kill`/`wait` only touch the direct child; the *whole
+/// private tree* is reaped when `wait` consumes `running` and drops its owned
+/// process group, whose `Drop` is kernel kill-on-close. So moving `running`
+/// into `wait` is not redundant.
+async fn kill_and_reap(mut running: PkRunningProcess) -> processkit::Result<()> {
+    running.start_kill()?;
+    running.wait().await?;
+    Ok(())
+}
+
 #[pymethods]
 impl PyRunningProcess {
     /// The OS process id, or `None` once the handle has been consumed/reaped.
@@ -228,20 +244,8 @@ impl PyRunningProcess {
         // handle is taken would drop (kill-on-drop) a process the caller could
         // otherwise have torn down correctly from the right context.
         reject_reentrant_runtime()?;
-        if let Some(mut running) = self.inner.take() {
-            // Order is load-bearing: `start_kill` before `wait`. Killing first
-            // guarantees `wait` reaps promptly even when stdin was handed out via
-            // `take_stdin()` (the handle no longer owns the pipe to auto-close on
-            // a `keep_stdin_open` child). `start_kill`/`wait` only touch the
-            // direct child; the *whole private tree* is reaped when `wait`
-            // consumes `running` and drops its owned process group, whose `Drop`
-            // is kernel kill-on-close. So moving `running` into `wait` is not
-            // redundant.
-            block_on(py, async move {
-                running.start_kill()?;
-                running.wait().await?;
-                Ok::<(), processkit::Error>(())
-            })?;
+        if let Some(running) = self.inner.take() {
+            block_on(py, kill_and_reap(running))?;
         }
         Ok(false)
     }
@@ -265,9 +269,8 @@ impl PyRunningProcess {
         require_event_loop(py)?;
         let running = self.inner.take();
         drive_async(py, async move {
-            if let Some(mut running) = running {
-                running.start_kill()?;
-                running.wait().await?;
+            if let Some(running) = running {
+                kill_and_reap(running).await?;
             }
             Ok::<bool, processkit::Error>(false)
         })
@@ -390,4 +393,14 @@ impl PyRunningProcess {
             None => "RunningProcess(consumed)".to_string(),
         }
     }
+}
+
+/// Register this module's pyclasses (`RunningProcess`, `ProcessStdin`,
+/// `StdoutLines`, `OutputEvents`) on `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRunningProcess>()?;
+    m.add_class::<PyProcessStdin>()?;
+    m.add_class::<PyStdoutLines>()?;
+    m.add_class::<PyOutputEvents>()?;
+    Ok(())
 }

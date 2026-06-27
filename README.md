@@ -25,7 +25,7 @@ version = Command("python", ["--version"]).run()
 print(version)
 ```
 
-![Cover](https://raw.githubusercontent.com/ZelAnton/processkit-py/main/cover.png)
+![Cover](https://raw.githubusercontent.com/ZelAnton/processkit-py/main/.github/cover.png)
 
 ## Why processkit?
 

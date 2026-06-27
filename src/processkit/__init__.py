@@ -61,13 +61,22 @@ from ._processkit import (
 from ._runner import ProcessRunner
 from ._types import SignalName, StrPath
 
-try:
-    # Distribution name is `processkit-py` (the bare `processkit` is taken on
-    # PyPI); the import name stays `processkit`. The metadata lookup keys off the
-    # distribution name.
-    __version__ = version("processkit-py")
-except PackageNotFoundError:  # not installed (e.g. running from a source tree)
-    __version__ = "unknown"
+
+def __getattr__(name: str) -> str:
+    # Lazy `__version__` (PEP 562): `importlib.metadata.version()` scans
+    # installed-package metadata, a cost every `import processkit` would
+    # otherwise pay even when nothing reads `__version__`. Computed only on
+    # first access; nothing caches it since a re-scan is cheap once resolved.
+    if name == "__version__":
+        try:
+            # Distribution name is `processkit-py` (the bare `processkit` is
+            # taken on PyPI); the import name stays `processkit`. The metadata
+            # lookup keys off the distribution name.
+            return version("processkit-py")
+        except PackageNotFoundError:  # not installed (e.g. running from a source tree)
+            return "unknown"
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "BytesResult",

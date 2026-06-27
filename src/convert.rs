@@ -4,10 +4,8 @@ use std::time::Duration;
 
 use processkit::Encoding;
 use processkit::OverflowMode;
-use processkit::RestartPolicy;
 use processkit::Signal as PkSignal;
 use processkit::StdioMode;
-use processkit::StopReason;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -34,28 +32,6 @@ pub(crate) fn nonnegative_duration(seconds: f64, what: &str) -> PyResult<Duratio
     }
     Duration::try_from_secs_f64(seconds)
         .map_err(|err| PyValueError::new_err(format!("invalid {what}: {err}")))
-}
-
-/// Parse a restart policy name into a crate `RestartPolicy`.
-pub(crate) fn parse_restart_policy(name: &str) -> PyResult<RestartPolicy> {
-    match name.to_ascii_lowercase().as_str() {
-        "always" => Ok(RestartPolicy::Always),
-        "never" => Ok(RestartPolicy::Never),
-        "on_crash" | "on-crash" | "oncrash" => Ok(RestartPolicy::OnCrash),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown restart policy {name:?}; use one of: always, never, on_crash"
-        ))),
-    }
-}
-
-/// Render a `StopReason` as a stable lowercase string.
-pub(crate) fn stop_reason_str(reason: StopReason) -> &'static str {
-    match reason {
-        StopReason::PolicySatisfied => "policy_satisfied",
-        StopReason::Predicate => "predicate",
-        StopReason::RestartsExhausted => "restarts_exhausted",
-        _ => "unknown",
-    }
 }
 
 /// Map a Python stdio-mode label to the crate `StdioMode`.

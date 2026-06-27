@@ -36,11 +36,13 @@ jobs:
           enable-cache: true
       # `--strict` fails on a broken cross-page or in-page anchor link (see the
       # `validation:` block in mkdocs.yml), so a renamed heading can't ship a broken
-      # guide. Renders markdown only — no Rust extension build needed.
+      # guide. Renders markdown only — no Rust extension build needed, so sync only
+      # the `docs` dependency-group (mkdocs-material, major-bound like the
+      # cibuildwheel pin, and now locked in uv.lock instead of riding an unlocked
+      # `uvx --with`) and skip installing the project itself.
+      - run: uv sync --only-group docs --no-install-project
       - name: Build site (strict)
-        # Major-bound pin (Material for MkDocs 9.x → mkdocs 1.x) so a major release
-        # of either can't silently change the build, matching the cibuildwheel pin.
-        run: uvx --with 'mkdocs-material>=9,<10' mkdocs build --strict
+        run: uv run --no-sync mkdocs build --strict
       # Upload only when we will actually deploy (push to main, opt-in via DOCS_DEPLOY).
       - if: github.event_name == 'push' && vars.DOCS_DEPLOY == 'true'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

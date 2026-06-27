@@ -6,19 +6,43 @@ use std::time::Duration;
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
+use processkit::RestartPolicy;
+use processkit::StopReason;
 use processkit::SupervisionOutcome;
 use processkit::Supervisor as PkSupervisor;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
-use crate::convert::{
-    nonnegative_duration, parse_restart_policy, positive_duration, stop_reason_str,
-};
+use crate::convert::{nonnegative_duration, positive_duration};
 use crate::errors::ProcessError;
 use crate::result::PyProcessResult;
 use crate::runner::extract_runner;
 use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
+
+/// Parse a restart policy name into a crate `RestartPolicy` — supervisor-only,
+/// so it lives here rather than in the general `convert.rs` grab-bag.
+fn parse_restart_policy(name: &str) -> PyResult<RestartPolicy> {
+    match name.to_ascii_lowercase().as_str() {
+        "always" => Ok(RestartPolicy::Always),
+        "never" => Ok(RestartPolicy::Never),
+        "on_crash" | "on-crash" | "oncrash" => Ok(RestartPolicy::OnCrash),
+        _ => Err(PyValueError::new_err(format!(
+            "unknown restart policy {name:?}; use one of: always, never, on_crash"
+        ))),
+    }
+}
+
+/// Render a `StopReason` as a stable lowercase string — supervisor-only, see
+/// `parse_restart_policy` above.
+fn stop_reason_str(reason: StopReason) -> &'static str {
+    match reason {
+        StopReason::PolicySatisfied => "policy_satisfied",
+        StopReason::Predicate => "predicate",
+        StopReason::RestartsExhausted => "restarts_exhausted",
+        _ => "unknown",
+    }
+}
 
 /// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
 /// callback. The crate's predicate is infallible (`-> bool`), so a raising or
@@ -249,4 +273,12 @@ impl PySupervisor {
                 .map(|outcome| convert_supervision_outcome(&outcome))
         })
     }
+}
+
+/// Register this module's pyclasses (`Supervisor`, `SupervisionOutcome`) on
+/// `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PySupervisor>()?;
+    m.add_class::<PySupervisionOutcome>()?;
+    Ok(())
 }

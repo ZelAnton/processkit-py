@@ -108,3 +108,9 @@ pub(crate) fn enable_logging() -> bool {
             .is_ok()
     })
 }
+
+/// Register this module's function (`enable_logging`) on `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(pyo3::wrap_pyfunction!(enable_logging, m)?)?;
+    Ok(())
+}

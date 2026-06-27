@@ -1,5 +1,5 @@
 [package]
-name = "processkit"
+name = "processkit-py"
 version = "1.0.0"
 edition = "2021"
 description = "PyO3 binding crate for the processkit Python package (compiled into wheels)"
@@ -7,7 +7,11 @@ license = "MIT"
 repository = "https://github.com/ZelAnton/processkit-py"
 # This crate is the PyO3 glue compiled into the Python wheels — it is NOT a
 # crates.io artifact. The published Rust crate is `processkit` itself (which we
-# depend on); never publish this same-named binding over it.
+# depend on). Named `processkit-py` (not `processkit`) so the two never share a
+# package name in Cargo.lock — the disambiguation the release workflow's
+# Cargo.lock-sync step previously needed (a negative-lookahead regex matching
+# the local, sourceless entry among two same-named ones) is now structural: an
+# ordinary name match is unambiguous.
 publish = false
 
 [lib]
@@ -67,3 +71,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 [profile.release]
 lto = true
 codegen-units = 1
+# Strip debuginfo/symbols from release wheels (smaller artifacts); deliberately
+# NOT `panic = "abort"` — PyO3 needs unwinding to convert a Rust panic into a
+# Python exception instead of aborting the whole interpreter.
+strip = "symbols"

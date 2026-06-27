@@ -131,3 +131,9 @@ impl PyCliClient {
         "CliClient()".to_string()
     }
 }
+
+/// Register this module's pyclass (`CliClient`) on `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyCliClient>()?;
+    Ok(())
+}

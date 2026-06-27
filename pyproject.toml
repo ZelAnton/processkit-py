@@ -55,6 +55,10 @@ dev = [
   "ruff>=0.15.20",
   "pre-commit>=4.0.0",
 ]
+# The mkdocs toolchain, split out of `dev` so the Docs CI job's `uv run --group
+# docs` rides the locked `uv.lock` tree (reproducible, cached) instead of an
+# unlocked `uvx --with`.
+docs = ["mkdocs-material>=9,<10"]
 
 [tool.maturin]
 # Build abi3 wheels (cp310+) to keep the wheel matrix flat across Python versions.
@@ -67,26 +71,34 @@ module-name = "processkit._processkit"
 python-source = "src"
 features = ["extension-module"]
 # Keep the sdist lean and on-topic: drop the 3 MB README cover art (referenced by
-# an absolute URL, never needed to build), the CI/dev-harness metadata, and the
-# internal release-process note. src/, tests/, docs/, and the standard manifests
-# still ship so a source build (and downstream testing) works.
+# an absolute URL, never needed to build) and the CI/dev-harness metadata — both
+# now live under `.github/`, so the one glob below excludes them (previously two
+# separate root-level entries, "cover.png" and "release-token-bypass.md"). src/,
+# tests/, docs/, and the standard manifests still ship so a source build (and
+# downstream testing) works.
 exclude = [
-  "cover.png",
   ".github/**/*",
   "docker/**/*",
   "compose.yaml",
   ".dockerignore",
-  "release-token-bypass.md",
-  # Internal planning / session-handoff docs. They live only in a local commit and
-  # never reach `main`, but exclude them here too so they can never slip into a
-  # source dist from any build tree (belt-and-braces, like release-token-bypass.md).
+  # Internal planning / session-handoff docs and agent-instruction files. They
+  # live only in a local commit and never reach `main`, but exclude them here
+  # too so they can never slip into a source dist from any build tree
+  # (belt-and-braces, like `.github/**/*`) — verified they otherwise DO leak
+  # (built an sdist from a tree where these happened to be tracked; every one
+  # of them showed up in the tarball before this list covered them).
   "progress.md",
   "*-plan.md",
+  ".work/**/*",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "CLAUDE.local.md",
+  ".claude/**/*",
 ]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
@@ -95,7 +107,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true
@@ -104,6 +116,10 @@ namespace_packages = true
 addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 filterwarnings = ["error"]
 testpaths = ["tests"]
+# The repo root on sys.path so tests can `import scripts.release.*` (the
+# release.yml helper scripts) as an ordinary absolute import, alongside the
+# installed `processkit` package.
+pythonpath = ["."]
 
 [tool.cibuildwheel]
 # Two wheel families per OS/arch:
@@ -123,6 +139,13 @@ build = "cp310-* cp314t-*"
 skip = "*-musllinux_i686 *-win32"
 # Smoke-test the actual built wheel on each platform (see scripts/smoke.py).
 test-command = "python {project}/scripts/smoke.py"
+
+[tool.cibuildwheel.macos]
+# Cross-compile Intel (x86_64) alongside the runner's native arm64: GitHub
+# retired the free `macos-13` Intel runner, but Rust cross-compiles
+# darwin-x86_64 from an arm64 host trivially (the `_build-dists.yml` workflow
+# adds the `x86_64-apple-darwin` rustup target before this runs).
+archs = ["arm64", "x86_64"]
 
 [tool.cibuildwheel.linux]
 # The manylinux/musllinux build containers ship no Rust toolchain — install a

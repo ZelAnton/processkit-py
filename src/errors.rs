@@ -1,4 +1,21 @@
 //! The exception hierarchy and the crate-error -> Python-exception mapping.
+//!
+//! Decision (2026-07, deep-audit Stage 4 / D5): keep the hierarchy defined
+//! here in Rust rather than moving it to a pure-Python `_errors.py` sidecar.
+//! B1 (Stage 2) already shrank the ceremony this module needs — `map_err`'s
+//! field attachment is now accessor-driven and variant-generic instead of
+//! hand-matching every crate error variant — so the sidecar's main promised
+//! win (less boilerplate) is smaller than it would have been pre-B1. What
+//! remains (`create_exception!` for the 6 single-base exceptions, the
+//! `PyOnceLock`-cached dual-base trio below) is a one-time, module-init-only
+//! cost, not something touched per raised error. A sidecar would also add a
+//! Python-side import + attribute lookup + call to CONSTRUCT every exception
+//! (`map_err` currently builds them directly in Rust), a real per-error-path
+//! cost for no functional gain, on a hierarchy that is public, exception-
+//! catching surface (already shipped in the released `v1.0.0`) — not the
+//! place to trade correctness risk for stylistic cleanup right now. Revisit
+//! only if the ceremony grows again (e.g. a 4th dual-base exception) enough
+//! to outweigh this.
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyFileNotFoundError, PyPermissionError, PyTimeoutError};
@@ -45,8 +62,34 @@ fn make_dual_exception<'py>(
     Ok(class.cast_into::<PyType>()?)
 }
 
-/// Register the dual-base exceptions on the module and cache them for `map_err`.
-pub(crate) fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
+/// Register every exception (single-base and dual-base) on `_processkit`.
+///
+/// Single-base exceptions get their `__module__` normalized to the public
+/// package so reprs/tracebacks read `processkit.X` rather than leaking the
+/// private `_processkit` extension name (the dual-base ones set it at
+/// construction; the pyclasses set `module = "processkit"` themselves, except
+/// the testing doubles which set `module = "processkit.testing"`).
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+    for (name, ty) in [
+        ("ProcessError", py.get_type::<ProcessError>()),
+        ("NonZeroExit", py.get_type::<NonZeroExit>()),
+        ("Signalled", py.get_type::<Signalled>()),
+        ("ResourceLimit", py.get_type::<ResourceLimit>()),
+        ("Unsupported", py.get_type::<Unsupported>()),
+        ("OutputTooLarge", py.get_type::<OutputTooLarge>()),
+    ] {
+        ty.setattr("__module__", "processkit")?;
+        m.add(name, ty)?;
+    }
+    // `Timeout`, `ProcessNotFound`, and `PermissionDenied` are dual-base (also
+    // `TimeoutError` / `FileNotFoundError` / `PermissionError`); built and
+    // registered here.
+    init_dual_exceptions(m)
+}
+
+/// Build the dual-base exceptions and cache them for `map_err`.
+fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     let timeout = make_dual_exception(
         py,

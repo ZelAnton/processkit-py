@@ -492,3 +492,10 @@ impl PyPipeline {
         format!("{:?}", self.inner)
     }
 }
+
+/// Register this module's pyclasses (`Command`, `Pipeline`) on `_processkit`.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyCommand>()?;
+    m.add_class::<PyPipeline>()?;
+    Ok(())
+}

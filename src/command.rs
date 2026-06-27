@@ -148,9 +148,10 @@ impl PyCommand {
     /// Set the exit codes treated as success — this **replaces** the default of
     /// just `0`, so pass every code you accept (e.g. `[0, 1]`). For tools whose
     /// non-zero exit is a normal result, like `grep` (`1` = no match) or `diff`
-    /// (`1` = differs). Affects `run()` and `ProcessResult.is_success`;
-    /// `exit_code()` (raw) and `probe()` (0/1) are unchanged. An empty sequence
-    /// raises `ValueError` (it would accept nothing, which is never intended).
+    /// (`1` = differs). Affects `run()` and the captured results' `is_success`
+    /// (`ProcessResult` and `BytesResult`); `exit_code()` (raw) and `probe()`
+    /// (0/1) are unchanged. An empty sequence raises `ValueError` (it would accept
+    /// nothing, which is never intended).
     fn success_codes(&self, codes: Vec<i32>) -> PyResult<Self> {
         if codes.is_empty() {
             return Err(PyValueError::new_err(

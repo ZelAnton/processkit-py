@@ -136,6 +136,10 @@ def test_timeout_error_carries_timeout_seconds() -> None:
     with pytest.raises(Timeout) as excinfo:
         Command(PY, ["-c", "import time; time.sleep(5)"]).timeout(0.3).run()
     assert excinfo.value.timeout_seconds == pytest.approx(0.3, abs=0.05)
+    # The other structured fields are attached too (partial output + program).
+    assert isinstance(excinfo.value.stdout, str)
+    assert isinstance(excinfo.value.stderr, str)
+    assert excinfo.value.program
 
 
 def test_process_not_found_carries_program() -> None:

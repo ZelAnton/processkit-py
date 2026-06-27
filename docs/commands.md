@@ -266,9 +266,10 @@ r.truncated         # an output_limit cap dropped output
 r.combined          # stdout + stderr concatenated (property)
 ```
 
-`output_bytes()` returns a `BytesResult` with the same fields, except `stdout` is
-raw `bytes` (stderr stays decoded `str`). On a `BytesResult`, `truncated` refers
-to **stderr** only — the raw bytes stdout is never line-capped.
+`output_bytes()` returns a `BytesResult` with the same fields (minus `combined`,
+which can't join `bytes` stdout with `str` stderr), except `stdout` is raw `bytes`
+(stderr stays decoded `str`). On a `BytesResult`, `truncated` refers to **stderr**
+only — the raw bytes stdout is never line-capped.
 
 ```python
 png = Command("convert", ["in.png", "png:-"]).output_bytes().stdout   # bytes
@@ -324,14 +325,23 @@ as `asyncio.CancelledError` and still reaps the tree.
 
 ### Secrets in diagnostics
 
-These exceptions' `stdout` / `stderr` fields carry the child's **raw output
-verbatim**, and the exception *message* appends a bounded last-line excerpt of it
-— so if a tool echoes a token on failure, it can land in both. Don't forward
-exception text/fields to a low-trust log sink unredacted. Likewise,
-`repr(Command(...))` shows the full **argv** (so a `--password=…` flag is visible
-in a REPL echo or a traceback frame). Pass secrets via `env(...)` — whose *value*
-is kept out of the `repr` and out of record/replay cassettes (only the variable
-name is recorded) — rather than as command-line flags.
+`repr(Command(...))` is **redacted**: it shows the program, the argument *count*,
+and env variable *names* — never argv values or env values. So a secret passed as
+a flag or an `env(...)` value does **not** leak through a REPL echo, an `%r` log,
+or a traceback frame.
+
+The remaining channels carry raw values, so handle them with care:
+
+- **Exception `stdout` / `stderr` fields carry the child's raw output verbatim**,
+  and the exception *message* appends a **bounded last-line excerpt** of the
+  captured output (stderr's last line, or stdout's when stderr is blank) — so if a
+  tool echoes a token on failure, it can land in both. Don't forward exception
+  text/fields to a low-trust log sink unredacted.
+- **argv is visible to the OS** regardless of this library — any local user can
+  read it via `ps` / `/proc/<pid>/cmdline` while the child runs. So for real
+  secrets, prefer `env(...)` over a command-line flag: the env *value* is kept out
+  of the `repr` and out of record/replay cassettes (only the variable name is
+  recorded), and isn't exposed in the process listing.
 
 ## Pipelines
 

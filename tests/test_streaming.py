@@ -143,6 +143,17 @@ def test_kill_then_wait_returns_promptly() -> None:
     assert not outcome.exited_zero  # type: ignore[attr-defined]  # killed, not a clean exit
 
 
+def test_shutdown_grace_terminates_and_returns_outcome() -> None:
+    # shutdown() = graceful signal -> wait grace -> hard kill, consuming the handle.
+    # A no-op would hang on the 60s sleeper past the bounded wait_for.
+    async def scenario() -> object:
+        proc = await Command(PY, ["-c", "import time; time.sleep(60)"]).astart()
+        return await asyncio.wait_for(proc.shutdown(grace_seconds=0.5), timeout=15.0)
+
+    outcome = asyncio.run(scenario())
+    assert not outcome.exited_zero  # type: ignore[attr-defined]  # terminated, not clean
+
+
 def test_running_process_wait_reports_exit_code() -> None:
     async def scenario() -> object:
         proc = await Command(PY, ["-c", "import sys; sys.exit(3)"]).astart()
@@ -151,6 +162,8 @@ def test_running_process_wait_reports_exit_code() -> None:
     outcome = asyncio.run(scenario())
     assert outcome.code == 3  # type: ignore[attr-defined]
     assert not outcome.exited_zero  # type: ignore[attr-defined]
+    assert outcome.signal is None  # type: ignore[attr-defined]  # clean exit, not a signal
+    assert not outcome.timed_out  # type: ignore[attr-defined]
 
 
 def test_consumed_handle_raises() -> None:

@@ -92,9 +92,11 @@ async def wait_for_port(
             _reader, writer = await asyncio.wait_for(conn, timeout=remaining)
         except (OSError, asyncio.TimeoutError):
             _close_pending_connection(conn)
-            if loop.time() >= deadline:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 raise TimeoutError(f"port {host}:{port} not ready within {timeout}s") from None
-            await asyncio.sleep(interval)
+            # Don't overshoot the deadline by a full interval on the last retry.
+            await asyncio.sleep(min(interval, remaining))
             continue
         except asyncio.CancelledError:
             _close_pending_connection(conn)

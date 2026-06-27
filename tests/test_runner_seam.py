@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from processkit import Command, NonZeroExit, Reply, Runner, ScriptedRunner
+from processkit import Command, NonZeroExit, Reply, Runner, ScriptedRunner, Signalled, Timeout
 
 PY = sys.executable
 
@@ -98,3 +98,44 @@ def test_scripted_result_for_mocking() -> None:
     fake = runner.output(Command("x"))
     assert fake.stdout == "mocked output"
     assert fake.is_success
+
+
+def test_reply_timeout() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.timeout())
+    assert runner.output(Command("x")).timed_out
+    with pytest.raises(Timeout):
+        runner.run(Command("x"))
+
+
+def test_reply_signalled() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.signalled(15))
+    assert runner.output(Command("x")).signal == 15
+    with pytest.raises(Signalled):
+        runner.run(Command("x"))
+
+
+def test_reply_with_stdout_on_failure() -> None:
+    # with_stdout() attaches stdout to a reply (e.g. a failure that still printed).
+    runner = ScriptedRunner()
+    runner.fallback(Reply.fail(1, "err").with_stdout("partial output"))
+    result = runner.output(Command("x"))
+    assert result.code == 1
+    assert result.stdout == "partial output"
+    assert "err" in result.stderr
+
+
+def test_reply_pending_never_exits() -> None:
+    # Reply.pending() models a run that never ends on its own — only cancellation
+    # or a timeout stops it. The documented "prove your orchestration cancels a
+    # blocked call" pattern.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    async def scenario() -> None:
+        proc = runner.start(Command("server"))
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=0.3)
+
+    asyncio.run(scenario())

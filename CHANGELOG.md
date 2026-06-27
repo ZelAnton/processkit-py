@@ -196,8 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `repr(Command(...))` no longer renders argv (or env *values*): it now uses the
   crate's redacted form — program, argument *count*, and env *names* only. A repr
   is emitted everywhere (logging `%r`, f-strings, tracebacks, test diffs), so this
-  prevents a secret passed as an argument from leaking through any of them. The
-  full command line stays behind the crate's explicit `command_line()` escape hatch.
+  prevents a secret passed as an argument from leaking through any of them. (The
+  Python surface exposes no way to recover the full command line; argv remains
+  visible to the OS via `ps` / `/proc` while the child runs.)
 - Documentation hardening: the sandbox/privilege-drop guidance now sets all of
   `gid` / `groups` / `uid` (dropping `uid` alone leaves the child holding the
   parent's supplementary groups — a sandbox-escape footgun); documents that

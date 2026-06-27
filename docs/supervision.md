@@ -132,6 +132,12 @@ A returned outcome means supervision *concluded*, not that the child succeeded â
 inspect `final_result` (e.g. `outcome.final_result.is_success`) for the child's own
 verdict.
 
+`final_result.stdout` is the **last run's** output, and for a long-lived
+supervised process it is kept to a bounded tail (the most recent ~1000 lines)
+rather than buffered in full â€” so `final_result.truncated` may be `True`. Treat it
+as a diagnostic tail, not a complete transcript; for full output, give the
+`Command` an explicit [`output_limit`](commands.md) or stream it yourself.
+
 ## The failure-storm guard
 
 Backoff slows individual restarts; the **failure-storm guard** distinguishes "fails

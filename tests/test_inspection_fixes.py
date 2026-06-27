@@ -16,6 +16,7 @@ import pytest
 from processkit import (
     CliClient,
     Command,
+    NonZeroExit,
     OutputTooLarge,
     ProcessError,
     ProcessRunner,
@@ -189,6 +190,23 @@ def test_arg_args_accept_path_like() -> None:
     echo = "import sys; print(sys.argv[1])"
     echoed = Command(PY, ["-c", echo, pathlib.Path("xyz") / "abc"]).output()
     assert "abc" in echoed.stdout
+
+
+def test_exception_message_redaction_boundary() -> None:
+    # The exception *message* (str(exc)) must never carry argv or stdout; it may
+    # carry a BOUNDED stderr excerpt. Pins the boundary so an upstream Display
+    # change that started dumping argv/stdout (or unbounding stderr) is caught —
+    # the raw values stay only on the structured fields (documented caveat).
+    code = "import sys; print('STDOUT-SECRET-xyz'); sys.stderr.write('e' * 50000); sys.exit(7)"
+    cmd = Command(PY, ["-c", code, "--token=ARGV-SECRET-abc"])
+    with pytest.raises(NonZeroExit) as excinfo:
+        cmd.run()
+    msg = str(excinfo.value)
+    assert "ARGV-SECRET-abc" not in msg, "argv must not appear in the exception message"
+    assert "STDOUT-SECRET-xyz" not in msg, "stdout must not appear in the exception message"
+    assert len(msg) < 2000, f"stderr excerpt must stay bounded, got {len(msg)} chars"
+    # The full output is still available on the structured field.
+    assert "STDOUT-SECRET-xyz" in excinfo.value.stdout
 
 
 def test_repr_does_not_leak_argv() -> None:

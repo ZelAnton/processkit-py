@@ -252,6 +252,19 @@ jobs:
           NEW="${{ steps.version.outputs.version }}"
           sed -i -E "s|^version = \"[^\"]+\"|version = \"$NEW\"|" pyproject.toml
           sed -i -E "s|^version = \"[^\"]+\"|version = \"$NEW\"|" Cargo.toml
+          # Keep Cargo.lock's entry for the local (path) binding crate in sync —
+          # it's the `processkit` package with NO `source` line (the registry dep
+          # `processkit` has one), so bump only that. No cargo needed in `prepare`.
+          NEW="$NEW" python3 - <<'PY'
+          import os, pathlib, re
+          new = os.environ["NEW"]
+          lock = pathlib.Path("Cargo.lock")
+          pat = re.compile(r'(\[\[package\]\]\nname = "processkit"\nversion = ")[^"]+(")(?!\nsource)')
+          text, n = pat.subn(rf"\g<1>{new}\g<2>", lock.read_text(), count=1)
+          if n != 1:
+              raise SystemExit(f"expected one local processkit Cargo.lock entry, patched {n}")
+          lock.write_text(text)
+          PY
 
       # The version-bumped manifests + the promoted changelog + the extracted notes,
       # carried to every downstream job as the single source of truth.
@@ -319,6 +332,7 @@ jobs:
           path: |
             pyproject.toml
             Cargo.toml
+            Cargo.lock
             CHANGELOG.md
             release-notes.md
           if-no-files-found: error

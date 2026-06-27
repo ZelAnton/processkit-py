@@ -269,7 +269,12 @@ class RunningProcess:
     async def output(self) -> ProcessResult: ...
     async def output_bytes(self) -> BytesResult: ...
     async def profile(self, every_seconds: float) -> RunProfile: ...
-    async def shutdown(self, grace_seconds: float) -> Outcome: ...
+    async def shutdown(self, grace_seconds: float) -> Outcome:
+        """Graceful teardown (signal -> wait ``grace_seconds`` -> hard kill),
+        returning the `Outcome`; consumes the handle. Only for a standalone
+        ``start()``/``astart()`` handle — a handle from ``ProcessGroup.start()``
+        raises `Unsupported`; tear such a child down via the group (or `kill()`)."""
+
     def __repr__(self) -> str: ...
 
 class ProcessGroupStats:
@@ -294,7 +299,13 @@ class ProcessGroup:
         cpu_quota: float | None = ...,
         shutdown_timeout: float | None = ...,
         escalate_to_kill: bool | None = ...,
-    ) -> None: ...
+    ) -> None:
+        """Resource limits need a Windows Job Object or a Linux cgroup-v2 root:
+        ``max_memory`` is **bytes** (whole tree), ``max_processes`` a count, and
+        ``cpu_quota`` a fraction of a **single** core (``0.5`` = half a core,
+        ``2.0`` = two cores) — not a share of all cores. ``shutdown_timeout`` is
+        seconds."""
+
     def __enter__(self) -> ProcessGroup: ...
     def __exit__(
         self,

@@ -12,7 +12,10 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+import re
 import types
+
+import pytest
 
 import processkit
 from processkit import _processkit
@@ -205,3 +208,42 @@ def test_dual_base_exceptions_match_stdlib_and_stub() -> None:
     assert {"ProcessError", "TimeoutError"} <= stub_bases(stub["Timeout"])
     assert {"ProcessError", "FileNotFoundError"} <= stub_bases(stub["ProcessNotFound"])
     assert {"ProcessError", "PermissionError"} <= stub_bases(stub["PermissionDenied"])
+
+
+def _section_version(text: str, section: str) -> str | None:
+    """Extract `version = "..."` from a named TOML `[section]` table.
+
+    A deliberately tiny TOML reader — `tomllib` is 3.11+ and the floor is 3.10.
+    Scans for the `[section]` header and returns the first `version = "..."`
+    before the next table header.
+    """
+    in_section = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == f"[{section}]"
+            continue
+        if in_section:
+            match = re.match(r'version\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match.group(1)
+    return None
+
+
+def test_pyproject_and_cargo_versions_agree() -> None:
+    # The release workflow bumps pyproject `[project]` and Cargo `[package]` in
+    # lockstep; nothing else enforces it. A skew means a wheel whose Python
+    # metadata and binding-crate version disagree — caught here at build time
+    # rather than after the irreversible publish.
+    root = pathlib.Path(processkit.__file__).resolve().parents[2]
+    pyproject = root / "pyproject.toml"
+    cargo = root / "Cargo.toml"
+    if not (pyproject.is_file() and cargo.is_file()):
+        pytest.skip("source-tree manifests not present (installed wheel)")
+    py_version = _section_version(pyproject.read_text(encoding="utf-8"), "project")
+    rs_version = _section_version(cargo.read_text(encoding="utf-8"), "package")
+    assert py_version is not None, "no [project] version in pyproject.toml"
+    assert rs_version is not None, "no [package] version in Cargo.toml"
+    assert py_version == rs_version, (
+        f"version skew: pyproject [project] {py_version!r} != Cargo [package] {rs_version!r}"
+    )

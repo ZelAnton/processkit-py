@@ -100,6 +100,25 @@ def test_async_group_teardown_kills_grandchild(tmp_path: pathlib.Path) -> None:
     )
 
 
+def test_explicit_ashutdown_reaps_tree(tmp_path: pathlib.Path) -> None:
+    # The explicit `await group.ashutdown()` path (not the async-with sugar) must
+    # reap the whole tree, grandchild included.
+    pid_file = tmp_path / "grandchild.pid"
+
+    async def scenario() -> int:
+        group = ProcessGroup()
+        await group.astart(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        grandchild_pid = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+        assert is_alive(grandchild_pid)
+        await group.ashutdown()
+        return grandchild_pid
+
+    grandchild_pid = asyncio.run(scenario())
+    assert wait_until(lambda: not is_alive(grandchild_pid), timeout=10.0), (
+        f"grandchild {grandchild_pid} survived explicit ashutdown()"
+    )
+
+
 def test_wait_for_timeout_kills_tree(tmp_path: pathlib.Path) -> None:
     # asyncio.wait_for cancellation must tear the tree down, like a direct cancel.
     pid_file = tmp_path / "grandchild.pid"

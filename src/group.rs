@@ -11,6 +11,11 @@ use pyo3::prelude::*;
 use crate::command::PyCommand;
 use crate::convert::{nonnegative_duration, parse_signal};
 use crate::errors::{map_err, ProcessError};
+use crate::result::{PyBytesResult, PyProcessResult};
+use crate::runner::{
+    runner_aexit_code, runner_aoutput, runner_aoutput_bytes, runner_aprobe, runner_arun,
+    runner_exit_code, runner_output, runner_output_bytes, runner_probe, runner_run,
+};
 use crate::running::PyRunningProcess;
 use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
 
@@ -79,6 +84,12 @@ async fn shutdown_if_open(group: Option<Arc<PkProcessGroup>>) -> processkit::Res
 /// reaps the tree when the last handle closes (kernel-enforced); on Linux/macOS
 /// teardown is driven from the `__exit__` path and is best-effort if the
 /// interpreter is hard-killed.
+///
+/// Also usable directly as a runner: `group.output(cmd)` / `.run(cmd)` / …
+/// run `cmd` as a *shared* member of this group (not a standalone tree) —
+/// the same verb surface `Runner`/`ScriptedRunner`/… expose, for code
+/// written against that seam that should route every spawn through one
+/// shared group instead of a per-call private tree.
 #[pyclass(name = "ProcessGroup", module = "processkit")]
 pub(crate) struct PyProcessGroup {
     // `None` after the group is shut down — every method then errors cleanly.
@@ -197,6 +208,75 @@ impl PyProcessGroup {
         })
     }
 
+    // `ProcessGroup` implements the crate's `ProcessRunner` (`output_string` +
+    // `start`, with `output_bytes`/`run`/`exit_code`/`probe` from the trait's
+    // own defaults/`ProcessRunnerExt`) — so it can run a *shared*-group member
+    // command directly, the same verb surface as `Runner`/`ScriptedRunner`/…,
+    // via the same generic `runner_*` helpers those use over `self.inner`
+    // (`Arc<ProcessGroup>` itself satisfies `ProcessRunner` via the crate's
+    // blanket `impl<R: ProcessRunner + ?Sized> ProcessRunner for Arc<R>`).
+    // Not registered as an `extract_runner` target (unlike the four dedicated
+    // runner pyclasses) — a `ProcessGroup` is a containment container first,
+    // injectable directly by callers who already hold one, not through the
+    // `runner=` kwarg seam.
+
+    /// Run `command` as a member of this group and capture output (a non-zero
+    /// exit is data, not an error) — the `ProcessRunner` verb surface.
+    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
+        runner_output(py, self.group()?.as_ref(), command)
+    }
+
+    /// Run `command` as a member of this group and capture raw-bytes stdout.
+    fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
+        runner_output_bytes(py, self.group()?.as_ref(), command)
+    }
+
+    /// Run `command` as a member of this group; require a zero exit and
+    /// return trimmed stdout.
+    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
+        runner_run(py, self.group()?.as_ref(), command)
+    }
+
+    /// Run `command` as a member of this group and return the exit code.
+    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
+        runner_exit_code(py, self.group()?.as_ref(), command)
+    }
+
+    /// Run a predicate command as a member of this group and read its exit
+    /// code as a bool.
+    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
+        runner_probe(py, self.group()?.as_ref(), command)
+    }
+
+    /// Async counterpart of `output()`.
+    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aoutput(py, self.group()?.clone(), command)
+    }
+
+    /// Async counterpart of `output_bytes()`.
+    fn aoutput_bytes<'py>(
+        &self,
+        py: Python<'py>,
+        command: &PyCommand,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        runner_aoutput_bytes(py, self.group()?.clone(), command)
+    }
+
+    /// Async counterpart of `run()`.
+    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_arun(py, self.group()?.clone(), command)
+    }
+
+    /// Async counterpart of `exit_code()`.
+    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aexit_code(py, self.group()?.clone(), command)
+    }
+
+    /// Async counterpart of `probe()`.
+    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
+        runner_aprobe(py, self.group()?.clone(), command)
+    }
+
     /// The containment mechanism in use: `"job_object"` (Windows),
     /// `"cgroup_v2"` (Linux), or `"process_group"` (POSIX fallback).
     #[getter]
@@ -216,10 +296,11 @@ impl PyProcessGroup {
     }
 
     /// Send a signal to every process in the tree. `name` is one of `term`,
-    /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2` — but a Job Object has no
-    /// POSIX signals, so on Windows only `kill` is deliverable; every other
-    /// name raises `Unsupported` there.
-    fn signal(&self, name: &str) -> PyResult<()> {
+    /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2`, or a raw platform signal
+    /// number (Unix only) — but a Job Object has no POSIX signals, so on
+    /// Windows only `kill` is deliverable; every other name/number raises
+    /// `Unsupported` there.
+    fn signal(&self, name: &Bound<'_, PyAny>) -> PyResult<()> {
         let signal = parse_signal(name)?;
         self.group()?.signal(signal).map_err(map_err)
     }

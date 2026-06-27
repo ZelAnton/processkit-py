@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from processkit import BytesResult, Command, NonZeroExit, Pipeline
+from processkit import BytesResult, CancellationToken, Cancelled, Command, NonZeroExit, Pipeline
 
 PY = sys.executable
 
@@ -114,3 +114,18 @@ def test_pipeline_timeout_is_captured() -> None:
     result = pipe.timeout(0.3).output()
     assert result.timed_out
     assert not result.is_success
+
+
+def test_pipeline_cancel_on_tears_down_the_whole_chain() -> None:
+    async def scenario() -> None:
+        token = CancellationToken()
+        pipe = (
+            Command(PY, ["-c", "print('go')"]) | Command(PY, ["-c", "import time; time.sleep(30)"])
+        ).cancel_on(token)
+        task = asyncio.ensure_future(pipe.arun())
+        await asyncio.sleep(0.2)
+        token.cancel()
+        with pytest.raises(Cancelled):
+            await task
+
+    asyncio.run(scenario())

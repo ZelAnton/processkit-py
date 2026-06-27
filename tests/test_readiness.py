@@ -1,4 +1,4 @@
-"""Readiness probes: `wait_for` (predicate polling), `wait_for_port` (TCP
+"""Readiness probes: `wait_until` (predicate polling), `wait_for_port` (TCP
 accept), and `wait_for_line` (match a streamed line). Includes the probe-socket
 cleanup wiring that a cancelled/refused `wait_for_port` must run.
 """
@@ -13,17 +13,25 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from processkit import Command, ProcessError, ProcessGroup, wait_for, wait_for_line, wait_for_port
+from processkit import (
+    Command,
+    ProcessError,
+    ProcessGroup,
+    WaitTimeout,
+    wait_for_line,
+    wait_for_port,
+    wait_until,
+)
 
 from ._programs import free_port, refused_port
 
 PY = sys.executable
 
 
-# --- wait_for (predicate polling) -------------------------------------------
+# --- wait_until (predicate polling) -------------------------------------------
 
 
-def test_wait_for_sync_predicate() -> None:
+def test_wait_until_sync_predicate() -> None:
     async def scenario() -> None:
         calls = 0
 
@@ -32,35 +40,51 @@ def test_wait_for_sync_predicate() -> None:
             calls += 1
             return calls >= 3
 
-        await wait_for(ready, timeout=2.0, interval=0.01)
+        await wait_until(ready, timeout=2.0, interval=0.01)
         assert calls >= 3
 
     asyncio.run(scenario())
 
 
-def test_wait_for_async_predicate() -> None:
+def test_wait_until_async_predicate() -> None:
     async def scenario() -> None:
         async def ready() -> bool:
             return True
 
-        await wait_for(ready, timeout=1.0)
+        await wait_until(ready, timeout=1.0)
 
     asyncio.run(scenario())
 
 
-def test_wait_for_times_out() -> None:
+def test_wait_until_times_out() -> None:
     async def scenario() -> None:
         with pytest.raises(TimeoutError):
-            await wait_for(lambda: False, timeout=0.2, interval=0.01)
+            await wait_until(lambda: False, timeout=0.2, interval=0.01)
 
     asyncio.run(scenario())
 
 
-def test_wait_for_returns_immediately_when_already_true() -> None:
+def test_wait_until_timeout_is_a_wait_timeout_with_the_deadline() -> None:
+    # `WaitTimeout` is catchable as both `TimeoutError` (the readiness-timeout
+    # convention) and `ProcessError` (the library's base), and carries the
+    # `timeout_seconds` that was actually configured.
+    async def scenario() -> None:
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_until(lambda: False, timeout=0.2, interval=0.01)
+        assert isinstance(excinfo.value, TimeoutError)
+        assert isinstance(excinfo.value, ProcessError)
+        assert excinfo.value.timeout_seconds == 0.2
+        assert excinfo.value.host is None
+        assert excinfo.value.port is None
+
+    asyncio.run(scenario())
+
+
+def test_wait_until_returns_immediately_when_already_true() -> None:
     # An already-true predicate must return before the deadline check, even at
     # timeout=0 (predicate is evaluated first).
     async def scenario() -> None:
-        await wait_for(lambda: True, timeout=0.0)
+        await wait_until(lambda: True, timeout=0.0)
 
     asyncio.run(scenario())
 
@@ -68,12 +92,12 @@ def test_wait_for_returns_immediately_when_already_true() -> None:
 def test_readiness_timeout_is_keyword_only() -> None:
     # `timeout` is keyword-only across ALL three readiness helpers — pin each
     # signature so dropping the `*` on any of them fails.
-    for fn in (wait_for, wait_for_port, wait_for_line):
+    for fn in (wait_until, wait_for_port, wait_for_line):
         kind = inspect.signature(fn).parameters["timeout"].kind
         assert kind is inspect.Parameter.KEYWORD_ONLY, f"{fn.__name__}.timeout is {kind}"
 
 
-def test_wait_for_async_predicate_polls_until_true() -> None:
+def test_wait_until_async_predicate_polls_until_true() -> None:
     # A missing `await` would treat the coroutine as truthy and return after one
     # call; requiring three proves the value is actually awaited.
     async def scenario() -> None:
@@ -84,34 +108,34 @@ def test_wait_for_async_predicate_polls_until_true() -> None:
             calls += 1
             return calls >= 3
 
-        await wait_for(ready, timeout=2.0, interval=0.01)
+        await wait_until(ready, timeout=2.0, interval=0.01)
         assert calls >= 3
 
     asyncio.run(scenario())
 
 
-def test_wait_for_async_predicate_times_out() -> None:
+def test_wait_until_async_predicate_times_out() -> None:
     async def scenario() -> None:
         async def never() -> bool:
             return False
 
         with pytest.raises(TimeoutError):
-            await wait_for(never, timeout=0.2, interval=0.01)
+            await wait_until(never, timeout=0.2, interval=0.01)
 
     asyncio.run(scenario())
 
 
-def test_wait_for_rejects_nonpositive_interval() -> None:
+def test_wait_until_rejects_nonpositive_interval() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError):
-            await wait_for(lambda: True, timeout=1.0, interval=0)
+            await wait_until(lambda: True, timeout=1.0, interval=0)
         with pytest.raises(ValueError):
-            await wait_for(lambda: True, timeout=1.0, interval=float("nan"))
+            await wait_until(lambda: True, timeout=1.0, interval=float("nan"))
 
     asyncio.run(scenario())
 
 
-def test_wait_for_bounds_a_hanging_async_predicate() -> None:
+def test_wait_until_bounds_a_hanging_async_predicate() -> None:
     # A hung async predicate must not outlive `timeout`: the deadline bounds the
     # predicate itself, not just the gaps between polls. A regression (bare await)
     # would hang until the outer guard fires, so assert it returns *promptly*.
@@ -123,14 +147,16 @@ def test_wait_for_bounds_a_hanging_async_predicate() -> None:
         loop = asyncio.get_running_loop()
         start = loop.time()
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(wait_for(never_answers, timeout=0.2, interval=0.01), timeout=5.0)
+            await asyncio.wait_for(
+                wait_until(never_answers, timeout=0.2, interval=0.01), timeout=5.0
+            )
         elapsed = loop.time() - start
-        assert elapsed < 2.0, f"wait_for did not bound the hanging predicate ({elapsed:.1f}s)"
+        assert elapsed < 2.0, f"wait_until did not bound the hanging predicate ({elapsed:.1f}s)"
 
     asyncio.run(scenario())
 
 
-def test_wait_for_propagates_predicate_own_exception() -> None:
+def test_wait_until_propagates_predicate_own_exception() -> None:
     # A predicate that raises its own error (e.g. an I/O `TimeoutError`) must surface
     # untouched — not be swallowed and relabelled as the generic "condition not met".
     async def scenario() -> None:
@@ -138,12 +164,12 @@ def test_wait_for_propagates_predicate_own_exception() -> None:
             raise TimeoutError("db handshake timed out")
 
         with pytest.raises(TimeoutError, match="db handshake"):
-            await wait_for(boom, timeout=10.0)
+            await wait_until(boom, timeout=10.0)
 
     asyncio.run(scenario())
 
 
-def test_wait_for_async_predicate_runs_once_at_zero_timeout() -> None:
+def test_wait_until_async_predicate_runs_once_at_zero_timeout() -> None:
     # Symmetry with the sync path: an already-true async predicate is evaluated (and
     # succeeds) even at timeout=0, not cancelled before it runs.
     async def scenario() -> None:
@@ -154,15 +180,15 @@ def test_wait_for_async_predicate_runs_once_at_zero_timeout() -> None:
             calls += 1
             return True
 
-        await wait_for(ready, timeout=0.0)
+        await wait_until(ready, timeout=0.0)
         assert calls == 1
 
     asyncio.run(scenario())
 
 
-def test_wait_for_cancels_inner_predicate_on_outer_cancel() -> None:
-    # Cancelling the task awaiting wait_for must not orphan the in-flight predicate:
-    # asyncio.wait (unlike wait_for) does not cancel its member, so wait_for must.
+def test_wait_until_cancels_inner_predicate_on_outer_cancel() -> None:
+    # Cancelling the task awaiting wait_until must not orphan the in-flight predicate:
+    # asyncio.wait (unlike wait_until) does not cancel its member, so wait_until must.
     async def scenario() -> None:
         started = asyncio.Event()
         cancelled = False
@@ -177,19 +203,19 @@ def test_wait_for_cancels_inner_predicate_on_outer_cancel() -> None:
                 raise
             return True
 
-        task = asyncio.ensure_future(wait_for(slow, timeout=10.0))
+        task = asyncio.ensure_future(wait_until(slow, timeout=10.0))
         await started.wait()  # the predicate is now running inside asyncio.wait
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.sleep(0.01)  # let the inner cancellation settle
-        assert cancelled, "wait_for orphaned the inner predicate task on outer cancel"
+        assert cancelled, "wait_until orphaned the inner predicate task on outer cancel"
 
     asyncio.run(scenario())
 
 
-def test_wait_for_deadline_drain_preserves_outer_cancellation() -> None:
-    # A regression: a caller cancellation landing WHILE wait_for is draining a
+def test_wait_until_deadline_drain_preserves_outer_cancellation() -> None:
+    # A regression: a caller cancellation landing WHILE wait_until is draining a
     # just-timed-out predicate used to be swallowed and replaced with a
     # misleading TimeoutError instead of propagating as CancelledError.
     async def scenario() -> None:
@@ -204,8 +230,8 @@ def test_wait_for_deadline_drain_preserves_outer_cancellation() -> None:
                 raise
             return True
 
-        outer = asyncio.ensure_future(wait_for(slow_predicate, timeout=0.05, interval=0.01))
-        await cleanup_started.wait()  # wait_for's deadline fired and cancelled the predicate
+        outer = asyncio.ensure_future(wait_until(slow_predicate, timeout=0.05, interval=0.01))
+        await cleanup_started.wait()  # wait_until's deadline fired and cancelled the predicate
         outer.cancel()  # a fresh cancellation lands while the predicate is still unwinding
         with pytest.raises(asyncio.CancelledError):
             await outer
@@ -213,7 +239,7 @@ def test_wait_for_deadline_drain_preserves_outer_cancellation() -> None:
     asyncio.run(scenario())
 
 
-def test_wait_for_second_cancellation_during_drain_does_not_leak_task_exception() -> None:
+def test_wait_until_second_cancellation_during_drain_does_not_leak_task_exception() -> None:
     # A regression for _quiesce's own drain: if a SECOND cancellation lands
     # while it is still draining an already-cancelling predicate, and that
     # predicate's cleanup then raises its own (non-CancelledError) exception,
@@ -233,8 +259,8 @@ def test_wait_for_second_cancellation_during_drain_does_not_leak_task_exception(
                     raise ValueError("cleanup failed") from None  # NOT re-raised
             return True
 
-        outer = asyncio.ensure_future(wait_for(flaky_predicate, timeout=0.05, interval=0.01))
-        await first_cancel_seen.wait()  # wait_for's deadline fired; predicate mid-cleanup
+        outer = asyncio.ensure_future(wait_until(flaky_predicate, timeout=0.05, interval=0.01))
+        await first_cancel_seen.wait()  # wait_until's deadline fired; predicate mid-cleanup
         outer.cancel()  # a fresh, second cancellation lands while still draining
         with pytest.raises(asyncio.CancelledError):
             await outer
@@ -242,17 +268,17 @@ def test_wait_for_second_cancellation_during_drain_does_not_leak_task_exception(
     asyncio.run(scenario())
 
 
-def test_wait_for_rejects_nan_timeout() -> None:
+def test_wait_until_rejects_nan_timeout() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="NaN"):
-            await wait_for(lambda: True, timeout=float("nan"))
+            await wait_until(lambda: True, timeout=float("nan"))
 
     asyncio.run(scenario())
 
 
-def test_wait_for_outer_cancel_wins_over_completed_predicate_exception() -> None:
+def test_wait_until_outer_cancel_wins_over_completed_predicate_exception() -> None:
     # Race: if the predicate task finishes with its OWN exception at the same instant
-    # the caller cancels wait_for, the cancellation must win (CancelledError) — not the
+    # the caller cancels wait_until, the cancellation must win (CancelledError) — not the
     # predicate's exception, or `except CancelledError: cleanup()` silently misses.
     async def scenario() -> None:
         started = asyncio.Event()
@@ -261,7 +287,7 @@ def test_wait_for_outer_cancel_wins_over_completed_predicate_exception() -> None
             started.set()
             raise ValueError("predicate's own error")  # completes without awaiting
 
-        outer = asyncio.ensure_future(wait_for(flaky, timeout=10.0))
+        outer = asyncio.ensure_future(wait_until(flaky, timeout=10.0))
         await started.wait()  # flaky's task is now done with ValueError; outer still in wait
         outer.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -319,6 +345,20 @@ def test_wait_for_port_timeout() -> None:
         asyncio.run(scenario(port))
 
 
+def test_wait_for_port_timeout_carries_host_and_port() -> None:
+    # Unlike wait_until()/wait_for_line()'s WaitTimeout (host/port always
+    # None), wait_for_port's sets them — the one variant where they apply.
+    async def scenario(port: int) -> None:
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_for_port("127.0.0.1", port, timeout=0.5)
+        assert excinfo.value.timeout_seconds == 0.5
+        assert excinfo.value.host == "127.0.0.1"
+        assert excinfo.value.port == port
+
+    with refused_port() as port:  # nothing is listening
+        asyncio.run(scenario(port))
+
+
 def test_wait_for_line_rejects_nan_timeout() -> None:
     async def empty_lines() -> AsyncIterator[str]:
         return
@@ -366,6 +406,69 @@ def test_wait_for_line_times_out_when_no_line_matches() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_for_line_timeout_carries_no_host_or_port() -> None:
+    async def endless_non_matching_lines() -> AsyncIterator[str]:
+        while True:
+            yield "nope"
+            await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_for_line(
+                endless_non_matching_lines(), lambda line: "READY" in line, timeout=0.2
+            )
+        assert excinfo.value.timeout_seconds == 0.2
+        assert excinfo.value.host is None
+        assert excinfo.value.port is None
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_line_accepts_a_string_predicate_as_substring_match() -> None:
+    # The `predicate: str` overload — a shorthand for `lambda line: needle in
+    # line` — only valid for a `str`-yielding iterator.
+    async def lines() -> AsyncIterator[str]:
+        yield "starting"
+        yield "READY now"
+
+    async def scenario() -> str:
+        return await wait_for_line(lines(), "READY", timeout=10.0)
+
+    assert asyncio.run(scenario()) == "READY now"
+
+
+def test_wait_for_line_string_predicate_times_out_like_a_callable_one() -> None:
+    async def endless_non_matching_lines() -> AsyncIterator[str]:
+        while True:
+            yield "nope"
+            await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        with pytest.raises(WaitTimeout, match="no matching line"):
+            await wait_for_line(endless_non_matching_lines(), "READY", timeout=0.2)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_line_generalizes_over_a_non_string_item_type() -> None:
+    # "generic over the iterator item type" (Stage 3 / C4): a callable
+    # predicate works over ANY async iterator, not just `str` lines —
+    # e.g. an `OutputEvent`-shaped item.
+    class _Event:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    async def events() -> AsyncIterator[_Event]:
+        yield _Event("starting")
+        yield _Event("READY now")
+
+    async def scenario() -> _Event:
+        return await wait_for_line(events(), lambda ev: "READY" in ev.text, timeout=10.0)
+
+    matched = asyncio.run(scenario())
+    assert matched.text == "READY now"
+
+
 def test_wait_for_line_stream_ended_raises_process_error() -> None:
     # The stream-ended branch: the iterator exhausts (EOF) before any line
     # matches and before the deadline — this is a ProcessError, not a
@@ -384,7 +487,7 @@ def test_wait_for_line_stream_ended_raises_process_error() -> None:
 
 
 def test_wait_for_line_recovers_match_at_zero_timeout() -> None:
-    # Symmetry with wait_for's "evaluate at least once": a line already
+    # Symmetry with wait_until's "evaluate at least once": a line already
     # available in the iterator must still be found even at timeout=0 (the
     # done-at-deadline recovery path), not discarded as a timeout.
     async def one_line() -> AsyncIterator[str]:

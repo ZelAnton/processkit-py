@@ -103,6 +103,7 @@ Build the canned outcomes with the `Reply` factories:
 - **`Reply.signalled(signal=None)`** — a signal-killed run; `run` raises `Signalled`.
 - **`Reply.pending()`** — parks the call like a hung child; pair it with `asyncio.wait_for` / a `Command.timeout()` to prove your orchestration actually cancels a blocked call.
 - **`.with_stdout(text)`** — an instance method that attaches stdout to any reply (e.g. the `CONFLICT …` text git prints on a *failing* merge).
+- **`.with_line_delay(seconds)`** — sleep `seconds` before each scripted stdout line on a `start()`/`astart()` run, so a hermetic streaming test can observe genuinely incremental delivery instead of every line arriving at once.
 
 Prefix matching is element-wise over the program name then the arguments, so
 `on(["git", "branch"])` matches `git branch --show-current` but not `git
@@ -121,6 +122,23 @@ and so on; once exhausted, the **last** reply repeats forever.
 runner = ScriptedRunner()
 runner.on_sequence(["deploy"], [Reply.fail(1, "transient"), Reply.ok("deployed")])
 ```
+
+For a match that isn't a plain argv prefix, **`.when(predicate, reply)`**
+replies with `reply` when `predicate(command)` accepts it — inspecting
+`command.cwd`/`command.arguments`/whatever `Command`'s own inspection
+accessors expose:
+
+```python
+runner = ScriptedRunner()
+runner.when(lambda cmd: "--dangerous" in cmd.arguments, Reply.fail(1, "blocked"))
+runner.fallback(Reply.ok(""))
+```
+
+`predicate` is infallible from the crate's perspective, like
+`Supervisor.stop_when`: a raising or non-`bool` predicate is treated as "does
+not match" rather than propagating, with the error surfaced via
+[`sys.unraisablehook`](https://docs.python.org/3/library/sys.html#sys.unraisablehook)
+(visible on stderr) so a buggy predicate is noisy, not silently wrong.
 
 *Deeper: outcome semantics and the exception hierarchy — [Running commands](commands.md).*
 
@@ -142,7 +160,7 @@ async def becomes_ready(runner):
     async for line in proc.stdout_lines():
         if "listening" in line:
             break
-    return (await proc.finish()).exited_zero
+    return (await proc.afinish()).exited_zero
 
 def test_server_becomes_ready():
     runner = ScriptedRunner()
@@ -243,6 +261,12 @@ def test_deploy_pushes_tags() -> None:
 
 - **`replying(reply)`** — every command gets `reply`, built with the same `Reply`
   factories as `ScriptedRunner`.
+- **`new(inner)`** — wrap `inner` (any of `Runner`, `ScriptedRunner`,
+  `RecordReplayRunner`, or another `RecordingRunner`), recording every call
+  made through it. The general form behind `replying()`, for combining
+  recording with a double you've already built (e.g. a `RecordReplayRunner`
+  cassette, or a `ScriptedRunner` with several `.on()` rules already wired
+  up) instead of a fresh runner that just replies with one canned `Reply`.
 - **`calls()`** — every recorded `Invocation`, in call order.
 - **`only_call()`** — the single invocation, or a `ProcessError` if there wasn't
   exactly one.

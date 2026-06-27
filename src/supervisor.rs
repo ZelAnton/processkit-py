@@ -14,7 +14,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
-use crate::convert::{nonnegative_duration, positive_duration};
+use crate::convert::{build_output_buffer_policy, nonnegative_duration, positive_duration};
 use crate::errors::ProcessError;
 use crate::result::PyProcessResult;
 use crate::runner::extract_runner;
@@ -166,6 +166,9 @@ impl PySupervisor {
         storm_pause=None,
         failure_threshold=None,
         failure_decay=None,
+        capture_max_bytes=None,
+        capture_max_lines=None,
+        capture_on_overflow=None,
         runner=None,
     ))]
     #[allow(clippy::too_many_arguments)] // a keyword-only builder constructor
@@ -181,6 +184,9 @@ impl PySupervisor {
         storm_pause: Option<f64>,
         failure_threshold: Option<f64>,
         failure_decay: Option<f64>,
+        capture_max_bytes: Option<usize>,
+        capture_max_lines: Option<usize>,
+        capture_on_overflow: Option<&str>,
         runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let mut supervisor = PkSupervisor::new(command.inner.clone());
@@ -235,6 +241,22 @@ impl PySupervisor {
             // `nonnegative_duration`: a zero half-life is a valid config (keeps no
             // history — every failure scores exactly 1.0).
             supervisor = supervisor.failure_decay(nonnegative_duration(seconds, "failure_decay")?);
+        }
+        // Bound (or widen) the output captured from each incarnation — opt-in:
+        // the crate's own default is already a sensible bounded tail (a
+        // long-lived supervised process is often chatty), so this only applies
+        // when the caller sets at least one of the cap sizes.
+        if capture_max_bytes.is_some()
+            || capture_max_lines.is_some()
+            || capture_on_overflow.is_some()
+        {
+            let policy = build_output_buffer_policy(
+                capture_max_bytes,
+                capture_max_lines,
+                capture_on_overflow.unwrap_or("drop_oldest"),
+                "capture",
+            )?;
+            supervisor = supervisor.capture(policy);
         }
         // `Supervisor::new` only exists for `Supervisor<JobRunner>`; every builder
         // call above is generic over `R` and works unchanged on that concrete

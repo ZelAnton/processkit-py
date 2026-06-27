@@ -37,6 +37,24 @@ def test_output_all_returns_results_in_order() -> None:
     assert [r.stdout.strip() for r in results if isinstance(r, ProcessResult)] == ["1", "2"]
 
 
+def test_output_all_rejects_zero_concurrency() -> None:
+    # concurrency=0 used to be silently clamped to 1 ("I asked for none and
+    # got some anyway") — now a clear ValueError, across all four entry points.
+    cmds = [Command(PY, ["-c", "print(1)"])]
+    with pytest.raises(ValueError, match="concurrency"):
+        output_all(cmds, concurrency=0)
+    with pytest.raises(ValueError, match="concurrency"):
+        output_all_bytes(cmds, concurrency=0)
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="concurrency"):
+            await aoutput_all(cmds, concurrency=0)
+        with pytest.raises(ValueError, match="concurrency"):
+            await aoutput_all_bytes(cmds, concurrency=0)
+
+    asyncio.run(scenario())
+
+
 def test_output_all_puts_spawn_failure_in_its_slot() -> None:
     results = output_all([Command(PY, ["-c", "print(1)"]), Command(NO_SUCH_PROGRAM)])
     ok, failed = results[0], results[1]

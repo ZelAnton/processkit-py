@@ -89,9 +89,21 @@ and `program`. So the chain above would raise `NonZeroExit(code=2, program="grep
 One honest edge: in the `producer | head` shape, a downstream that stops reading
 early (`head` exits after one line and closes the pipe) leaves the producer to
 die on a **broken pipe** at its next write. Under strict pipefail that counts as
-the producer's failure, and the Python binding has no per-stage opt-out — if you
-need only the first lines, prefer a tool that reads to completion, or capture
-with `output()` and inspect the result instead of `run()`.
+the producer's failure — unless that stage was built with
+`.unchecked_in_pipe()`, which exempts it from pipefail attribution (its
+unclean exit, including a `SIGPIPE`, is skipped when the chain decides what to
+report, and never shields a *checked* stage's own failure):
+
+```python
+top = (
+    Command("producer").unchecked_in_pipe()   # SIGPIPE from `head` closing early is expected
+    | Command("head", ["-1"])
+).run()
+```
+
+Outside a `Pipeline`, `unchecked_in_pipe()` is a no-op — a single run's status
+is already plain data on its own `ProcessResult`, and `ensure_success()` stays
+opt-in.
 
 ## stdin and stdout at the ends; per-stage env/cwd
 
@@ -144,7 +156,10 @@ partial stdout** — the chain is run-to-completion or nothing. A per-stage
 `Command.timeout(...)` set on an individual stage still kills just that stage and
 surfaces under pipefail as that stage's `Timeout`. See
 [Timeouts & cancellation](timeouts-and-cancellation.md); cancelling an awaited
-`arun()`/`aoutput()` reaps the whole chain's tree the same way.
+`arun()`/`aoutput()` reaps the whole chain's tree the same way, and so does
+firing a `CancellationToken` wired with `Pipeline.cancel_on(token)` — **gap-fill**
+here, not override: a stage with its own explicit `Command.cancel_on(...)` keeps
+it, only stages without one pick up the pipeline-level token.
 
 ## Binary tails
 

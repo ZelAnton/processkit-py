@@ -149,7 +149,7 @@ flooding child with a `timeout()` instead.
 proc = await Command("my-build", ["--watch"]).astart()
 async for line in proc.stdout_lines():
     print(line)
-finished = await proc.finish()   # outcome + captured stderr
+finished = await proc.afinish()   # outcome + captured stderr
 ```
 
 Interleaved stdout + stderr:
@@ -180,8 +180,9 @@ with Command("worker").start() as proc:
 # proc torn down here
 ```
 
-If you consume the handle inside the block (`await proc.output()` / `.wait()` /
-`.finish()` / `.shutdown(...)`), exit is a no-op.
+If you consume the handle inside the block (`proc.output()`/`.outcome()`/
+`.finish()`/`.shutdown(...)`, or their `a`-prefixed async twins), exit is a
+no-op.
 
 ## Talk to a process interactively (async)
 
@@ -192,7 +193,7 @@ await stdin.write_line("print(1 + 1)")
 await stdin.close()                  # EOF
 async for line in proc.stdout_lines():
     print(line)
-await proc.wait()
+await proc.aoutcome()
 ```
 
 ## Contain a process tree (no orphans)
@@ -230,15 +231,15 @@ task.cancel()                        # the process tree is reaped; CancelledErro
 ## Wait for a server to be ready
 
 ```python
-from processkit import Command, ProcessGroup, wait_for, wait_for_port, wait_for_line
+from processkit import Command, ProcessGroup, wait_until, wait_for_port, wait_for_line
 
 async with ProcessGroup() as group:
     proc = await group.astart(Command("my-server"))
     await wait_for_port("127.0.0.1", 8080, timeout=10)        # poll the port
-    # or wait for a log line:
-    # await wait_for_line(proc.stdout_lines(), lambda l: "listening" in l, timeout=10)
+    # or wait for a log line (a plain string is a substring-match shorthand):
+    # await wait_for_line(proc.stdout_lines(), "listening", timeout=10)
     # or poll any (sync or async) condition:
-    # await wait_for(lambda: health_check_passes(), timeout=10, interval=0.1)
+    # await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 ```
 
 ## Build a shell-free pipeline

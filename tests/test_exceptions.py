@@ -187,3 +187,16 @@ def test_permission_denied_on_non_executable(tmp_path: pathlib.Path) -> None:
     assert isinstance(excinfo.value, PermissionError)  # the stdlib-aliased base
     assert excinfo.value.program
     _assert_no_phantom_stub_attrs(excinfo.value)
+
+
+def test_permission_denied_program_has_a_class_level_none_default() -> None:
+    # The `Io`-sourced permission denial (no program named — e.g. an OS
+    # refusing a group signal) isn't practically reachable in a hermetic
+    # test (no double produces it, and the crate's `Error` is
+    # `#[non_exhaustive]`, so it can't be constructed directly here either).
+    # This pins the class-level default itself (mirroring
+    # `Timeout.timeout_seconds`'s own default): a bare, un-raised
+    # `PermissionDenied` reads `.program` as `None` rather than raising
+    # `AttributeError`, so that path — whenever it *is* hit — behaves per the
+    # `program: str | None` stub instead of crashing on attribute access.
+    assert PermissionDenied("no program named").program is None

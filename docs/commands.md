@@ -28,9 +28,10 @@ and an **asyncio** one with the same name under an `a` prefix. They share the sa
 builder, the same result types, and the same no-orphan guarantee — pick whichever
 fits the call site. (`start()` / `astart()` hand back a live `RunningProcess` for
 streaming and interactive I/O — see [Streaming & interactive I/O](streaming.md).
-That handle's *consuming* verbs (`wait` / `finish` / `output` / …) are async
-coroutines, so the sync `start()` is mainly for spawning a scoped background child
-you watch via its live properties and tear down with a `with` block.)
+That handle's *consuming* verbs (`outcome`/`aoutcome`, `finish`/`afinish`,
+`output`/`aoutput`, …) come in sync/async pairs too, like everywhere else in
+this library — use whichever matches your code, regardless of whether the
+handle came from `start()` or `astart()`.)
 
 ```python
 from processkit import Command
@@ -91,6 +92,22 @@ The program name reaches the OS verbatim: a bare name is resolved on `PATH` by
 the OS, and `cwd` does **not** re-anchor a *relative* program path against the new
 directory. Pass an absolute program path when you combine a relative tool with a
 `cwd`.
+
+Read back what you built with the `program` / `arguments` properties (`arguments`,
+not `args` — that name is already the builder method that *appends* args), or
+render the whole thing as a single shell-quoted line with `command_line()` — for
+display only (logs, error messages, a dry-run echo): it never invokes a shell,
+and the escaping targets human legibility, not any shell's actual parsing rules.
+Unlike the redacted `repr()`, `command_line()` **does** include argv, so render it
+only into a sink you control.
+
+```python
+cmd = Command("login", ["--password", "hunter2"])
+cmd.program              # "login"
+cmd.arguments            # ["--password", "hunter2"]
+cmd.command_line()       # "login --password hunter2" — includes the secret!
+repr(cmd)                # redacted: shows arg COUNT, never values
+```
 
 ## Environment and sandboxing
 
@@ -210,7 +227,45 @@ Durations are floats of seconds — never a duration object. `timeout` kills the
 whole process tree at the deadline; on the capturing verbs the expiry is captured
 (`ProcessResult.timed_out`), on the checking verbs it raises `Timeout`. The
 signal name in `timeout_signal` is one of `term | kill | int | hup | quit | usr1
-| usr2`. *Deeper: [Timeouts & cancellation](timeouts-and-cancellation.md).*
+| usr2`, or a raw platform signal number (an `int`, POSIX only — Windows raises
+`Unsupported` for anything but a hard kill, same as the named variants).
+*Deeper: [Timeouts & cancellation](timeouts-and-cancellation.md).*
+
+`no_timeout()` runs without a deadline, and — unlike simply never calling
+`timeout()` — also opts out of a `CliClient`'s `default_timeout` gap-fill
+(useful for the one deliberately unbounded call — a `tail -f`, a watch loop —
+against a client that otherwise imposes a deadline on every call). Whichever
+of `timeout()` / `no_timeout()` you call **last** wins.
+
+## Retrying a run
+
+```python
+Command("flaky-fetch").retry(
+    "transient_or_timeout",       # or "transient" — see below
+    max_retries=3,                # up to 4 total attempts (default)
+    initial_backoff=0.1,          # seconds before the first retry (default)
+    multiplier=2.0,                # exponential growth per retry (default)
+    max_backoff=30.0,             # cap on a single delay (default)
+    jitter=True,                  # spread the wait over [0, delay] (default)
+).run()
+```
+
+Honored only by the success-checking verbs (`run`/`exit_code`/`probe`) — the
+non-erroring `output()`/`output_bytes()` never retry, since they never raise
+in the first place. `retry_if` is a named preset over the error-classification
+accessors, not an arbitrary predicate: `"transient"` covers a bare-retry-clears
+spawn/IO condition (interrupted, would-block, a busy resource);
+`"transient_or_timeout"` also retries a `.timeout()` expiry. Each attempt
+**re-executes the whole command from scratch** — only retry operations safe to
+repeat (a `git push` that already reached the server, then dropped the
+connection, will be replayed if retried). A one-shot `stdin_bytes()`/
+`stdin_text()` source can't survive a retry, so a command built with one is
+never retried at all. Ignored by `Supervisor` (its own restart policy governs
+keep-alive restarts — a different concern), `output_all`, and `Pipeline`.
+
+`CliClient` has the same knobs, prefixed `default_` (`default_retry_if=`,
+`default_max_retries=`, …) — `default_retry_if` is the required opt-in gate;
+setting a tuning knob without it raises `ValueError`.
 
 ## Privileges and spawn flags
 
@@ -291,18 +346,28 @@ Command("grep", ["needle", "log"]).success_codes([0, 1]).run()   # 1 (no match) 
 ## Errors
 
 Every exception derives from `ProcessError`. The checking verbs raise these; the
-capturing verbs do not. Each carries **structured fields**, not just a message:
+capturing verbs do not (call `ProcessResult.ensure_success()` /
+`BytesResult.ensure_success()` on an already-captured result to raise the same
+exception after the fact — it returns `self` unchanged on success, so it
+composes: `cmd.output().ensure_success().stdout`). Each carries **structured
+fields**, not just a message:
 
 | Exception | Raised when | Fields |
 |---|---|---|
-| `NonZeroExit` | a checking verb saw a non-success exit code | `program`, `code`, `stdout`, `stderr` |
-| `Timeout` | the run's deadline killed it | `program`, `timeout_seconds`, `stdout`, `stderr` |
-| `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr` |
+| `NonZeroExit` | a checking verb saw a non-success exit code | `program`, `code`, `stdout`, `stderr`, `diagnostic` |
+| `Timeout` | the run's deadline killed it | `program`, `timeout_seconds`, `stdout`, `stderr`, `diagnostic` |
+| `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr`, `diagnostic` |
 | `ProcessNotFound` | the program couldn't be located / spawned | `program` |
 | `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file) | `program` |
 | `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `max_lines`, `max_bytes`, `total_lines`, `total_bytes` |
 | `ResourceLimit` | a memory / process / CPU cap was invalid or couldn't be enforced | — (reason is `str(exc)`) |
 | `Unsupported` | the platform can't perform the requested operation | `operation` |
+| `Cancelled` | a wired `CancellationToken` fired | `program` |
+
+`diagnostic` (on the three stream-bearing exceptions) is the best human-facing
+message — captured stderr if it carries text, otherwise captured stdout,
+`None` if both streams are blank — so a generic `except ProcessError` handler
+can log something useful without knowing which of the three it caught.
 
 ```python
 from processkit import Command, NonZeroExit, Timeout, ProcessNotFound
@@ -321,9 +386,11 @@ Three exceptions also derive from the builtin the stdlib raises for the same
 condition, so familiar `except` clauses keep working: `Timeout` is also a
 `TimeoutError` (as `asyncio.TimeoutError` is), `ProcessNotFound` is also a
 `FileNotFoundError` (what `subprocess` raises), and `PermissionDenied` is also a
-`PermissionError`. Note that cancelling an *awaited*
-run via asyncio (`task.cancel()`, `asyncio.wait_for`, `asyncio.timeout`) surfaces
-as `asyncio.CancelledError` and still reaps the tree.
+`PermissionError`. Cancelling an *awaited* run via asyncio (`task.cancel()`,
+`asyncio.wait_for`, `asyncio.timeout`) surfaces as `asyncio.CancelledError`
+instead of raising `Cancelled` (that's for an explicit `CancellationToken` wired
+with `.cancel_on()`) — either way the tree is reaped.
+*Deeper: [Timeouts & cancellation](timeouts-and-cancellation.md).*
 
 ### Secrets in diagnostics
 

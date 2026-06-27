@@ -11,6 +11,7 @@
 use pyo3::prelude::*;
 
 mod batch;
+mod cancellation;
 mod cli;
 mod command;
 mod convert;
@@ -46,6 +47,7 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     cli::register(m)?;
     batch::register(m)?;
     logging::register(m)?;
+    cancellation::register(m)?;
     errors::register(m)?;
     Ok(())
 }

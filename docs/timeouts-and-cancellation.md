@@ -151,23 +151,59 @@ like `task.cancel()`, then translate the cancellation into a builtin
 `TimeoutError` at the `await` boundary — so *inside*, the run was cancelled, even
 though *you* catch `TimeoutError`. Either way the tree is gone.
 
-**Cancellation surfaces as `asyncio.CancelledError`.** The Rust crate has a
-token-style cancellation (`CancellationToken`) that the Python binding does
-**not** expose — in Python you cancel through asyncio, so a cancelled run surfaces
-asyncio's own `asyncio.CancelledError` (a `BaseException`, deliberately not a
-`ProcessError`). There is no separate processkit cancellation exception to catch.
+**Cancellation surfaces as `asyncio.CancelledError`** when you cancel through
+asyncio itself, as above (a `BaseException`, deliberately not a
+`ProcessError`) — there is no separate processkit exception on this path.
+
+## Cancelling with an explicit `CancellationToken`
+
+For a cancel switch that isn't tied to one asyncio task — shared across
+several runs, fired from sync code, or from a different task entirely — wire
+a `CancellationToken` instead:
+
+```python
+from processkit import Command, Cancelled, CancellationToken
+
+token = CancellationToken()
+cmd = Command("long-export").cancel_on(token)
+
+# elsewhere — a signal handler, a UI action, another task:
+token.cancel()
+
+try:
+    await cmd.arun()   # (or cmd.run() from sync code)
+except Cancelled:
+    ...  # the whole tree was already torn down
+```
+
+Unlike asyncio cancellation, this surfaces as `Cancelled` — a `ProcessError`
+subclass carrying `.program`, catchable alongside every other processkit
+exception, on *either* the sync or async surface. A cancelled token stays
+cancelled forever (never use it to mean "pause" — see
+[`ProcessGroup.suspend()`/`resume()`](process-groups.md) for that), and a
+cancelled run is never retried (`Command.retry()`) or restarted
+(`Supervisor`) — another attempt could only fail the same way.
+
+`Command.cancel_on()` **replaces** any previously set token (last write
+wins); the *gap-fill* containers `Pipeline.cancel_on()` and `CliClient`'s
+`default_cancel_on=` leave an explicit per-stage/per-command token intact,
+only filling in where none was set — the same gap-fill convention
+`default_timeout` uses. `token.child_token()` derives a token cancelled
+automatically when the parent fires, but cancellable independently — for
+scoping a broader shutdown token down to one operation while still reacting
+to the parent.
 
 ## Timeout vs. cancellation
 
 The two can both stop a run, but they are different kinds of event:
 
-| | Timeout | Cancellation |
-|---|---|---|
-| Meaning | the deadline was part of the contract | the caller abandoned the run |
-| Capture verbs (`output*`) | captured as `result.timed_out` | terminal — no result |
-| Success verbs (`run`/`exit_code`/`probe`) | raises `Timeout` | terminal — no result |
-| Sync surface | `Timeout` | `KeyboardInterrupt` |
-| Async surface | `Timeout` | `asyncio.CancelledError` |
+| | Timeout | asyncio cancellation | `CancellationToken` |
+|---|---|---|---|
+| Meaning | the deadline was part of the contract | the caller abandoned the run | an explicit cancel switch fired |
+| Capture verbs (`output*`) | captured as `result.timed_out` | terminal — no result | terminal — no result |
+| Success verbs (`run`/`exit_code`/`probe`) | raises `Timeout` | terminal — no result | raises `Cancelled` |
+| Sync surface | `Timeout` | `KeyboardInterrupt` | `Cancelled` |
+| Async surface | `Timeout` | `asyncio.CancelledError` | `Cancelled` |
 
 A timeout still leaves something to inspect on the capture verbs; a cancellation
 never does — the run was abandoned, so there is nothing to report but the
@@ -181,11 +217,11 @@ running.
 
 ## Readiness-probe timeouts are separate
 
-The `timeout` on the readiness helpers — `wait_for`, `wait_for_port`,
+The `timeout` on the readiness helpers — `wait_until`, `wait_for_port`,
 `wait_for_line` — is a **different deadline** from a run timeout. It bounds how
-long you wait for a *condition*, and on expiry it raises a builtin `TimeoutError`
-**without killing the child** — the process keeps running; only your wait gave
-up:
+long you wait for a *condition*, and on expiry it raises `WaitTimeout` (also a
+builtin `TimeoutError`) **without killing the child** — the process keeps
+running; only your wait gave up:
 
 ```python
 from processkit import wait_for_port

@@ -10,6 +10,7 @@ operations, skipping where the platform cannot enforce them.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import gc
 import os
@@ -19,7 +20,16 @@ import time
 
 import pytest
 
-from processkit import Command, ProcessError, ProcessGroup, ResourceLimit, Unsupported
+from processkit import (
+    Command,
+    NonZeroExit,
+    ProcessError,
+    ProcessGroup,
+    ProcessRunner,
+    ResourceLimit,
+    StreamingRunner,
+    Unsupported,
+)
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
 from .conftest import PY, spawn_grandchild_command
@@ -341,3 +351,72 @@ def test_group_stats() -> None:
         assert stats.active_process_count >= 1
         assert stats.peak_memory_bytes is None or stats.peak_memory_bytes >= 0
         assert stats.total_cpu_time_seconds is None or stats.total_cpu_time_seconds >= 0.0
+
+
+# --- ProcessGroup as a ProcessRunner (C7 batch B) ----------------------------
+
+
+def test_group_satisfies_streaming_runner() -> None:
+    # ProcessGroup implements the crate's ProcessRunner (output_string + start,
+    # with the rest from the trait's defaults / ProcessRunnerExt) — the full
+    # verb surface, so it satisfies StreamingRunner (and therefore
+    # ProcessRunner too), not just the narrower capture-only protocol.
+    with ProcessGroup() as group:
+        assert isinstance(group, ProcessRunner)
+        assert isinstance(group, StreamingRunner)
+
+
+def test_group_output_runs_a_shared_member() -> None:
+    with ProcessGroup() as group:
+        result = group.output(Command(PY, ["-c", "print('member')"]))
+        assert result.stdout.strip() == "member"
+        assert result.is_success
+
+
+def test_group_run_requires_a_zero_exit() -> None:
+    with ProcessGroup() as group:
+        assert group.run(Command(PY, ["-c", "print('ok')"])) == "ok"
+        with pytest.raises(NonZeroExit):
+            group.run(Command(PY, ["-c", "import sys; sys.exit(1)"]))
+
+
+def test_group_exit_code_and_probe() -> None:
+    with ProcessGroup() as group:
+        assert group.exit_code(Command(PY, ["-c", "import sys; sys.exit(7)"])) == 7
+        assert group.probe(Command(PY, ["-c", "import sys; sys.exit(0)"])) is True
+        assert group.probe(Command(PY, ["-c", "import sys; sys.exit(1)"])) is False
+
+
+def test_group_output_bytes() -> None:
+    with ProcessGroup() as group:
+        code = "import sys; sys.stdout.buffer.write(bytes([1, 2, 3]))"
+        result = group.output_bytes(Command(PY, ["-c", code]))
+        assert result.stdout == bytes([1, 2, 3])
+
+
+def test_group_async_runner_verbs() -> None:
+    async def scenario() -> tuple[str, int, bool]:
+        async with ProcessGroup() as group:
+            out = await group.arun(Command(PY, ["-c", "print('async-member')"]))
+            code = await group.aexit_code(Command(PY, ["-c", "import sys; sys.exit(5)"]))
+            ok = await group.aprobe(Command(PY, ["-c", "import sys; sys.exit(0)"]))
+            return out, code, ok
+
+    out, code, ok = asyncio.run(scenario())
+    assert out == "async-member"
+    assert code == 5
+    assert ok is True
+
+
+def test_group_output_shares_the_group_not_a_private_tree(pid_file: pathlib.Path) -> None:
+    # A command run via group.output() is a SHARED member — same containment
+    # tree as everything else started in this group, not its own private one.
+    with ProcessGroup() as group:
+        group.start(spawn_grandchild_command(pid_file))
+        grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
+        assert is_alive(grandchild_pid)
+        group.output(Command(PY, ["-c", "print('member')"]))
+        # The earlier member is still alive — output() didn't tear the group
+        # down or otherwise disturb its other members.
+        assert is_alive(grandchild_pid)
+    assert wait_dead(grandchild_pid, timeout=10.0)

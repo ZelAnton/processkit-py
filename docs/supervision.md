@@ -135,8 +135,12 @@ verdict.
 `final_result.stdout` is the **last run's** output, and for a long-lived
 supervised process it is kept to a bounded tail (the most recent ~1000 lines)
 rather than buffered in full — so `final_result.truncated` may be `True`. Treat it
-as a diagnostic tail, not a complete transcript; for full output, give the
-`Command` an explicit [`output_limit`](commands.md) or stream it yourself.
+as a diagnostic tail, not a complete transcript. Widen or re-bound the cap with
+`Supervisor`'s own `capture_max_bytes=`/`capture_max_lines=`/`capture_on_overflow=`
+constructor kwargs (mirroring `Command.output_limit`'s kwargs — set at least one
+of the two cap sizes), or give the base `Command` an explicit
+[`output_limit`](commands.md) (respected as-is) before wrapping it in a
+`Supervisor`; otherwise stream the process yourself.
 
 ## The failure-storm guard
 

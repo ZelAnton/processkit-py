@@ -12,20 +12,25 @@ Both a synchronous surface and an asyncio-native one are provided:
   `async with ProcessGroup() as g:`, and streaming over a `RunningProcess`
   (`async for line in proc.stdout_lines(): ...`, interactive `take_stdin()`).
 
-A `RunningProcess`'s *consuming* verbs (`wait` / `finish` / `output` /
-`output_bytes` / `profile` / `shutdown`) are coroutines with no `a` prefix —
-they exist for streaming/interactive use and have no synchronous twin to
-disambiguate from — so they are awaited whether the handle came from `start()`
-or `astart()`. Cancelling an awaited run tears down the whole process tree.
+A `RunningProcess`'s *consuming* verbs each come in a sync/async pair, like
+everywhere else in this library: `outcome`/`aoutcome` (named to dodge the
+reserved word `await`), `finish`/`afinish`, `output`/`aoutput`,
+`output_bytes`/`aoutput_bytes`, `profile`/`aprofile`, and
+`shutdown`/`ashutdown` (matching `ProcessGroup.shutdown`/`ashutdown`) — use
+whichever matches your code, regardless of whether the handle came from
+`start()` or `astart()`. Cancelling an awaited run tears down the whole
+process tree.
 """
 
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
-from ._aio import wait_for, wait_for_line, wait_for_port
+from ._aio import WaitTimeout, wait_for_line, wait_for_port, wait_until
 from ._processkit import (
     BytesResult,
+    CancellationToken,
+    Cancelled,
     CliClient,
     Command,
     Finished,
@@ -58,8 +63,8 @@ from ._processkit import (
     output_all,
     output_all_bytes,
 )
-from ._runner import ProcessRunner
-from ._types import SignalName, StrPath
+from ._protocols import ProcessRunner, StreamingRunner
+from ._types import Args, ReadableBuffer, RetryIf, SignalName, StrPath
 
 
 def __getattr__(name: str) -> str:
@@ -79,7 +84,10 @@ def __getattr__(name: str) -> str:
 
 
 __all__ = [
+    "Args",
     "BytesResult",
+    "CancellationToken",
+    "Cancelled",
     "CliClient",
     "Command",
     "Finished",
@@ -97,7 +105,9 @@ __all__ = [
     "ProcessResult",
     "ProcessRunner",
     "ProcessStdin",
+    "ReadableBuffer",
     "ResourceLimit",
+    "RetryIf",
     "RunProfile",
     "Runner",
     "RunningProcess",
@@ -105,16 +115,18 @@ __all__ = [
     "Signalled",
     "StdoutLines",
     "StrPath",
+    "StreamingRunner",
     "SupervisionOutcome",
     "Supervisor",
     "Timeout",
     "Unsupported",
+    "WaitTimeout",
     "aoutput_all",
     "aoutput_all_bytes",
     "enable_logging",
     "output_all",
     "output_all_bytes",
-    "wait_for",
     "wait_for_line",
     "wait_for_port",
+    "wait_until",
 ]

@@ -94,10 +94,15 @@ if TYPE_CHECKING:
         assert_type(inv.has_stdin, bool)
         assert_type(inv.has_flag("x"), bool)
 
-    async def _running_process_return_types(proc: RunningProcess) -> None:
-        assert_type(await proc.wait(), Outcome)
-        assert_type(await proc.finish(), Finished)
-        assert_type(await proc.output(), ProcessResult)
+    def _running_process_sync_return_types(proc: RunningProcess) -> None:
+        assert_type(proc.outcome(), Outcome)
+        assert_type(proc.finish(), Finished)
+        assert_type(proc.output(), ProcessResult)
+
+    async def _running_process_async_return_types(proc: RunningProcess) -> None:
+        assert_type(await proc.aoutcome(), Outcome)
+        assert_type(await proc.afinish(), Finished)
+        assert_type(await proc.aoutput(), ProcessResult)
 
     def _result_property_types(r: ProcessResult, b: BytesResult, o: Outcome) -> None:
         assert_type(r.stdout, str)
@@ -132,7 +137,7 @@ if TYPE_CHECKING:
         assert_type(to.timeout_seconds, float | None)
         assert_type(sg.signal, int | None)
         assert_type(nf.program, str)
-        assert_type(pd.program, str)
+        assert_type(pd.program, str | None)
         assert_type(otl.max_lines, int | None)
         assert_type(otl.max_bytes, int | None)
         assert_type(otl.total_lines, int)

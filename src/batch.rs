@@ -12,6 +12,7 @@ use processkit::output_all_bytes as pk_output_all_bytes;
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
@@ -33,15 +34,21 @@ fn resolve_runner(
     }
 }
 
-/// Clamp the requested concurrency, defaulting to the logical CPU count.
-fn resolve_concurrency(concurrency: Option<usize>) -> usize {
-    concurrency
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-        })
-        .max(1)
+/// Resolve the requested concurrency, defaulting to the logical CPU count.
+/// Rejects `0` explicitly: it used to be silently clamped to `1` (a confusing
+/// "I asked for no concurrency and got some anyway"), which is worse than a
+/// clear error, since `0` most likely means a caller-computed value (e.g. an
+/// empty allowlist's length) that was never meant to reach here at all.
+fn resolve_concurrency(concurrency: Option<usize>) -> PyResult<usize> {
+    match concurrency {
+        Some(0) => Err(PyValueError::new_err(
+            "concurrency must be at least 1 (0 would run nothing, silently)",
+        )),
+        Some(n) => Ok(n),
+        None => Ok(std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)),
+    }
 }
 
 /// Clone the inner `Command`s out of the Python handles (under the GIL) so the
@@ -91,7 +98,7 @@ pub(crate) fn output_all(
     runner: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let cmds = take_commands(py, &commands);
-    let n = resolve_concurrency(concurrency);
+    let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     let fut = async move { pk_output_all(cmds, n, &runner).await };
     let results = block_on_interruptible(py, fut)?;
@@ -108,7 +115,7 @@ pub(crate) fn aoutput_all<'py>(
     runner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmds = take_commands(py, &commands);
-    let n = resolve_concurrency(concurrency);
+    let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let results = pk_output_all(cmds, n, &runner).await;
@@ -126,7 +133,7 @@ pub(crate) fn output_all_bytes(
     runner: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let cmds = take_commands(py, &commands);
-    let n = resolve_concurrency(concurrency);
+    let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     let fut = async move { pk_output_all_bytes(cmds, n, &runner).await };
     let results = block_on_interruptible(py, fut)?;
@@ -143,7 +150,7 @@ pub(crate) fn aoutput_all_bytes<'py>(
     runner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmds = take_commands(py, &commands);
-    let n = resolve_concurrency(concurrency);
+    let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let results = pk_output_all_bytes(cmds, n, &runner).await;

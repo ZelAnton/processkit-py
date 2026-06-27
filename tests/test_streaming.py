@@ -20,6 +20,7 @@ from processkit import (
     ProcessResult,
     Runner,
     RunProfile,
+    Supervisor,
 )
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead
@@ -59,7 +60,7 @@ def test_stdout_lines_streams_in_order() -> None:
     async def scenario() -> tuple[list[str], Finished]:
         proc = await Command(PY, ["-c", _PRINT_LINES]).astart()
         lines = [line.rstrip() async for line in proc.stdout_lines()]
-        finished = await proc.finish()
+        finished = await proc.afinish()
         return lines, finished
 
     lines, finished = asyncio.run(scenario())
@@ -75,7 +76,7 @@ def test_output_events_cover_both_streams() -> None:
     async def scenario() -> list[tuple[str, str, bool]]:
         proc = await Command(PY, ["-c", _BOTH_STREAMS]).astart()
         events = [(str(e.stream), e.text.rstrip(), e.is_stderr) async for e in proc.output_events()]
-        await proc.wait()
+        await proc.aoutcome()
         return events
 
     events = asyncio.run(scenario())
@@ -95,7 +96,7 @@ def test_interactive_stdin_echo() -> None:
         await stdin.write_line("world")
         await stdin.close()  # EOF — the child finishes and exits
         lines = [line.rstrip() async for line in proc.stdout_lines()]
-        await proc.wait()
+        await proc.aoutcome()
         return lines
 
     assert asyncio.run(scenario()) == ["HELLO", "WORLD"]
@@ -117,6 +118,16 @@ def test_stdin_bytes_feeds_input() -> None:
     assert asyncio.run(scenario()) == "XYZ"
 
 
+def test_stdin_bytes_accepts_bytearray_and_memoryview() -> None:
+    # ReadableBuffer (C7 batch A / C6): stdin_bytes() isn't bytes-only — any
+    # buffer-protocol object PyO3 extracts a Vec<u8> from works.
+    async def scenario(data: bytes | bytearray | memoryview) -> str:
+        return await Command(PY, ["-c", _ECHO_UPPER]).stdin_bytes(data).arun()
+
+    assert asyncio.run(scenario(bytearray(b"abc\n"))) == "ABC"
+    assert asyncio.run(scenario(memoryview(b"xyz\n"))) == "XYZ"
+
+
 def test_interactive_stdin_write_bytes_and_flush() -> None:
     # `write(bytes)` + an explicit `flush()` were previously never exercised
     # (only `write_line`/`close` had coverage). `write` takes raw bytes (no
@@ -131,10 +142,26 @@ def test_interactive_stdin_write_bytes_and_flush() -> None:
         await stdin.flush()
         await stdin.close()
         lines = [line.rstrip() async for line in proc.stdout_lines()]
-        await proc.wait()
+        await proc.aoutcome()
         return lines
 
     assert asyncio.run(scenario()) == ["RAW-HELLO", "RAW-WORLD"]
+
+
+def test_interactive_stdin_write_accepts_bytearray_and_memoryview() -> None:
+    async def scenario() -> list[str]:
+        proc = await Command(PY, ["-c", _ECHO_UPPER]).keep_stdin_open().astart()
+        stdin = proc.take_stdin()
+        await stdin.write(bytearray(b"from-bytearray\n"))
+        await stdin.flush()
+        await stdin.write(memoryview(b"from-memoryview\n"))
+        await stdin.flush()
+        await stdin.close()
+        lines = [line.rstrip() async for line in proc.stdout_lines()]
+        await proc.aoutcome()
+        return lines
+
+    assert asyncio.run(scenario()) == ["FROM-BYTEARRAY", "FROM-MEMORYVIEW"]
 
 
 def test_take_stdin_is_once() -> None:
@@ -145,7 +172,7 @@ def test_take_stdin_is_once() -> None:
         with pytest.raises(ProcessError):
             proc.take_stdin()
         await first.close()
-        await proc.wait()
+        await proc.aoutcome()
 
     asyncio.run(scenario())
 
@@ -157,7 +184,7 @@ def test_take_stdin_without_keep_open_raises() -> None:
         proc = await Command(PY, ["-c", "pass"]).astart()
         with pytest.raises(ProcessError):
             proc.take_stdin()
-        await proc.wait()
+        await proc.aoutcome()
 
     asyncio.run(scenario())
 
@@ -165,7 +192,7 @@ def test_take_stdin_without_keep_open_raises() -> None:
 def test_running_process_output_captures() -> None:
     async def scenario() -> ProcessResult:
         proc = await Command(PY, ["-c", "print('captured')"]).astart()
-        return await proc.output()
+        return await proc.aoutput()
 
     result = asyncio.run(scenario())
     assert result.stdout.strip() == "captured"
@@ -173,24 +200,25 @@ def test_running_process_output_captures() -> None:
 
 
 def test_kill_then_wait_returns_promptly() -> None:
-    # kill() must actually terminate the child — a no-op would leave wait() blocking
-    # on the 60s sleeper until the bounded wait_for trips. Pins the effect, not just
-    # the renamed name.
+    # kill() must actually terminate the child — a no-op would leave aoutcome()
+    # blocking on the 60s sleeper until the bounded wait_for trips. Pins the
+    # effect, not just the renamed name.
     async def scenario() -> Outcome:
         proc = await Command(PY, ["-c", "import time; time.sleep(60)"]).astart()
         proc.kill()
-        return await asyncio.wait_for(proc.wait(), timeout=15.0)
+        return await asyncio.wait_for(proc.aoutcome(), timeout=15.0)
 
     outcome = asyncio.run(scenario())
     assert not outcome.exited_zero  # killed, not a clean exit
 
 
 def test_shutdown_grace_terminates_and_returns_outcome() -> None:
-    # shutdown() = graceful signal -> wait grace -> hard kill, consuming the handle.
-    # A no-op would hang on the 60s sleeper past the bounded wait_for.
+    # shutdown()/ashutdown() = graceful signal -> wait grace -> hard kill,
+    # consuming the handle. A no-op would hang on the 60s sleeper past the
+    # bounded wait_for.
     async def scenario() -> Outcome:
         proc = await Command(PY, ["-c", "import time; time.sleep(60)"]).astart()
-        return await asyncio.wait_for(proc.shutdown(grace_seconds=0.5), timeout=15.0)
+        return await asyncio.wait_for(proc.ashutdown(grace_seconds=0.5), timeout=15.0)
 
     outcome = asyncio.run(scenario())
     assert not outcome.exited_zero  # terminated, not clean
@@ -199,7 +227,7 @@ def test_shutdown_grace_terminates_and_returns_outcome() -> None:
 def test_running_process_wait_reports_exit_code() -> None:
     async def scenario() -> Outcome:
         proc = await Command(PY, ["-c", "import sys; sys.exit(3)"]).astart()
-        return await proc.wait()
+        return await proc.aoutcome()
 
     outcome = asyncio.run(scenario())
     assert outcome.code == 3
@@ -211,33 +239,95 @@ def test_running_process_wait_reports_exit_code() -> None:
 def test_consumed_handle_raises() -> None:
     async def scenario() -> None:
         proc = await Command(PY, ["-c", "pass"]).astart()
-        await proc.wait()
+        await proc.aoutcome()
         # The handle is spent; a second consuming call must raise.
-        await proc.wait()
+        await proc.aoutcome()
 
     with pytest.raises(ProcessError):
         asyncio.run(scenario())
 
 
 def test_async_verb_without_running_loop_leaves_handle_usable() -> None:
-    # Calling an async-only consuming verb (e.g. `wait()`) from sync code, with no
-    # asyncio event loop running, must not destroy the still-live process as a
-    # side effect of the error path — it must raise cleanly and leave the handle
-    # intact and reusable, not spend it.
+    # Calling an `a`-prefixed consuming verb (e.g. `aoutcome()`) from sync code,
+    # with no asyncio event loop running, must not destroy the still-live
+    # process as a side effect of the error path — it must raise cleanly and
+    # leave the handle intact and reusable, not spend it. (The sync twin,
+    # `outcome()`, is the correct call from sync code — this test pins the
+    # failure mode of reaching for the wrong one, not a missing capability.)
     proc = Command(PY, ["-c", "import time; time.sleep(30)"]).start()
     pid = proc.pid
     assert pid is not None
     with pytest.raises(ProcessError):
         # No running event loop: raises synchronously, before any await is
         # even reachable -- that's the point of this test, not a missing await.
-        proc.wait()  # type: ignore[unused-coroutine]
+        proc.aoutcome()  # type: ignore[unused-coroutine]
     assert proc.pid == pid, "the handle must not be consumed by the failed call"
     assert is_alive(pid), "the process must still be alive after the failed call"
 
     async def reap() -> None:
-        await proc.wait()
+        await proc.aoutcome()
 
     asyncio.run(reap())
+    assert wait_dead(pid, timeout=10.0)
+
+
+def test_running_process_sync_twins_of_every_consuming_verb() -> None:
+    # `start()` (sync) is genuinely usable end-to-end: every consuming verb has
+    # a sync twin (Stage 3 / C3), not just `outcome()`. Exercise each one on its
+    # own handle, entirely from sync code, no event loop anywhere.
+    assert Command(PY, ["-c", "import sys; sys.exit(3)"]).start().outcome().code == 3
+
+    proc = Command(PY, ["-c", "print('hi')"]).start()
+    finished = proc.finish()
+    assert finished.exited_zero
+    assert finished.stderr == ""
+
+    result = Command(PY, ["-c", "print('captured')"]).start().output()
+    assert isinstance(result, ProcessResult)
+    assert result.stdout.strip() == "captured"
+
+    code = "import sys; sys.stdout.buffer.write(bytes([1, 2, 255]))"
+    raw = Command(PY, ["-c", code]).start().output_bytes()
+    assert isinstance(raw, BytesResult)
+    assert raw.stdout == bytes([1, 2, 255])
+
+    proc = Command(PY, ["-c", "import time; time.sleep(0.1)"]).start()
+    prof = proc.profile(0.02)
+    assert isinstance(prof, RunProfile)
+    assert prof.code == 0
+
+    proc = Command(PY, ["-c", "import time; time.sleep(60)"]).start()
+    outcome = proc.shutdown(grace_seconds=0.3)
+    assert isinstance(outcome, Outcome)
+    assert not outcome.exited_zero  # terminated, not a clean exit
+
+
+def test_running_process_sync_verb_reentrant_call_leaves_handle_usable() -> None:
+    # A sync consuming verb (e.g. `outcome()`) called reentrantly — here, from
+    # inside a Supervisor's `stop_when` predicate running on the tokio runtime —
+    # must have its reentrant-runtime check run BEFORE the handle is taken out
+    # of `self`; otherwise the failed call would still spend (and thus leak)
+    # the process. Mirrors
+    # `test_reentrant_run_call_leaves_the_target_supervisor_usable` for
+    # `Supervisor.run()`.
+    proc = Command(PY, ["-c", "import time; time.sleep(30)"]).start()
+    pid = proc.pid
+    assert pid is not None
+
+    def reentrant_stop(_result: object) -> bool:
+        with pytest.raises(ProcessError):
+            proc.outcome()  # re-enters the runtime: must raise, not spend `proc`
+        return True
+
+    driver = Supervisor(
+        Command(PY, ["-c", "print('y')"]), restart="always", stop_when=reentrant_stop
+    )
+    driver.run()
+    assert proc.pid == pid, "the handle must not be consumed by the failed reentrant call"
+    assert is_alive(pid), "the process must still be alive after the failed reentrant call"
+
+    proc.kill()
+    proc.outcome()  # now off the runtime: consumes and reaps it for real
     assert wait_dead(pid, timeout=10.0)
 
 
@@ -283,7 +373,7 @@ def test_running_process_live_getters() -> None:
 def test_profile_returns_runprofile() -> None:
     async def scenario() -> RunProfile:
         proc = await Command(PY, ["-c", "import time; time.sleep(0.1)"]).astart()
-        return await proc.profile(0.02)
+        return await proc.aprofile(0.02)
 
     rp = asyncio.run(scenario())
     assert isinstance(rp, RunProfile)
@@ -293,7 +383,8 @@ def test_profile_returns_runprofile() -> None:
     assert rp.cpu_time_seconds is None or rp.cpu_time_seconds >= 0.0
     assert rp.peak_memory_bytes is None or rp.peak_memory_bytes >= 0
     assert rp.avg_cpu_cores is None or rp.avg_cpu_cores >= 0.0
-    # profile() is a superset of wait(): it also carries how the run ended.
+    # profile()/aprofile() is a superset of outcome()/aoutcome(): it also
+    # carries how the run ended.
     assert rp.timed_out is False
     assert rp.signal is None
     assert rp.outcome.code == 0
@@ -305,7 +396,7 @@ def test_profile_returns_runprofile() -> None:
 def test_profile_rejects_non_positive_interval(bad_interval: float) -> None:
     async def scenario() -> None:
         proc = await Command(PY, ["-c", "pass"]).astart()
-        await proc.profile(bad_interval)
+        await proc.aprofile(bad_interval)
 
     with pytest.raises(ValueError):
         asyncio.run(scenario())
@@ -318,7 +409,7 @@ def test_profile_tiny_interval_is_clamped_not_a_hang() -> None:
     # promptly with a well-formed profile, not hang or flood.
     async def scenario() -> RunProfile:
         proc = await Command(PY, ["-c", "import time; time.sleep(0.1)"]).astart()
-        return await asyncio.wait_for(proc.profile(1e-9), timeout=10.0)
+        return await asyncio.wait_for(proc.aprofile(1e-9), timeout=10.0)
 
     rp = asyncio.run(scenario())
     assert isinstance(rp, RunProfile)
@@ -327,12 +418,13 @@ def test_profile_tiny_interval_is_clamped_not_a_hang() -> None:
 
 
 def test_profile_of_a_timed_out_run() -> None:
-    # profile() is a superset of wait(): it must still report a well-formed
+    # profile()/aprofile() is a superset of outcome()/aoutcome(): it must
+    # still report a well-formed
     # profile when the run ends via Command.timeout() rather than a clean
     # exit, with `timed_out`/`outcome.timed_out` reflecting that.
     async def scenario() -> RunProfile:
         proc = await Command(PY, ["-c", "import time; time.sleep(30)"]).timeout(0.3).astart()
-        return await proc.profile(0.05)
+        return await proc.aprofile(0.05)
 
     rp = asyncio.run(scenario())
     assert isinstance(rp, RunProfile)
@@ -346,7 +438,7 @@ def test_running_process_output_bytes() -> None:
     async def scenario() -> BytesResult:
         code = "import sys; sys.stdout.buffer.write(bytes([1, 2, 255]))"
         proc = await Command(PY, ["-c", code]).astart()
-        return await proc.output_bytes()
+        return await proc.aoutput_bytes()
 
     result = asyncio.run(scenario())
     assert result.stdout == bytes([1, 2, 255])
@@ -383,7 +475,7 @@ def test_running_process_async_with_reaps_tree(pid_file: pathlib.Path) -> None:
 def test_context_manager_is_noop_after_consuming() -> None:
     async def scenario() -> None:
         async with await Command(PY, ["-c", "print('hi')"]).astart() as proc:
-            result = await proc.output()  # consumes the handle
+            result = await proc.aoutput()  # consumes the handle
             assert result.is_success
         # __aexit__ sees a consumed handle and must not raise.
 
@@ -427,7 +519,7 @@ def test_shared_group_streaming_enforces_command_timeout() -> None:
             proc = await group.astart(cmd)
             async for _line in proc.stdout_lines():  # arms the deadline watchdog
                 pass
-            finished = await proc.finish()
+            finished = await proc.afinish()
             return finished.outcome.timed_out
 
     # Outer bound: if the deadline were not enforced (the pre-1.2.0 behavior) the

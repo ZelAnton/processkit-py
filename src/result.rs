@@ -161,6 +161,26 @@ impl PyProcessResult {
         self.inner.combined()
     }
 
+    /// Raise the same exception a checking verb (`run`/`exit_code`/`probe`)
+    /// would if this result's exit isn't in `success_codes` — for turning an
+    /// already-captured `output()`/`output_bytes()` result into an error after
+    /// the fact (some code paths need the data either way, others should fail
+    /// loud only sometimes). Returns `self` unchanged on success, so it
+    /// composes into a call chain: `cmd.output().ensure_success().stdout`.
+    fn ensure_success(&self, py: Python<'_>) -> PyResult<Py<Self>> {
+        let _ = self
+            .inner
+            .clone()
+            .ensure_success()
+            .map_err(crate::errors::map_err)?;
+        Py::new(
+            py,
+            Self {
+                inner: self.inner.clone(),
+            },
+        )
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ProcessResult(program={:?}, code={:?}, success={})",
@@ -234,6 +254,23 @@ impl PyBytesResult {
     #[getter]
     fn truncated(&self) -> bool {
         self.inner.truncated()
+    }
+
+    /// Raise the same exception a checking verb would if this result's exit
+    /// isn't in `success_codes` — see `ProcessResult.ensure_success()`. Returns
+    /// `self` unchanged on success.
+    fn ensure_success(&self, py: Python<'_>) -> PyResult<Py<Self>> {
+        let _ = self
+            .inner
+            .clone()
+            .ensure_success()
+            .map_err(crate::errors::map_err)?;
+        Py::new(
+            py,
+            Self {
+                inner: self.inner.clone(),
+            },
+        )
     }
 
     fn __repr__(&self) -> String {

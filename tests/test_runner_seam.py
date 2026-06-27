@@ -76,7 +76,7 @@ def test_scripted_runner_streams_lines() -> None:
     async def scenario() -> list[str]:
         proc = runner.start(Command("server"))
         lines = [line.rstrip() async for line in proc.stdout_lines()]
-        await proc.wait()
+        await proc.aoutcome()
         return lines
 
     assert asyncio.run(scenario()) == ["listening", "ready"]
@@ -143,7 +143,7 @@ def test_runner_async_verbs_each_route_correctly() -> None:
         assert await runner.aprobe(Command("x")) is True
 
         proc = await runner.astart(Command("x"))
-        outcome = await proc.wait()
+        outcome = await proc.aoutcome()
         assert outcome.exited_zero
 
     asyncio.run(scenario())
@@ -213,7 +213,7 @@ def test_reply_pending_never_exits() -> None:
     async def scenario() -> None:
         proc = runner.start(Command("server"))
         with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(proc.wait(), timeout=0.3)
+            await asyncio.wait_for(proc.aoutcome(), timeout=0.3)
 
     asyncio.run(scenario())
 
@@ -276,7 +276,7 @@ def test_cassette_records_and_replays_streaming(tmp_path: pathlib.Path) -> None:
     async def stream(runner: RecordReplayRunner) -> list[str]:
         proc = runner.start(cmd)
         lines = [line.rstrip() async for line in proc.stdout_lines()]
-        await proc.wait()
+        await proc.aoutcome()
         return lines
 
     recorder = RecordReplayRunner.record(str(cassette))
@@ -336,6 +336,29 @@ def test_recording_runner_replies_and_records() -> None:
     assert calls[0].args == ["rev-parse", "HEAD"]
     assert calls[1].has_flag("-la")
     assert not calls[0].has_flag("--nope")
+
+
+def test_recording_runner_new_wraps_an_arbitrary_scripted_runner() -> None:
+    # The general form behind replying(): wrap a ScriptedRunner already
+    # configured with its own rules, recording every call made through it —
+    # not just a fresh runner replying with one canned Reply.
+    scripted = ScriptedRunner()
+    scripted.on(["git"], Reply.ok("git-reply"))
+    scripted.on(["ls"], Reply.fail(2, "no such dir"))
+    rec = RecordingRunner.new(scripted)
+
+    assert rec.run(Command("git", ["status"])) == "git-reply"
+    with pytest.raises(NonZeroExit):
+        rec.run(Command("ls"))
+
+    calls = rec.calls()
+    assert [c.program for c in calls] == ["git", "ls"]
+
+
+def test_recording_runner_new_wraps_the_real_runner() -> None:
+    rec = RecordingRunner.new(Runner())
+    assert rec.run(Command(PY, ["-c", "print('real')"])) == "real"
+    assert rec.only_call().program == PY
 
 
 def test_recording_runner_only_call() -> None:
@@ -477,3 +500,65 @@ def test_scripted_runner_on_sequence_rejects_empty_replies() -> None:
     runner = ScriptedRunner()
     with pytest.raises(ValueError):
         runner.on_sequence(["deploy"], [])
+
+
+# --- when() / with_line_delay (C7 batch B) -----------------------------------
+
+
+def test_scripted_runner_when_matches_by_predicate() -> None:
+    # when() matches on the whole Command via its own inspection accessors
+    # (`program`/`arguments`, from C7 batch A) — not just an argv prefix
+    # (`on()`), and not restricted to a simple prefix match at all.
+    runner = ScriptedRunner()
+    runner.when(lambda cmd: "--dangerous" in cmd.arguments, Reply.ok("sandboxed"))
+    runner.fallback(Reply.ok("default"))
+    assert runner.run(Command("tool", ["--dangerous"])) == "sandboxed"
+    assert runner.run(Command("tool", ["--safe"])) == "default"
+
+
+def test_scripted_runner_when_predicate_raising_is_treated_as_no_match() -> None:
+    # A raising predicate is infallible from the crate's perspective — treated
+    # as "does not match" (surfaced via the unraisable hook, not propagated).
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(cmd: Command) -> bool:
+        raise ValueError("predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        assert runner.run(Command("tool")) == "fallback"
+    finally:
+        sys.unraisablehook = old_hook
+    assert captured
+    assert isinstance(captured[0], ValueError)
+
+
+def test_reply_with_line_delay_spaces_out_stdout_lines() -> None:
+    import time
+
+    runner = ScriptedRunner()
+    runner.on(["server"], Reply.lines(["one", "two", "three"]).with_line_delay(0.1))
+
+    async def scenario() -> tuple[list[str], float]:
+        proc = runner.start(Command("server"))
+        started = time.monotonic()
+        lines = [line.rstrip() async for line in proc.stdout_lines()]
+        await proc.aoutcome()
+        return lines, time.monotonic() - started
+
+    lines, elapsed = asyncio.run(scenario())
+    assert lines == ["one", "two", "three"]
+    # 3 lines at 0.1s each is at least ~0.2s of delay (the first line doesn't
+    # necessarily wait); a generous lower bound avoids flaking on scheduling
+    # jitter while still proving the delay actually happened.
+    assert elapsed >= 0.15

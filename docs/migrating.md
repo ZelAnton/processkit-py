@@ -112,7 +112,7 @@ result = await Command("git", ["status", "--short"]).aoutput()
 proc = await Command("my-build", ["--watch"]).astart()
 async for line in proc.stdout_lines():
     print(line)
-finished = await proc.finish()
+finished = await proc.afinish()
 ```
 
 Streaming, interactive stdin, and readiness probes are covered in

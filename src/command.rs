@@ -4,15 +4,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use processkit::Command as PkCommand;
-use processkit::OutputBufferPolicy;
 use processkit::Pipeline as PkPipeline;
 use processkit::Stdin as PkStdin;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use crate::cancellation::PyCancellationToken;
 use crate::convert::{
-    nonnegative_duration, parse_encoding, parse_overflow_mode, parse_signal, parse_stdio_mode,
-    positive_duration,
+    build_output_buffer_policy, build_retry_policy, nonnegative_duration, parse_encoding,
+    parse_retry_if, parse_signal, parse_stdio_mode, positive_duration,
 };
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
@@ -136,12 +136,38 @@ impl PyCommand {
     }
 
     /// The signal sent first on a graceful timeout (default `term`): one of
-    /// `term`/`kill`/`int`/`hup`/`quit`/`usr1`/`usr2`.
-    fn timeout_signal(&self, name: &str) -> PyResult<Self> {
+    /// `term`/`kill`/`int`/`hup`/`quit`/`usr1`/`usr2`, or a raw platform signal
+    /// number (Unix only — the crate's `Signal::Other` escape hatch).
+    fn timeout_signal(&self, name: &Bound<'_, PyAny>) -> PyResult<Self> {
         let signal = parse_signal(name)?;
         Ok(Self {
             inner: self.inner.clone().timeout_signal(signal),
         })
+    }
+
+    /// Run **without** a timeout, and — unlike simply leaving it unset — opt out
+    /// of any client-wide `CliClient` `default_timeout` gap-fill. Use this to say
+    /// "this one long-running command is *deliberately* unbounded" against a
+    /// client that otherwise imposes a deadline on every call (a `tail -f`, a
+    /// watch loop, an interactive session). A plain `Command` (no client) is
+    /// already unbounded by default, so this only matters run through a
+    /// `CliClient` with a `default_timeout`. Clears a prior `timeout()` — the
+    /// last of the two wins.
+    fn no_timeout(&self) -> Self {
+        Self {
+            inner: self.inner.clone().no_timeout(),
+        }
+    }
+
+    /// Tear this run down (raising `Cancelled`) when `token` fires. A
+    /// cancelled run is never retried — `retry()`/`Supervisor` both treat
+    /// `Cancelled` as terminal, since another attempt could only fail the
+    /// same way (the token stays cancelled forever). On a `Command` this
+    /// **replaces** any previously set token (last write wins).
+    fn cancel_on(&self, token: &PyCancellationToken) -> Self {
+        Self {
+            inner: self.inner.clone().cancel_on(token.inner.clone()),
+        }
     }
 
     /// Set the exit codes treated as success — this **replaces** the default of
@@ -162,6 +188,56 @@ impl PyCommand {
         }
         Ok(Self {
             inner: self.inner.clone().ok_codes(codes),
+        })
+    }
+
+    /// Retry the run — exponential backoff, cap, and jitter — while `retry_if`
+    /// accepts the resulting error. Honored only by the success-checking verbs
+    /// (`run`/`exit_code`/`probe`); the non-erroring `output()`/`output_bytes()`
+    /// never retry. `retry_if` is a named preset over the crate's own error
+    /// accessors, not an arbitrary callable (kwargs, not a mirrored
+    /// `RetryPolicy` object — see `AGENTS.md`'s config-struct convention):
+    /// `"transient"` (a bare-retry-clears spawn/IO condition — interrupted,
+    /// would-block, a busy resource) or `"transient_or_timeout"` (also retries
+    /// a `.timeout()` expiry).
+    ///
+    /// `max_retries` counts retries **after** the first attempt (default `3` —
+    /// up to 4 total attempts; `0` never retries). `initial_backoff` is the
+    /// delay before the first retry (default 0.1s; `0` retries immediately).
+    /// `multiplier` grows each successive delay (default `2.0`; `1.0` is fixed
+    /// backoff — a non-finite/non-positive/sub-unit value is folded to `1.0`
+    /// rather than rejected, matching the crate's own tolerance). `max_backoff`
+    /// caps a single delay (default 30s). `jitter` (default `True`) spreads the
+    /// actual wait uniformly over `[0, delay]` (AWS-style full jitter,
+    /// decorrelating a fleet all backing off at once).
+    ///
+    /// Each attempt **re-executes the whole command from scratch** — only retry
+    /// operations safe to repeat (a side effect that already landed before the
+    /// failure would replay). A **one-shot** stdin source (`stdin_bytes()` /
+    /// `stdin_text()`) can't survive a retry, so a command built with one is
+    /// never retried at all — the first attempt's error returns as-is. Ignored
+    /// by `Supervisor` (its own `RestartPolicy` governs keep-alive restarts —
+    /// a different concern) and by `output_all`/`Pipeline`.
+    #[pyo3(signature = (retry_if, *, max_retries=None, initial_backoff=None, multiplier=None, max_backoff=None, jitter=None))]
+    fn retry(
+        &self,
+        retry_if: &str,
+        max_retries: Option<u32>,
+        initial_backoff: Option<f64>,
+        multiplier: Option<f64>,
+        max_backoff: Option<f64>,
+        jitter: Option<bool>,
+    ) -> PyResult<Self> {
+        let policy = build_retry_policy(
+            max_retries,
+            initial_backoff,
+            multiplier,
+            max_backoff,
+            jitter,
+        )?;
+        let classifier = parse_retry_if(retry_if)?;
+        Ok(Self {
+            inner: self.inner.clone().retry_with(policy, classifier),
         })
     }
 
@@ -274,20 +350,7 @@ impl PyCommand {
         max_lines: Option<usize>,
         on_overflow: &str,
     ) -> PyResult<Self> {
-        if max_bytes.is_none() && max_lines.is_none() {
-            return Err(PyValueError::new_err(
-                "output_limit requires at least one of max_bytes or max_lines",
-            ));
-        }
-        let overflow = parse_overflow_mode(on_overflow)?;
-        let mut policy = match max_lines {
-            Some(n) => OutputBufferPolicy::bounded(n),
-            None => OutputBufferPolicy::unbounded(),
-        };
-        if let Some(bytes) = max_bytes {
-            policy = policy.with_max_bytes(bytes);
-        }
-        policy = policy.with_overflow(overflow);
+        let policy = build_output_buffer_policy(max_bytes, max_lines, on_overflow, "output_limit")?;
         Ok(Self {
             inner: self.inner.clone().output_buffer(policy),
         })
@@ -378,6 +441,50 @@ impl PyCommand {
         )
     }
 
+    /// Exempt this command, **as a pipeline stage**, from pipefail attribution:
+    /// its unclean exit (non-zero code, signal kill — including `SIGPIPE` — or
+    /// its own per-stage `timeout()` kill) is skipped when the chain decides
+    /// what to report, and never shields a *checked* stage's failure. The
+    /// motivating pattern is `producer | head -1`: the consumer exits early,
+    /// the producer dies of `SIGPIPE`, and without this marker strict pipefail
+    /// reports that perfectly normal death as the chain's failure. Outside a
+    /// `Pipeline` this is a no-op: a single run's status is already plain data
+    /// in its `ProcessResult`, and `ensure_success()` stays opt-in.
+    fn unchecked_in_pipe(&self) -> Self {
+        Self {
+            inner: self.inner.clone().unchecked_in_pipe(),
+        }
+    }
+
+    /// The program to launch.
+    #[getter]
+    fn program(&self) -> String {
+        self.inner.program().to_string_lossy().into_owned()
+    }
+
+    /// The arguments, in order. Named `arguments`, not `args` — that name is
+    /// already the builder method that *appends* args.
+    #[getter]
+    fn arguments(&self) -> Vec<String> {
+        self.inner
+            .arguments()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Render this command as a single shell-quoted line for **display** — logs,
+    /// error messages, a dry-run echo. Quoting is per-platform (POSIX
+    /// single-quote / Windows double-quote) and is for readability, **not
+    /// execution**: this never invokes a shell, and the rendering is not
+    /// guaranteed to round-trip through one. Do **not** feed the output back to
+    /// a shell to re-run the command. Includes the arguments, which may carry
+    /// secrets (a `--token=…` flag) — unlike `__repr__` (redacted), this is
+    /// opt-in: render it only into a sink you control.
+    fn command_line(&self) -> String {
+        self.inner.command_line()
+    }
+
     /// Pipe this command's stdout into `other`'s stdin, returning a `Pipeline`.
     /// Equivalent to `self | other`.
     fn pipe(&self, other: &PyCommand) -> PyPipeline {
@@ -402,6 +509,13 @@ impl PyCommand {
 
 /// A shell-free pipeline `a | b | c`: each stage's stdout feeds the next's
 /// stdin, all in one process group, with pipefail outcome semantics.
+///
+/// By design, no `start`/`astart`: the crate's own `Pipeline` has no such
+/// method — a pipeline is inherently a *whole-chain* verb (the outcome/
+/// attribution logic only makes sense once every stage has run), so there is
+/// no natural "handle to a live, still-running chain" to hand back the way a
+/// single `Command.start()` returns a `RunningProcess`. Stream an individual
+/// stage's own output by `start()`ing that one `Command` directly instead.
 #[pyclass(name = "Pipeline", module = "processkit")]
 pub(crate) struct PyPipeline {
     inner: PkPipeline,
@@ -418,6 +532,16 @@ impl PyPipeline {
 
     fn __or__(&self, other: &PyCommand) -> Self {
         self.pipe(other)
+    }
+
+    /// Tear the whole chain down (raising `Cancelled`) when `token` fires.
+    /// **Gap-fill**, not override (unlike `Command.cancel_on`): a stage that
+    /// already has its own explicit token keeps it; this only fills stages
+    /// that don't.
+    fn cancel_on(&self, token: &PyCancellationToken) -> Self {
+        Self {
+            inner: self.inner.clone().cancel_on(token.inner.clone()),
+        }
     }
 
     /// Set a wall-clock timeout for the whole pipeline.

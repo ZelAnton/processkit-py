@@ -46,7 +46,7 @@ handy before you ship: it collects every per-OS caveat in one place.
 | [Coming from subprocess](migrating.md) | Side-by-side translation of `subprocess` / `asyncio.subprocess` patterns, the exception mapping, and the whole-tree containment the stdlib can't give |
 | [Running commands](commands.md) | The `Command` builder end to end — args, env/sandboxing, stdin, stdout/stderr redirection, encodings, output caps, timeouts, privileges — and every consuming verb (`output`, `run`, `probe`, …) with its error semantics |
 | [Process groups](process-groups.md) | Kill-on-drop containment: creating groups, spawning, teardown, whole-tree signals, suspend/resume, member listing, resource limits, stats |
-| [Streaming & interactive I/O](streaming.md) | `astart()` and the live `RunningProcess`: line streaming, interactive stdin, readiness probes (`wait_for_line` / `wait_for_port` / `wait_for`), per-run profiling |
+| [Streaming & interactive I/O](streaming.md) | `astart()` and the live `RunningProcess`: line streaming, interactive stdin, readiness probes (`wait_for_line` / `wait_for_port` / `wait_until`), per-run profiling |
 | [Pipelines](pipelines.md) | Shell-free command pipelines — chain with `.pipe()` or the pipe operator: wiring, pipefail attribution, chain timeouts, binary tails |
 | [Timeouts & cancellation](timeouts-and-cancellation.md) | How a deadline is *captured* vs when it raises, interrupting a blocked sync call (Ctrl+C), and asyncio cancellation that reaps the whole tree |
 | [Supervision](supervision.md) | Keeping a child alive: restart policies, backoff & jitter, stop conditions, outcomes |

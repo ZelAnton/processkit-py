@@ -158,7 +158,7 @@ Prioritised by Python demand, not crate order.
 
 - **Supervisor** — restart policies, backoff, stop conditions. High value for
   the agent / service niche.
-- **Readiness probes** — `wait_for_line` / `wait_for_port` / `wait_for`. High:
+- **Readiness probes** — `wait_for_line` / `wait_for_port` / `wait_until`. High:
   "start a server, then use it" is a constant Python pain point.
 - **Resource limits** — `max_memory` / `max_processes` / `cpu_quota`. High: the
   real differentiator vs `psutil` for sandboxing untrusted / agent tool trees.

@@ -16,6 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::command::PyCommand;
+use crate::convert::nonnegative_duration;
 use crate::errors::{map_err, ProcessError};
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
@@ -24,7 +25,7 @@ use crate::runtime::{block_on, drive_async};
 // The run verbs are generic over the crate's `ProcessRunner` so the real
 // `Runner` and the `ScriptedRunner` share one implementation.
 
-fn runner_output<R: ProcessRunner + Sync + ?Sized>(
+pub(crate) fn runner_output<R: ProcessRunner + Sync + ?Sized>(
     py: Python<'_>,
     runner: &R,
     command: &PyCommand,
@@ -32,7 +33,7 @@ fn runner_output<R: ProcessRunner + Sync + ?Sized>(
     block_on(py, runner.output_string(&command.inner)).map(PyProcessResult::from)
 }
 
-fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
+pub(crate) fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
     py: Python<'_>,
     runner: &R,
     command: &PyCommand,
@@ -40,7 +41,7 @@ fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
     block_on(py, runner.output_bytes(&command.inner)).map(PyBytesResult::from)
 }
 
-fn runner_run<R: ProcessRunner + Sync + ?Sized>(
+pub(crate) fn runner_run<R: ProcessRunner + Sync + ?Sized>(
     py: Python<'_>,
     runner: &R,
     command: &PyCommand,
@@ -48,7 +49,7 @@ fn runner_run<R: ProcessRunner + Sync + ?Sized>(
     block_on(py, runner.run(&command.inner))
 }
 
-fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
+pub(crate) fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
     py: Python<'_>,
     runner: &R,
     command: &PyCommand,
@@ -56,7 +57,7 @@ fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
     block_on(py, runner.exit_code(&command.inner))
 }
 
-fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
+pub(crate) fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
     py: Python<'_>,
     runner: &R,
     command: &PyCommand,
@@ -77,7 +78,7 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
 // Async run verbs over an owned `Arc<R>` so the future can hold the runner with
 // no borrow of the pyclass.
 
-fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
+pub(crate) fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
     py: Python<'py>,
     runner: Arc<R>,
     command: &PyCommand,
@@ -88,7 +89,7 @@ fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
     })
 }
 
-fn runner_aoutput_bytes<'py, R: ProcessRunner + Send + Sync + 'static>(
+pub(crate) fn runner_aoutput_bytes<'py, R: ProcessRunner + Send + Sync + 'static>(
     py: Python<'py>,
     runner: Arc<R>,
     command: &PyCommand,
@@ -99,7 +100,7 @@ fn runner_aoutput_bytes<'py, R: ProcessRunner + Send + Sync + 'static>(
     })
 }
 
-fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
+pub(crate) fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
     py: Python<'py>,
     runner: Arc<R>,
     command: &PyCommand,
@@ -108,7 +109,7 @@ fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
     drive_async(py, async move { runner.run(&cmd).await })
 }
 
-fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
+pub(crate) fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
     py: Python<'py>,
     runner: Arc<R>,
     command: &PyCommand,
@@ -117,7 +118,7 @@ fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
     drive_async(py, async move { runner.exit_code(&cmd).await })
 }
 
-fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
+pub(crate) fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
     py: Python<'py>,
     runner: Arc<R>,
     command: &PyCommand,
@@ -137,6 +138,42 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
     })
 }
 
+/// Wrap a Python predicate `(Command) -> bool` as a `ScriptedRunner.when`
+/// rule. Mirrors `supervisor::make_stop_predicate`'s infallible-bridge
+/// convention: a raising or non-`bool` predicate reads as "does not match"
+/// rather than panicking across the FFI boundary, with the error surfaced via
+/// the unraisable hook (visible on stderr) instead of silently swallowed.
+fn make_command_predicate(
+    callback: Py<PyAny>,
+) -> impl Fn(&processkit::Command) -> bool + Send + Sync + 'static {
+    move |command| {
+        Python::attach(|py| {
+            let py_command = match Py::new(
+                py,
+                PyCommand {
+                    inner: command.clone(),
+                },
+            ) {
+                Ok(py_command) => py_command,
+                Err(err) => {
+                    err.write_unraisable(py, None);
+                    return false;
+                }
+            };
+            match callback
+                .call1(py, (py_command,))
+                .and_then(|value| value.extract::<bool>(py))
+            {
+                Ok(matches) => matches,
+                Err(err) => {
+                    err.write_unraisable(py, Some(callback.bind(py)));
+                    false
+                }
+            }
+        })
+    }
+}
+
 /// Downcast a Python `runner=` argument to a type-erased, shareable
 /// `ProcessRunner` — the single extraction point `output_all`/`aoutput_all`/
 /// `output_all_bytes`/`aoutput_all_bytes` (`batch.rs`), `Supervisor.__new__`
@@ -145,10 +182,16 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
 /// the four runner pyclasses (`Runner`, `ScriptedRunner`, `RecordingRunner`,
 /// `RecordReplayRunner`); each already wraps its concrete runner in an `Arc`,
 /// so `.clone()` unsize-coerces to the trait object at this function's
-/// declared return type — no extra allocation beyond the `Arc` bump. The
-/// crate's `ProcessGroup` also implements `ProcessRunner`, but exposing that
-/// as an `extract_runner` target is out of scope here (the rest of C7 is a
-/// later stage).
+/// declared return type — no extra allocation beyond the `Arc` bump.
+///
+/// The crate's `ProcessGroup` also implements `ProcessRunner` (`group.rs`
+/// binds its verb surface directly, over the same generic `runner_*`
+/// helpers this module exposes), but it is deliberately NOT an
+/// `extract_runner` target: a `ProcessGroup` is a containment container a
+/// caller already holds and injects directly, not a `runner=` kwarg value —
+/// and unlike the four dedicated doubles/real-runner pyclasses, it carries
+/// real OS resources (a Job Object / cgroup) that a generic "one of these
+/// four" injection point shouldn't paper over.
 pub(crate) fn extract_runner(
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<Arc<dyn ProcessRunner + Send + Sync>> {
@@ -331,8 +374,11 @@ runner_pymethods!(PyScriptedRunner {
         }
     }
 
-    /// Reply with `reply` when a command's argv starts with `prefix`.
-    fn on(&mut self, prefix: Vec<String>, reply: &PyReply) -> PyResult<()> {
+    /// Reply with `reply` when a command's argv starts with `prefix`. `prefix`
+    /// elements accept a `str` or any `os.PathLike[str]` — unified with
+    /// `Command`'s own `arg`/`args` typing, since a prefix matches against a
+    /// `Command`'s actual argv (which can itself contain path elements).
+    fn on(&mut self, prefix: Vec<PathBuf>, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.on(prefix, reply))
     }
@@ -343,6 +389,18 @@ runner_pymethods!(PyScriptedRunner {
         self.reconfigure(move |runner| runner.fallback(reply))
     }
 
+    /// Reply with `reply` when `predicate(command)` accepts it — for a match
+    /// that isn't a plain argv prefix (`on()`), e.g. inspecting `cwd`/`env`/
+    /// flags via `Command`'s own inspection accessors. `predicate` is
+    /// infallible from the crate's perspective: a raising or non-`bool`
+    /// predicate is treated as "does not match" (like
+    /// `Supervisor.stop_when`), with the error surfaced via the unraisable
+    /// hook rather than silently swallowed.
+    fn when(&mut self, predicate: Py<PyAny>, reply: &PyReply) -> PyResult<()> {
+        let reply = reply.inner.clone();
+        self.reconfigure(move |runner| runner.when(make_command_predicate(predicate), reply))
+    }
+
     /// Reply with each of `replies` in turn on successive matching calls (the
     /// first match gets the first reply, the second the second, …); once
     /// exhausted, the last reply repeats forever. The declarative form for
@@ -351,7 +409,7 @@ runner_pymethods!(PyScriptedRunner {
     fn on_sequence(
         &mut self,
         py: Python<'_>,
-        prefix: Vec<String>,
+        prefix: Vec<PathBuf>,
         replies: Vec<Py<PyReply>>,
     ) -> PyResult<()> {
         // The crate's `on_sequence` panics on an empty `replies` — a Python-
@@ -433,6 +491,17 @@ impl PyReply {
         Self {
             inner: self.inner.clone().with_stdout(stdout),
         }
+    }
+
+    /// On a scripted `start`, sleep `seconds` before each stdout line — so a
+    /// hermetic streaming test can observe genuinely incremental delivery.
+    /// The scripted run "exits" after the last line. Ignored by the bulk
+    /// `output`/`run` path (only `start`/`astart` stream line by line).
+    fn with_line_delay(&self, seconds: f64) -> PyResult<Self> {
+        let delay = nonnegative_duration(seconds, "seconds")?;
+        Ok(Self {
+            inner: self.inner.clone().with_line_delay(delay),
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -570,16 +639,34 @@ impl PyInvocation {
 /// captured calls with `calls()` / `only_call()` (each an `Invocation`).
 #[pyclass(name = "RecordingRunner", module = "processkit.testing")]
 pub(crate) struct PyRecordingRunner {
-    inner: Arc<PkRecordingRunner<PkScriptedRunner>>,
+    // Type-erased (not the crate's own `RecordingRunner<ScriptedRunner>`
+    // specialization), so `new()` can wrap ANY of the four runner pyclasses —
+    // not just a fresh `ScriptedRunner` the way `replying()` builds one.
+    inner: Arc<PkRecordingRunner<Arc<dyn ProcessRunner + Send + Sync>>>,
 }
 
 runner_pymethods!(PyRecordingRunner {
     /// A recorder whose inner runner replies with `reply` to everything.
     #[staticmethod]
     fn replying(reply: &PyReply) -> Self {
+        let scripted: Arc<dyn ProcessRunner + Send + Sync> =
+            Arc::new(PkScriptedRunner::new().fallback(reply.inner.clone()));
         Self {
-            inner: Arc::new(PkRecordingRunner::replying(reply.inner.clone())),
+            inner: Arc::new(PkRecordingRunner::new(scripted)),
         }
+    }
+
+    /// Wrap `inner` — any of `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
+    /// or another `RecordingRunner` — recording every call made through it.
+    /// The general form behind `replying()`, for combining recording with a
+    /// double you've already built (e.g. a `RecordReplayRunner` cassette) or
+    /// with the real `Runner`.
+    #[staticmethod]
+    fn new(inner: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let inner = extract_runner(inner)?;
+        Ok(Self {
+            inner: Arc::new(PkRecordingRunner::new(inner)),
+        })
     }
 
     /// A snapshot of every recorded invocation, in call order.

@@ -89,9 +89,19 @@ with ProcessGroup() as group:
     # ...but other group members keep running until the group exits
 ```
 
-The streaming and await surface of the returned `RunningProcess`
-(`stdout_lines()`, `take_stdin()`, `wait()`, `finish()`, …) is documented in
-[Streaming & interactive I/O](streaming.md).
+The streaming and consuming surface of the returned `RunningProcess`
+(`stdout_lines()`, `take_stdin()`, `outcome()`/`aoutcome()`, `finish()`/
+`afinish()`, …) is documented in [Streaming & interactive I/O](streaming.md).
+
+Since a `ProcessGroup` is itself a runner, you can also run a one-shot command
+as a shared member without ever getting a `RunningProcess` handle back — the
+same verb surface `Runner`/`ScriptedRunner`/… expose:
+
+```python
+with ProcessGroup() as group:
+    result = group.output(Command("check-something"))   # a non-zero exit is data
+    version = group.run(Command("tool", ["--version"]))  # requires a zero exit
+```
 
 ## Tearing down
 

@@ -20,7 +20,7 @@ import pytest
 
 import processkit
 import processkit.testing
-from processkit import _aio, _processkit, _runner, _types
+from processkit import _aio, _processkit, _protocols, _types
 
 # The runner test doubles live in the `processkit.testing` submodule, not the
 # top-level surface; both re-export from the same compiled `_processkit`.
@@ -31,6 +31,13 @@ _TESTING_DOUBLES = {
     "Reply",
     "ScriptedRunner",
 }
+
+# `_RunnerVerbs` is a private, stub-only base (`_processkit.pyi`) that
+# de-duplicates the run-verb surface five runtime classes (`ProcessGroup`,
+# `Runner`, `ScriptedRunner`, `RecordReplayRunner`, `RecordingRunner`) each
+# implement independently in Rust — there is no such class at runtime, by
+# design (see the stub's own docstring on it).
+_STUB_ONLY_BASES = {"_RunnerVerbs"}
 
 
 def _public_names(obj: object) -> set[str]:
@@ -54,11 +61,44 @@ def _declared_members(classdef: ast.ClassDef) -> set[str]:
     return members
 
 
-def _stub_member_is_property(classdef: ast.ClassDef, name: str) -> bool:
-    """Whether the stub declares `name` with an `@property` decorator."""
+def _stub_bases(
+    classdef: ast.ClassDef, stub_classes: dict[str, ast.ClassDef]
+) -> list[ast.ClassDef]:
+    """The stub-declared base `ClassDef`s of `classdef` that are themselves
+    stub classes (e.g. `_RunnerVerbs`) — skips builtin/stdlib bases
+    (`Exception`, `TimeoutError`, …), which aren't stub-declared classes."""
+    return [
+        stub_classes[base.id]
+        for base in classdef.bases
+        if isinstance(base, ast.Name) and base.id in stub_classes
+    ]
+
+
+def _declared_members_with_bases(
+    classdef: ast.ClassDef, stub_classes: dict[str, ast.ClassDef]
+) -> set[str]:
+    """`_declared_members`, also walking stub-only bases (`_RunnerVerbs`): a
+    runtime class implements those members directly (no real inheritance),
+    but the stub factors the shared declarations into one base to avoid N
+    identical copies — so member/signature parity must look there too."""
+    members = _declared_members(classdef)
+    for base in _stub_bases(classdef, stub_classes):
+        members |= _declared_members_with_bases(base, stub_classes)
+    return members
+
+
+def _stub_member_is_property(
+    classdef: ast.ClassDef, name: str, stub_classes: dict[str, ast.ClassDef] | None = None
+) -> bool:
+    """Whether the stub declares `name` with an `@property` decorator — in
+    `classdef` itself, or (if `stub_classes` is given) in a stub-only base."""
     for stmt in classdef.body:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name == name:
             return any(isinstance(d, ast.Name) and d.id == "property" for d in stmt.decorator_list)
+    if stub_classes is not None:
+        for base in _stub_bases(classdef, stub_classes):
+            if name in _declared_members(base):
+                return _stub_member_is_property(base, name, stub_classes)
     return False
 
 
@@ -121,12 +161,13 @@ def test_every_compiled_export_is_reexported() -> None:
 
 
 def test_top_level_all_covers_every_shim_modules_all() -> None:
-    # The pure-Python "shim" modules (`_aio.py`, `_runner.py`, `_types.py`) each
-    # declare their own `__all__`, folded into the top-level `processkit.__all__`
-    # by `__init__.py`'s re-exports. Nothing enforces that fold-in automatically
-    # — a new helper added to a shim's `__all__` but forgotten from the
-    # top-level list would otherwise ship silently unexported.
-    shim_all = set(_aio.__all__) | set(_runner.__all__) | set(_types.__all__)
+    # The pure-Python "shim" modules (`_aio.py`, `_protocols.py`, `_types.py`)
+    # each declare their own `__all__`, folded into the top-level
+    # `processkit.__all__` by `__init__.py`'s re-exports. Nothing enforces that
+    # fold-in automatically — a new helper added to a shim's `__all__` but
+    # forgotten from the top-level list would otherwise ship silently
+    # unexported.
+    shim_all = set(_aio.__all__) | set(_protocols.__all__) | set(_types.__all__)
     missing = shim_all - set(processkit.__all__)
     assert not missing, f"shim-module exports missing from processkit.__all__: {sorted(missing)}"
 
@@ -152,8 +193,11 @@ def test_every_compiled_class_is_declared_in_the_stub() -> None:
 
 def test_stub_has_no_dead_class_entries() -> None:
     # Every class declared in the stub must exist in the compiled module — a
-    # stub-only class is stale documentation that lies to IDEs and type checkers.
-    extra = set(_stub_classes()) - _public_names(_processkit)
+    # stub-only class is stale documentation that lies to IDEs and type
+    # checkers. `_STUB_ONLY_BASES` (`_RunnerVerbs`) is the deliberate
+    # exception: a private, never-instantiated stub base with no runtime
+    # counterpart by design.
+    extra = set(_stub_classes()) - _public_names(_processkit) - _STUB_ONLY_BASES
     assert not extra, (
         f"_processkit.pyi declares classes not exported by the module: {sorted(extra)}"
     )
@@ -162,27 +206,31 @@ def test_stub_has_no_dead_class_entries() -> None:
 def test_compiled_class_members_match_the_stub() -> None:
     # Methods and properties of each pyclass (exceptions excluded — their fields
     # are instance attributes set at raise time, not type members) must be
-    # declared in the stub, so a new/renamed method can't silently go unstubbed.
+    # declared in the stub (its own body, or a stub-only base's — e.g.
+    # `_RunnerVerbs`), so a new/renamed method can't silently go unstubbed.
     stub = _stub_classes()
     for name, cls in _compiled_classes().items():
         if issubclass(cls, BaseException):
             continue
         own = {member for member in vars(cls) if not member.startswith("_")}
-        declared = _declared_members(stub[name])
+        declared = _declared_members_with_bases(stub[name], stub)
         missing = own - declared
         assert not missing, f"{name}: members missing from stub: {sorted(missing)}"
 
 
 def test_stub_has_no_dead_class_members() -> None:
     # Reverse of the member-parity check: every public method/property declared
-    # in the stub for a (non-exception) pyclass must exist at runtime, so a
-    # stub-only entry can't drift into stale documentation.
+    # in the stub for a (non-exception) pyclass — including via a stub-only
+    # base like `_RunnerVerbs` — must exist at runtime, so a stub-only entry
+    # can't drift into stale documentation.
     stub = _stub_classes()
     for name, cls in _compiled_classes().items():
         if issubclass(cls, BaseException):
             continue
         runtime = {m for m in vars(cls) if not m.startswith("_")}
-        declared = {m for m in _declared_members(stub[name]) if not m.startswith("_")}
+        declared = {
+            m for m in _declared_members_with_bases(stub[name], stub) if not m.startswith("_")
+        }
         extra = declared - runtime
         assert not extra, f"{name}: stub declares members not present at runtime: {sorted(extra)}"
 
@@ -238,7 +286,7 @@ def test_property_vs_method_matches_stub() -> None:
             if member.startswith("_"):
                 continue
             runtime_prop = _runtime_is_data_descriptor(cls, member)
-            stub_prop = _stub_member_is_property(stub[name], member)
+            stub_prop = _stub_member_is_property(stub[name], member, stub)
             assert runtime_prop == stub_prop, (
                 f"{name}.{member}: property/method mismatch "
                 f"(runtime property={runtime_prop}, stub @property={stub_prop})"
@@ -319,6 +367,20 @@ def _stub_funcdefs(body: list[ast.stmt]) -> dict[str, _StubFn]:
     }
 
 
+def _stub_funcdefs_with_bases(
+    classdef: ast.ClassDef, stub_classes: dict[str, ast.ClassDef]
+) -> dict[str, _StubFn]:
+    """`_stub_funcdefs`, also walking stub-only bases (`_RunnerVerbs`) — see
+    `_declared_members_with_bases`. A method declared on both the class and a
+    base (there are none today) would resolve to the class's own version,
+    matching normal MRO lookup order."""
+    funcs: dict[str, _StubFn] = {}
+    for base in _stub_bases(classdef, stub_classes):
+        funcs |= _stub_funcdefs_with_bases(base, stub_classes)
+    funcs |= _stub_funcdefs(classdef.body)
+    return funcs
+
+
 def _iter_callables_with_stub_defs() -> list[_CallablePair]:
     """Every (qualified name, runtime callable, stub AST def) pair worth a
     parameter-level signature comparison: module-level functions, plus every
@@ -338,7 +400,7 @@ def _iter_callables_with_stub_defs() -> list[_CallablePair]:
     for cls_name, cls in _compiled_classes().items():
         if issubclass(cls, BaseException):
             continue
-        stub_methods = _stub_funcdefs(stub_classes[cls_name].body)
+        stub_methods = _stub_funcdefs_with_bases(stub_classes[cls_name], stub_classes)
         for member in vars(cls):
             if member.startswith("_"):
                 continue

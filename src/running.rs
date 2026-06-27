@@ -126,10 +126,13 @@ impl PyOutputEvents {
 }
 
 /// A handle to a started process: stream its output, write to its stdin, and
-/// await its completion. The consuming methods (`wait`, `finish`, `output`,
-/// `shutdown`) leave the handle spent; using it afterwards raises. Usable as a
-/// context manager (`with` / `async with`): exiting the block tears the process
-/// down — a hard kill of the whole private tree for a standalone handle.
+/// wait for its completion. The consuming verbs (`outcome`/`aoutcome`,
+/// `finish`/`afinish`, `output`/`aoutput`, `output_bytes`/`aoutput_bytes`,
+/// `profile`/`aprofile`, `shutdown`/`ashutdown`) each come in a sync/async
+/// pair like everywhere else in this library — leave the handle spent after
+/// either is called; using it afterwards raises. Usable as a context manager
+/// (`with` / `async with`): exiting the block tears the process down — a hard
+/// kill of the whole private tree for a standalone handle.
 #[pyclass(name = "RunningProcess", module = "processkit")]
 pub(crate) struct PyRunningProcess {
     // `None` after a consuming method has taken ownership of the process.
@@ -230,8 +233,9 @@ impl PyRunningProcess {
     /// Context-manager exit: tear the process down deterministically — a hard
     /// kill of the whole private tree for a standalone `start()`/`astart()`
     /// handle, or just this child for one started inside a `ProcessGroup`. A
-    /// no-op if a consuming method (`wait`/`finish`/`output`/`shutdown`) already
-    /// took the handle. Never suppresses an exception raised inside the block.
+    /// no-op if a consuming verb (`outcome`/`finish`/`output`/`output_bytes`/
+    /// `profile`/`shutdown`, or their `a`-prefixed twins) already took the
+    /// handle. Never suppresses an exception raised inside the block.
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
         &mut self,
@@ -324,17 +328,36 @@ impl PyRunningProcess {
         self.running_mut()?.start_kill().map_err(map_err)
     }
 
-    /// Await exit and return the `Outcome`. Consumes the handle.
-    fn wait<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Wait for exit and return the `Outcome`. Consumes the handle. The
+    /// synchronous twin of `aoutcome()` — usable on a handle from either
+    /// `start()` or `astart()`, like every other sync/async verb pair in
+    /// this library.
+    fn outcome(&mut self, py: Python<'_>) -> PyResult<PyOutcome> {
+        // Checked before `take_running()`: see the comment on `reject_reentrant_runtime`.
+        reject_reentrant_runtime()?;
+        let running = self.take_running()?;
+        block_on(py, async move { running.wait().await }).map(PyOutcome::from)
+    }
+
+    /// Async counterpart of `outcome()`. (Named `aoutcome`, not `await` — a
+    /// reserved word can't be a method name.)
+    fn aoutcome<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // Checked before `take_running()`: see the comment on `require_event_loop`.
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move { running.wait().await.map(PyOutcome::from) })
     }
 
-    /// Await exit and return `Finished` (outcome + captured stderr) without
+    /// Wait for exit and return `Finished` (outcome + captured stderr) without
     /// buffering stdout — use this after streaming stdout. Consumes the handle.
-    fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn finish(&mut self, py: Python<'_>) -> PyResult<PyFinished> {
+        reject_reentrant_runtime()?;
+        let running = self.take_running()?;
+        block_on(py, async move { running.finish().await }).map(PyFinished::from)
+    }
+
+    /// Async counterpart of `finish()`.
+    fn afinish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(
@@ -343,8 +366,15 @@ impl PyRunningProcess {
         )
     }
 
-    /// Await exit and capture the full `ProcessResult`. Consumes the handle.
-    fn output<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Wait for exit and capture the full `ProcessResult`. Consumes the handle.
+    fn output(&mut self, py: Python<'_>) -> PyResult<PyProcessResult> {
+        reject_reentrant_runtime()?;
+        let running = self.take_running()?;
+        block_on(py, async move { running.output_string().await }).map(PyProcessResult::from)
+    }
+
+    /// Async counterpart of `output()`.
+    fn aoutput<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
@@ -352,8 +382,15 @@ impl PyRunningProcess {
         })
     }
 
-    /// Await exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
-    fn output_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Wait for exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
+    fn output_bytes(&mut self, py: Python<'_>) -> PyResult<PyBytesResult> {
+        reject_reentrant_runtime()?;
+        let running = self.take_running()?;
+        block_on(py, async move { running.output_bytes().await }).map(PyBytesResult::from)
+    }
+
+    /// Async counterpart of `output_bytes()`.
+    fn aoutput_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
@@ -361,9 +398,21 @@ impl PyRunningProcess {
         })
     }
 
-    /// Await exit while sampling resource usage every `every_seconds`, returning a
-    /// `RunProfile`. Consumes the handle.
-    fn profile<'py>(&mut self, py: Python<'py>, every_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
+    /// Wait for exit while sampling resource usage every `every_seconds`,
+    /// returning a `RunProfile`. Consumes the handle.
+    fn profile(&mut self, py: Python<'_>, every_seconds: f64) -> PyResult<PyRunProfile> {
+        let every = positive_duration(every_seconds, "every_seconds")?;
+        reject_reentrant_runtime()?;
+        let running = self.take_running()?;
+        block_on(py, async move { running.profile(every).await }).map(PyRunProfile::from)
+    }
+
+    /// Async counterpart of `profile()`.
+    fn aprofile<'py>(
+        &mut self,
+        py: Python<'py>,
+        every_seconds: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         require_event_loop(py)?;
         let running = self.take_running()?;
@@ -373,8 +422,20 @@ impl PyRunningProcess {
     }
 
     /// Gracefully tear down (signal, wait up to `grace_seconds`, then kill) and
-    /// return the `Outcome`. Consumes the handle.
-    fn shutdown<'py>(
+    /// return the `Outcome`. Consumes the handle. Named `shutdown`/`ashutdown`
+    /// to match `ProcessGroup.shutdown()`/`ashutdown()` — same verb, same
+    /// sync/async pairing convention, unlike the pre-1.1 `RunningProcess`
+    /// where `shutdown()` was itself a coroutine (a trap: the same verb name
+    /// meant "call it" on a `ProcessGroup` but "await it" here).
+    fn shutdown(&mut self, py: Python<'_>, grace_seconds: f64) -> PyResult<PyOutcome> {
+        let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
+        reject_reentrant_runtime()?;
+        let running = self.take_running()?;
+        block_on(py, async move { running.shutdown(grace).await }).map(PyOutcome::from)
+    }
+
+    /// Async counterpart of `shutdown()`.
+    fn ashutdown<'py>(
         &mut self,
         py: Python<'py>,
         grace_seconds: f64,

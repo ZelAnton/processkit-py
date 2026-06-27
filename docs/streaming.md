@@ -27,7 +27,7 @@ from processkit import Command, Runner
 # Async setup — the handle owns a private process tree:
 proc = await Command("dev-server").astart()
 
-# Sync setup, same live handle (the consuming verbs below are still async):
+# Sync setup, same live handle (the consuming verbs below have a sync twin too):
 proc = Command("dev-server").start()        # or: Runner().start(Command("dev-server"))
 # …or hand the tree to a group that owns its fate instead of the handle:
 #   proc = group.start(Command("dev-server"))   # see Process groups
@@ -38,29 +38,37 @@ proc.owns_group       # True for a standalone start()/astart() handle; False und
 ```
 
 Whichever way you start it, **consume the handle exactly one way** — each of
-these is an async coroutine that *spends* the handle (afterward the getters
-return `None` and a second consuming verb raises):
+these comes in a sync/async pair (like everywhere else in this library) and
+*spends* the handle (afterward the getters return `None` and a second
+consuming verb raises):
 
-| Verb | Returns | Use when |
+| Verb pair | Returns | Use when |
 | --- | --- | --- |
-| `await proc.wait()` | `Outcome` | you only need the exit; output is discarded |
-| `await proc.finish()` | `Finished` | **after streaming stdout** — exit + captured stderr, *without* buffering stdout |
-| `await proc.output()` | `ProcessResult` | capture everything (same as the one-shot `output()`) |
-| `await proc.output_bytes()` | `BytesResult` | capture, stdout as `bytes` |
-| `await proc.profile(every_seconds)` | `RunProfile` | full outcome + CPU/memory samples; output discarded |
-| `await proc.shutdown(grace_seconds)` | `Outcome` | graceful signal → wait → hard-kill |
+| `proc.outcome()` / `await proc.aoutcome()` | `Outcome` | you only need the exit; output is discarded |
+| `proc.finish()` / `await proc.afinish()` | `Finished` | **after streaming stdout** — exit + captured stderr, *without* buffering stdout |
+| `proc.output()` / `await proc.aoutput()` | `ProcessResult` | capture everything (same as the one-shot `output()`) |
+| `proc.output_bytes()` / `await proc.aoutput_bytes()` | `BytesResult` | capture, stdout as `bytes` |
+| `proc.profile(every_seconds)` / `await proc.aprofile(every_seconds)` | `RunProfile` | full outcome + CPU/memory samples; output discarded |
+| `proc.shutdown(grace_seconds)` / `await proc.ashutdown(grace_seconds)` | `Outcome` | graceful signal → wait → hard-kill |
+
+(`outcome`/`aoutcome`, not `wait`/`await` — `await` is a reserved word, so it
+can't be a method name.) Use whichever half of a pair matches your calling
+code — the sync half blocks the calling thread (the same interruptible driver
+as `Command.output()`), the async half is a coroutine.
 
 `Outcome` carries `code: int | None`, `signal: int | None`, `timed_out: bool`,
 and `exited_zero: bool` (literal "exit code 0" — it has no `success_codes`
 context; for the command's own verdict use `ProcessResult.is_success`). There is
 also a synchronous `proc.kill()` (like `subprocess.Popen.kill()`) for "stop it
-now, I'll `await proc.wait()` for the code myself."
+now, I'll read the code myself with `proc.outcome()` / `await proc.aoutcome()`."
 
 `start()`, `astart()`, and `Runner().start()` put the child in a **private group
-the handle owns**: tearing the handle down kills the whole tree, and `shutdown()`
-works on it. The shared-group variant — `group.start(cmd)` — gives the same handle,
-but the *group* controls the tree's fate (`owns_group` is `False`), so `shutdown()`
-raises `Unsupported` there; tear such a child down via the group (or `kill()`). See
+the handle owns**: tearing the handle down kills the whole tree, and
+`shutdown()`/`ashutdown()` work on it — named to match
+`ProcessGroup.shutdown()`/`ashutdown()`. The shared-group variant —
+`group.start(cmd)` — gives the same handle, but the *group* controls the
+tree's fate (`owns_group` is `False`), so `shutdown()`/`ashutdown()` raise
+`Unsupported` there; tear such a child down via the group (or `kill()`). See
 [Process groups](process-groups.md).
 
 ## Streaming stdout
@@ -80,7 +88,7 @@ async for line in proc.stdout_lines():
 # The stream ended (stdout closed). finish() collects the outcome and stderr —
 # stderr was drained in the background the whole time, so a noisy child could
 # never block on a full pipe.
-finished = await proc.finish()
+finished = await proc.afinish()
 if not finished.exited_zero:
     print(finished.outcome.code, finished.stderr)
 ```
@@ -142,7 +150,7 @@ await stdin.write_line("6 * 7")
 print("=", await anext(answers))   # 42
 
 await stdin.close()                # send EOF — bc exits (idempotent)
-finished = await proc.finish()
+finished = await proc.afinish()
 assert finished.exited_zero
 ```
 
@@ -176,7 +184,7 @@ async def drain():
         handle(line)
 
 await asyncio.gather(feed(), drain())
-await proc.wait()
+await proc.aoutcome()
 ```
 
 *Deeper: the non-interactive `stdin_text` / `stdin_bytes` sources never deadlock
@@ -189,38 +197,51 @@ free async helpers replace the arbitrary `asyncio.sleep`, each bounded by its
 own deadline:
 
 ```python
-from processkit import Command, wait_for, wait_for_port, wait_for_line
+from processkit import Command, wait_until, wait_for_port, wait_for_line
 
 proc = await Command("my-server").astart()
 lines = proc.stdout_lines()        # bind once — you reuse this same iterator
 
-# 1. A line on stdout (returns the matching line):
+# 1. A line on stdout (returns the matching line) — a plain string is a
+#    substring-match shorthand for a str-yielding iterator:
+banner = await wait_for_line(lines, "listening on", timeout=10)
+# …or a callable predicate, which also works over any async iterator, not
+# just str lines (e.g. `proc.output_events()`'s OutputEvent items):
 banner = await wait_for_line(lines, lambda l: "listening on" in l, timeout=10)
 
 # 2. A TCP port accepting connections:
 await wait_for_port("127.0.0.1", 8080, timeout=10)
 
 # 3. Any predicate — sync bool OR an awaitable (an HTTP /health, a file, …):
-await wait_for(lambda: health_check_passes(), timeout=10, interval=0.1)
+await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 
 # ready — keep consuming from the SAME iterator:
 async for line in lines:
     ...
 ```
 
+(Named `wait_until`, not `wait_for` — the latter would collide with
+`asyncio.wait_for`, whose semantics differ: it bounds one *awaitable*, not a
+*polled predicate*.)
+
 Semantics, deliberately uniform:
 
-- A probe that can't pass within its deadline raises **`TimeoutError`** (the
-  builtin — so `except TimeoutError` catches both run and readiness timeouts).
+- A probe that can't pass within its deadline raises **`WaitTimeout`**
+  (`ProcessError`, `TimeoutError`) — so `except TimeoutError` catches both run
+  and readiness timeouts, and `.timeout_seconds` reads the configured deadline
+  either way. `wait_for_port` additionally sets `.host`/`.port`.
 - `wait_for_line` additionally raises `ProcessError` if the stdout stream ends
-  *before* a match — no waiting out a 10s deadline on a dead server. It consumes
-  lines up to (and including) the match; iteration may continue afterward.
-  `wait_for_port` / `wait_for` don't touch the pipes at all.
+  *before* a match — no waiting out a 10s deadline on a dead server. It
+  consumes items up to (and including) a match; iteration may continue
+  afterward **only when a match was found** — exactly how far it advanced past
+  the last inspected item on a timeout is unspecified, so don't rely on the
+  iterator's position there. `wait_for_port` / `wait_until` don't touch the
+  pipes at all.
 - A failed probe **never kills the child** — you decide: retry, log, or tear
   down.
-- `wait_for` polls every `interval` seconds (`ValueError` if `interval <= 0`). A
-  sync predicate runs on the event loop, so keep it non-blocking; for blocking
-  work, pass an awaitable.
+- `wait_until` polls every `interval` seconds (`ValueError` if
+  `interval <= 0`). A sync predicate runs on the event loop, so keep it
+  non-blocking; for blocking work, pass an awaitable.
 
 *Deeper: bounding the whole run (not just the wait) is
 [Timeouts & cancellation](timeouts-and-cancellation.md).*
@@ -239,15 +260,16 @@ proc.peak_memory_bytes   # int | None
 proc.stdout_line_count   # int | None — progress while you stream
 ```
 
-Or turn a whole run into a summary with `profile()`, which samples the child
-every `every_seconds` until exit (the run's normal timeout still applies; like
-`wait()`, the output is drained and discarded, not returned). `RunProfile` is a
-**superset of `wait()`**: it carries the full `outcome` (`code` / `signal` /
-`timed_out`) *and* the resource samples:
+Or turn a whole run into a summary with `profile()`/`aprofile()`, which
+samples the child every `every_seconds` until exit (the run's normal timeout
+still applies; like `outcome()`/`aoutcome()`, the output is drained and
+discarded, not returned). `RunProfile` is a **superset of `Outcome`**: it
+carries the full `outcome` (`code` / `signal` / `timed_out`) *and* the
+resource samples:
 
 ```python
 proc = await Command("crunch").astart()
-prof = await proc.profile(every_seconds=0.1)
+prof = await proc.aprofile(every_seconds=0.1)
 
 print(
     f"exit={prof.code} signal={prof.signal} timed_out={prof.timed_out} "
@@ -255,7 +277,7 @@ print(
     f"peak_rss={prof.peak_memory_bytes} "
     f"avg_cpu_cores={prof.avg_cpu_cores} ({prof.samples} samples)"
 )
-# prof.outcome is the same Outcome a wait() would return.
+# prof.outcome is the same Outcome outcome()/aoutcome() would return.
 # avg_cpu_cores = cpu / wall — e.g. 1.7 ≈ 1.7 cores busy
 ```
 
@@ -299,10 +321,11 @@ async with await Command("tail", ["-f", "app.log"]).astart() as proc:
 Two rules close the loop:
 
 - **A consumed handle is spent.** If you consume inside the block (`await
-  proc.output()` / `.wait()` / `.finish()` / `.shutdown(...)`), the exit is a
+  proc.output()` / `.outcome()` / `.finish()` / `.shutdown(...)` — or their
+  `a`-prefixed async twins), the exit is a
   no-op — the verb already settled the run. Afterward the getters return `None`
   and a second consuming verb raises.
-- **Prefer `shutdown()` for a graceful stop.** `await proc.shutdown(grace_seconds=5)`
+- **Prefer `shutdown()`/`ashutdown()` for a graceful stop.** `await proc.ashutdown(grace_seconds=5)`
   signals the tree, waits up to `grace_seconds`, then hard-kills — and returns
   the `Outcome`. Reach for the context manager when you just want the tree
   *gone*; reach for `shutdown()` when the child deserves a chance to flush.

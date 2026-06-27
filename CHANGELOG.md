@@ -7,7 +7,203 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- `RunningProcess`'s consuming verbs now come in a sync/async pair, like
+  everywhere else in this library, instead of being coroutine-only. Migration:
+  `await proc.wait()` → `await proc.aoutcome()` (renamed — `await` is a
+  reserved word, so the async twin of the new sync `outcome()` couldn't be
+  called `await()`); `await proc.finish()` → `await proc.afinish()`;
+  `await proc.output()` → `await proc.aoutput()`; `await proc.output_bytes()`
+  → `await proc.aoutput_bytes()`; `await proc.profile(...)` →
+  `await proc.aprofile(...)`; `await proc.shutdown(...)` →
+  `await proc.ashutdown(...)`. Each bare name is now a new **synchronous**
+  method (`proc.outcome()`, `proc.finish()`, `proc.output()`,
+  `proc.output_bytes()`, `proc.profile(...)`, `proc.shutdown(...)`), making a
+  handle from the synchronous `Command.start()` / `Runner.start()` genuinely
+  usable end-to-end with no event loop at all — not just for the
+  monitor-and-`kill()` pattern. No aliasing was possible (the old bare names
+  now mean something different — synchronous — so keeping them pointing at the
+  old async behavior would be actively misleading, not merely redundant).
+  `RunningProcess.shutdown()`/`ashutdown()` also now match
+  `ProcessGroup.shutdown()`/`ashutdown()`'s naming exactly, closing a trap
+  where the same verb name meant "call it" on one class but "await it" on the
+  other.
+- `ProcessRunner` no longer includes `start`/`astart` — it is now the
+  capture/check verb surface only (`output`/`run`/`exit_code`/`probe` and
+  their `a`-prefixed twins). A new `StreamingRunner(ProcessRunner)` protocol
+  adds `start`/`astart` back for code that also needs a live `RunningProcess`
+  handle. Migration: annotate an injection point that only calls the
+  capture/check verbs as `ProcessRunner` (now narrower, easier for a custom
+  double to satisfy); annotate one that also calls `start`/`astart` as
+  `StreamingRunner`. Every built-in runner (`Runner`, `ScriptedRunner`,
+  `RecordingRunner`, `RecordReplayRunner`) satisfies `StreamingRunner` (and
+  therefore `ProcessRunner` too), so existing injected-runner call sites are
+  unaffected — only code that annotated *against* `ProcessRunner` expecting
+  `start`/`astart` to be part of it needs to switch to `StreamingRunner`. The
+  internal `_runner.py` module (never part of the public import path) is
+  renamed `_protocols.py` to reflect holding two protocols now, not one.
+- `wait_for()` is renamed `wait_until()` — the old name collided with
+  `asyncio.wait_for`, which bounds one *awaitable*, not a *polled predicate*
+  (different semantics entirely). Migration: `await wait_for(...)` →
+  `await wait_until(...)`, same arguments. No alias was kept — a `wait_for`
+  alias sitting next to `asyncio.wait_for` in the same import line would
+  perpetuate exactly the confusion this rename fixes. All three readiness
+  helpers (`wait_until`, `wait_for_port`, `wait_for_line`) now raise
+  `WaitTimeout` (`ProcessError`, `TimeoutError`) instead of a bare
+  `TimeoutError` on their own deadline — still catchable as `except
+  TimeoutError`, but now carrying `timeout_seconds` (and, for
+  `wait_for_port`, `host`/`port`) as structured fields instead of only a
+  message string.
+
 ### Added
+- `Args` and `ReadableBuffer` type aliases (`from processkit import Args,
+  ReadableBuffer`). `Args` (`list[StrPath] | tuple[StrPath, ...]`) replaces
+  `Sequence[str]`/`Sequence[StrPath]` on every argv-like parameter
+  (`Command`'s `args`, `ScriptedRunner.on()`/`on_sequence()`'s `prefix`,
+  `CliClient.command()`/its verbs) — deliberately **not** `Sequence[StrPath]`,
+  since `str` is itself structurally a `Sequence[str]` (each character is a
+  `str`), so that spelling let a bare string slip through everywhere an argv
+  list was expected (`cmd.args("--flag")` type-checked, then exploded into
+  one argument *per character* at runtime). This is a static-typing-only
+  tightening — runtime behavior (and any caller not using mypy) is
+  unaffected; a mypy-strict caller passing something other than a `list`/
+  `tuple` (an arbitrary custom `Sequence`) at one of these call sites may
+  need to wrap it in `list(...)`. `ReadableBuffer` (`bytes | bytearray |
+  memoryview`) replaces the too-narrow `bytes` on `Command.stdin_bytes()` /
+  `ProcessStdin.write()` — both already accepted `bytearray`/`memoryview` at
+  runtime (PyO3's buffer-protocol extraction), so this only catches up the
+  stub to reality, no runtime change.
+- `CliClient`'s `command()` and every verb (`run`/`output`/`output_bytes`/
+  `exit_code`/`probe`, `a`-prefixed twins) now accept a `str` or any
+  `os.PathLike[str]` for each argv element, unified with `Command`'s own
+  `arg`/`args` typing — previously `CliClient` was `str`-only, so a
+  `pathlib.Path` argument needed a manual `str()` there but not on `Command`.
+- Documented explicitly: `Timeout`, `ProcessNotFound`, and `PermissionDenied`
+  are transitively `OSError` subclasses too (since their builtin second base
+  — `TimeoutError`/`FileNotFoundError`/`PermissionError` — has itself been an
+  `OSError` subclass since Python 3.3), so `except OSError` catches all
+  three alongside `except ProcessError`. No behavior change — this was
+  already true; it just wasn't written down anywhere.
+- Fixed: `PermissionDenied.program` is now typed `str | None` (was `str`) and
+  reliably reads `None` — not a missing-attribute `AttributeError` — on the
+  broader OS-refusal path with no program to name (`is_permission_denied()`
+  also classifies a program-less `Io` failure, e.g. a group signal the OS
+  refused, alongside the ordinary spawn-time denial that does name one).
+  Mirrors the class-level default already used for `Timeout.timeout_seconds`.
+- `CancellationToken` — a portable cancel switch: `Command.cancel_on(token)`
+  (replaces any prior token — last write wins), `Pipeline.cancel_on(token)`
+  (gap-fill — a stage with its own explicit token keeps it), and `CliClient`'s
+  `default_cancel_on=` (also gap-fill) tear the run/chain down when `token`
+  fires, surfacing the new `Cancelled` exception. `token.cancel()` is
+  idempotent; `token.child_token()` derives a token cancelled automatically
+  with its parent but cancellable independently, for scoping a broader
+  shutdown token down to one operation.
+- `Cancelled` exception — a run deliberately cancelled via a
+  `CancellationToken`. Previously such a cancellation surfaced only as a
+  plain `ProcessError` (no dedicated subclass existed since `cancel_on` had
+  no binding yet); now a distinct, terminal exception — never retried by
+  `Command.retry()` or restarted by `Supervisor`, matching the crate's own
+  contract (a cancelled token stays cancelled forever, so a replay could only
+  fail the same way).
+- `ScriptedRunner.when(predicate, reply)` — reply with `reply` when
+  `predicate(command)` accepts it, for a match that isn't a plain argv
+  prefix (`on()`) — e.g. inspecting `cwd`/`arguments`/flags via `Command`'s
+  own inspection accessors. `predicate` is infallible from the crate's
+  perspective, like `Supervisor.stop_when`: a raising or non-`bool` predicate
+  reads as "does not match", surfaced via the unraisable hook.
+- `Reply.with_line_delay(seconds)` — sleep `seconds` before each scripted
+  stdout line on a `start()`/`astart()` run, so a hermetic streaming test can
+  observe genuinely incremental delivery instead of every line arriving at
+  once.
+- `RecordingRunner.new(inner)` — wrap any of `Runner`, `ScriptedRunner`,
+  `RecordReplayRunner`, or another `RecordingRunner`, recording every call
+  made through it. The general form behind the existing `replying(reply)`
+  (a recorder whose inner runner is always a fresh `ScriptedRunner` replying
+  with one canned `Reply`) — `new()` lets a test combine recording with a
+  double it already built (e.g. a `RecordReplayRunner` cassette) or with the
+  real `Runner`.
+- `ProcessGroup` is now itself a runner: `group.output(cmd)` / `.run(cmd)` /
+  `.exit_code(cmd)` / `.probe(cmd)` / `.output_bytes(cmd)` (+ `a`-prefixed
+  twins) run `cmd` as a *shared* member of the group (not a standalone
+  private tree) — the same verb surface `Runner`/`ScriptedRunner`/… expose,
+  for code written against that seam that should route every spawn through
+  one shared group. (Not registered as a `runner=` injection target — a
+  `ProcessGroup` carries real OS resources and is injected directly by
+  callers who already hold one, not through that kwarg seam.)
+- `output_all()` / `aoutput_all()` / `output_all_bytes()` / `aoutput_all_bytes()`
+  now reject `concurrency=0` with `ValueError` instead of silently clamping it
+  to `1` (a confusing "asked for none, got some anyway").
+- `Command.no_timeout()` — run without a timeout, and (unlike simply leaving
+  it unset) opt out of a client-wide `CliClient` `default_timeout` gap-fill.
+  Clears a prior `.timeout()`; the last of the two wins.
+- `Command.command_line()` — render the command as a single shell-quoted line
+  for display (logs, error messages, a dry-run echo); includes argv, unlike
+  the redacted `repr()`. Never used to actually execute anything. Plus
+  `Command.program` / `Command.arguments` read-only properties (named
+  `arguments`, not `args` — that name is already the builder method that
+  appends args).
+- `Command.unchecked_in_pipe()` — exempt a command, as a `Pipeline` stage,
+  from pipefail attribution (its unclean exit, including a `SIGPIPE`, is
+  skipped when the chain decides what to report); a no-op outside a
+  `Pipeline`.
+- `ProcessResult.ensure_success()` / `BytesResult.ensure_success()` — raise
+  the same exception a checking verb would if the result's exit isn't in
+  `success_codes`, for turning an already-captured `output()`/`output_bytes()`
+  result into an error after the fact. Returns `self` unchanged on success, so
+  it composes: `cmd.output().ensure_success().stdout`.
+- `.diagnostic: str | None` on `NonZeroExit`, `Timeout`, and `Signalled` — the
+  best human-facing message (captured stderr if it carries text, otherwise
+  captured stdout; `None` if both streams are blank), so a generic `except
+  ProcessError` handler can log/report something useful without knowing which
+  of the three stream-bearing exceptions it caught.
+- `Command.timeout_signal()` / `ProcessGroup.signal()` now also accept a raw
+  platform signal number (an `int`), not just a portable name — the crate's
+  `Signal::Other` escape hatch (Unix only; a raw number is `Unsupported` on
+  Windows like every non-`Kill` signal, same as the named variants).
+- `CliClient.command(args)` — a `Command` for `program <args>` with the
+  client's defaults (timeout/env/retry/cancel) pre-applied; chain more
+  builders for a customized one-off call, then pass the result to `run()` /
+  `output()` / … (which now accept either a plain arg list or such a
+  `Command` — the `IntoCommand` path). An explicit setting on the returned
+  `Command` always wins over the client's default; only the gaps get filled.
+- `CliClient`'s `default_env_fn={key: resolver, ...}` — a per-key zero-arg
+  resolver called fresh each time a command is *built* (not each retry
+  attempt) to fill an environment variable, for a credential that should be
+  read freshly rather than baked in once at client-construction time (a
+  static `default_env` value). An explicit per-call `env`/`default_env` at
+  the same key still wins — this only fills the gap.
+- `Supervisor`'s `capture_max_bytes=`/`capture_max_lines=`/
+  `capture_on_overflow=` — bound (or widen) the output captured from each
+  supervised incarnation; the default is already a sensible bounded tail
+  (`Command.output_limit`'s own kwargs, applied here as constructor kwargs
+  instead of a builder method, per the config-struct convention). Setting any
+  of the three requires at least one of the two cap sizes, mirroring
+  `output_limit`'s own validation.
+- `Command.retry(retry_if, *, max_retries=, initial_backoff=, multiplier=,
+  max_backoff=, jitter=)` and `CliClient`'s `default_retry_if=` (+
+  `default_max_retries=`/`default_initial_backoff=`/`default_multiplier=`/
+  `default_max_backoff=`/`default_jitter=`) — retry a run with exponential
+  backoff, a cap, and jitter, while `retry_if` accepts the resulting error.
+  Honored only by the success-checking verbs (`run`/`exit_code`/`probe`, and
+  `CliClient`'s equivalents); ignored by `Supervisor` (its own `RestartPolicy`
+  governs keep-alive restarts — a different concern), `output_all`, and
+  `Pipeline`. Bound as kwargs over the crate's `RetryPolicy`, not a mirrored
+  pyclass (the established config-struct convention — see `AGENTS.md`).
+  `retry_if` is a named preset over the crate's own error-classification
+  accessors, not an arbitrary Python callable crossing the FFI boundary:
+  `"transient"` (a bare-retry-clears spawn/IO condition — interrupted,
+  would-block, a busy resource) or `"transient_or_timeout"` (also retries a
+  `.timeout()` expiry). `CliClient`'s tuning knobs require
+  `default_retry_if=` to be set (raises `ValueError` otherwise) — the same
+  explicit opt-in `Command.retry()`'s required `retry_if` already enforces.
+- `wait_for_line(lines, predicate, *, timeout)` is generalized over the
+  iterator's item type (previously hardcoded to `AsyncIterator[str]`) — it now
+  works over any async iterator (e.g. `RunningProcess.output_events()`'s
+  `OutputEvent` items), not just stdout lines, given a callable predicate.
+  `predicate` also accepts a plain `str` as a substring-match shorthand
+  (`wait_for_line(lines, "listening on", timeout=10)`) when the iterator
+  yields `str`. Purely additive: an existing callable-predicate,
+  `str`-iterator call site is unaffected.
 - `Invocation.env_is(name, value)` / `has_env(name)` — the platform-correct
   (case-insensitive on Windows, last write wins) effective-override check. The
   existing `env` dict is plain Python dict semantics, not platform env-key

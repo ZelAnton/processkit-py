@@ -31,6 +31,7 @@ create_exception!(_processkit, Signalled, ProcessError);
 create_exception!(_processkit, ResourceLimit, ProcessError);
 create_exception!(_processkit, Unsupported, ProcessError);
 create_exception!(_processkit, OutputTooLarge, ProcessError);
+create_exception!(_processkit, Cancelled, ProcessError);
 
 // `Timeout` and `ProcessNotFound` carry a second, builtin base so they are
 // catchable the way the stdlib trains Python users to expect: a command timeout
@@ -78,6 +79,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("ResourceLimit", py.get_type::<ResourceLimit>()),
         ("Unsupported", py.get_type::<Unsupported>()),
         ("OutputTooLarge", py.get_type::<OutputTooLarge>()),
+        ("Cancelled", py.get_type::<Cancelled>()),
     ] {
         ty.setattr("__module__", "processkit")?;
         m.add(name, ty)?;
@@ -114,6 +116,13 @@ fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "The program could not be spawned because of insufficient permissions \
          (e.g. a non-executable file). Also a `PermissionError`.",
     )?;
+    // Class-level default, mirroring `timeout_seconds` above: `program()`
+    // returns `None` for the broader `Io`-sourced permission denial (no
+    // program is named there), so `map_err`'s instance `setattr` is skipped
+    // on that path. Without this, `.program` would be missing entirely
+    // (`AttributeError`) instead of reading `None`, contradicting the stub's
+    // `program: str | None`.
+    permission_denied.setattr("program", py.None())?;
     m.add("Timeout", &timeout)?;
     m.add("ProcessNotFound", &not_found)?;
     m.add("PermissionDenied", &permission_denied)?;
@@ -137,8 +146,9 @@ fn cached<'py>(lock: &PyOnceLock<Py<PyType>>, py: Python<'py>) -> Bound<'py, PyT
 
 /// Map a crate `Error` onto the Python exception hierarchy and attach the
 /// structured fields the variant carries (`code`, `stdout`, `stderr`,
-/// `program`, `signal`, `timeout_seconds`, output-cap counters) so callers can
-/// inspect a failure programmatically, not just read its message.
+/// `program`, `signal`, `timeout_seconds`, `diagnostic`, output-cap counters)
+/// so callers can inspect a failure programmatically, not just read its
+/// message.
 ///
 /// Self-attaching: it acquires the GIL itself (a cheap re-entrant no-op when one
 /// is already held), so both the sync surface and the async futures can map an
@@ -186,6 +196,7 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 E::ResourceLimit { .. } => ResourceLimit::new_err(message),
                 E::Unsupported { .. } => Unsupported::new_err(message),
                 E::OutputTooLarge { .. } => OutputTooLarge::new_err(message),
+                E::Cancelled { .. } => Cancelled::new_err(message),
                 _ => ProcessError::new_err(message),
             }
         };
@@ -222,6 +233,13 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 // conditional `setattr` would leave it missing (`AttributeError`)
                 // for exactly that no-number case instead of reading `None`.
                 let _ = value.setattr("signal", *signal);
+                // Same reasoning for `diagnostic`: like `signal`, `error.diagnostic()`
+                // is `None` both for a variant that carries no streams AND for a
+                // stream-bearing one whose streams both happen to be blank — the stub
+                // promises `diagnostic: str | None` is always present on the three
+                // stream-bearing classes, so this must be unconditional too, not
+                // folded into the generic `if let Some(...)` accessor block above.
+                let _ = value.setattr("diagnostic", error.diagnostic());
             }
             E::Timeout { timeout, .. } => {
                 // A zero `Duration` means the deadline wasn't known to the checking
@@ -231,6 +249,10 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 if !timeout.is_zero() {
                     let _ = value.setattr("timeout_seconds", timeout.as_secs_f64());
                 }
+                let _ = value.setattr("diagnostic", error.diagnostic());
+            }
+            E::Exit { .. } => {
+                let _ = value.setattr("diagnostic", error.diagnostic());
             }
             E::OutputTooLarge {
                 line_limit,

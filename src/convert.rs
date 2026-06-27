@@ -3,7 +3,10 @@
 use std::time::Duration;
 
 use processkit::Encoding;
+use processkit::Error as PkError;
+use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;
+use processkit::RetryPolicy;
 use processkit::Signal as PkSignal;
 use processkit::StdioMode;
 use pyo3::exceptions::PyValueError;
@@ -58,6 +61,35 @@ pub(crate) fn parse_overflow_mode(on_overflow: &str) -> PyResult<OverflowMode> {
     }
 }
 
+/// Build an `OutputBufferPolicy` from an `output_limit(...)`-shaped set of
+/// kwargs — shared by `Command.output_limit` and `Supervisor`'s
+/// `capture_max_bytes=`/`capture_max_lines=`/`capture_on_overflow=`
+/// constructor kwargs (the crate's `Supervisor.capture(policy)`, flattened to
+/// kwargs like every other config-struct binding). Requires at least one of
+/// `max_bytes`/`max_lines`: the crate itself treats an all-`None` policy
+/// build as a confusing silent no-op, so this rejects it explicitly instead.
+pub(crate) fn build_output_buffer_policy(
+    max_bytes: Option<usize>,
+    max_lines: Option<usize>,
+    on_overflow: &str,
+    what: &str,
+) -> PyResult<OutputBufferPolicy> {
+    if max_bytes.is_none() && max_lines.is_none() {
+        return Err(PyValueError::new_err(format!(
+            "{what} requires at least one of max_bytes or max_lines"
+        )));
+    }
+    let overflow = parse_overflow_mode(on_overflow)?;
+    let mut policy = match max_lines {
+        Some(n) => OutputBufferPolicy::bounded(n),
+        None => OutputBufferPolicy::unbounded(),
+    };
+    if let Some(bytes) = max_bytes {
+        policy = policy.with_max_bytes(bytes);
+    }
+    Ok(policy.with_overflow(overflow))
+}
+
 /// Resolve a label to an `Encoding`, accepting both WHATWG labels and the common
 /// Python codec aliases (e.g. `"latin_1"`, `"utf_8"`, `"euc_jp"`) that the WHATWG
 /// table doesn't spell the same way.
@@ -97,7 +129,7 @@ pub(crate) fn parse_encoding(label: &str) -> PyResult<&'static Encoding> {
 
 /// Parse a signal name (`"term"`, `"kill"`, `"int"`, `"hup"`, `"quit"`,
 /// `"usr1"`, `"usr2"`; a `"sig"` prefix is accepted) into a crate `Signal`.
-pub(crate) fn parse_signal(name: &str) -> PyResult<PkSignal> {
+fn parse_signal_name(name: &str) -> PyResult<PkSignal> {
     let key = name.to_ascii_lowercase();
     let key = key.strip_prefix("sig").unwrap_or(&key);
     match key {
@@ -112,4 +144,75 @@ pub(crate) fn parse_signal(name: &str) -> PyResult<PkSignal> {
             "unknown signal {name:?}; use one of: term, kill, int, hup, quit, usr1, usr2"
         ))),
     }
+}
+
+/// Parse a signal argument that is either a portable name (see
+/// `parse_signal_name`) or a raw platform signal number — the crate's
+/// `Signal::Other(i32)` escape hatch, passed through verbatim (Unix only; a
+/// raw number is `Unsupported` on Windows like every non-`Kill` signal). An
+/// `int` (Python `bool` included, since `bool` is a Python `int` subtype) takes
+/// this path; anything else is extracted as a name string.
+pub(crate) fn parse_signal(obj: &Bound<'_, PyAny>) -> PyResult<PkSignal> {
+    if let Ok(raw) = obj.extract::<i32>() {
+        return Ok(PkSignal::Other(raw));
+    }
+    parse_signal_name(&obj.extract::<String>()?)
+}
+
+fn is_transient_classifier(error: &PkError) -> bool {
+    error.is_transient()
+}
+
+fn is_transient_or_timeout_classifier(error: &PkError) -> bool {
+    error.is_transient() || error.is_timeout()
+}
+
+/// Map a `retry_if` preset name to the crate's own documented error-classifier
+/// composition (`Command::retry`'s doc example: `e.is_transient() ||
+/// e.is_timeout()`). A named preset over the 1.2.0 accessors, not an arbitrary
+/// Python callable: plain (non-capturing) `fn` pointers, not closures, so both
+/// arms share one concrete return type and trivially satisfy `Fn(&Error) ->
+/// bool + Send + Sync + 'static` with no boxing.
+pub(crate) fn parse_retry_if(name: &str) -> PyResult<fn(&PkError) -> bool> {
+    match name {
+        "transient" => Ok(is_transient_classifier as fn(&PkError) -> bool),
+        "transient_or_timeout" => Ok(is_transient_or_timeout_classifier as fn(&PkError) -> bool),
+        other => Err(PyValueError::new_err(format!(
+            "unknown retry_if {other:?}; use one of: transient, transient_or_timeout"
+        ))),
+    }
+}
+
+/// Build a `RetryPolicy` from the optional Python-facing tuning knobs, layered
+/// over the crate's own `RetryPolicy::default()` (3 retries, 100ms initial
+/// backoff, ×2 growth, 30s cap, jitter on) — the same defaults `Command.retry`
+/// and `CliClient`'s `default_retry_if=` fall back to when a knob is omitted.
+/// `multiplier` is passed through unvalidated: the crate itself already folds
+/// a non-finite/non-positive/sub-unit value to `1.0` (fixed backoff) rather
+/// than erroring, and duplicating stricter validation here would only create
+/// a second, inconsistent notion of "invalid".
+pub(crate) fn build_retry_policy(
+    max_retries: Option<u32>,
+    initial_backoff: Option<f64>,
+    multiplier: Option<f64>,
+    max_backoff: Option<f64>,
+    jitter: Option<bool>,
+) -> PyResult<RetryPolicy> {
+    let mut policy = RetryPolicy::default();
+    if let Some(retries) = max_retries {
+        policy = policy.max_retries(retries);
+    }
+    if let Some(seconds) = initial_backoff {
+        policy = policy.initial_backoff(nonnegative_duration(seconds, "initial_backoff")?);
+    }
+    if let Some(factor) = multiplier {
+        policy = policy.multiplier(factor);
+    }
+    if let Some(seconds) = max_backoff {
+        policy = policy.max_backoff(nonnegative_duration(seconds, "max_backoff")?);
+    }
+    if let Some(enabled) = jitter {
+        policy = policy.jitter(enabled);
+    }
+    Ok(policy)
 }

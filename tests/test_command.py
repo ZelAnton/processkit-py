@@ -20,6 +20,8 @@ import pytest
 
 from processkit import (
     BytesResult,
+    CancellationToken,
+    Cancelled,
     Command,
     NonZeroExit,
     OutputTooLarge,
@@ -293,6 +295,98 @@ def test_success_codes_replaces_success_set() -> None:
         Command(PY, ["-c", "print(1)"]).success_codes([])
 
 
+# --- retry (C2) --------------------------------------------------------------
+
+
+def test_retry_on_timeout_recovers_and_returns_success(tmp_path: pathlib.Path) -> None:
+    # "transient_or_timeout" retries a Command.timeout() expiry. The first
+    # attempt sleeps past the (short) timeout; a counter file makes the
+    # RETRIED attempt behave differently (exit 0 immediately) — since a retry
+    # re-executes the whole command from scratch, this is the only way an
+    # otherwise-identical replay can actually recover.
+    counter = tmp_path / "n"
+    code = (
+        "import pathlib, sys, time\n"
+        f"p = pathlib.Path({str(counter)!r})\n"
+        "n = int(p.read_text()) if p.exists() else 0\n"
+        "p.write_text(str(n + 1))\n"
+        "if n == 0:\n"
+        "    time.sleep(30)\n"
+        "sys.exit(0)\n"
+    )
+    result = (
+        Command(PY, ["-c", code])
+        .timeout(3.0)
+        .retry("transient_or_timeout", max_retries=1, initial_backoff=0.01, jitter=False)
+        .run()
+    )
+    assert result == ""
+    assert counter.read_text() == "2"  # first attempt timed out, second succeeded
+
+
+def test_retry_transient_preset_excludes_timeout(tmp_path: pathlib.Path) -> None:
+    # "transient" alone does NOT cover Error::Timeout (only spawn/IO
+    # conditions) — the same scenario that recovers under
+    # "transient_or_timeout" above must raise on the very first attempt here.
+    counter = tmp_path / "n"
+    code = (
+        "import pathlib, sys, time\n"
+        f"p = pathlib.Path({str(counter)!r})\n"
+        "n = int(p.read_text()) if p.exists() else 0\n"
+        "p.write_text(str(n + 1))\n"
+        "if n == 0:\n"
+        "    time.sleep(30)\n"
+        "sys.exit(0)\n"
+    )
+    with pytest.raises(Timeout):
+        Command(PY, ["-c", code]).timeout(3.0).retry(
+            "transient", max_retries=5, initial_backoff=0.01, jitter=False
+        ).run()
+    assert counter.read_text() == "1"  # no retry happened
+
+
+def test_retry_max_retries_zero_never_retries(tmp_path: pathlib.Path) -> None:
+    counter = tmp_path / "n"
+    code = (
+        "import pathlib, sys, time\n"
+        f"p = pathlib.Path({str(counter)!r})\n"
+        "n = int(p.read_text()) if p.exists() else 0\n"
+        "p.write_text(str(n + 1))\n"
+        "time.sleep(30)\n"
+    )
+    with pytest.raises(Timeout):
+        Command(PY, ["-c", code]).timeout(3.0).retry(
+            "transient_or_timeout", max_retries=0, initial_backoff=0.01
+        ).run()
+    assert counter.read_text() == "1"
+
+
+def test_retry_rejects_unknown_retry_if() -> None:
+    with pytest.raises(ValueError, match="retry_if"):
+        Command(PY, ["-c", "print(1)"]).retry("bogus")  # type: ignore[arg-type]
+
+
+def test_retry_output_never_raises_so_never_retries(tmp_path: pathlib.Path) -> None:
+    # retry is inert for the non-erroring output()/output_bytes() paths — they
+    # never raise, so there's nothing for retry_if to classify; a single
+    # attempt's result comes back as-is even with retry configured.
+    counter = tmp_path / "n"
+    code = (
+        "import pathlib, sys\n"
+        f"p = pathlib.Path({str(counter)!r})\n"
+        "n = int(p.read_text()) if p.exists() else 0\n"
+        "p.write_text(str(n + 1))\n"
+        "sys.exit(1)\n"
+    )
+    result = (
+        Command(PY, ["-c", code])
+        .retry("transient_or_timeout", max_retries=5, initial_backoff=0.01)
+        .output()
+    )
+    assert not result.is_success
+    assert counter.read_text() == "1"  # exactly one attempt, no retry
+
+
 # --- encoding ---------------------------------------------------------------
 
 
@@ -342,7 +436,7 @@ def test_stdout_null_rejects_capture_verbs() -> None:
 def test_stdout_null_works_with_start_then_wait() -> None:
     async def scenario() -> int | None:
         proc = await Command(PY, ["-c", "print('hidden')"]).stdout("null").astart()
-        return (await proc.wait()).code
+        return (await proc.aoutcome()).code
 
     assert asyncio.run(scenario()) == 0
 
@@ -354,12 +448,12 @@ def test_stdout_rejects_unknown_mode() -> None:
 
 
 def test_stderr_null_works_with_start_then_wait() -> None:
-    # stderr("null") is non-capturing (the twin of stdout("null")); start()+wait()
-    # still runs the child cleanly with stderr discarded.
+    # stderr("null") is non-capturing (the twin of stdout("null")); start() then
+    # aoutcome() still runs the child cleanly with stderr discarded.
     async def scenario() -> int | None:
         cmd = Command(PY, ["-c", "import sys; sys.stderr.write('x')"]).stderr("null")
         proc = await cmd.astart()
-        return (await proc.wait()).code
+        return (await proc.aoutcome()).code
 
     assert asyncio.run(scenario()) == 0
 
@@ -464,3 +558,194 @@ def test_repr_does_not_leak_argv() -> None:
     assert "hunter2-SECRET" not in text
     assert "--password" not in text
     assert "login" in text
+
+
+def test_program_and_arguments_getters() -> None:
+    cmd = Command("login", ["--password", "hunter2-SECRET"])
+    assert cmd.program == "login"
+    assert cmd.arguments == ["--password", "hunter2-SECRET"]
+
+
+def test_command_line_is_the_explicit_escape_hatch() -> None:
+    # Unlike repr() (redacted), command_line() is opt-in and DOES include argv —
+    # the escape hatch test_repr_does_not_leak_argv's docstring refers to.
+    cmd = Command("login", ["--password", "hunter2-SECRET"])
+    line = cmd.command_line()
+    assert "login" in line
+    assert "hunter2-SECRET" in line
+
+
+# --- no_timeout / unchecked_in_pipe (C7 batch A) -----------------------------
+
+
+def test_no_timeout_clears_a_prior_timeout() -> None:
+    # no_timeout() clears an earlier timeout() — the last of the two wins, so a
+    # command that would otherwise time out completes normally.
+    result = Command(PY, ["-c", "import time; time.sleep(0.3)"]).timeout(0.05).no_timeout().output()
+    assert result.is_success
+    assert not result.timed_out
+
+
+def test_unchecked_in_pipe_is_a_noop_outside_a_pipeline() -> None:
+    # Outside a Pipeline, unchecked_in_pipe() has no effect: a single run's
+    # status is already plain data, and success_codes/ensure_success are
+    # unaffected either way.
+    result = Command(PY, ["-c", "import sys; sys.exit(1)"]).unchecked_in_pipe().output()
+    assert not result.is_success
+    assert result.code == 1
+
+
+# --- ensure_success (C7 batch A) ---------------------------------------------
+
+
+def test_ensure_success_returns_self_on_success() -> None:
+    result = Command(PY, ["-c", "print('ok')"]).output()
+    same = result.ensure_success()
+    assert same.stdout.strip() == "ok"
+    assert same is not None
+
+
+def test_ensure_success_raises_on_failure() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output()
+    with pytest.raises(NonZeroExit) as excinfo:
+        result.ensure_success()
+    assert excinfo.value.code == 3
+
+
+def test_bytes_ensure_success_raises_on_failure() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output_bytes()
+    with pytest.raises(NonZeroExit):
+        result.ensure_success()
+
+
+# --- diagnostic (C7 batch A) --------------------------------------------------
+
+
+def test_nonzero_exit_diagnostic_prefers_stderr() -> None:
+    code = "import sys; print('out'); sys.stderr.write('err'); sys.exit(1)"
+    with pytest.raises(NonZeroExit) as excinfo:
+        Command(PY, ["-c", code]).run()
+    assert excinfo.value.diagnostic == "err"
+
+
+def test_nonzero_exit_diagnostic_falls_back_to_stdout() -> None:
+    code = "import sys; print('only stdout'); sys.exit(1)"
+    with pytest.raises(NonZeroExit) as excinfo:
+        Command(PY, ["-c", code]).run()
+    assert excinfo.value.diagnostic == "only stdout"
+
+
+def test_nonzero_exit_diagnostic_is_none_when_both_streams_blank() -> None:
+    with pytest.raises(NonZeroExit) as excinfo:
+        Command(PY, ["-c", "import sys; sys.exit(1)"]).run()
+    assert excinfo.value.diagnostic is None
+
+
+def test_timeout_diagnostic_reflects_partial_output() -> None:
+    # A generous timeout margin (not 0.2-0.3s): under heavy parallel test-suite
+    # load, interpreter startup itself can occasionally take longer than a
+    # tight deadline, which would kill the child before it even reaches the
+    # `print` — see the retry tests' own note on this same class of flake.
+    code = "import sys, time; print('partial', flush=True); time.sleep(30)"
+    with pytest.raises(Timeout) as excinfo:
+        Command(PY, ["-c", code]).timeout(3.0).run()
+    assert excinfo.value.diagnostic == "partial"
+
+
+# --- signal as a raw int (C7 batch A) ----------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")
+def test_timeout_signal_accepts_a_raw_int() -> None:
+    import signal as signal_module
+
+    # `getattr`, not `signal_module.SIGUSR1` directly: typeshed declares SIGUSR1
+    # behind a POSIX-only platform guard, so a direct attribute access fails
+    # mypy on a Windows dev machine even though this test itself only runs
+    # (skipif above) on POSIX, and CI's mypy job runs on Linux either way.
+    sigusr1 = getattr(signal_module, "SIGUSR1")  # noqa: B009
+    code = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGUSR1, lambda *a: (_ for _ in ()).throw(SystemExit(7)))\n"
+        "time.sleep(30)\n"
+    )
+    # A generous margin (not 0.2-0.3s) — see the diagnostic test's note on the
+    # same interpreter-startup-under-load flake class.
+    result = Command(PY, ["-c", code]).timeout(3.0).timeout_signal(int(sigusr1)).output()
+    assert result.timed_out
+
+
+# --- CancellationToken / cancel_on (C7 batch B) ------------------------------
+
+
+def test_cancellation_token_starts_uncancelled_and_reports_cancel() -> None:
+    token = CancellationToken()
+    assert not token.is_cancelled()
+    token.cancel()
+    assert token.is_cancelled()
+    token.cancel()  # idempotent
+    assert token.is_cancelled()
+
+
+def test_cancellation_token_child_token_reflects_parent_state() -> None:
+    parent = CancellationToken()
+    child = parent.child_token()
+    assert not child.is_cancelled()
+    parent.cancel()
+    assert child.is_cancelled()
+
+    # The reverse does not hold: cancelling a child leaves the parent (and its
+    # other children) alone.
+    other_parent = CancellationToken()
+    other_child = other_parent.child_token()
+    other_child.cancel()
+    assert other_child.is_cancelled()
+    assert not other_parent.is_cancelled()
+
+
+def test_cancel_on_tears_down_the_run_and_raises_cancelled() -> None:
+    async def scenario() -> None:
+        token = CancellationToken()
+        cmd = Command(PY, ["-c", "import time; time.sleep(30)"]).cancel_on(token)
+        task = asyncio.ensure_future(cmd.arun())
+        await asyncio.sleep(0.2)  # let the child actually start
+        token.cancel()
+        with pytest.raises(Cancelled) as excinfo:
+            await task
+        assert excinfo.value.program == PY
+
+    asyncio.run(scenario())
+
+
+def test_cancel_on_replaces_a_prior_token() -> None:
+    # Command.cancel_on REPLACES (not gap-fills) — the last call wins, so
+    # firing the FIRST token must not cancel a command whose cancel_on() was
+    # called again with a second token.
+    async def scenario() -> str:
+        first = CancellationToken()
+        second = CancellationToken()
+        cmd = Command(PY, ["-c", "print('unaffected')"]).cancel_on(first).cancel_on(second)
+        first.cancel()  # the replaced, no-longer-wired token
+        return await cmd.arun()
+
+    assert asyncio.run(scenario()) == "unaffected"
+
+
+def test_cancelled_is_never_retried() -> None:
+    # A cancelled run is terminal: retry_if="transient_or_timeout" (the
+    # broadest preset) must not retry it — Error::Cancelled is excluded from
+    # both is_transient() and is_timeout() by the crate itself.
+    async def scenario() -> None:
+        token = CancellationToken()
+        cmd = (
+            Command(PY, ["-c", "import time; time.sleep(30)"])
+            .cancel_on(token)
+            .retry("transient_or_timeout", max_retries=5, initial_backoff=0.01)
+        )
+        task = asyncio.ensure_future(cmd.arun())
+        await asyncio.sleep(0.2)
+        token.cancel()
+        with pytest.raises(Cancelled):
+            await task
+
+    asyncio.run(scenario())

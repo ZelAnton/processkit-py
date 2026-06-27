@@ -203,6 +203,34 @@ def test_supervisor_zero_failure_decay_is_accepted() -> None:
     Supervisor(Command(PY, ["-c", "pass"]), restart="never", storm_pause=0.01, failure_decay=0.0)
 
 
+# --- output cap (C7 batch A) --------------------------------------------------
+
+
+def test_supervisor_capture_max_lines_caps_final_result_output() -> None:
+    code = "\n".join(f"print('line{i}')" for i in range(20))
+    outcome = Supervisor(Command(PY, ["-c", code]), restart="never", capture_max_lines=2).run()
+    assert outcome.final_result.truncated
+    # drop_oldest (the default) keeps the most recent lines — the tail.
+    assert "line19" in outcome.final_result.stdout
+    assert "line0" not in outcome.final_result.stdout
+
+
+def test_supervisor_capture_on_overflow_alone_requires_a_cap_size() -> None:
+    # Mirrors Command.output_limit's own validation: setting any of the three
+    # capture_* kwargs without a cap size is a clear misuse, not a silent no-op.
+    with pytest.raises(ValueError, match="capture"):
+        Supervisor(Command(PY, ["-c", "pass"]), capture_on_overflow="error")
+
+
+def test_supervisor_capture_max_bytes_widens_or_bounds_capture() -> None:
+    # A construction-time smoke test: max_bytes alone is accepted (no ValueError)
+    # and the supervisor still runs to completion.
+    outcome = Supervisor(
+        Command(PY, ["-c", "print('x' * 100)"]), restart="never", capture_max_bytes=10
+    ).run()
+    assert outcome.final_result.truncated
+
+
 # --- runner injection (C1) ---------------------------------------------------
 
 

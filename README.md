@@ -286,17 +286,17 @@ print(outcome.restarts, outcome.stopped)
 started. Three async probes replace the arbitrary sleep:
 
 ```python
-from processkit import Command, wait_for, wait_for_port, wait_for_line
+from processkit import Command, wait_until, wait_for_port, wait_for_line
 
 proc = await Command("my-server").astart()
 lines = proc.stdout_lines()
-await wait_for_line(lines, lambda l: "listening on" in l, timeout=10)   # a log line
+await wait_for_line(lines, "listening on", timeout=10)                  # a log line
 await wait_for_port("127.0.0.1", 8080, timeout=10)                      # a TCP port
-await wait_for(lambda: health_check(), timeout=10, interval=0.1)        # any condition
+await wait_until(lambda: health_check(), timeout=10, interval=0.1)      # any condition
 ```
 
-A probe that doesn't pass in time raises `TimeoutError` and **does not kill the
-child** — you decide what happens next.
+A probe that doesn't pass in time raises `WaitTimeout` (`ProcessError`,
+`TimeoutError`) and **does not kill the child** — you decide what happens next.
 *Deeper: [Streaming → readiness probes](docs/streaming.md).*
 
 ### Pipelines without a shell

@@ -127,6 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   abi3 (GIL) wheel, and the full test suite runs on the free-threaded interpreter
   in CI. Also adds CPython **3.14** to the supported set (the abi3 wheel already
   runs there).
+- **musllinux (Alpine/musl) wheels** for x86_64 and aarch64, alongside the
+  existing manylinux (glibc) wheels — so `pip install` gets a binary wheel on
+  Alpine-based images instead of building from the sdist. Both the abi3 GIL wheel
+  and the free-threaded cp314t wheel ship per libc. CI builds and smoke-tests the
+  x86_64 musllinux wheels on every push (aarch64 builds natively at release).
 - Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.14, the
   supported operating systems, topics) and project URLs (Documentation, Issues).
 

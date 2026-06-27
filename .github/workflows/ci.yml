@@ -140,18 +140,45 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         run: uv run maturin sdist --out dist
       # Assert the release cibuildwheel selector resolves to exactly the intended
-      # wheel families — the abi3 GIL wheel (cp310) and the free-threaded cp314t
-      # wheel — so a renamed/dropped identifier (or a bad enable group) surfaces
-      # here at PR time, not at release. cibuildwheel is only otherwise invoked in
-      # release.yml, so without this nothing exercises the config until a release.
+      # wheel families per libc — the abi3 GIL wheel (cp310) and the free-threaded
+      # cp314t wheel, for both manylinux (glibc) and musllinux (musl) — so a
+      # renamed/dropped/re-skipped identifier surfaces here, not at release. (The
+      # musllinux wheels are actually built + smoke-tested in the build-musllinux
+      # job below; this only checks the selector resolves.)
       - if: matrix.os == 'ubuntu-latest'
         name: Verify cibuildwheel build selector
         run: |
           ids=$(uvx 'cibuildwheel>=4,<5' --print-build-identifiers --platform linux)
           echo "$ids"
-          for fam in cp310-manylinux cp314t-manylinux; do
+          for fam in cp310-manylinux cp310-musllinux cp314t-manylinux cp314t-musllinux; do
             echo "$ids" | grep -q "^$fam" || { echo "::error::$fam wheel not in cibuildwheel selector"; exit 1; }
           done
+
+  build-musllinux:
+    # Actually build + smoke-test the musllinux (Alpine/musl) wheels. This is the
+    # only thing on a push that exercises the musl Rust toolchain path —
+    # cibuildwheel otherwise runs only in the dispatch-only release flows, so a
+    # musl-specific break (the before-all hook, maturin's cdylib crt-static
+    # handling) would otherwise surface only at release. Builds both wheel families
+    # for x86_64 in the Alpine container (Rust is installed inside it by the
+    # before-all hook in pyproject.toml — no host toolchain needed); aarch64 musl
+    # builds natively at release on the ubuntu-24.04-arm runner.
+    name: build (musllinux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - name: Build + smoke-test musllinux wheels
+        # Pin the exact two families (abi3 GIL + free-threaded). CIBW_BUILD
+        # OVERRIDES pyproject's build selector, so a wildcard like *-musllinux_x86_64
+        # would also pull cp311–cp314 (redundant abi3-reuse smoke runs).
+        env:
+          CIBW_BUILD: "cp310-musllinux_x86_64 cp314t-musllinux_x86_64"
+        run: uvx 'cibuildwheel>=4,<5' --platform linux --output-dir wheelhouse
 
   audit:
     name: pip-audit

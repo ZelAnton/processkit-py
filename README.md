@@ -409,7 +409,7 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 The first release to PyPI is pending (`pip install processkit` is the supported
 path once published). Until then — or on a platform without a prebuilt wheel
-(musllinux, Windows on ARM, 32-bit) — build from source, which needs a
+(Windows on ARM, 32-bit) — build from source, which needs a
 [Rust toolchain](https://rustup.rs/):
 
 ```bash

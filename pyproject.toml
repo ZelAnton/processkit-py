@@ -95,9 +95,12 @@ testpaths = ["tests"]
 #                 the officially-supported free-threaded interpreter, 3.14t — there
 #                 is no cp313t build; 3.13's free-threaded build was experimental.)
 build = "cp310-* cp314t-*"
-# manylinux covers the common Linux case (revisit musllinux on demand); 32-bit
-# Windows is not a target. Each matrix runner builds its own native arch.
-skip = "*-musllinux* *-win32"
+# Build both glibc (manylinux) and musl (musllinux) Linux wheels — Alpine/musl is
+# common in containers. 32-bit musl has no Rust/Cargo, and 32-bit Windows is not a
+# target. Each matrix runner builds its own native arch. The stock pypa
+# musllinux_1_2 image already ships cc + musl-dev, and maturin auto-sets
+# `-C target-feature=-crt-static` for the musl cdylib, so no extra build setup.
+skip = "*-musllinux_i686 *-win32"
 # Smoke-test the actual built wheel on each platform (see scripts/smoke.py).
 test-command = "python {project}/scripts/smoke.py"
 

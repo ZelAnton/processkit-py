@@ -10,6 +10,7 @@ operations, skipping where the platform cannot enforce them.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 import pathlib
@@ -226,17 +227,31 @@ def test_escalate_to_kill_false_spares_a_surviving_child(tmp_path: pathlib.Path)
     # pins that. What IS verified here, and reachable: a brand-new
     # `ProcessGroup` still behaves normally afterwards (no cross-instance
     # state corruption from the prior group's spared survivor).
+    # Liveness is checked on a *grandchild* here too, not `fresh`'s own direct
+    # pid — same reason as `test_group_shutdown_grace_kwarg_tears_down`: a
+    # direct child of this test process can linger as an unreaped POSIX
+    # zombie that still answers `kill(pid, 0)` (only the OS-level parent, i.e.
+    # this test process, would reap it, and nothing here calls `waitpid` on
+    # it), whereas the grandchild is reparented to init on its parent's death
+    # and reaped there — a portable death signal.
+    fresh_pid_file = tmp_path / "fresh_gc.pid"
     with ProcessGroup() as fresh_group:
-        fresh = fresh_group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
-        fresh_pid = fresh.pid
-        assert fresh_pid is not None
-    assert wait_dead(fresh_pid, timeout=10.0), (
+        fresh_group.start(spawn_grandchild_command(fresh_pid_file))
+        fresh_grandchild_pid = read_pid_when_ready(fresh_pid_file, timeout=10.0)
+    assert wait_dead(fresh_grandchild_pid, timeout=10.0), (
         "a fresh ProcessGroup's teardown must still hard-kill"
     )
 
     # Clean up the spared survivor so it doesn't leak past the test (this test
-    # only runs on POSIX, per the skipif above).
+    # only runs on POSIX, per the skipif above). `survivor_pid` is a direct
+    # child of this test process (the crate stopped tracking it once spared
+    # and dropped), so nothing else will ever reap it — `wait()` for it
+    # ourselves instead of polling `kill(pid, 0)`, which would spin forever on
+    # an unreaped zombie.
     os.kill(survivor_pid, 9)
+    with contextlib.suppress(ChildProcessError):
+        # ChildProcessError: already reaped by the crate's own background cleanup.
+        os.waitpid(survivor_pid, 0)
     assert wait_dead(survivor_pid, timeout=10.0)
 
 

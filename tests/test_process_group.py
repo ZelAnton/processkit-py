@@ -184,15 +184,23 @@ def test_escalate_to_kill_false_spares_a_surviving_child(tmp_path: pathlib.Path)
     # coverage: every other teardown test uses the `escalate_to_kill=True`
     # default, which always ends in a hard kill either way).
     marker = tmp_path / "got_term"
+    ready = tmp_path / "ready"
     code = (
         "import signal, time\n"
         f"signal.signal(signal.SIGTERM, lambda *a: open({str(marker)!r}, 'w').write('x'))\n"
+        f"open({str(ready)!r}, 'w').write('x')\n"
         "time.sleep(30)\n"
     )
     group = ProcessGroup(shutdown_grace=0.3, escalate_to_kill=False)
     running = group.start(Command(PY, ["-c", code]))
     survivor_pid = running.pid
     assert survivor_pid is not None
+
+    # Wait for the child to actually install its SIGTERM handler before
+    # signalling it — otherwise shutdown() can race the child's own startup
+    # (interpreter boot + `signal.signal()`) and the SIGTERM arrives while the
+    # default disposition (terminate, no marker) is still in effect.
+    assert wait_until(ready.exists, timeout=5.0), "the child never became ready"
 
     group.shutdown()  # signal -> wait shutdown_grace -> NO escalation (spared)
 

@@ -23,10 +23,12 @@ so an early return, an exception, or a cancelled task can never leak a child.
 
 ## The two surfaces: sync and async
 
-Every verb comes in two flavors: a **synchronous** one with a plain name, and an
-**asyncio** one with the same name under an `a` prefix. They share the same
+The capture verbs come in two flavors: a **synchronous** one with a plain name,
+and an **asyncio** one with the same name under an `a` prefix. They share the same
 builder, the same result types, and the same no-orphan guarantee — pick whichever
-fits the call site.
+fits the call site. (`astart()`, which hands back a live `RunningProcess` for
+streaming and interactive I/O, is asyncio-only — see
+[Streaming & interactive I/O](streaming.md).)
 
 ```python
 from processkit import Command
@@ -36,8 +38,10 @@ head = await Command("git", ["rev-parse", "HEAD"]).arun()    # asyncio
 ```
 
 The rest of this guide shows the sync form and only repeats the async form where
-the behavior differs. A blocked synchronous call is interruptible by Ctrl+C: it
-raises `KeyboardInterrupt` and reaps the process tree on the way out. *Deeper:
+the behavior differs. A blocked synchronous call **on the main thread** is
+interruptible by Ctrl+C: it raises `KeyboardInterrupt` and reaps the process tree
+on the way out (off the main thread CPython can't deliver the signal — use the
+async API or a `timeout()` there). *Deeper:
 [Timeouts & cancellation](timeouts-and-cancellation.md).*
 
 ## Picking a verb

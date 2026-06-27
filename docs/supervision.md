@@ -125,18 +125,38 @@ Two honest caveats about `stop_when=`:
 outcome.final_result   # ProcessResult of the LAST run
 outcome.restarts       # restarts performed (run #1 is not a restart)
 outcome.stopped        # "policy_satisfied" | "predicate" | "restarts_exhausted"
-outcome.storm_pauses   # always 0 — the failure-storm guard is not enabled in this binding
+outcome.storm_pauses   # how many failure-storm pauses were taken (see below)
 ```
 
 A returned outcome means supervision *concluded*, not that the child succeeded —
 inspect `final_result` (e.g. `outcome.final_result.is_success`) for the child's own
 verdict.
 
-`storm_pauses` is reported for parity with the crate's outcome, but the Python
-`Supervisor` does **not** enable the crate's opt-in failure-storm guard (and exposes
-no knob to configure it), so it is **always `0`** — only the per-restart `backoff`
-and the lifetime `max_restarts` cap apply. If you need a crash-loop circuit-breaker
-on top of those, build it yourself from `outcome.restarts` and the per-run results.
+## The failure-storm guard
+
+Backoff slows individual restarts; the **failure-storm guard** distinguishes "fails
+once in a blue moon" from "crash-looping" and takes a single collective pause
+instead of hammering restarts at backoff speed. It is **off by default** — enable
+it by setting `storm_pause`:
+
+```python
+outcome = Supervisor(
+    Command("flaky-worker"),
+    restart="on_crash",
+    storm_pause=30.0,          # ENABLES the guard: pause 30s when a storm is detected
+    failure_threshold=5.0,     # decaying failure score that trips the pause (optional)
+    failure_decay=60.0,        # the score halves every 60s (optional)
+).run()
+
+if outcome.storm_pauses:
+    log.warning("flaky-worker crash-looped: %d storm pauses", outcome.storm_pauses)
+```
+
+Each failure adds to a score that decays every `failure_decay`; once it crosses
+`failure_threshold` the supervisor takes one `storm_pause` and increments
+`outcome.storm_pauses`. With `storm_pause` unset, the guard is inactive and
+`storm_pauses` stays `0` — only the per-restart `backoff` and the lifetime
+`max_restarts` cap apply.
 
 A `Supervisor` is single-shot: `run()`/`arun()` consume it, so build a fresh one to
 supervise again.

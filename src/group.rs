@@ -91,14 +91,14 @@ impl PyProcessGroup {
     #[new]
     #[pyo3(signature = (
         *,
-        memory_max=None,
+        max_memory=None,
         max_processes=None,
         cpu_quota=None,
         shutdown_timeout=None,
         escalate_to_kill=None,
     ))]
     fn new(
-        memory_max: Option<u64>,
+        max_memory: Option<u64>,
         max_processes: Option<u32>,
         cpu_quota: Option<f64>,
         shutdown_timeout: Option<f64>,
@@ -107,13 +107,18 @@ impl PyProcessGroup {
         // `ProcessGroup::new()` is exactly `with_options(default())`, so always
         // build from defaults and apply whatever was passed — no branch needed.
         let mut options = ProcessGroupOptions::default();
-        if let Some(bytes) = memory_max {
+        if let Some(bytes) = max_memory {
+            // Python kwarg `max_memory` mirrors the `max_*` convention used across
+            // the surface; the crate builder method is `memory_max`.
             options = options.memory_max(bytes);
         }
         if let Some(n) = max_processes {
             options = options.max_processes(n);
         }
         if let Some(cores) = cpu_quota {
+            // Forwarded raw (unlike the `Duration` knobs, validated locally): the
+            // crate validates `cpu_quota` in `with_options` and surfaces
+            // NaN/inf/non-positive as a `ResourceLimit` error, never a panic.
             options = options.cpu_quota(cores);
         }
         if let Some(seconds) = shutdown_timeout {

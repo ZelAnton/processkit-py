@@ -206,7 +206,9 @@ reaped a tree.
   whichever verb you finish it with.
 - A [ProcessGroup](process-groups.md)'s graceful teardown timing is set at
   construction with `shutdown_timeout=` and `escalate_to_kill=`, independent of
-  any per-run timeout.
+  any per-run timeout. Note: cancelling an in-flight `await group.ashutdown()` (or
+  an `async with` exit) falls back to an immediate hard kill — the tree is still
+  reaped (no orphan), but the *graceful* signal-then-wait window is skipped.
 
 ## Keeping a flaky thing alive
 

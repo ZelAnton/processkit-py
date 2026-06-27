@@ -47,7 +47,7 @@ ship: it collects every per-OS caveat in one place.
 | [Pipelines](pipelines.md) | `a \| b \| c` without a shell (the `\|` operator works too): wiring, pipefail attribution, chain timeouts, binary tails |
 | [Timeouts & cancellation](timeouts-and-cancellation.md) | How a deadline is *captured* vs when it raises, interrupting a blocked sync call (Ctrl+C), and asyncio cancellation that reaps the whole tree |
 | [Supervision](supervision.md) | Keeping a child alive: restart policies, backoff & jitter, stop conditions, outcomes |
-| [Testing your code](testing.md) | The runner seam — `ScriptedRunner` (incl. scripted streaming `start()`), record/replay cassettes, and the `CliClient` wrapper |
+| [Testing your code](testing.md) | The `ProcessRunner` seam — `ScriptedRunner` (incl. scripted streaming `start()`), record/replay cassettes, and the `CliClient` wrapper |
 | [Platform support](platforms.md) | The containment mechanisms, every per-feature support matrix in one place, and the caveats worth knowing before you ship |
 
 ## Packaging

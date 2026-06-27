@@ -19,10 +19,14 @@ __all__ = ["ProcessRunner"]
 class ProcessRunner(Protocol):
     """The runner verb surface as a structural type.
 
-    `Runner`, `ScriptedRunner`, and `RecordReplayRunner` all satisfy it. Annotate
-    an injected runner as `ProcessRunner` so the code accepts any of them and
-    type-checks against a custom double. (`CliClient` is *not* a `ProcessRunner` —
-    its verbs take per-call args, not a `Command`.)
+    `Runner`, `ScriptedRunner`, and `RecordReplayRunner` all satisfy it — annotate
+    an injected runner as `ProcessRunner` so your code accepts any of them. A
+    hand-rolled double can implement the capture/check verbs (`output`/`run`/…)
+    easily, but `start`/`astart` must return a `RunningProcess`, which has no public
+    constructor — so a fully-conforming custom runner in practice means subclassing
+    or wrapping one of the built-ins (use `ScriptedRunner` for streaming doubles).
+    (`CliClient` is *not* a `ProcessRunner` — its verbs take per-call args, not a
+    `Command`, and it has no `start`/`astart`.)
     """
 
     def output(self, command: Command) -> ProcessResult: ...

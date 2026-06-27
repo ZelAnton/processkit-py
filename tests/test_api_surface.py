@@ -45,6 +45,23 @@ def _compiled_classes() -> dict[str, type]:
     }
 
 
+def _stub_module_functions() -> set[str]:
+    stub_path = pathlib.Path(processkit.__file__).with_name("_processkit.pyi")
+    tree = ast.parse(stub_path.read_text(encoding="utf-8"))
+    return {
+        node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+
+def _compiled_functions() -> set[str]:
+    # Module-level callables that are not classes — the batch verbs (output_all, …).
+    return {
+        name
+        for name in _public_names(_processkit)
+        if callable(obj := getattr(_processkit, name)) and not isinstance(obj, type)
+    }
+
+
 def test_all_is_sorted_unique_and_importable() -> None:
     assert processkit.__all__ == sorted(processkit.__all__)
     assert len(processkit.__all__) == len(set(processkit.__all__))
@@ -97,6 +114,19 @@ def test_stub_has_no_dead_class_members() -> None:
         declared = {m for m in _declared_members(stub[name]) if not m.startswith("_")}
         extra = declared - runtime
         assert not extra, f"{name}: stub declares members not present at runtime: {sorted(extra)}"
+
+
+def test_every_compiled_function_is_declared_in_the_stub() -> None:
+    # Module-level functions (the batch verbs) must appear in the stub, so a new
+    # or renamed one can't ship without its type signature.
+    missing = _compiled_functions() - _stub_module_functions()
+    assert not missing, f"compiled module functions missing from _processkit.pyi: {sorted(missing)}"
+
+
+def test_stub_has_no_dead_module_functions() -> None:
+    # Reverse: a module-level function in the stub must exist at runtime.
+    extra = _stub_module_functions() - _compiled_functions()
+    assert not extra, f"_processkit.pyi declares module functions not at runtime: {sorted(extra)}"
 
 
 def test_context_manager_protocol_is_declared() -> None:

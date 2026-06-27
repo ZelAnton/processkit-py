@@ -51,7 +51,7 @@ group = ProcessGroup(shutdown_timeout=10.0, escalate_to_kill=True)
 ```
 
 `shutdown_timeout` is a float of **seconds**. The resource-limit keywords
-(`memory_max`, `max_processes`, `cpu_quota`) are covered under
+(`max_memory`, `max_processes`, `cpu_quota`) are covered under
 [Resource limits](#resource-limits-the-sandbox).
 
 ## Spawning into the group
@@ -217,7 +217,7 @@ contains the tree:
 from processkit import Command, ProcessGroup
 
 with ProcessGroup(
-    memory_max=512 * 1024 * 1024,   # bytes, whole tree
+    max_memory=512 * 1024 * 1024,   # bytes, whole tree
     max_processes=64,               # fork-bomb ceiling
     cpu_quota=1.0,                  # one core (0.5 = half, 2.0 = two)
 ) as group:
@@ -236,7 +236,7 @@ root**. If a requested cap can't be enforced, the constructor raises
 from processkit import ResourceLimit
 
 try:
-    group = ProcessGroup(memory_max=256 * 1024 * 1024)
+    group = ProcessGroup(max_memory=256 * 1024 * 1024)
 except ResourceLimit:
     ...   # no Job Object / cgroup-v2 root here — limits unavailable
 ```

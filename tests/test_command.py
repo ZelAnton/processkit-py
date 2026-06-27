@@ -80,8 +80,9 @@ def test_builder_chaining_returns_new_command() -> None:
     base = Command(PY)
     chained = base.arg("-c").arg("print(1 + 1)")
     assert chained.output().stdout.strip() == "2"
-    # The original is untouched (builder methods return a new Command).
-    assert "print" not in repr(base)
+    # The original is untouched (builder methods return a new Command). The
+    # redacted repr shows the arg COUNT (not values), still 0 on the base.
+    assert "args: 0" in repr(base)
 
 
 def test_cwd_is_applied() -> None:

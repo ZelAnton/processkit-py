@@ -46,17 +46,17 @@ guarantee, and resource limits on untrusted child trees.
 
 ```python
 import asyncio
-from processkit import Command, ProcessGroup
+from processkit import Command, ProcessGroup, wait_for_port
 
 async def main():
 	# Run-and-capture; a non-zero exit is data, not an exception.
-	result = await Command("git", ["rev-parse", "HEAD"]).output()
-	print(result.stdout.strip(), result.exit_code)
+	result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
+	print(result.stdout.strip(), result.code)
 
 	# Kill-on-exit container for a whole tree.
 	async with ProcessGroup() as group:
-		server = await group.start(Command("my-server"))
-		await server.wait_for_port(("127.0.0.1", 8080), timeout=10)
+		await group.astart(Command("my-server"))
+		await wait_for_port("127.0.0.1", 8080, timeout=10)
 		# ... use the server ...
 	# group exit reaps the whole tree, grandchildren included
 
@@ -135,8 +135,7 @@ path.
 
 - `async` variants of `run` / `output` / `start`; `async with ProcessGroup`.
 - `RunningProcess`: stdout line streaming as an async iterator
-  (`async for line in proc.stdout_lines()`), interactive stdin,
-  `finish_streamed`.
+  (`async for line in proc.stdout_lines()`), interactive stdin, `finish()`.
 - **Cancellation:** map `asyncio.CancelledError` on an awaited run → tree kill.
   In async Python this is where the no-orphan promise naturally lives.
 - **Timeouts:** captured-vs-raised semantics; define the interaction with
@@ -153,7 +152,7 @@ Prioritised by Python demand, not crate order.
   the agent / service niche.
 - **Readiness probes** — `wait_for_line` / `wait_for_port` / `wait_for`. High:
   "start a server, then use it" is a constant Python pain point.
-- **Resource limits** — `memory_max` / `max_processes` / `cpu_quota`. High: the
+- **Resource limits** — `max_memory` / `max_processes` / `cpu_quota`. High: the
   real differentiator vs `psutil` for sandboxing untrusted / agent tool trees.
 - **Pipelines** — shell-free `a | b | c`. Medium.
 - **Signals / suspend / resume / members / stats** — lower; expose

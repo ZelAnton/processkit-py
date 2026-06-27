@@ -283,7 +283,7 @@ class ProcessGroup:
     def __init__(
         self,
         *,
-        memory_max: int | None = ...,
+        max_memory: int | None = ...,
         max_processes: int | None = ...,
         cpu_quota: float | None = ...,
         shutdown_timeout: float | None = ...,
@@ -344,6 +344,9 @@ class Supervisor:
         max_backoff: float | None = ...,
         jitter: bool | None = ...,
         stop_when: Callable[[ProcessResult], bool] | None = ...,
+        storm_pause: float | None = ...,
+        failure_threshold: float | None = ...,
+        failure_decay: float | None = ...,
     ) -> None: ...
     def run(self) -> SupervisionOutcome: ...
     async def arun(self) -> SupervisionOutcome: ...
@@ -431,7 +434,7 @@ class RunProfile:
     """A resource-usage profile sampled across a run (`RunningProcess.profile`)."""
 
     @property
-    def exit_code(self) -> int | None: ...
+    def code(self) -> int | None: ...
     @property
     def duration_seconds(self) -> float: ...
     @property
@@ -441,7 +444,7 @@ class RunProfile:
     @property
     def samples(self) -> int: ...
     @property
-    def avg_cpu(self) -> float | None: ...
+    def avg_cpu_cores(self) -> float | None: ...
     def __repr__(self) -> str: ...
 
 class CliClient:
@@ -493,10 +496,12 @@ class Timeout(ProcessError, TimeoutError):
     stderr: str
 
 class Cancelled(ProcessError):
-    """A run was cancelled (e.g. via a cancellation token).
+    """A run was cancelled via a crate cancellation token.
 
-    Note: cancelling an *awaited* run via asyncio surfaces as
-    `asyncio.CancelledError`, not this exception.
+    Reserved and rarely raised from Python: this binding exposes no cancellation
+    token, and cancelling an *awaited* run via asyncio surfaces as
+    `asyncio.CancelledError` (not this exception). Kept for taxonomy parity and
+    forward compatibility.
     """
 
     program: str
@@ -528,10 +533,15 @@ class PermissionDenied(ProcessError, PermissionError):
     program: str
 
 class ResourceLimit(ProcessError):
-    """A resource limit (memory / processes / CPU) was invalid or exceeded."""
+    """A resource limit (memory / processes / CPU) was invalid or could not be
+    enforced by the active containment mechanism."""
+
+    message: str
 
 class Unsupported(ProcessError):
     """The operation is not supported on this platform."""
+
+    operation: str
 
 class OutputTooLarge(ProcessError):
     """Captured output hit an `output_limit(..., on_overflow="error")` ceiling."""

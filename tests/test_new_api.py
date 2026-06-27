@@ -12,6 +12,7 @@ import pytest
 from processkit import (
     BytesResult,
     Command,
+    NonZeroExit,
     OutputTooLarge,
     ProcessError,
     ProcessGroup,
@@ -116,6 +117,22 @@ def test_pipeline_aoutput_bytes_captures_binary_tail() -> None:
 
     result = asyncio.run(scenario())
     assert result.stdout == bytes([3, 4, 255])
+
+
+def test_pipeline_pipefail_propagates_non_last_stage_failure() -> None:
+    # The whole point over a shell `|`: a failure in a NON-last stage is not
+    # masked by a clean final stage. The pipeline's code is the first unclean
+    # stage's, and `run()` raises for it.
+    bad = Command(PY, ["-c", "import sys; sys.exit(3)"])  # first stage fails
+    tail = Command(PY, ["-c", "import sys; sys.stdin.read(); print('tail-ran')"])
+
+    result = (bad | tail).output()
+    assert result.code == 3, "a non-last stage's failure must propagate to the pipeline exit code"
+    assert not result.is_success
+
+    with pytest.raises(NonZeroExit) as excinfo:
+        (bad | tail).run()
+    assert excinfo.value.code == 3
 
 
 # --- Output caps ------------------------------------------------------------

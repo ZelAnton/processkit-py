@@ -42,7 +42,7 @@ def test_invalid_resource_limit_raises() -> None:
     with pytest.raises(ResourceLimit):
         ProcessGroup(max_processes=0)
     with pytest.raises(ResourceLimit):
-        ProcessGroup(memory_max=0)
+        ProcessGroup(max_memory=0)
 
 
 def test_resource_limited_group_runs() -> None:
@@ -51,7 +51,7 @@ def test_resource_limited_group_runs() -> None:
     # "no internal processes" rule blocks them (raising ResourceLimit), and some
     # platforms don't support them at all (Unsupported). Skip where unenforceable.
     try:
-        with ProcessGroup(max_processes=64, memory_max=512 * 1024 * 1024) as group:
+        with ProcessGroup(max_processes=64, max_memory=512 * 1024 * 1024) as group:
             running = group.start(Command(PY, ["-c", "pass"]))
             assert running.pid is not None
     except (Unsupported, ResourceLimit):

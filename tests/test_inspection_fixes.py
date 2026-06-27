@@ -17,11 +17,13 @@ import pytest
 from processkit import (
     CliClient,
     Command,
+    OutputTooLarge,
     ProcessError,
     ProcessRunner,
     RecordReplayRunner,
     Runner,
     ScriptedRunner,
+    Signalled,
     Supervisor,
     wait_for_port,
 )
@@ -186,9 +188,26 @@ def test_encoding_unknown_label_gives_guidance() -> None:
 
 def test_arg_args_accept_path_like() -> None:
     p = pathlib.Path("sub/file")
+    # arg()/args() and the constructor accept os.PathLike without a manual str().
     cmd = Command("tool").arg(p).args([p, "literal"])
-    assert "sub" in repr(cmd)  # the path argument made it into the command line
-    Command("tool", [p, "x"])  # the constructor accepts path-likes in args too
+    assert isinstance(cmd, Command)
+    Command("tool", [p, "x"])
+    # The path value is actually passed through to the child as an argument.
+    echo = "import sys; print(sys.argv[1])"
+    echoed = Command(PY, ["-c", echo, pathlib.Path("xyz") / "abc"]).output()
+    assert "abc" in echoed.stdout
+
+
+def test_repr_does_not_leak_argv() -> None:
+    # repr() is emitted by logging (`%r`), f-strings, and tracebacks; it must not
+    # render argv, so a secret passed as a flag can't leak through them. The
+    # program name is safe to show; the full command line stays behind the crate's
+    # explicit command_line() escape hatch.
+    cmd = Command("login", ["--password", "hunter2-SECRET"])
+    text = repr(cmd)
+    assert "hunter2-SECRET" not in text
+    assert "--password" not in text
+    assert "login" in text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX exec-bit permission semantics")
@@ -226,3 +245,71 @@ def test_cli_client_is_not_a_process_runner() -> None:
     # CliClient verbs take per-call args (not a Command) and it has no start()/
     # astart() — so it is deliberately NOT a ProcessRunner.
     assert not isinstance(CliClient("git"), ProcessRunner)
+
+
+# --- Whole-solution review: supervisor storm guard --------------------------
+
+
+def test_supervisor_storm_pause_enables_guard() -> None:
+    # With the failure-storm guard enabled (storm_pause set) + a low threshold, a
+    # rapidly crash-looping command takes collective storm pauses (the field is no
+    # longer permanently 0).
+    out = Supervisor(
+        Command(PY, ["-c", "import sys; sys.exit(1)"]),
+        restart="always",
+        max_restarts=30,
+        backoff_initial=0.001,
+        backoff_factor=1.0,
+        jitter=False,
+        storm_pause=0.01,
+        failure_threshold=1.5,
+        failure_decay=100.0,
+    ).run()
+    assert out.storm_pauses >= 1
+
+
+def test_supervisor_storm_knobs_validate() -> None:
+    base = Command(PY, ["-c", "pass"])
+    with pytest.raises(ValueError):
+        Supervisor(base, storm_pause=-1.0)
+    with pytest.raises(ValueError):
+        Supervisor(base, failure_threshold=0.0)
+    with pytest.raises(ValueError):
+        Supervisor(base, failure_decay=-1.0)
+
+
+def test_supervisor_zero_failure_decay_is_accepted() -> None:
+    # A zero half-life is a valid crate config (no history; every failure scores
+    # 1.0) — the binding must not reject it.
+    Supervisor(Command(PY, ["-c", "pass"]), restart="never", storm_pause=0.01, failure_decay=0.0)
+
+
+# --- Whole-solution review: exception structured-field contracts -------------
+# These fields are part of the public contract (documented + in the stub) but are
+# set on the raised *instance*, so the static drift guard cannot see them. Pin
+# them by actually raising the exception.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal-kill semantics")
+def test_signalled_carries_structured_fields() -> None:
+    # A child that kills itself with a signal surfaces as `Signalled` carrying the
+    # signal number plus the captured streams (not a generic NonZeroExit).
+    killer = Command(PY, ["-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"])
+    with pytest.raises(Signalled) as excinfo:
+        killer.run()
+    exc = excinfo.value
+    assert exc.signal is not None and exc.signal > 0
+    assert isinstance(exc.stdout, str) and isinstance(exc.stderr, str)
+    assert exc.program
+
+
+def test_output_too_large_carries_byte_fields() -> None:
+    # The byte-cap overflow path carries `byte_limit`/`total_bytes` (the line-cap
+    # path is covered elsewhere). Pins those two fields against a silent rename.
+    flood = Command(PY, ["-c", "import sys; sys.stdout.write('x' * 100_000)"])
+    with pytest.raises(OutputTooLarge) as excinfo:
+        flood.output_limit(max_bytes=1024, on_overflow="error").run()
+    exc = excinfo.value
+    assert exc.byte_limit == 1024
+    assert exc.total_bytes >= 1024
+    assert exc.program

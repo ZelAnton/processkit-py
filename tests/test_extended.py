@@ -104,8 +104,10 @@ def test_builder_knobs_chain_builds() -> None:
 )
 def test_privilege_drop_unsupported_on_windows() -> None:
     # Privilege drops are never silently skipped: on Windows the run raises.
-    with pytest.raises(Unsupported):
+    with pytest.raises(Unsupported) as excinfo:
         Command(PY, ["-c", "print('x')"]).uid(0).run()
+    # The structured `.operation` field names what wasn't supported.
+    assert excinfo.value.operation
 
 
 def test_inherit_env_filters_to_allowlist() -> None:
@@ -165,7 +167,7 @@ def test_profile_returns_runprofile() -> None:
 
     rp = asyncio.run(scenario())
     assert isinstance(rp, RunProfile)
-    assert rp.exit_code == 0
+    assert rp.code == 0
     assert rp.duration_seconds >= 0.0
     assert rp.samples >= 1
 

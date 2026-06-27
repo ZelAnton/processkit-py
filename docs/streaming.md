@@ -113,7 +113,8 @@ async for ev in proc.output_events():
     print(f"[{tag}] {ev.text}")     # ev.stream is "stdout" / "stderr"
 ```
 
-Each `OutputEvent` has `stream: str`, `is_stderr: bool`, and `text: str`. Like
+Each `OutputEvent` has `stream: Literal["stdout", "stderr"]`, `is_stderr: bool`,
+and `text: str`. Like
 `stdout_lines()`, this consumes the pipes once — pick `stdout_lines()` *or*
 `output_events()`, not both.
 
@@ -241,11 +242,11 @@ proc = await Command("crunch").astart()
 prof = await proc.profile(every_seconds=0.1)
 
 print(
-    f"exit={prof.exit_code} wall={prof.duration_seconds:.2f}s "
+    f"exit={prof.code} wall={prof.duration_seconds:.2f}s "
     f"cpu={prof.cpu_time_seconds} peak_rss={prof.peak_memory_bytes} "
-    f"avg_cpu={prof.avg_cpu} ({prof.samples} samples)"
+    f"avg_cpu_cores={prof.avg_cpu_cores} ({prof.samples} samples)"
 )
-# avg_cpu = cpu / wall — e.g. 1.7 ≈ 1.7 cores busy
+# avg_cpu_cores = cpu / wall — e.g. 1.7 ≈ 1.7 cores busy
 ```
 
 These read the *child process itself*, and availability follows the platform —

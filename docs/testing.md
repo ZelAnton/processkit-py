@@ -47,8 +47,11 @@ branch = current_branch(Runner())
 Annotate the injected runner as **`ProcessRunner`** — a `typing.Protocol` that
 describes the verb surface. `Runner`, `ScriptedRunner`, and `RecordReplayRunner`
 all satisfy it structurally, so the annotation type-checks (strict `mypy`) against
-any of them, and against a custom double you write yourself. (`CliClient` is *not*
-a `ProcessRunner` — its verbs take per-call args, not a `Command`.)
+any of them. A custom double can implement the capture/check verbs directly; the
+streaming `start`/`astart` verbs must return a `RunningProcess` (no public
+constructor), so reach for `ScriptedRunner` when you need a streaming double rather
+than building one from scratch. (`CliClient` is *not* a `ProcessRunner` — its verbs
+take per-call args, not a `Command`, and it has no `start`/`astart`.)
 
 The sync and async surfaces are twins (`run` ↔ `arun`), so async code injects
 the very same runner objects and awaits the `a`-prefixed verbs.

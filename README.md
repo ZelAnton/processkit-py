@@ -43,15 +43,17 @@ a kernel operation over the whole tree, not a best-effort signal to one pid:
   descendant, grandchildren included. Where a mechanism has a genuine weakness (a
   `setsid` child can escape a POSIX process group), `ProcessGroup.mechanism`
   reports the active backend instead of pretending — never a silent downgrade.
-- **Sync *and* async, first-class.** Every verb exists as a plain synchronous
-  call and as an `a`-prefixed asyncio coroutine, sharing one set of types: run &
-  capture, line streaming, interactive stdin, readiness probes, shell-free
-  pipelines, supervision.
+- **Sync *and* async, first-class.** The run-&-capture verbs, pipelines, and
+  supervision each exist as a plain synchronous call *and* an `a`-prefixed asyncio
+  coroutine, sharing one set of types. The inherently-streaming surfaces — live
+  line streaming, interactive stdin, readiness probes — are asyncio-native
+  (awaited on a started process), not duplicated as blocking calls.
 - **Honest results.** A non-zero exit is data (`ProcessResult`) until you ask for
   success; a timeout is *captured* in the result; a cancellation is always an
   error; every platform divergence raises `Unsupported` or is documented. Raised
   exceptions carry structured fields and alias the stdlib's (`Timeout` is a
-  `TimeoutError`, `ProcessNotFound` a `FileNotFoundError`).
+  `TimeoutError`, `ProcessNotFound` a `FileNotFoundError`, `PermissionDenied` a
+  `PermissionError`).
 - **Testable.** One runner seam swaps the real spawner for scripted doubles or
   record/replay cassettes — no subprocess in your tests.
 
@@ -209,7 +211,7 @@ tool = (
     .env_clear().inherit_env(["PATH"])     # locked-down environment
     .output_limit(max_bytes=8 * 1024 * 1024)
 )
-with ProcessGroup(memory_max=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
+with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
     group.start(tool)
     print(group.stats().active_process_count)
 ```

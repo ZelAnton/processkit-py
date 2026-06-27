@@ -464,7 +464,12 @@ impl PyCommand {
     }
 
     fn __repr__(&self) -> String {
-        format!("Command({:?})", self.inner.command_line())
+        // Use the crate's redacted `Debug` (program + arg COUNT + env NAMES, never
+        // argv/env values) — a repr is emitted everywhere (logging `%r`, f-strings,
+        // tracebacks), so it must not leak secrets passed as arguments. The full
+        // command line stays behind the crate's explicit `command_line()` escape
+        // hatch, not the default repr.
+        format!("{:?}", self.inner)
     }
 }
 

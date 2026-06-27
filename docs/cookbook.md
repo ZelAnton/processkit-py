@@ -16,12 +16,14 @@ The whole library has two parallel surfaces: a **synchronous** one (plain method
 names) and an **asyncio** one (the same names with an `a` prefix). Use whichever
 fits your code; they share the same types and the same no-orphan guarantee.
 
-`ProcessStdin` and the `stdout_lines()` / `output_events()` iterators are
-**async-only**, as are a `RunningProcess`'s I/O and await methods
-(`take_stdin`/`wait`/`finish`/`output`/`shutdown`): they exist for streaming and
-interactive use, so they are coroutines with no `a` prefix (there is no
-synchronous twin to disambiguate from). A `RunningProcess` is still usable as a
-**sync or async context manager** for deterministic teardown.
+`ProcessStdin`'s write methods and the `stdout_lines()` / `output_events()`
+iterators are **async-only**. A `RunningProcess`'s *consuming* methods
+(`wait`/`finish`/`output`/`output_bytes`/`profile`/`shutdown`) are coroutines with
+no `a` prefix — they exist for streaming/interactive use, so there is no
+synchronous twin to disambiguate from. Its `stdout_lines()` / `output_events()` /
+`take_stdin()` / `start_kill()` are *synchronous* setup calls (it's the
+iterator/handle they return that you await). A `RunningProcess` is still usable as
+a **sync or async context manager** for deterministic teardown.
 
 ---
 
@@ -328,7 +330,7 @@ tool = (
     .kill_on_parent_death()          # die with us even without explicit teardown
     .output_limit(max_bytes=8 * 1024 * 1024)
 )
-with ProcessGroup(memory_max=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
+with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
     group.start(tool)
     stats = group.stats()
     print(stats.active_process_count, stats.peak_memory_bytes)

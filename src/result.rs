@@ -16,9 +16,10 @@ pub(crate) struct PyRunProfile {
 
 #[pymethods]
 impl PyRunProfile {
-    /// The exit code, or `None` for a timeout / signal-kill.
+    /// The exit code, or `None` for a timeout / signal-kill. (Named `code` to
+    /// match every other result type — `ProcessResult`, `Outcome`, ….)
     #[getter]
-    fn exit_code(&self) -> Option<i32> {
+    fn code(&self) -> Option<i32> {
         self.inner.exit_code
     }
 
@@ -47,14 +48,15 @@ impl PyRunProfile {
     }
 
     /// Average CPU cores used over the run (cpu_time / duration), if measurable.
+    /// A value of `1.0` means one core fully saturated; `2.0`, two cores.
     #[getter]
-    fn avg_cpu(&self) -> Option<f64> {
+    fn avg_cpu_cores(&self) -> Option<f64> {
         self.inner.avg_cpu()
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "RunProfile(exit_code={:?}, duration_seconds={:.3}, peak_memory_bytes={:?}, samples={})",
+            "RunProfile(code={:?}, duration_seconds={:.3}, peak_memory_bytes={:?}, samples={})",
             self.inner.exit_code,
             self.inner.duration.as_secs_f64(),
             self.inner.peak_memory_bytes,

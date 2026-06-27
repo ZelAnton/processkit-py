@@ -197,8 +197,16 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             | E::Spawn { program, .. }
             | E::Cancelled { program }
             | E::CassetteMiss { program }
+            | E::NotReady { program, .. }
+            | E::Parse { program, .. }
             | E::Stdin { program, .. } => {
                 let _ = value.setattr("program", program.as_str());
+            }
+            E::Unsupported { operation } => {
+                let _ = value.setattr("operation", operation.as_str());
+            }
+            E::ResourceLimit { message } => {
+                let _ = value.setattr("message", message.as_str());
             }
             _ => {}
         }

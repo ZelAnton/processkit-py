@@ -10,7 +10,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
-use crate::convert::{parse_restart_policy, positive_duration, stop_reason_str};
+use crate::convert::{
+    nonnegative_duration, parse_restart_policy, positive_duration, stop_reason_str,
+};
 use crate::errors::{map_err, ProcessError};
 use crate::result::PyProcessResult;
 use crate::runtime::block_on_interruptible;
@@ -134,6 +136,9 @@ impl PySupervisor {
         max_backoff=None,
         jitter=None,
         stop_when=None,
+        storm_pause=None,
+        failure_threshold=None,
+        failure_decay=None,
     ))]
     #[allow(clippy::too_many_arguments)] // a keyword-only builder constructor
     fn new(
@@ -145,6 +150,9 @@ impl PySupervisor {
         max_backoff: Option<f64>,
         jitter: Option<bool>,
         stop_when: Option<Py<PyAny>>,
+        storm_pause: Option<f64>,
+        failure_threshold: Option<f64>,
+        failure_decay: Option<f64>,
     ) -> PyResult<Self> {
         let mut supervisor = PkSupervisor::new(command.inner.clone());
         if let Some(policy) = restart {
@@ -178,6 +186,26 @@ impl PySupervisor {
         }
         if let Some(callback) = stop_when {
             supervisor = supervisor.stop_when(make_stop_predicate(callback));
+        }
+        // Failure-storm guard (off unless `storm_pause` is set): once the decaying
+        // failure score crosses `failure_threshold`, the supervisor takes one
+        // collective `storm_pause` instead of hammering restarts — and counts it in
+        // `SupervisionOutcome.storm_pauses`.
+        if let Some(seconds) = storm_pause {
+            supervisor = supervisor.storm_pause(positive_duration(seconds, "storm_pause")?);
+        }
+        if let Some(threshold) = failure_threshold {
+            if !threshold.is_finite() || threshold <= 0.0 {
+                return Err(PyValueError::new_err(
+                    "failure_threshold must be a finite, positive number",
+                ));
+            }
+            supervisor = supervisor.failure_threshold(threshold);
+        }
+        if let Some(seconds) = failure_decay {
+            // `nonnegative_duration`: a zero half-life is a valid config (keeps no
+            // history — every failure scores exactly 1.0).
+            supervisor = supervisor.failure_decay(nonnegative_duration(seconds, "failure_decay")?);
         }
         Ok(Self {
             inner: Some(supervisor),

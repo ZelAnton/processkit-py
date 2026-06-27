@@ -22,7 +22,7 @@ Cancelling an awaited run (`task.cancel()`, `asyncio.wait_for`,
 `asyncio.timeout`) reaps the run's tree on every platform — the dropped future
 tears it down.
 
-## Resource limits (`ProcessGroup(memory_max=…, max_processes=…, cpu_quota=…)`)
+## Resource limits (`ProcessGroup(max_memory=…, max_processes=…, cpu_quota=…)`)
 
 | | Support |
 |---|---|

@@ -124,7 +124,13 @@ async def wait_for_line(
                 return line
         raise ProcessError("the output stream ended before a matching line")
 
+    # Own the scan as a task so a line that matches at the exact deadline — which
+    # would complete the task just as `wait_for` cancels it — is recovered rather
+    # than dropped (the line is already consumed from the iterator).
+    task = asyncio.ensure_future(scan())
     try:
-        return await asyncio.wait_for(scan(), timeout)
+        return await asyncio.wait_for(task, timeout)
     except asyncio.TimeoutError:
+        if task.done() and not task.cancelled() and task.exception() is None:
+            return task.result()
         raise TimeoutError(f"no matching line within {timeout}s") from None

@@ -59,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clauses catch them. The data-carrying ones expose structured fields — e.g.
   `NonZeroExit.code` / `.stdout` / `.stderr` / `.program`,
   `Timeout.timeout_seconds`, `Signalled.signal`, `OutputTooLarge.byte_limit` /
-  `.total_bytes` — so a failure can be inspected programmatically, not just read
-  as a message.
+  `.total_bytes`, `Unsupported.operation`, `ResourceLimit.message` — so a failure
+  can be inspected programmatically, not just read as a message.
 - Blocking synchronous calls are interruptible: `Ctrl+C` (SIGINT) raises
   `KeyboardInterrupt` promptly and tears down the run's process tree, instead of
   hanging until the child exits.
@@ -83,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upfront) and `keep_stdin_open()` (write interactively after start).
 - New result types: `Outcome`, `Finished`, `OutputEvent`.
 - Higher-level features:
-  - **Resource limits** on `ProcessGroup`: keyword-only `memory_max`,
+  - **Resource limits** on `ProcessGroup`: keyword-only `max_memory`,
     `max_processes`, `cpu_quota`, `shutdown_timeout`, `escalate_to_kill`
     (enforced via the Windows Job Object or a Linux cgroup-v2 *root*).
   - **Signals & observability** on `ProcessGroup`: `signal("term"|…)`,
@@ -93,8 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sync/async run verbs (incl. `output_bytes()` / `aoutput_bytes()` for a binary
     tail) and `timeout()`.
   - **Supervision**: `Supervisor(cmd, restart=…, max_restarts=…, backoff_initial=…,
-    backoff_factor=…, max_backoff=…, jitter=…, stop_when=…)` with `run()` /
-    `arun()` → `SupervisionOutcome`.
+    backoff_factor=…, max_backoff=…, jitter=…, stop_when=…, storm_pause=…,
+    failure_threshold=…, failure_decay=…)` with `run()` / `arun()` →
+    `SupervisionOutcome`. Setting `storm_pause` enables the failure-storm guard
+    (crash-loop circuit-breaker), reported via `SupervisionOutcome.storm_pauses`.
   - **Readiness probes**: `await wait_for_port(host, port, timeout)`,
     `await wait_for_line(lines, predicate, timeout)`, and
     `await wait_for(predicate, timeout)` (poll any sync-or-async condition).
@@ -133,6 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the
   whole success set, not an addition), and an empty sequence now raises
   `ValueError` instead of being silently ignored.
+- Renamed `RunProfile.exit_code` → **`code`**, matching the exit-code field on
+  every other result type (`ProcessResult`, `Outcome`, …).
 - `Command.encoding()` / `stdout_encoding` / `stderr_encoding` now also accept
   common **Python codec aliases** (`latin_1`, `utf_8`, `euc_jp`, …) in addition to
   WHATWG labels, normalized to the WHATWG form; an unmappable label raises
@@ -145,6 +149,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Closed-set string parameters and return values are typed as `Literal` in the
   stubs (signal names, `restart`, `mechanism`, `SupervisionOutcome.stopped`,
   `OutputEvent.stream`) for editor autocomplete and `mypy` typo-catching.
+- Renamed `ProcessGroup(memory_max=…)` → **`max_memory`**, so every ceiling on the
+  surface follows the `max_*` convention (`max_processes`, `output_limit(max_bytes=…,
+  max_lines=…)`, `Supervisor(max_restarts=…, max_backoff=…)`). The crate builder
+  remains `memory_max()`.
+- Renamed `RunProfile.avg_cpu` → **`avg_cpu_cores`** (self-documenting: the value is
+  CPU-cores, e.g. `1.7` ≈ 1.7 cores busy).
 
 ### Fixed
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no
@@ -161,12 +171,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancelled just after the connection is accepted.
 
 ### Security
+- `repr(Command(...))` no longer renders argv (or env *values*): it now uses the
+  crate's redacted form — program, argument *count*, and env *names* only. A repr
+  is emitted everywhere (logging `%r`, f-strings, tracebacks, test diffs), so this
+  prevents a secret passed as an argument from leaking through any of them. The
+  full command line stays behind the crate's explicit `command_line()` escape hatch.
 - Documentation hardening: the sandbox/privilege-drop guidance now sets all of
   `gid` / `groups` / `uid` (dropping `uid` alone leaves the child holding the
   parent's supplementary groups — a sandbox-escape footgun); documents that
   record/replay cassettes are written owner-only (`0600`, no symlink follow) on
-  Unix; and warns that exception `stdout`/`stderr` and `repr(Command(...))` (argv)
-  carry raw values — pass secrets via `env(...)`, not flags.
+  Unix; and warns that exception `stdout`/`stderr` still carry raw values — pass
+  secrets via `env(...)`, not flags.
 
 ### Notes
 

@@ -426,3 +426,20 @@ rec.save()
 rep = RecordReplayRunner.replay("cassette.json")   # offline; no process spawned
 assert latest_commit(rep) == recorded
 ```
+
+To assert on *what* your code ran (not just its output), inject a
+`RecordingRunner` spy — it replies uniformly and records every call:
+
+```python
+from processkit import Command, RecordingRunner, Reply
+
+def deploy(runner):
+    runner.run(Command("git", ["push", "--tags"]))
+
+spy = RecordingRunner.replying(Reply.ok(""))
+deploy(spy)
+
+inv = spy.only_call()                 # the one call (raises unless exactly one)
+assert inv.program == "git"
+assert inv.args == ["push", "--tags"]
+```

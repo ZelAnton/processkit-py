@@ -1,8 +1,9 @@
 """The `ProcessRunner` protocol — the typed seam for dependency injection.
 
 Write code that takes a runner against this protocol, and it accepts the real
-`Runner`, a `ScriptedRunner`, a replaying `RecordReplayRunner`, or any custom
-double with the same verbs — all checked by the type checker.
+`Runner`, a `ScriptedRunner`, a replaying `RecordReplayRunner`, a recording
+`RecordingRunner`, or any custom double with the same verbs — all checked by the
+type checker.
 """
 
 from __future__ import annotations
@@ -19,8 +20,9 @@ __all__ = ["ProcessRunner"]
 class ProcessRunner(Protocol):
     """The runner verb surface as a structural type.
 
-    `Runner`, `ScriptedRunner`, and `RecordReplayRunner` all satisfy it — annotate
-    an injected runner as `ProcessRunner` so your code accepts any of them. A
+    `Runner`, `ScriptedRunner`, `RecordReplayRunner`, and `RecordingRunner` all
+    satisfy it — annotate an injected runner as `ProcessRunner` so your code
+    accepts any of them. A
     hand-rolled double can implement the capture/check verbs (`output`/`run`/…)
     easily, but `start`/`astart` must return a `RunningProcess`, which has no public
     constructor — and the built-in runners are `@final`, so a fully-conforming custom

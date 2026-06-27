@@ -114,7 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   production and a `ScriptedRunner` in tests — no real processes spawned; the
   results returned are genuine `ProcessResult` / `RunningProcess` objects. The
   injected runner is typed by the `ProcessRunner` `typing.Protocol`, which
-  `Runner` / `ScriptedRunner` / `RecordReplayRunner` all satisfy structurally.
+  `Runner` / `ScriptedRunner` / `RecordReplayRunner` / `RecordingRunner` all
+  satisfy structurally.
 - A full [documentation guide set](docs/README.md): a task-oriented
   [cookbook](docs/cookbook.md) plus deep guides for
   [running commands](docs/commands.md), [process groups](docs/process-groups.md),

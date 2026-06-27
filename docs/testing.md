@@ -6,8 +6,9 @@ Code that shells out is miserable to test — unless the subprocess sits behind 
 seam. In **processkit-py** that seam is a plain object: a *runner*. Write your
 code against a `runner` parameter, call its verbs, and never name a concrete
 runner inside the logic. In production you pass `Runner()` — the real thing. In
-tests you pass a double — a `ScriptedRunner` with canned replies, or a replaying
-`RecordReplayRunner` — and no subprocess is ever spawned. The objects that come
+tests you pass a double — a `ScriptedRunner` with canned replies, a replaying
+`RecordReplayRunner`, or a `RecordingRunner` spy — and no subprocess is ever
+spawned. The objects that come
 back are genuine `ProcessResult` / `RunningProcess` values, so the code under
 test can't tell the difference.
 
@@ -46,9 +47,9 @@ branch = current_branch(Runner())
 ```
 
 Annotate the injected runner as **`ProcessRunner`** — a `typing.Protocol` that
-describes the verb surface. `Runner`, `ScriptedRunner`, and `RecordReplayRunner`
-all satisfy it structurally, so the annotation type-checks (strict `mypy`) against
-any of them. A custom double can implement the capture/check verbs directly; the
+describes the verb surface. `Runner`, `ScriptedRunner`, `RecordReplayRunner`, and
+`RecordingRunner` all satisfy it structurally, so the annotation type-checks
+(strict `mypy`) against any of them. A custom double can implement the capture/check verbs directly; the
 streaming `start`/`astart` verbs must return a `RunningProcess` (no public
 constructor), so reach for `ScriptedRunner` when you need a streaming double rather
 than building one from scratch. (`CliClient` is *not* a `ProcessRunner` — its verbs

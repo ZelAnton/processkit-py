@@ -388,7 +388,8 @@ scripted.on(["git", "rev-parse"], Reply.ok("deadbeef"))
 assert scripted.run(Command("git", ["rev-parse", "HEAD"])) == "deadbeef"
 ```
 
-`RecordReplayRunner` captures real tool output once and replays it offline.
+`RecordReplayRunner` captures real tool output once and replays it offline, and
+`RecordingRunner` spies on *what* your code ran.
 *Deeper: [Testing your code](docs/testing.md).*
 
 ## Stability

@@ -225,6 +225,7 @@ def test_runner_classes_satisfy_process_runner() -> None:
 
 def test_record_replay_runner_satisfies_process_runner(tmp_path: pathlib.Path) -> None:
     rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
+    _accepts_runner(rec)  # static (mypy) signature conformance, not just isinstance
     assert isinstance(rec, ProcessRunner)
 
 
@@ -298,4 +299,6 @@ def test_recording_runner_async_records() -> None:
 
 
 def test_recording_runner_satisfies_process_runner() -> None:
-    assert isinstance(RecordingRunner.replying(Reply.ok("")), ProcessRunner)
+    rec = RecordingRunner.replying(Reply.ok(""))
+    _accepts_runner(rec)  # static (mypy) signature conformance, not just isinstance
+    assert isinstance(rec, ProcessRunner)

@@ -1,5 +1,6 @@
-//! The runner seam: a real `Runner`, a `ScriptedRunner` test double, and the
-//! `Reply` builder, sharing one generic set of run verbs over `ProcessRunner`.
+//! The runner seam: a real `Runner`, the `ScriptedRunner` / `RecordReplayRunner`
+//! / `RecordingRunner` test doubles, and the `Reply` builder, sharing one generic
+//! set of run verbs over `ProcessRunner`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

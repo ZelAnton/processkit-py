@@ -31,8 +31,14 @@ def test_pipeline_run_async_and_pipe_method() -> None:
 
 
 def test_pipeline_exit_code() -> None:
-    pipe = Command(PY, ["-c", "print('hi')"]) | Command(PY, ["-c", "import sys; sys.exit(0)"])
-    assert pipe.exit_code() == 0
+    # The downstream stage drains stdin before exiting: a consumer that exits
+    # WITHOUT reading can race the producer into writing to a closed pipe
+    # (BrokenPipe -> the producer's interpreter exits 120, which pipefail then
+    # surfaces as the pipeline code). Reading stdin keeps both stages clean, so
+    # the pipeline exit code is a deterministic 0.
+    upstream = Command(PY, ["-c", "print('hi')"])
+    downstream = Command(PY, ["-c", "import sys; sys.stdin.read(); sys.exit(0)"])
+    assert (upstream | downstream).exit_code() == 0
 
 
 def test_pipeline_output_bytes_captures_binary_tail() -> None:

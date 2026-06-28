@@ -18,8 +18,7 @@ pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
 /// with `map_err`. The caller maps the success value to its Python wrapper
 /// inside the future (e.g. `.map(PyProcessResult::from)`); a scalar result
 /// (`String` / `i32` / `bool`) passes through unchanged. This is the async twin
-/// of the sync `block_on_interruptible(...)?.map_err(map_err)` dance and keeps
-/// every `a`-prefixed verb a one-liner.
+/// of the sync `block_on` and keeps every `a`-prefixed verb a one-liner.
 pub(crate) fn drive_async<F, U>(py: Python<'_>, fut: F) -> PyResult<Bound<'_, PyAny>>
 where
     F: std::future::Future<Output = Result<U, processkit::Error>> + Send + 'static,

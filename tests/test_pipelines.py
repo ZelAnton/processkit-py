@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from processkit import BytesResult, Command, NonZeroExit
+from processkit import BytesResult, Command, NonZeroExit, Pipeline
 
 PY = sys.executable
 
@@ -77,6 +77,34 @@ def test_pipeline_pipefail_propagates_non_last_stage_failure() -> None:
     with pytest.raises(NonZeroExit) as excinfo:
         (bad | tail).run()
     assert excinfo.value.code == 3
+
+
+def test_pipeline_probe_sync() -> None:
+    # `probe` routes to the pipeline's exit code: 0 -> True, non-zero -> False.
+    ok = Command(PY, ["-c", "print('hi')"]) | Command(PY, ["-c", _UPPER])
+    assert ok.probe() is True
+    bad = Command(PY, ["-c", "import sys; sys.exit(1)"]) | Command(
+        PY, ["-c", "import sys; sys.stdin.read()"]
+    )
+    assert bad.probe() is False
+
+
+def test_pipeline_async_verbs_each_route_correctly() -> None:
+    # Drive the async pipeline verbs with no other coverage — aoutput / aexit_code
+    # / aprobe. Each returns an awaitable, so a forwarder wired to the wrong helper
+    # would still compile and pass stubtest; only calling each one proves it routes
+    # correctly.
+    def _pipe() -> Pipeline:
+        return Command(PY, ["-c", "print('hi')"]) | Command(PY, ["-c", _UPPER])
+
+    async def scenario() -> None:
+        result = await _pipe().aoutput()
+        assert result.stdout.strip() == "HI"
+        assert result.is_success
+        assert await _pipe().aexit_code() == 0
+        assert await _pipe().aprobe() is True
+
+    asyncio.run(scenario())
 
 
 def test_pipeline_timeout_is_captured() -> None:

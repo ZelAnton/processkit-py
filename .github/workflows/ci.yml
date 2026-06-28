@@ -25,7 +25,9 @@ jobs:
         with:
           python-version: '3.x'
       - name: Install yamllint
-        run: pip install yamllint
+        # Major-bound pin (like the uvx tools) so a yamllint 2.x can't add rules
+        # that red this gate without a deliberate bump.
+        run: pip install 'yamllint>=1,<2'
       - name: Lint YAML
         run: yamllint .
 

@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use processkit::CliClient as PkCliClient;
 use processkit::JobRunner;
@@ -20,8 +19,10 @@ use crate::runtime::{block_on, drive_async};
 /// `ScriptedRunner` instead — this client always uses the real runner.
 #[pyclass(name = "CliClient", module = "processkit")]
 pub(crate) struct PyCliClient {
-    // `Arc` so the async verbs can hold the client across the await.
-    inner: Arc<PkCliClient<JobRunner>>,
+    // `CliClient` is `Clone` (since 1.1.0), so the async verbs clone an owned
+    // client to hold across the await — no `Arc` indirection. A clone shares the
+    // same default cancellation token (the correct shared-token semantic).
+    inner: PkCliClient<JobRunner>,
 }
 
 #[pymethods]
@@ -48,9 +49,7 @@ impl PyCliClient {
                 client = client.default_env_remove(key);
             }
         }
-        Ok(Self {
-            inner: Arc::new(client),
-        })
+        Ok(Self { inner: client })
     }
 
     /// Run with the given args; require a zero exit and return trimmed stdout.

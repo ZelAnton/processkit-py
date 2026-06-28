@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Synchronous `Command` builder over the `processkit` Rust crate (pinned at
-  `=1.0.1`): `output()` (captures a non-zero exit, timeout, and signal-kill as
+  `=1.1.0`): `output()` (captures a non-zero exit, timeout, and signal-kill as
   data), `output_bytes()` (raw-bytes stdout → `BytesResult`), `run()` (returns
   trimmed stdout, raises on failure), `exit_code()`, and `probe()`, configured
   with `arg`/`args`/`cwd`/`env`/`envs`/`env_remove`/`env_clear`/`timeout`/
@@ -39,13 +39,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `output_bytes` / `exit_code` / `probe` (+ async) taking just the per-call args.
 - `RunningProcess` live introspection (`elapsed_seconds`, `cpu_time_seconds`,
   `peak_memory_bytes`, `stdout_line_count` / `stderr_line_count`, `owns_group`),
-  plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`.
+  plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`. A `RunProfile`
+  carries the run's full `outcome` (`code` / `signal` / `timed_out` — a superset of
+  `wait()`) alongside the CPU/memory samples (`cpu_time_seconds`,
+  `peak_memory_bytes`, `avg_cpu_cores`, `samples`).
 - Synchronous `Command.start()` — a blocking twin of `astart()` returning a live
   `RunningProcess` for streaming a child from synchronous code (its consuming
   methods `wait` / `finish` / `output` / … remain coroutines, awaited from an
   event loop).
 - `RecordReplayRunner` test double — `record(path)` real runs then `save()`, and
-  `replay(path)` offline; plus `output_bytes` on `Runner` / `ScriptedRunner`.
+  `replay(path)` offline; plus `output_bytes` on `Runner` / `ScriptedRunner`. It
+  records and replays the streaming `start()` verb too (record is capture-whole;
+  interactive mid-stream stdin can't be cassette-recorded — script those with
+  `ScriptedRunner`); `output_bytes` through a cassette raises `Unsupported` (a
+  text fixture can't reproduce exact bytes).
 - `RecordingRunner` spy test double — `RecordingRunner.replying(reply)` answers
   every command with one canned `Reply` and records each call, so a test can
   assert on *what* its code ran: `calls()` returns every `Invocation` (in order)

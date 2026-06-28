@@ -52,14 +52,14 @@ impl PyProcessGroupStats {
     }
 }
 
-/// Tear the group down gracefully when we are its sole owner; if an `astart`
-/// future is still racing (another `Arc` ref alive), fall back to a hard kill of
-/// the whole tree so teardown still happens.
+/// Tear the group down gracefully (SIGTERM -> grace -> SIGKILL survivors). Uses
+/// the crate's `shutdown_ref(&self)` (since 1.1.0), which borrows the group rather
+/// than consuming it — so it works even while an `astart` future still holds an
+/// `Arc` ref, with no `try_unwrap` and no downgrade to a hard kill. The owned `Arc`
+/// passed in is the taken-out inner; dropping it afterwards is a no-op (the group
+/// is already down).
 async fn shutdown_group(group: Arc<PkProcessGroup>) -> processkit::Result<()> {
-    match Arc::try_unwrap(group) {
-        Ok(group) => group.shutdown().await,
-        Err(group) => group.terminate_all(),
-    }
+    group.shutdown_ref().await
 }
 
 /// A kill-on-drop container for a process *tree*. Use it as a context manager
@@ -227,7 +227,7 @@ impl PyProcessGroup {
     /// group counterpart of `RunningProcess.kill()`. For a graceful teardown use
     /// `shutdown()` / `ashutdown()`.
     fn kill_all(&self) -> PyResult<()> {
-        self.group()?.terminate_all().map_err(map_err)
+        self.group()?.kill_all().map_err(map_err)
     }
 
     /// A snapshot of the group's resource usage.

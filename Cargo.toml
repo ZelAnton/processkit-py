@@ -34,7 +34,7 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # `limits` (whole-tree resource caps) implies `stats` (resource measurement);
 # both back the sandboxing/observability surface. `record` enables the
 # `RecordReplayRunner` test double (pulls serde/serde_json for the cassette).
-processkit = { version = "=1.0.1", features = ["limits", "record"] }
+processkit = { version = "=1.1.0", features = ["limits", "record"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [profile.release]

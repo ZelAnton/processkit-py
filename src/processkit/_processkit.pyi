@@ -520,10 +520,17 @@ class Invocation:
 
 @final
 class RunProfile:
-    """A resource-usage profile sampled across a run (`RunningProcess.profile`)."""
+    """A resource-usage profile sampled across a run (`RunningProcess.profile`),
+    plus the run's `outcome` — `profile()` is a superset of `wait()`."""
 
     @property
     def code(self) -> int | None: ...
+    @property
+    def signal(self) -> int | None: ...
+    @property
+    def timed_out(self) -> bool: ...
+    @property
+    def outcome(self) -> Outcome: ...
     @property
     def duration_seconds(self) -> float: ...
     @property

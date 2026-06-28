@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         ProcessResult,
         Runner,
         RunningProcess,
+        RunProfile,
         Signalled,
         SignalName,
         StrPath,
@@ -106,6 +107,14 @@ if TYPE_CHECKING:
         assert_type(b.stderr, str)
         assert_type(o.code, int | None)
         assert_type(o.exited_zero, bool)
+
+    def _run_profile_property_types(rp: RunProfile) -> None:
+        assert_type(rp.code, int | None)
+        assert_type(rp.signal, int | None)
+        assert_type(rp.timed_out, bool)
+        assert_type(rp.outcome, Outcome)
+        assert_type(rp.avg_cpu_cores, float | None)
+        assert_type(rp.samples, int)
 
     def _exception_attr_types(
         nz: NonZeroExit,

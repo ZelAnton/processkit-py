@@ -24,6 +24,7 @@ from processkit import (
     Runner,
     Signalled,
     Timeout,
+    Unsupported,
 )
 from processkit.testing import (
     Invocation,
@@ -244,6 +245,39 @@ def test_cassette_miss_carries_program(tmp_path: pathlib.Path) -> None:
     with pytest.raises(ProcessError) as excinfo:
         rep.run(Command(PY, ["-c", "print('DIFFERENT')"]))  # absent from the cassette
     assert getattr(excinfo.value, "program", None), "cassette miss should carry .program"
+
+
+def test_cassette_records_and_replays_streaming(tmp_path: pathlib.Path) -> None:
+    # Since processkit 1.1.0 the cassette runner covers `start` too: recording is
+    # capture-whole (the child runs to completion, then the handle replays its
+    # lines), and replay serves them through a real streaming `RunningProcess`.
+    cassette = tmp_path / "stream.json"
+    cmd = Command(PY, ["-c", "import random; print(random.random()); print('done')"])
+
+    async def stream(runner: RecordReplayRunner) -> list[str]:
+        proc = runner.start(cmd)
+        lines = [line.rstrip() async for line in proc.stdout_lines()]
+        await proc.wait()
+        return lines
+
+    recorder = RecordReplayRunner.record(str(cassette))
+    recorded = asyncio.run(stream(recorder))
+    recorder.save()
+    assert recorded[-1] == "done"  # the deterministic tail line
+
+    # Replaying the same argv serves the recorded (random) line — a real respawn
+    # would print a different number, so equality proves nothing was spawned.
+    replayer = RecordReplayRunner.replay(str(cassette))
+    assert asyncio.run(stream(replayer)) == recorded
+
+
+def test_cassette_output_bytes_is_unsupported(tmp_path: pathlib.Path) -> None:
+    # A cassette stores lossy-UTF-8 *text*, so it cannot reproduce exact bytes —
+    # `output_bytes` through the record/replay runner raises `Unsupported` (1.1.0).
+    # Capture bytes from a real or scripted runner instead.
+    rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
+    with pytest.raises(Unsupported):
+        rec.output_bytes(Command(PY, ["-c", "print('x')"]))
 
 
 # --- ProcessRunner protocol conformance -------------------------------------

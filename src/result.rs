@@ -58,13 +58,34 @@ impl PyRunProfile {
     /// A value of `1.0` means one core fully saturated; `2.0`, two cores.
     #[getter]
     fn avg_cpu_cores(&self) -> Option<f64> {
-        self.inner.avg_cpu()
+        self.inner.avg_cpu_cores()
+    }
+
+    /// The signal that killed the run, if it was signal-killed; `None` otherwise.
+    #[getter]
+    fn signal(&self) -> Option<i32> {
+        self.inner.signal()
+    }
+
+    /// Whether the run hit its timeout.
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.inner.timed_out()
+    }
+
+    /// The full run outcome (`code` / `signal` / `timed_out`) — the same value a
+    /// `wait()` would return. `profile()` computes it anyway, so it is a superset
+    /// of `wait()`: telemetry **and** how the run actually ended.
+    #[getter]
+    fn outcome(&self) -> PyOutcome {
+        PyOutcome::from(self.inner.outcome)
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "RunProfile(code={:?}, duration_seconds={:.3}, peak_memory_bytes={:?}, samples={})",
+            "RunProfile(code={:?}, timed_out={}, duration_seconds={:.3}, peak_memory_bytes={:?}, samples={})",
             self.inner.exit_code,
+            self.inner.timed_out(),
             self.inner.duration.as_secs_f64(),
             self.inner.peak_memory_bytes,
             self.inner.samples,

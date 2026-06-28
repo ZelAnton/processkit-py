@@ -47,7 +47,7 @@ return `None` and a second consuming verb raises):
 | `await proc.finish()` | `Finished` | **after streaming stdout** — exit + captured stderr, *without* buffering stdout |
 | `await proc.output()` | `ProcessResult` | capture everything (same as the one-shot `output()`) |
 | `await proc.output_bytes()` | `BytesResult` | capture, stdout as `bytes` |
-| `await proc.profile(every_seconds)` | `RunProfile` | exit + CPU/memory samples; output discarded |
+| `await proc.profile(every_seconds)` | `RunProfile` | full outcome + CPU/memory samples; output discarded |
 | `await proc.shutdown(grace_seconds)` | `Outcome` | graceful signal → wait → hard-kill |
 
 `Outcome` carries `code: int | None`, `signal: int | None`, `timed_out: bool`,
@@ -239,17 +239,21 @@ proc.stdout_line_count   # int | None — progress while you stream
 
 Or turn a whole run into a summary with `profile()`, which samples the child
 every `every_seconds` until exit (the run's normal timeout still applies; like
-`wait()`, the output is drained and discarded, not returned):
+`wait()`, the output is drained and discarded, not returned). `RunProfile` is a
+**superset of `wait()`**: it carries the full `outcome` (`code` / `signal` /
+`timed_out`) *and* the resource samples:
 
 ```python
 proc = await Command("crunch").astart()
 prof = await proc.profile(every_seconds=0.1)
 
 print(
-    f"exit={prof.code} wall={prof.duration_seconds:.2f}s "
-    f"cpu={prof.cpu_time_seconds} peak_rss={prof.peak_memory_bytes} "
+    f"exit={prof.code} signal={prof.signal} timed_out={prof.timed_out} "
+    f"wall={prof.duration_seconds:.2f}s cpu={prof.cpu_time_seconds} "
+    f"peak_rss={prof.peak_memory_bytes} "
     f"avg_cpu_cores={prof.avg_cpu_cores} ({prof.samples} samples)"
 )
+# prof.outcome is the same Outcome a wait() would return.
 # avg_cpu_cores = cpu / wall — e.g. 1.7 ≈ 1.7 cores busy
 ```
 

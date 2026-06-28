@@ -3,7 +3,10 @@
 These compose on top of the compiled async surface (a `StdoutLines` iterator, a
 plain TCP connect) rather than bridging the Rust crate's borrowing probe methods
 — simpler, fully composable, and they work against any server, not only one this
-package started.
+package started. (The `processkit` crate's 1.1.0 made its probes `Send`-bridgeable,
+but these Python helpers are kept deliberately: a free `wait_for_line(iterator)` /
+`wait_for_port(host, port)` is more composable than methods bound to one started
+`RunningProcess`.)
 """
 
 from __future__ import annotations

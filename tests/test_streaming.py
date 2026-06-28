@@ -246,6 +246,12 @@ def test_profile_returns_runprofile() -> None:
     assert rp.cpu_time_seconds is None or rp.cpu_time_seconds >= 0.0
     assert rp.peak_memory_bytes is None or rp.peak_memory_bytes >= 0
     assert rp.avg_cpu_cores is None or rp.avg_cpu_cores >= 0.0
+    # profile() is a superset of wait(): it also carries how the run ended.
+    assert rp.timed_out is False
+    assert rp.signal is None
+    assert rp.outcome.code == 0
+    assert rp.outcome.exited_zero is True
+    assert rp.outcome.timed_out is False
 
 
 def test_running_process_output_bytes() -> None:

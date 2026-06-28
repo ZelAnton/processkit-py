@@ -166,6 +166,15 @@ That last assertion is the **no-respawn proof**: the recorded command prints a
 fresh random number every real run, so if replay equals the recorded value,
 nothing was spawned. (This is exactly how our suite proves it.)
 
+`start()` is covered too: the cassette records a streamed run (capture-whole — the
+child runs to completion, then the handle replays its captured lines through a real
+`RunningProcess`) and replays it offline, so a readiness-gated `start` flow tests
+hermetically. Two limits: an *interactive* run fed stdin mid-stream can't be
+cassette-recorded (bound it with `Command.timeout()`, or script it with
+`ScriptedRunner`); and **`output_bytes` is not supported through a cassette** — it
+stores lossy-UTF-8 *text*, so it can't reproduce exact bytes and raises
+`Unsupported` (capture bytes from a real or scripted runner instead).
+
 Semantics worth knowing before you commit a cassette:
 
 | Aspect | Behavior |

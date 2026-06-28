@@ -105,6 +105,16 @@ def test_backoff_factor_alone_is_accepted() -> None:
     assert outcome.final_result.is_success
 
 
+def test_max_backoff_kwarg_accepted_and_validated() -> None:
+    # `max_backoff` has no other call site — pin its name against the stub (mypy)
+    # and the Rust binding (a rename would raise TypeError, not ValueError) plus its
+    # positive-duration check.
+    outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never", max_backoff=30.0).run()
+    assert outcome.final_result.is_success
+    with pytest.raises(ValueError):
+        Supervisor(Command(PY, ["-c", "pass"]), max_backoff=0.0)
+
+
 # --- failure-storm guard ----------------------------------------------------
 
 

@@ -28,13 +28,13 @@ from processkit import Command, Runner
 proc = await Command("dev-server").astart()
 
 # Sync setup, same live handle (the consuming verbs below are still async):
-proc = Runner().start(Command("dev-server"))
+proc = Command("dev-server").start()        # or: Runner().start(Command("dev-server"))
 # …or hand the tree to a group that owns its fate instead of the handle:
 #   proc = group.start(Command("dev-server"))   # see Process groups
 
 proc.pid              # int | None — None once the handle is consumed
 proc.elapsed_seconds  # float | None — wall time since spawn
-proc.owns_group       # True for astart()/Runner().start(); False under a group
+proc.owns_group       # True for a standalone start()/astart() handle; False under a group
 ```
 
 Whichever way you start it, **consume the handle exactly one way** — each of
@@ -56,8 +56,8 @@ context; for the command's own verdict use `ProcessResult.is_success`). There is
 also a synchronous `proc.kill()` (like `subprocess.Popen.kill()`) for "stop it
 now, I'll `await proc.wait()` for the code myself."
 
-`astart()` and `Runner().start()` put the child in a **private group the handle
-owns**: tearing the handle down kills the whole tree. The shared-group variant —
+`start()`, `astart()`, and `Runner().start()` put the child in a **private group
+the handle owns**: tearing the handle down kills the whole tree. The shared-group variant —
 `group.start(cmd)` — gives the same handle, but the *group* controls the tree's
 fate (`owns_group` is `False`); see [Process groups](process-groups.md).
 
@@ -238,8 +238,8 @@ proc.stdout_line_count   # int | None — progress while you stream
 ```
 
 Or turn a whole run into a summary with `profile()`, which samples the child
-every `every_seconds` until exit (and applies the run's normal timeout/output
-handling):
+every `every_seconds` until exit (the run's normal timeout still applies; like
+`wait()`, the output is drained and discarded, not returned):
 
 ```python
 proc = await Command("crunch").astart()
@@ -263,9 +263,9 @@ per-process cheaply. See [Platform support](platforms.md).
 ## Deterministic teardown
 
 A `RunningProcess` is a context manager — sync and async. For a standalone
-`astart()` / `Runner().start()` handle, exiting the block hard-kills its whole
-private tree (best-effort; see [Platform support](platforms.md)), even if the
-block raises, without waiting on Python's GC:
+`start()` / `astart()` / `Runner().start()` handle, exiting the block hard-kills
+its whole private tree (best-effort; see [Platform support](platforms.md)), even
+if the block raises, without waiting on Python's GC:
 
 ```python
 async with await Command("flaky-server").astart() as proc:

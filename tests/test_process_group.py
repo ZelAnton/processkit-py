@@ -163,6 +163,18 @@ def test_group_shutdown_grace_kwarg_tears_down(tmp_path: pathlib.Path) -> None:
     )
 
 
+def test_group_cpu_quota_kwarg_accepted() -> None:
+    # The last unpinned `ProcessGroup` limit kwarg. Pin `cpu_quota=`'s name against
+    # the stub (mypy) and the Rust binding (a rename would raise `TypeError` here,
+    # before any enforcement). Enforcement needs a Job Object / cgroup-v2 root, so
+    # skip where unenforceable — the name binding has already been exercised.
+    try:
+        with ProcessGroup(cpu_quota=1.0) as group:
+            assert group.mechanism in {"job_object", "cgroup_v2", "process_group"}
+    except (Unsupported, ResourceLimit):
+        pytest.skip("cpu_quota not enforceable in this environment")
+
+
 # --- signals / suspend / resume / terminate / stats -------------------------
 
 

@@ -91,8 +91,9 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ty.setattr("__module__", "processkit")?;
         m.add(name, ty)?;
     }
-    // `Timeout` and `ProcessNotFound` are dual-base (also `TimeoutError` /
-    // `FileNotFoundError`); built and registered here.
+    // `Timeout`, `ProcessNotFound`, and `PermissionDenied` are dual-base (also
+    // `TimeoutError` / `FileNotFoundError` / `PermissionError`); built and
+    // registered here.
     init_dual_exceptions(m)?;
     Ok(())
 }

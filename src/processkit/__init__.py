@@ -6,12 +6,17 @@ data, a timeout is captured, a cancellation is an error).
 
 Both a synchronous surface and an asyncio-native one are provided:
 
-- Sync: `Command(...).output()` / `.run()`, `with ProcessGroup() as g:`.
+- Sync: `Command(...).output()` / `.run()`, `with ProcessGroup() as g:`, and
+  `Command(...).start()` for a scoped background child you watch and tear down.
 - Async: `await Command(...).aoutput()` / `.arun()` / `.astart()`,
   `async with ProcessGroup() as g:`, and streaming over a `RunningProcess`
   (`async for line in proc.stdout_lines(): ...`, interactive `take_stdin()`).
 
-Cancelling an awaited run tears down the whole process tree.
+A `RunningProcess`'s *consuming* verbs (`wait` / `finish` / `output` /
+`output_bytes` / `profile` / `shutdown`) are coroutines with no `a` prefix —
+they exist for streaming/interactive use and have no synchronous twin to
+disambiguate from — so they are awaited whether the handle came from `start()`
+or `astart()`. Cancelling an awaited run tears down the whole process tree.
 """
 
 from __future__ import annotations

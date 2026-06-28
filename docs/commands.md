@@ -26,9 +26,11 @@ so an early return, an exception, or a cancelled task can never leak a child.
 The capture verbs come in two flavors: a **synchronous** one with a plain name,
 and an **asyncio** one with the same name under an `a` prefix. They share the same
 builder, the same result types, and the same no-orphan guarantee — pick whichever
-fits the call site. (`astart()`, which hands back a live `RunningProcess` for
-streaming and interactive I/O, is asyncio-only — see
-[Streaming & interactive I/O](streaming.md).)
+fits the call site. (`start()` / `astart()` hand back a live `RunningProcess` for
+streaming and interactive I/O — see [Streaming & interactive I/O](streaming.md).
+That handle's *consuming* verbs (`wait` / `finish` / `output` / …) are async
+coroutines, so the sync `start()` is mainly for spawning a scoped background child
+you watch via its live properties and tear down with a `with` block.)
 
 ```python
 from processkit import Command
@@ -53,7 +55,7 @@ async API or a `timeout()` there). *Deeper:
 | `run()` | trimmed stdout `str` | raises `NonZeroExit` | raises `Timeout` / `Signalled` | "Give me the answer, or fail" |
 | `exit_code()` | `int` (raw) | returns the code | raises (no `-1` sentinel) | The exit code *is* the answer |
 | `probe()` | `bool` | `0`→`True`, `1`→`False`, else raises | raises | Predicate tools: `git diff --quiet`, `grep -q` |
-| `astart()` | `RunningProcess` | — | — | Streaming / interactive I/O — see [Streaming](streaming.md) |
+| `start()` / `astart()` | `RunningProcess` | — | — | Streaming / interactive I/O — see [Streaming](streaming.md) |
 
 The capturing verbs (`output`, `output_bytes`) treat a non-zero exit, a timeout,
 and a signal-kill as **data** — they never raise on the child's outcome. The
@@ -135,13 +137,13 @@ Each stream defaults to `"pipe"` (captured). You can also `"inherit"` the
 parent's stream or send it to `"null"`:
 
 ```python
-Command("long-build").stdout("inherit").stderr("inherit").astart()
+Command("long-build").stdout("inherit").stderr("inherit").start()
 ```
 
 This matters: the one-shot capturing verbs (`output`, `output_bytes`, `run`,
 `exit_code`, `probe`) need a piped stdout to do their job. If you set stdout to
-`"inherit"` or `"null"`, those verbs **raise** — only `astart()` plus streaming
-works with a non-piped stdout, because there is nothing to capture. Redirect
+`"inherit"` or `"null"`, those verbs **raise** — only `start()` / `astart()` plus
+streaming work with a non-piped stdout, because there is nothing to capture. Redirect
 streams only when you intend to stream or to discard.
 
 ## Text decoding
@@ -227,7 +229,7 @@ Spawn-time controls for sandboxing and service launch:
 Command("helper").create_no_window().run()
 
 # Take the direct child down even if THIS process is killed before teardown runs.
-Command("worker").kill_on_parent_death().astart()
+Command("worker").kill_on_parent_death().start()
 ```
 
 Platform honesty, not silent no-ops:

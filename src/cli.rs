@@ -11,9 +11,8 @@ use processkit::JobRunner;
 use pyo3::prelude::*;
 
 use crate::convert::positive_duration;
-use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
-use crate::runtime::{block_on_interruptible, drive_async};
+use crate::runtime::{block_on, drive_async};
 
 /// A program bound to default timeout/environment, run with the real `Runner`.
 ///
@@ -56,31 +55,27 @@ impl PyCliClient {
 
     /// Run with the given args; require a zero exit and return trimmed stdout.
     fn run(&self, py: Python<'_>, args: Vec<String>) -> PyResult<String> {
-        block_on_interruptible(py, self.inner.run(args))?.map_err(map_err)
+        block_on(py, self.inner.run(args))
     }
 
     /// Run with the given args and capture output (a non-zero exit is data).
     fn output(&self, py: Python<'_>, args: Vec<String>) -> PyResult<PyProcessResult> {
-        block_on_interruptible(py, self.inner.output_string(args))?
-            .map(PyProcessResult::from)
-            .map_err(map_err)
+        block_on(py, self.inner.output_string(args)).map(PyProcessResult::from)
     }
 
     /// Run with the given args and capture raw-bytes stdout.
     fn output_bytes(&self, py: Python<'_>, args: Vec<String>) -> PyResult<PyBytesResult> {
-        block_on_interruptible(py, self.inner.output_bytes(args))?
-            .map(PyBytesResult::from)
-            .map_err(map_err)
+        block_on(py, self.inner.output_bytes(args)).map(PyBytesResult::from)
     }
 
     /// Run with the given args and return the exit code.
     fn exit_code(&self, py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
-        block_on_interruptible(py, self.inner.exit_code(args))?.map_err(map_err)
+        block_on(py, self.inner.exit_code(args))
     }
 
     /// Run a predicate call and read its exit code as a bool.
     fn probe(&self, py: Python<'_>, args: Vec<String>) -> PyResult<bool> {
-        block_on_interruptible(py, self.inner.probe(args))?.map_err(map_err)
+        block_on(py, self.inner.probe(args))
     }
 
     /// Async counterpart of `run()`.

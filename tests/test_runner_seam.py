@@ -108,6 +108,43 @@ def test_real_runner_async() -> None:
     assert asyncio.run(scenario()) == "async runner"
 
 
+def test_runner_probe_reads_exit_code() -> None:
+    # `probe` is one of the run verbs the runner macro generates for every runner;
+    # exercise it so a mis-wired forwarder (e.g. to exit_code) can't slip through.
+    runner = ScriptedRunner()
+    runner.on(["ok"], Reply.ok(""))
+    runner.on(["bad"], Reply.fail(1, ""))
+    assert runner.probe(Command("ok")) is True
+    assert runner.probe(Command("bad")) is False
+
+
+def test_runner_async_verbs_each_route_correctly() -> None:
+    # Drive every async verb the runner macro emits — aoutput / aoutput_bytes /
+    # aexit_code / aprobe / astart. They all return an awaitable, so a forwarder
+    # wired to the wrong helper would still compile and pass stubtest; only calling
+    # each one proves the macro routes it to the matching `runner_a*` helper.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("async"))
+
+    async def scenario() -> None:
+        result = await runner.aoutput(Command("x"))
+        assert result.stdout == "async"
+        assert result.is_success
+
+        raw = await runner.aoutput_bytes(Command("x"))
+        assert isinstance(raw, BytesResult)
+        assert raw.stdout == b"async"
+
+        assert await runner.aexit_code(Command("x")) == 0
+        assert await runner.aprobe(Command("x")) is True
+
+        proc = await runner.astart(Command("x"))
+        outcome = await proc.wait()
+        assert outcome.exited_zero
+
+    asyncio.run(scenario())
+
+
 def test_scripted_result_for_mocking() -> None:
     # ScriptedRunner is also a factory for genuine ProcessResult objects to feed
     # to unittest.mock-style fakes.

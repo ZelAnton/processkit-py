@@ -12,7 +12,7 @@ use crate::command::PyCommand;
 use crate::convert::{nonnegative_duration, parse_signal};
 use crate::errors::{map_err, ProcessError};
 use crate::running::PyRunningProcess;
-use crate::runtime::{block_on_interruptible, drive_async};
+use crate::runtime::{block_on, drive_async};
 
 /// A snapshot of a `ProcessGroup`'s resource usage.
 #[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
@@ -175,9 +175,7 @@ impl PyProcessGroup {
     /// runs concurrently; this does not wait for it to finish.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
         let group = self.group()?.clone();
-        block_on_interruptible(py, group.start(&command.inner))?
-            .map(PyRunningProcess::from)
-            .map_err(map_err)
+        block_on(py, group.start(&command.inner)).map(PyRunningProcess::from)
     }
 
     /// Async counterpart of `start()`.
@@ -246,7 +244,7 @@ impl PyProcessGroup {
     /// a no-op.
     fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(group) = self.inner.take() {
-            block_on_interruptible(py, shutdown_group(group))?.map_err(map_err)?;
+            block_on(py, shutdown_group(group))?;
         }
         Ok(())
     }

@@ -17,7 +17,7 @@ use crate::errors::{map_err, ProcessError};
 use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
-use crate::runtime::{block_on_interruptible, drive_async, rt};
+use crate::runtime::{block_on, drive_async, rt};
 
 /// Map a stdin I/O failure (a broken pipe, a closed child) onto `OSError`.
 fn map_io_err(error: std::io::Error) -> PyErr {
@@ -238,12 +238,11 @@ impl PyRunningProcess {
             // consumes `running` and drops its owned process group, whose `Drop`
             // is kernel kill-on-close. So moving `running` into `wait` is not
             // redundant.
-            block_on_interruptible(py, async move {
+            block_on(py, async move {
                 running.start_kill()?;
                 running.wait().await?;
                 Ok::<(), processkit::Error>(())
-            })?
-            .map_err(map_err)?;
+            })?;
         }
         Ok(false)
     }

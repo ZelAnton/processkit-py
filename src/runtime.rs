@@ -28,6 +28,21 @@ where
     pyo3_async_runtimes::tokio::future_into_py(py, async move { fut.await.map_err(map_err) })
 }
 
+/// Drive a crate future to completion on the sync surface and convert a crate
+/// error to the right Python exception with `map_err` — the sync twin of
+/// `drive_async`. The caller maps the success value to its Python wrapper on the
+/// returned `PyResult` (e.g. `.map(PyProcessResult::from)`); a scalar result
+/// (`String` / `i32` / `bool` / `()`) is returned as-is. This is the interruptible
+/// `block_on_interruptible(...)?.map_err(map_err)` dance in one place, so every
+/// sync verb is a one-liner and `map_err` lives in a single spot.
+pub(crate) fn block_on<F, U>(py: Python<'_>, fut: F) -> PyResult<U>
+where
+    F: std::future::Future<Output = Result<U, processkit::Error>> + Send,
+    U: Send,
+{
+    block_on_interruptible(py, fut)?.map_err(map_err)
+}
+
 /// How often a blocked sync call surfaces to check for pending Python signals.
 const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 

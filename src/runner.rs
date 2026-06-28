@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::errors::{map_err, ProcessError};
-use crate::runtime::{block_on_interruptible, drive_async};
+use crate::runtime::{block_on, drive_async};
 use crate::{PyBytesResult, PyCommand, PyProcessResult, PyRunningProcess};
 
 // The run verbs are generic over the crate's `ProcessRunner` so the real
@@ -27,9 +27,7 @@ fn runner_output<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyProcessResult> {
-    block_on_interruptible(py, runner.output_string(&command.inner))?
-        .map(PyProcessResult::from)
-        .map_err(map_err)
+    block_on(py, runner.output_string(&command.inner)).map(PyProcessResult::from)
 }
 
 fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
@@ -37,9 +35,7 @@ fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyBytesResult> {
-    block_on_interruptible(py, runner.output_bytes(&command.inner))?
-        .map(PyBytesResult::from)
-        .map_err(map_err)
+    block_on(py, runner.output_bytes(&command.inner)).map(PyBytesResult::from)
 }
 
 fn runner_run<R: ProcessRunner + Sync + ?Sized>(
@@ -47,7 +43,7 @@ fn runner_run<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<String> {
-    block_on_interruptible(py, runner.run(&command.inner))?.map_err(map_err)
+    block_on(py, runner.run(&command.inner))
 }
 
 fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
@@ -55,7 +51,7 @@ fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<i32> {
-    block_on_interruptible(py, runner.exit_code(&command.inner))?.map_err(map_err)
+    block_on(py, runner.exit_code(&command.inner))
 }
 
 fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
@@ -63,7 +59,7 @@ fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<bool> {
-    block_on_interruptible(py, runner.probe(&command.inner))?.map_err(map_err)
+    block_on(py, runner.probe(&command.inner))
 }
 
 fn runner_start<R: ProcessRunner + Sync + ?Sized>(
@@ -71,11 +67,9 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyRunningProcess> {
-    // `start()` is async, so `block_on_interruptible` provides the runtime
-    // context while it (and its pump spawn) is polled — no `enter()` needed.
-    block_on_interruptible(py, runner.start(&command.inner))?
-        .map(PyRunningProcess::from)
-        .map_err(map_err)
+    // `start()` is async, so `block_on` provides the runtime context while it
+    // (and its pump spawn) is polled — no `enter()` needed.
+    block_on(py, runner.start(&command.inner)).map(PyRunningProcess::from)
 }
 
 // Async run verbs over an owned `Arc<R>` so the future can hold the runner with
@@ -141,6 +135,107 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
     })
 }
 
+/// Emit a runner pyclass's `#[pymethods]` block: the six sync + six async run-verb
+/// forwarders (every runner delegates these to the generic `runner_*` helpers
+/// over its `self.inner`), spliced together with the type's own methods. PyO3's
+/// `multiple-pymethods` is off, so a pyclass may have only ONE `#[pymethods]`
+/// impl — `$unique` captures the constructor / builders / `__repr__` as a token
+/// tree (attributes like `#[new]` / `#[staticmethod]` included) and is emitted in
+/// the same block as the shared verbs. This is the single source of truth for the
+/// run-verb surface across all four runners.
+macro_rules! runner_pymethods {
+    ($ty:ty { $($unique:tt)* }) => {
+        #[pymethods]
+        impl $ty {
+            $($unique)*
+
+            /// Run a command and capture output (a non-zero exit is data).
+            fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
+                runner_output(py, &*self.inner, command)
+            }
+
+            /// Run a command and capture raw-bytes stdout.
+            fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
+                runner_output_bytes(py, &*self.inner, command)
+            }
+
+            /// Require a zero exit and return trimmed stdout.
+            fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
+                runner_run(py, &*self.inner, command)
+            }
+
+            /// The command's exit code.
+            fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
+                runner_exit_code(py, &*self.inner, command)
+            }
+
+            /// Read a predicate command's exit code as a bool.
+            fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
+                runner_probe(py, &*self.inner, command)
+            }
+
+            /// Start a command and return a `RunningProcess`.
+            fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
+                runner_start(py, &*self.inner, command)
+            }
+
+            /// Async counterpart of `output()`.
+            fn aoutput<'py>(
+                &self,
+                py: Python<'py>,
+                command: &PyCommand,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                runner_aoutput(py, self.inner.clone(), command)
+            }
+
+            /// Async counterpart of `output_bytes()`.
+            fn aoutput_bytes<'py>(
+                &self,
+                py: Python<'py>,
+                command: &PyCommand,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                runner_aoutput_bytes(py, self.inner.clone(), command)
+            }
+
+            /// Async counterpart of `run()`.
+            fn arun<'py>(
+                &self,
+                py: Python<'py>,
+                command: &PyCommand,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                runner_arun(py, self.inner.clone(), command)
+            }
+
+            /// Async counterpart of `exit_code()`.
+            fn aexit_code<'py>(
+                &self,
+                py: Python<'py>,
+                command: &PyCommand,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                runner_aexit_code(py, self.inner.clone(), command)
+            }
+
+            /// Async counterpart of `probe()`.
+            fn aprobe<'py>(
+                &self,
+                py: Python<'py>,
+                command: &PyCommand,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                runner_aprobe(py, self.inner.clone(), command)
+            }
+
+            /// Async counterpart of `start()`.
+            fn astart<'py>(
+                &self,
+                py: Python<'py>,
+                command: &PyCommand,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                runner_astart(py, self.inner.clone(), command)
+            }
+        }
+    };
+}
+
 /// The real process runner. Inject it where you'd otherwise call `Command`
 /// verbs directly, so the same code can take a `ScriptedRunner` under test.
 #[pyclass(name = "Runner", module = "processkit")]
@@ -148,8 +243,7 @@ pub(crate) struct PyRunner {
     inner: Arc<JobRunner>,
 }
 
-#[pymethods]
-impl PyRunner {
+runner_pymethods!(PyRunner {
     #[new]
     fn new() -> Self {
         Self {
@@ -157,74 +251,10 @@ impl PyRunner {
         }
     }
 
-    /// Run a command and capture output (a non-zero exit is data).
-    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &*self.inner, command)
-    }
-
-    /// Run a command and capture raw-bytes stdout.
-    fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
-        runner_output_bytes(py, &*self.inner, command)
-    }
-
-    /// Require a zero exit and return trimmed stdout.
-    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &*self.inner, command)
-    }
-
-    /// The command's exit code.
-    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &*self.inner, command)
-    }
-
-    /// Read a predicate command's exit code as a bool.
-    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &*self.inner, command)
-    }
-
-    /// Start a command and return a `RunningProcess`.
-    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &*self.inner, command)
-    }
-
-    /// Async counterpart of `output()`.
-    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `output_bytes()`.
-    fn aoutput_bytes<'py>(
-        &self,
-        py: Python<'py>,
-        command: &PyCommand,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput_bytes(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `run()`.
-    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `exit_code()`.
-    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `probe()`.
-    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `start()`.
-    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_astart(py, self.inner.clone(), command)
-    }
-
     fn __repr__(&self) -> String {
         "Runner()".to_string()
     }
-}
+});
 
 /// A scripted test double for a `Runner`: configure canned replies for argv
 /// prefixes, then run commands through it without spawning real processes. The
@@ -259,8 +289,7 @@ impl PyScriptedRunner {
     }
 }
 
-#[pymethods]
-impl PyScriptedRunner {
+runner_pymethods!(PyScriptedRunner {
     #[new]
     fn new() -> Self {
         Self {
@@ -280,68 +309,10 @@ impl PyScriptedRunner {
         self.reconfigure(move |runner| runner.fallback(reply))
     }
 
-    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &*self.inner, command)
-    }
-
-    fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
-        runner_output_bytes(py, &*self.inner, command)
-    }
-
-    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &*self.inner, command)
-    }
-
-    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &*self.inner, command)
-    }
-
-    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &*self.inner, command)
-    }
-
-    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &*self.inner, command)
-    }
-
-    /// Async counterpart of `output()`.
-    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `output_bytes()`.
-    fn aoutput_bytes<'py>(
-        &self,
-        py: Python<'py>,
-        command: &PyCommand,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput_bytes(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `run()`.
-    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `exit_code()`.
-    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `probe()`.
-    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `start()`.
-    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_astart(py, self.inner.clone(), command)
-    }
-
     fn __repr__(&self) -> String {
         "ScriptedRunner()".to_string()
     }
-}
+});
 
 /// A canned reply for a `ScriptedRunner` rule.
 #[pyclass(name = "Reply", module = "processkit")]
@@ -420,8 +391,7 @@ pub(crate) struct PyRecordReplayRunner {
     inner: Arc<PkRecordReplayRunner<JobRunner>>,
 }
 
-#[pymethods]
-impl PyRecordReplayRunner {
+runner_pymethods!(PyRecordReplayRunner {
     /// Record real runs (via the real runner) to a cassette at `path`; call
     /// `save()` to write it to disk.
     #[staticmethod]
@@ -446,68 +416,10 @@ impl PyRecordReplayRunner {
         self.inner.save().map_err(map_err)
     }
 
-    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &*self.inner, command)
-    }
-
-    fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
-        runner_output_bytes(py, &*self.inner, command)
-    }
-
-    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &*self.inner, command)
-    }
-
-    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &*self.inner, command)
-    }
-
-    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &*self.inner, command)
-    }
-
-    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &*self.inner, command)
-    }
-
-    /// Async counterpart of `output()`.
-    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `output_bytes()`.
-    fn aoutput_bytes<'py>(
-        &self,
-        py: Python<'py>,
-        command: &PyCommand,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput_bytes(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `run()`.
-    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `exit_code()`.
-    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `probe()`.
-    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `start()`.
-    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_astart(py, self.inner.clone(), command)
-    }
-
     fn __repr__(&self) -> String {
         "RecordReplayRunner()".to_string()
     }
-}
+});
 
 /// One call captured by a `RecordingRunner`: the program, args, working
 /// directory, environment overrides, and whether stdin was supplied. The values
@@ -585,72 +497,13 @@ pub(crate) struct PyRecordingRunner {
     inner: Arc<PkRecordingRunner<PkScriptedRunner>>,
 }
 
-#[pymethods]
-impl PyRecordingRunner {
+runner_pymethods!(PyRecordingRunner {
     /// A recorder whose inner runner replies with `reply` to everything.
     #[staticmethod]
     fn replying(reply: &PyReply) -> Self {
         Self {
             inner: Arc::new(PkRecordingRunner::replying(reply.inner.clone())),
         }
-    }
-
-    fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-        runner_output(py, &*self.inner, command)
-    }
-
-    fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
-        runner_output_bytes(py, &*self.inner, command)
-    }
-
-    fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-        runner_run(py, &*self.inner, command)
-    }
-
-    fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-        runner_exit_code(py, &*self.inner, command)
-    }
-
-    fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-        runner_probe(py, &*self.inner, command)
-    }
-
-    fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        runner_start(py, &*self.inner, command)
-    }
-
-    /// Async counterpart of `output()`.
-    fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `output_bytes()`.
-    fn aoutput_bytes<'py>(
-        &self,
-        py: Python<'py>,
-        command: &PyCommand,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput_bytes(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `run()`.
-    fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `exit_code()`.
-    fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `probe()`.
-    fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.inner.clone(), command)
-    }
-
-    /// Async counterpart of `start()`.
-    fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_astart(py, self.inner.clone(), command)
     }
 
     /// A snapshot of every recorded invocation, in call order.
@@ -679,4 +532,4 @@ impl PyRecordingRunner {
     fn __repr__(&self) -> String {
         format!("RecordingRunner(calls={})", self.inner.calls().len())
     }
-}
+});

@@ -14,10 +14,9 @@ use crate::convert::{
     nonnegative_duration, parse_encoding, parse_overflow_mode, parse_signal, parse_stdio_mode,
     positive_duration,
 };
-use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
-use crate::runtime::{block_on_interruptible, drive_async};
+use crate::runtime::{block_on, drive_async};
 
 /// A command builder. Builder methods return a new `Command`, so a configured
 /// command is reusable and chains read left to right.
@@ -295,36 +294,32 @@ impl PyCommand {
     /// Run to completion and capture output. A non-zero exit is data, not an
     /// error — inspect `code` / `is_success` on the result.
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
-        block_on_interruptible(py, self.inner.output_string())?
-            .map(PyProcessResult::from)
-            .map_err(map_err)
+        block_on(py, self.inner.output_string()).map(PyProcessResult::from)
     }
 
     /// Run to completion and capture **raw bytes** stdout (stderr stays decoded
     /// text). Use for binary output that isn't valid UTF-8. A non-zero exit is
     /// data, returned as a `BytesResult`.
     fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
-        block_on_interruptible(py, self.inner.output_bytes())?
-            .map(PyBytesResult::from)
-            .map_err(map_err)
+        block_on(py, self.inner.output_bytes()).map(PyBytesResult::from)
     }
 
     /// Require a zero exit and return stdout, trailing whitespace trimmed.
     /// Raises `NonZeroExit` (or `Timeout` / `Signalled`) otherwise.
     fn run(&self, py: Python<'_>) -> PyResult<String> {
-        block_on_interruptible(py, self.inner.run())?.map_err(map_err)
+        block_on(py, self.inner.run())
     }
 
     /// The exit code; a timeout / signal-kill raises rather than returning a
     /// sentinel.
     fn exit_code(&self, py: Python<'_>) -> PyResult<i32> {
-        block_on_interruptible(py, self.inner.exit_code())?.map_err(map_err)
+        block_on(py, self.inner.exit_code())
     }
 
     /// Run a predicate command and read its exit code as a bool: `0` → `True`,
     /// `1` → `False`, anything else raises.
     fn probe(&self, py: Python<'_>) -> PyResult<bool> {
-        block_on_interruptible(py, self.inner.probe())?.map_err(map_err)
+        block_on(py, self.inner.probe())
     }
 
     /// Async counterpart of `output()`. Awaitable under asyncio; cancelling the
@@ -367,9 +362,7 @@ impl PyCommand {
     /// interactive I/O. The process runs concurrently — this returns as soon as
     /// it has spawned, not when it finishes. Sync counterpart of `astart()`.
     fn start(&self, py: Python<'_>) -> PyResult<PyRunningProcess> {
-        block_on_interruptible(py, self.inner.start())?
-            .map(PyRunningProcess::from)
-            .map_err(map_err)
+        block_on(py, self.inner.start()).map(PyRunningProcess::from)
     }
 
     /// Start the command and return a `RunningProcess` for streaming and
@@ -435,32 +428,28 @@ impl PyPipeline {
 
     /// Run the pipeline and capture the last stage's output (sync).
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
-        block_on_interruptible(py, self.inner.output_string())?
-            .map(PyProcessResult::from)
-            .map_err(map_err)
+        block_on(py, self.inner.output_string()).map(PyProcessResult::from)
     }
 
     /// Run the pipeline and capture the last stage's **raw bytes** stdout (sync);
     /// for a pipeline ending in a binary producer (e.g. `... | gzip`).
     fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
-        block_on_interruptible(py, self.inner.output_bytes())?
-            .map(PyBytesResult::from)
-            .map_err(map_err)
+        block_on(py, self.inner.output_bytes()).map(PyBytesResult::from)
     }
 
     /// Require success and return the last stage's trimmed stdout (sync).
     fn run(&self, py: Python<'_>) -> PyResult<String> {
-        block_on_interruptible(py, self.inner.run())?.map_err(map_err)
+        block_on(py, self.inner.run())
     }
 
     /// The pipeline's exit code (sync).
     fn exit_code(&self, py: Python<'_>) -> PyResult<i32> {
-        block_on_interruptible(py, self.inner.exit_code())?.map_err(map_err)
+        block_on(py, self.inner.exit_code())
     }
 
     /// Run a predicate pipeline and read its exit code as a bool (sync).
     fn probe(&self, py: Python<'_>) -> PyResult<bool> {
-        block_on_interruptible(py, self.inner.probe())?.map_err(map_err)
+        block_on(py, self.inner.probe())
     }
 
     /// Async counterpart of `output()`.

@@ -15,7 +15,7 @@ asyncio-native form.
 [![CodeQL](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-<!-- Once published, add: [![PyPI](https://img.shields.io/pypi/v/processkit.svg)](https://pypi.org/project/processkit/) -->
+<!-- Once published, add: [![PyPI](https://img.shields.io/pypi/v/processkit-py.svg)](https://pypi.org/project/processkit-py/) -->
 
 ```python
 from processkit import Command
@@ -83,7 +83,7 @@ exposes a typed, asyncio-native surface with context-manager teardown.
 ## Install
 
 ```bash
-pip install processkit
+pip install processkit-py   # the import name is `processkit`
 ```
 
 Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on
@@ -410,8 +410,8 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 ## Building from source
 
-The first release to PyPI is pending (`pip install processkit` is the supported
-path once published). Until then — or on a platform without a prebuilt wheel
+The first release to PyPI is pending (`pip install processkit-py` is the supported
+path once published; the import name is `processkit`). Until then — or on a platform without a prebuilt wheel
 (Windows on ARM, 32-bit) — build from source, which needs a
 [Rust toolchain](https://rustup.rs/):
 

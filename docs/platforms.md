@@ -73,6 +73,6 @@ Prebuilt wheels are published for:
 
 Each row ships both the abi3 GIL wheel (CPython 3.10+) and the free-threaded
 cp314t wheel. Not currently prebuilt: Windows on ARM and 32-bit targets (incl.
-32-bit musl, which has no Rust toolchain). On those, `pip install processkit`
+32-bit musl, which has no Rust toolchain). On those, `pip install processkit-py`
 builds from the sdist, which needs a [Rust toolchain](https://rustup.rs/). An
 sdist is published alongside the wheels for source builds anywhere.

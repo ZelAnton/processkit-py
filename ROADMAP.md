@@ -75,15 +75,19 @@ asyncio.run(main())
 
 ## Naming & publishing
 
-The project ships under the **same name as the Rust core** — for a thin binding,
-discoverability beats an independent brand. Someone who knows the crate must be
-able to guess `pip install processkit` and land exactly right.
+The project keeps the **same import name as the Rust core** — for a thin binding,
+discoverability beats an independent brand. The bare `processkit` PyPI name turned
+out to be already taken, so the *distribution* is published as `processkit-py`
+while the *import* name stays `processkit`.
 
-- **PyPI distribution + import name:** `processkit`
-  (`pip install processkit` → `import processkit`). The normalized name is
-  verified free on PyPI. A dormant `process-kit` (hyphenated, a single 0.1.0
-  release from 2014, project actually named `pkit`) is a *different* normalized
-  name and does not block it — only a faint namesake.
+- **PyPI distribution name:** `processkit-py` — `pip install processkit-py`. The
+  bare `processkit` is taken on PyPI by an unrelated project, so the binding takes
+  the `-py` form (matching the GitHub repo). A hyphen is not a valid Python
+  identifier anyway, so the distribution and import names necessarily differ.
+- **Import name:** `processkit` (`import processkit`), unchanged — the package
+  directory, the `module-name`, and every example. `pip install processkit-py`
+  then `import processkit` is a common, well-understood split (cf. `beautifulsoup4`
+  → `bs4`, `scikit-learn` → `sklearn`).
 - **crates.io:** the public Rust core stays `processkit` (already published).
 - **GitHub repository:** `processkit-py`, sitting beside `ProcessKit-rs` — the
   `-rs` / `-py` suffix pair signals "Rust core / Python bindings" at a glance.

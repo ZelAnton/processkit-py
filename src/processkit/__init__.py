@@ -61,7 +61,10 @@ from ._runner import ProcessRunner
 from ._types import SignalName, StrPath
 
 try:
-    __version__ = version("processkit")
+    # Distribution name is `processkit-py` (the bare `processkit` is taken on
+    # PyPI); the import name stays `processkit`. The metadata lookup keys off the
+    # distribution name.
+    __version__ = version("processkit-py")
 except PackageNotFoundError:  # not installed (e.g. running from a source tree)
     __version__ = "unknown"
 

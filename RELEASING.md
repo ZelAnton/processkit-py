@@ -13,7 +13,8 @@ provenance attestations.
    On <https://pypi.org/manage/account/publishing/> add a GitHub publisher. For
    the first release the project does not exist yet, so use the **pending
    publisher** form there:
-   - **PyPI Project Name:** `processkit`.
+   - **PyPI Project Name:** `processkit-py` (the bare `processkit` is taken on
+     PyPI; the import name is still `processkit`).
    - **Owner / Repository:** this repo.
    - **Workflow name:** `release.yml` (the filename, exactly).
    - **Environment name:** **leave blank.** The `publish` job sets no GitHub

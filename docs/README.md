@@ -58,7 +58,7 @@ record/replay are all present in every published wheel. There is nothing to opt
 into at install time:
 
 ```bash
-pip install processkit   # supported path once the first PyPI release lands
+pip install processkit-py   # supported path once the first PyPI release lands (import name: processkit)
 ```
 
 Until then, build from source (`uv run maturin develop`) — see the

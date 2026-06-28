@@ -2,8 +2,11 @@
 requires = ["maturin>=1.14.1,<2.0"]
 build-backend = "maturin"
 
+# Distribution (PyPI) name is `processkit-py` — the bare `processkit` is already
+# taken on PyPI. The import name stays `processkit` (the package dir + the
+# module-name below): `pip install processkit-py` -> `import processkit`.
 [project]
-name = "processkit"
+name = "processkit-py"
 version = "1.0.0"
 description = "Python bindings to the processkit Rust crate — asyncio-native, no-orphan process containment"
 readme = "README.md"

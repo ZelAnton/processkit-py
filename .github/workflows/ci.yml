@@ -134,8 +134,13 @@ jobs:
         with:
           enable-cache: true
       # Verify the abi3 wheel (cp310+) builds on every target OS, not just Linux —
-      # a one-OS build would not catch a Windows/macOS packaging break.
-      - run: uv run maturin build --release --out dist
+      # a one-OS build would not catch a Windows/macOS packaging break. A debug
+      # build (no --release) exercises the same abi3 tag / cdylib link / packaging
+      # path much faster. The optimized (LTO) wheels are built + smoke-tested by
+      # cibuildwheel: musl x86_64 here (build-musllinux), and the FULL matrix
+      # (every OS/arch, incl. Windows/macOS) pre-pivot in the release flow — so a
+      # release-profile-only break can't reach PyPI, it just surfaces at release.
+      - run: uv run maturin build --out dist
       # The sdist is platform-independent; build it once.
       - if: matrix.os == 'ubuntu-latest'
         run: uv run maturin sdist --out dist
@@ -187,10 +192,16 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           enable-cache: true
-      - run: uv run --with pip-audit pip-audit --skip-editable
+      # Audit the locked dependency tree. Exporting the lockfile (--no-emit-project
+      # drops the editable binding itself) lets pip-audit scan the deps without
+      # building the Rust extension — so no rust-toolchain / compile step is needed.
+      # The project has no runtime deps, so the dev groups ARE the audit surface:
+      # --all-groups makes that explicit (not reliant on uv's default-includes-dev),
+      # and --locked pins the scan to the committed uv.lock (failing loudly if stale).
+      - run: >-
+          uv export --no-emit-project --all-groups --locked
+          --format requirements-txt --output-file requirements-audit.txt
+      - run: uvx 'pip-audit>=2,<3' -r requirements-audit.txt

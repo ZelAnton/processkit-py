@@ -105,8 +105,14 @@ skip = "*-musllinux_i686 *-win32"
 test-command = "python {project}/scripts/smoke.py"
 
 [tool.cibuildwheel.linux]
-# The manylinux build container ships no Rust toolchain — install a current
-# stable (>= the crate's MSRV) before building. On Windows/macOS the runner's
-# own toolchain (dtolnay/rust-toolchain) is used instead.
-before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable"
+# The manylinux/musllinux build containers ship no Rust toolchain — install a
+# current stable (>= the crate's MSRV) before building. On Windows/macOS the
+# runner's own toolchain (dtolnay/rust-toolchain) is used instead.
+# The `--component` flags match rust-toolchain.toml so the fresh toolchain
+# already satisfies it: otherwise rustup tries to add those components
+# mid-build (when maturin first runs cargo), which has intermittently raced into a
+# `bin/cargo-fmt` install conflict in the musl container. Installing them once, up
+# front on a clean toolchain, closes that window (the build itself never runs
+# fmt/clippy).
+before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt --component clippy"
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }

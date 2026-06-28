@@ -442,7 +442,7 @@ jobs:
         with:
           enable-cache: true
       - name: Check distribution metadata
-        run: uvx twine check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
+        run: uvx 'twine>=6,<7' check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
 
       # === PIVOT: the single irreversible step ===
       # PyPI Trusted Publishing (OIDC) by default: with NO PYPI_API_TOKEN secret set,

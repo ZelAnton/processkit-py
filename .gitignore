@@ -25,6 +25,9 @@ htmlcov/
 # Release pipeline scratch file — written by .github/workflows/release.yml
 release-notes.md
 
+# CI scratch — exported lockfile the pip-audit job (.github/workflows/ci.yml) scans.
+requirements-audit.txt
+
 ## -------
 ## Editors / IDEs
 ## -------

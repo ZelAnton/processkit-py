@@ -15,10 +15,6 @@ from typing import Literal, final
 # annotate with them; imported here for the signatures below.
 from ._types import SignalName, StrPath
 
-# Why a supervised run ended (`SupervisionOutcome.stopped`). "unknown" is a
-# forward-compat fallback that the pinned crate version does not emit.
-StopReason = Literal["policy_satisfied", "predicate", "restarts_exhausted", "unknown"]
-
 @final
 class ProcessResult:
     """The captured result of a finished run. A non-zero exit, a timeout, and a
@@ -232,7 +228,13 @@ class RunningProcess:
     iterator / handle they return is what you await. ``wait`` / ``finish`` /
     ``output`` / ``output_bytes`` / ``profile`` / ``shutdown`` are coroutines that
     **consume** the handle — afterwards it is spent (``pid`` and the other
-    getters return ``None``, and the consuming verbs raise)."""
+    getters return ``None``, and the consuming verbs raise).
+
+    A handle from the synchronous ``Command.start()`` / ``Runner.start()`` has no
+    synchronous result-consumer: every consuming verb is a coroutine, so from sync
+    code use it to spawn a scoped background child you watch via its live
+    properties and tear down with a ``with`` block. For a synchronous *result*, use
+    ``Command.output()`` / ``run()``; to await one, use ``astart()``."""
 
     @property
     def pid(self) -> int | None: ...
@@ -315,7 +317,10 @@ class ProcessGroup:
         ``max_memory`` is **bytes** (whole tree), ``max_processes`` a count, and
         ``cpu_quota`` a fraction of a **single** core (``0.5`` = half a core,
         ``2.0`` = two cores) — not a share of all cores. ``shutdown_grace`` is the
-        seconds to wait after signalling before escalating to a hard kill."""
+        seconds to wait after signalling before escalating to a hard kill;
+        ``escalate_to_kill`` (default on) is whether that hard kill follows once
+        the grace elapses — set ``False`` to leave any survivors instead of
+        force-killing them."""
 
     def __enter__(self) -> ProcessGroup: ...
     def __exit__(
@@ -353,8 +358,13 @@ class SupervisionOutcome:
     def final_result(self) -> ProcessResult: ...
     @property
     def restarts(self) -> int: ...
+    # Why the run ended. "unknown" is a forward-compat fallback the pinned crate
+    # version does not emit. (Inline like the other read-only Literals —
+    # `OutputEvent.stream`, `ProcessGroup.mechanism` — rather than a named export.)
     @property
-    def stopped(self) -> StopReason: ...
+    def stopped(
+        self,
+    ) -> Literal["policy_satisfied", "predicate", "restarts_exhausted", "unknown"]: ...
     @property
     def storm_pauses(self) -> int: ...
     def __repr__(self) -> str: ...

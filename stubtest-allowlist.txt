@@ -24,12 +24,11 @@ processkit._processkit.Supervisor.__init__
 processkit._processkit.Supervisor.__new__
 
 # --- type aliases -----------------------------------------------------------
-# StopReason is stub-only (annotation for the compiled module; not a runtime
-# attribute). SignalName is an exported runtime alias in `_types`, but stubtest
-# flags a module-level `Literal` type-alias ("is not a Union") instead of seeing
-# the runtime object — a known false positive. (StrPath, a plain union alias, is
-# not flagged, so no entry.)
-processkit._processkit.StopReason
+# SignalName is an exported runtime alias in `_types`, but stubtest flags a
+# module-level `Literal` type-alias ("is not a Union") instead of seeing the
+# runtime object — a known false positive. (StrPath, a plain union alias, is not
+# flagged, so no entry. Read-only Literals like `SupervisionOutcome.stopped` are
+# inlined at the return type, so they need no alias and no entry.)
 processkit._types.SignalName
 
 # --- compiled-module __all__ ------------------------------------------------

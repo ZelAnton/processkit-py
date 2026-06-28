@@ -68,8 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clauses catch them. The data-carrying ones expose structured fields — e.g.
   `NonZeroExit.code` / `.stdout` / `.stderr` / `.program`,
   `Timeout.timeout_seconds`, `Signalled.signal`, `OutputTooLarge.max_bytes` /
-  `.total_bytes`, `Unsupported.operation`, `ResourceLimit.message` — so a failure
-  can be inspected programmatically, not just read as a message.
+  `.total_bytes`, `Unsupported.operation` — so a failure can be inspected
+  programmatically, not just read as a message. (`ResourceLimit` carries no extra
+  field; its reason is `str(exc)`.)
 - Blocking synchronous calls are interruptible: `Ctrl+C` (SIGINT) raises
   `KeyboardInterrupt` promptly and tears down the run's process tree, instead of
   hanging until the child exits.
@@ -119,7 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results returned are genuine `ProcessResult` / `RunningProcess` objects. The
   injected runner is typed by the `ProcessRunner` `typing.Protocol`, which
   `Runner` / `ScriptedRunner` / `RecordReplayRunner` / `RecordingRunner` all
-  satisfy structurally.
+  satisfy structurally. The test doubles (`ScriptedRunner`, `RecordReplayRunner`,
+  `RecordingRunner`) plus `Reply` and `Invocation` live in the **`processkit.testing`**
+  submodule; `Runner` and `ProcessRunner` are top-level (production).
 - A full [documentation guide set](docs/README.md): a task-oriented
   [cookbook](docs/cookbook.md) plus deep guides for
   [running commands](docs/commands.md), [process groups](docs/process-groups.md),
@@ -183,6 +186,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed the `OutputTooLarge` overflow fields `line_limit` / `byte_limit` →
   **`max_lines`** / **`max_bytes`**, so the caps reported on overflow match the
   `output_limit(max_bytes=…, max_lines=…)` kwargs that set them.
+- Moved the runner test doubles — `ScriptedRunner`, `RecordReplayRunner`,
+  `RecordingRunner`, the `Reply` builder, and the `Invocation` record — into a new
+  **`processkit.testing`** submodule (mirroring the crate's `processkit::testing`
+  split), so the top-level `processkit` namespace is the production surface and the
+  test scaffolding is one explicit import away (`from processkit.testing import
+  ScriptedRunner`). `Runner` and the `ProcessRunner` protocol stay top-level.
 - `ProcessResult.combined` is now a **property** (was `combined()`), matching the
   other read accessors (`stdout`, `code`, …).
 - Renamed `Outcome.is_success` / `Finished.is_success` → **`exited_zero`**. These
@@ -204,6 +213,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CliClient.run_unit()` / `arun_unit()`. The success-only `-> None` verb existed
   nowhere else on the surface; use `run()` / `arun()` and ignore the returned
   stdout for the same "run, raise on failure" behavior.
+- `ResourceLimit.message`. It duplicated `str(exc)` — idiomatic Python 3 exceptions
+  carry no separate `.message` attribute. Read the reason via `str(exc)`.
 
 ### Fixed
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no

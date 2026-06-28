@@ -378,10 +378,12 @@ instead — `CliClient` always uses the real runner.
 
 ### Testing without spawning processes
 
-Write your code against a runner, then inject a `ScriptedRunner` in tests:
+Write your code against a runner, then inject a `ScriptedRunner` in tests (the
+test doubles live in the `processkit.testing` submodule):
 
 ```python
-from processkit import Command, Reply, ScriptedRunner
+from processkit import Command
+from processkit.testing import Reply, ScriptedRunner
 
 scripted = ScriptedRunner()
 scripted.on(["git", "rev-parse"], Reply.ok("deadbeef"))

@@ -301,7 +301,7 @@ capturing verbs do not. Each carries **structured fields**, not just a message:
 | `ProcessNotFound` | the program couldn't be located / spawned | `program` |
 | `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file) | `program` |
 | `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `max_lines`, `max_bytes`, `total_lines`, `total_bytes` |
-| `ResourceLimit` | a memory / process / CPU cap was invalid or couldn't be enforced | `message` |
+| `ResourceLimit` | a memory / process / CPU cap was invalid or couldn't be enforced | — (reason is `str(exc)`) |
 | `Unsupported` | the platform can't perform the requested operation | `operation` |
 
 ```python

@@ -18,17 +18,19 @@ import pytest
 from processkit import (
     BytesResult,
     Command,
-    Invocation,
     NonZeroExit,
     ProcessError,
     ProcessRunner,
+    Runner,
+    Signalled,
+    Timeout,
+)
+from processkit.testing import (
+    Invocation,
     RecordingRunner,
     RecordReplayRunner,
     Reply,
-    Runner,
     ScriptedRunner,
-    Signalled,
-    Timeout,
 )
 
 PY = sys.executable

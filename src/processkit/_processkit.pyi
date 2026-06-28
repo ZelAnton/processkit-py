@@ -601,9 +601,8 @@ class PermissionDenied(ProcessError, PermissionError):
 
 class ResourceLimit(ProcessError):
     """A resource limit (memory / processes / CPU) was invalid or could not be
-    enforced by the active containment mechanism."""
-
-    message: str
+    enforced by the active containment mechanism. The reason is the exception
+    message (``str(exc)``); it carries no extra structured field."""
 
 class Unsupported(ProcessError):
     """The operation is not supported on this platform."""

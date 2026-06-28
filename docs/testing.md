@@ -12,6 +12,12 @@ spawned. The objects that come
 back are genuine `ProcessResult` / `RunningProcess` values, so the code under
 test can't tell the difference.
 
+> The doubles — `ScriptedRunner`, `RecordReplayRunner`, `RecordingRunner`, the
+> `Reply` builder, and the `Invocation` record — live in the **`processkit.testing`**
+> submodule (mirroring the crate's own `processkit::testing` split). `Runner` and
+> the `ProcessRunner` protocol stay on the top-level `processkit` — they are
+> production code, not test scaffolding.
+
 - [The runner seam](#the-runner-seam)
 - [Scripting replies: ScriptedRunner](#scripting-replies-scriptedrunner)
 - [Scripted streaming: a live handle, no child](#scripted-streaming-a-live-handle-no-child)
@@ -67,7 +73,8 @@ command you teach it. Match rules with `.on(prefix, reply)`; add an optional
 `.fallback(reply)` for everything else.
 
 ```python
-from processkit import Command, Reply, ScriptedRunner
+from processkit import Command
+from processkit.testing import Reply, ScriptedRunner
 
 def current_branch(runner):
     return runner.run(Command("git", ["branch", "--show-current"]))
@@ -109,7 +116,8 @@ readiness-gate orchestration hermetically:
 
 ```python
 import asyncio
-from processkit import Command, Reply, ScriptedRunner
+from processkit import Command
+from processkit.testing import Reply, ScriptedRunner
 
 async def becomes_ready(runner):
     proc = runner.start(Command("server", ["serve"]))
@@ -139,7 +147,8 @@ once, then replay them offline — fast, deterministic, no subprocess in CI. It
 shares the `Runner` verb surface, so it drops into the same seam.
 
 ```python
-from processkit import Command, RecordReplayRunner
+from processkit import Command
+from processkit.testing import RecordReplayRunner
 
 CMD = Command("python", ["-c", "import random; print(random.random())"])
 
@@ -187,7 +196,8 @@ such constraint.
 not just react to a reply. It shares the `Runner` verb surface.
 
 ```python
-from processkit import Command, RecordingRunner, Reply
+from processkit import Command
+from processkit.testing import RecordingRunner, Reply
 
 
 def deploy(runner) -> None:

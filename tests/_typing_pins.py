@@ -25,15 +25,12 @@ if TYPE_CHECKING:
         CliClient,
         Command,
         Finished,
-        Invocation,
         NonZeroExit,
         Outcome,
         Pipeline,
         ProcessError,
         ProcessNotFound,
         ProcessResult,
-        RecordingRunner,
-        ResourceLimit,
         Runner,
         RunningProcess,
         Signalled,
@@ -45,6 +42,7 @@ if TYPE_CHECKING:
         output_all,
         output_all_bytes,
     )
+    from processkit.testing import Invocation, RecordingRunner
 
     def _command_verb_return_types(cmd: Command) -> None:
         assert_type(cmd.output(), ProcessResult)
@@ -111,11 +109,9 @@ if TYPE_CHECKING:
         to: Timeout,
         sg: Signalled,
         nf: ProcessNotFound,
-        rl: ResourceLimit,
     ) -> None:
         assert_type(nz.code, int)
         assert_type(nz.stdout, str)
         assert_type(to.timeout_seconds, float)
         assert_type(sg.signal, int | None)
         assert_type(nf.program, str)
-        assert_type(rl.message, str)

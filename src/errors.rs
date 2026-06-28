@@ -190,9 +190,8 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             E::Unsupported { operation } => {
                 let _ = value.setattr("operation", operation.as_str());
             }
-            E::ResourceLimit { message } => {
-                let _ = value.setattr("message", message.as_str());
-            }
+            // `ResourceLimit` carries no structured field: its message is the whole
+            // payload, already available via `str(exc)` (no redundant `.message`).
             _ => {}
         }
         err

@@ -18,7 +18,18 @@ import types
 import pytest
 
 import processkit
+import processkit.testing
 from processkit import _processkit
+
+# The runner test doubles live in the `processkit.testing` submodule, not the
+# top-level surface; both re-export from the same compiled `_processkit`.
+_TESTING_DOUBLES = {
+    "Invocation",
+    "RecordReplayRunner",
+    "RecordingRunner",
+    "Reply",
+    "ScriptedRunner",
+}
 
 
 def _public_names(obj: object) -> set[str]:
@@ -90,8 +101,25 @@ def test_all_is_sorted_unique_and_importable() -> None:
 
 
 def test_every_compiled_export_is_reexported() -> None:
-    missing = _public_names(_processkit) - set(processkit.__all__)
-    assert not missing, f"compiled names not re-exported in processkit.__all__: {sorted(missing)}"
+    # Every compiled public name must surface either on the top-level package or
+    # on the `processkit.testing` submodule (the test doubles).
+    reexported = set(processkit.__all__) | set(processkit.testing.__all__)
+    missing = _public_names(_processkit) - reexported
+    assert not missing, f"compiled names not re-exported: {sorted(missing)}"
+
+
+def test_testing_submodule_exports_the_doubles_only() -> None:
+    # The testing submodule exposes exactly the runner doubles, sorted/unique and
+    # importable, and they are absent from the top-level surface (clean split).
+    testing = processkit.testing
+    assert set(testing.__all__) == _TESTING_DOUBLES
+    assert testing.__all__ == sorted(testing.__all__)
+    assert len(testing.__all__) == len(set(testing.__all__))
+    for name in testing.__all__:
+        assert hasattr(testing, name), f"testing.__all__ lists {name!r} but it is not importable"
+    assert _TESTING_DOUBLES.isdisjoint(set(processkit.__all__)), (
+        "test doubles must not be on the top-level surface"
+    )
 
 
 def test_every_compiled_class_is_declared_in_the_stub() -> None:

@@ -395,10 +395,12 @@ the stdlib raises for the same condition, so familiar `except` clauses work:
 
 ## Test code without spawning processes
 
-Write your code against a runner, then inject a `ScriptedRunner` in tests:
+Write your code against a runner, then inject a `ScriptedRunner` in tests. The
+doubles live in the `processkit.testing` submodule; `Runner` is top-level:
 
 ```python
-from processkit import Command, Reply, Runner, ScriptedRunner
+from processkit import Command, Runner
+from processkit.testing import Reply, ScriptedRunner
 
 def latest_commit(runner):
     return runner.run(Command("git", ["rev-parse", "HEAD"]))
@@ -420,7 +422,7 @@ To capture *real* tool output once and replay it deterministically offline, use
 `RecordReplayRunner` — both share the `Runner` verb surface:
 
 ```python
-from processkit import RecordReplayRunner
+from processkit.testing import RecordReplayRunner
 
 rec = RecordReplayRunner.record("cassette.json")   # records via the real runner
 recorded = latest_commit(rec)                       # spawns git once, captures it
@@ -434,7 +436,8 @@ To assert on *what* your code ran (not just its output), inject a
 `RecordingRunner` spy — it replies uniformly and records every call:
 
 ```python
-from processkit import Command, RecordingRunner, Reply
+from processkit import Command
+from processkit.testing import RecordingRunner, Reply
 
 def deploy(runner):
     runner.run(Command("git", ["push", "--tags"]))

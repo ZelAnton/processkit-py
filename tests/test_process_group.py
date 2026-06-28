@@ -123,7 +123,7 @@ def test_group_started_handle_works_as_context_manager() -> None:
 def test_invalid_resource_limit_raises() -> None:
     with pytest.raises(ResourceLimit) as excinfo:
         ProcessGroup(max_processes=0)
-    assert excinfo.value.message  # the structured field carries the reason
+    assert str(excinfo.value)  # the reason is the exception message (no .message attr)
     with pytest.raises(ResourceLimit):
         ProcessGroup(max_memory=0)
 

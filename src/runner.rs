@@ -259,7 +259,7 @@ runner_pymethods!(PyRunner {
 /// A scripted test double for a `Runner`: configure canned replies for argv
 /// prefixes, then run commands through it without spawning real processes. The
 /// results it returns are genuine `ProcessResult` / `RunningProcess` objects.
-#[pyclass(name = "ScriptedRunner", module = "processkit")]
+#[pyclass(name = "ScriptedRunner", module = "processkit.testing")]
 pub(crate) struct PyScriptedRunner {
     // `Arc` so the async run verbs can hold the runner across the await; builders
     // reconfigure it via `Arc::try_unwrap`, which requires no in-flight call.
@@ -315,7 +315,7 @@ runner_pymethods!(PyScriptedRunner {
 });
 
 /// A canned reply for a `ScriptedRunner` rule.
-#[pyclass(name = "Reply", module = "processkit")]
+#[pyclass(name = "Reply", module = "processkit.testing")]
 pub(crate) struct PyReply {
     inner: PkReply,
 }
@@ -386,7 +386,7 @@ impl PyReply {
 /// A runner that records real runs to a cassette file (`record`) and replays
 /// them deterministically without spawning (`replay`) — for tests that exercise
 /// real tools once, then run offline against the captured transcript.
-#[pyclass(name = "RecordReplayRunner", module = "processkit")]
+#[pyclass(name = "RecordReplayRunner", module = "processkit.testing")]
 pub(crate) struct PyRecordReplayRunner {
     inner: Arc<PkRecordReplayRunner<JobRunner>>,
 }
@@ -426,7 +426,7 @@ runner_pymethods!(PyRecordReplayRunner {
 /// are inspectable (this is your own test data) for assertions; the `repr` stays
 /// redacted (program, arg count, cwd, env names, has_stdin — never argv or env
 /// values) like `Command`'s.
-#[pyclass(name = "Invocation", module = "processkit")]
+#[pyclass(name = "Invocation", module = "processkit.testing")]
 pub(crate) struct PyInvocation {
     inner: Invocation,
 }
@@ -492,7 +492,7 @@ impl PyInvocation {
 /// A recording test double: replies to every command with a canned `Reply` and
 /// records each call, so a test can assert on *what* its code ran. Inspect the
 /// captured calls with `calls()` / `only_call()` (each an `Invocation`).
-#[pyclass(name = "RecordingRunner", module = "processkit")]
+#[pyclass(name = "RecordingRunner", module = "processkit.testing")]
 pub(crate) struct PyRecordingRunner {
     inner: Arc<PkRecordingRunner<PkScriptedRunner>>,
 }

@@ -104,7 +104,7 @@ decides what you get back. Each has an `a`-prefixed asyncio twin
 | the full outcome, exit code as data | `.output()` / `.output_bytes()` | `ProcessResult` / `BytesResult` — code, stdout, stderr, `timed_out`; never raises on a non-zero exit |
 | just the exit code | `.exit_code()` | `int` (a timed-out / killed run raises instead of inventing `-1`) |
 | a yes/no answer | `.probe()` | `bool` — exit 0 → `True`, 1 → `False`, anything else raises |
-| a live handle — streaming, stdin, probes | `.astart()` | `RunningProcess` |
+| a live handle — streaming, stdin, probes | `.start()` / `.astart()` | `RunningProcess` |
 
 The same vocabulary repeats on every layer (`Runner`, `CliClient`).
 *Deeper: [Running commands](docs/commands.md).*

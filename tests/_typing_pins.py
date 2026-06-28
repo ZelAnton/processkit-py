@@ -27,6 +27,8 @@ if TYPE_CHECKING:
         Finished,
         NonZeroExit,
         Outcome,
+        OutputTooLarge,
+        PermissionDenied,
         Pipeline,
         ProcessError,
         ProcessNotFound,
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
         SupervisionOutcome,
         Supervisor,
         Timeout,
+        Unsupported,
         output_all,
         output_all_bytes,
     )
@@ -109,9 +112,18 @@ if TYPE_CHECKING:
         to: Timeout,
         sg: Signalled,
         nf: ProcessNotFound,
+        pd: PermissionDenied,
+        otl: OutputTooLarge,
+        un: Unsupported,
     ) -> None:
         assert_type(nz.code, int)
         assert_type(nz.stdout, str)
         assert_type(to.timeout_seconds, float)
         assert_type(sg.signal, int | None)
         assert_type(nf.program, str)
+        assert_type(pd.program, str)
+        assert_type(otl.max_lines, int | None)
+        assert_type(otl.max_bytes, int | None)
+        assert_type(otl.total_lines, int)
+        assert_type(otl.total_bytes, int)
+        assert_type(un.operation, str)

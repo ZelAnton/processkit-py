@@ -79,7 +79,8 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the single-base exceptions, normalizing `__module__` to the
     // public package so reprs/tracebacks read `processkit.X` rather than leaking
     // the private `_processkit` extension name (the dual-base ones below set it
-    // at construction, and the pyclasses use `module = "processkit"`).
+    // at construction; the pyclasses set `module = "processkit"`, except the
+    // testing doubles which set `module = "processkit.testing"`).
     for (name, ty) in [
         ("ProcessError", py.get_type::<ProcessError>()),
         ("NonZeroExit", py.get_type::<NonZeroExit>()),

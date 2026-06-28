@@ -100,8 +100,8 @@ explicit control you also have three verbs:
 
 | Verb | What it does |
 |---|---|
-| `with` / `async with` exit | Hard kill of the whole tree. Always on, even if the block raises. |
-| `group.kill_all()` | The same immediate hard kill, mid-flight; idempotent. |
+| `with` / `async with` exit | **Graceful** teardown of the whole tree — the same as `shutdown()` (signal → wait up to `shutdown_grace` → hard-kill survivors if `escalate_to_kill`). Always on, even if the block raises. |
+| `group.kill_all()` | Immediate hard kill of the whole tree, mid-flight; idempotent. |
 | `group.shutdown()` / `await group.ashutdown()` | **Graceful**: signal → wait up to `shutdown_grace` → hard-kill survivors if `escalate_to_kill`. |
 
 ```python
@@ -187,8 +187,9 @@ supported platforms). Two gotchas bite in practice:
   until you `resume()`.
 - **Resume before a graceful shutdown.** `shutdown` opens with a signal a
   frozen tree can't act on, so it would wait out the whole `shutdown_grace`.
-  A hard kill (`kill_all()`, `signal("kill")`, context exit) works on a
-  frozen tree regardless.
+  An immediate hard kill (`kill_all()` or `signal("kill")`) works on a frozen
+  tree regardless; the `with`-exit is itself a graceful shutdown, so it carries
+  the same caveat — `resume()` first.
 
 ## Inspecting members
 

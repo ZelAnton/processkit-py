@@ -63,6 +63,18 @@ bindings = "pyo3"
 module-name = "processkit._processkit"
 python-source = "src"
 features = ["extension-module"]
+# Keep the sdist lean and on-topic: drop the 3 MB README cover art (referenced by
+# an absolute URL, never needed to build), the CI/dev-harness metadata, and the
+# internal release-process note. src/, tests/, docs/, and the standard manifests
+# still ship so a source build (and downstream testing) works.
+exclude = [
+  "cover.png",
+  ".github/**/*",
+  "docker/**/*",
+  "compose.yaml",
+  ".dockerignore",
+  "release-token-bypass.md",
+]
 
 [tool.ruff]
 line-length = 100

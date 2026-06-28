@@ -141,36 +141,48 @@ def test_resource_limited_group_runs() -> None:
         pytest.skip("resource limits not enforceable in this environment")
 
 
-def test_group_shutdown_grace_kwarg_tears_down() -> None:
+def test_group_shutdown_grace_kwarg_tears_down(tmp_path: pathlib.Path) -> None:
     # The teardown-policy ceilings (`shutdown_grace`, `escalate_to_kill`) are not
     # resource limits, so construction needs no Job Object / cgroup root. This is
     # the only call site that passes `shutdown_grace=` — it pins the renamed kwarg
     # against both the stub (mypy here) and the Rust binding (a name mismatch would
-    # raise at construction).
+    # raise at construction) — and proves the configured grace policy still reaps
+    # the whole tree. Liveness is checked on the *grandchild* (reparented to init
+    # and reaped on death); a direct child can linger as an unreaped POSIX zombie
+    # that still answers `kill(pid, 0)`, so it is not a portable death signal.
+    pid_file = tmp_path / "grandchild.pid"
+
     with ProcessGroup(shutdown_grace=0.5, escalate_to_kill=True) as group:
-        running = group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
-        pid = running.pid
+        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
+        assert is_alive(grandchild_pid)
         group.shutdown()  # signal -> wait shutdown_grace -> escalate to hard kill
 
-    assert pid is not None
-    assert wait_dead(pid, timeout=10.0), "shutdown_grace teardown did not reap the child"
+    assert wait_dead(grandchild_pid, timeout=10.0), (
+        f"grandchild {grandchild_pid} survived shutdown_grace teardown"
+    )
 
 
 # --- signals / suspend / resume / terminate / stats -------------------------
 
 
-def test_group_suspend_resume_terminate() -> None:
+def test_group_suspend_resume_terminate(tmp_path: pathlib.Path) -> None:
+    # As above, assert on the grandchild: it is reparented to init and reaped, so
+    # its PID truly disappears, whereas the killed direct child can persist as an
+    # unreaped zombie for the lifetime of the still-open group handle.
+    pid_file = tmp_path / "grandchild.pid"
     with ProcessGroup() as group:
-        running = group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
-        pid = running.pid
+        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
         try:
             group.suspend()
             group.resume()
         except Unsupported:
             pass
         group.kill_all()
-        assert pid is not None
-        assert wait_dead(pid, timeout=10.0), "kill_all did not reap the group member"
+        assert wait_dead(grandchild_pid, timeout=10.0), (
+            f"grandchild {grandchild_pid} survived kill_all"
+        )
 
 
 def test_group_signal() -> None:

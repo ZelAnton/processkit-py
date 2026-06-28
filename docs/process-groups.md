@@ -47,10 +47,10 @@ short version is *Windows strongest, macOS weakest.*
 Tune the teardown timing at construction:
 
 ```python
-group = ProcessGroup(shutdown_timeout=10.0, escalate_to_kill=True)
+group = ProcessGroup(shutdown_grace=10.0, escalate_to_kill=True)
 ```
 
-`shutdown_timeout` is a float of **seconds**. The resource-limit keywords
+`shutdown_grace` is a float of **seconds**. The resource-limit keywords
 (`max_memory`, `max_processes`, `cpu_quota`) are covered under
 [Resource limits](#resource-limits-the-sandbox).
 
@@ -101,11 +101,11 @@ explicit control you also have three verbs:
 | Verb | What it does |
 |---|---|
 | `with` / `async with` exit | Hard kill of the whole tree. Always on, even if the block raises. |
-| `group.terminate_all()` | The same immediate hard kill, mid-flight; idempotent. |
-| `group.shutdown()` / `await group.ashutdown()` | **Graceful**: signal → wait up to `shutdown_timeout` → hard-kill survivors if `escalate_to_kill`. |
+| `group.kill_all()` | The same immediate hard kill, mid-flight; idempotent. |
+| `group.shutdown()` / `await group.ashutdown()` | **Graceful**: signal → wait up to `shutdown_grace` → hard-kill survivors if `escalate_to_kill`. |
 
 ```python
-group = ProcessGroup(shutdown_timeout=5.0, escalate_to_kill=True)
+group = ProcessGroup(shutdown_grace=5.0, escalate_to_kill=True)
 with group:
     group.start(Command("my-service"))
     ...
@@ -113,14 +113,14 @@ with group:
 ```
 
 ```python
-async with ProcessGroup(shutdown_timeout=5.0) as group:
+async with ProcessGroup(shutdown_grace=5.0) as group:
     await group.astart(Command("my-service"))
     await group.ashutdown()
 ```
 
 A child that handles `SIGTERM` and exits ends the grace **early** —
 `shutdown` / `ashutdown` returns as soon as the tree is empty, not after the
-full timeout. Use `terminate_all()` when you want the tree gone *now* with no
+full timeout. Use `kill_all()` when you want the tree gone *now* with no
 grace at all.
 
 **The no-orphan guarantee and its platform asymmetry.** The `with` /
@@ -148,7 +148,7 @@ with ProcessGroup() as group:
     group.signal("usr1")    # whatever the tool defines
 ```
 
-`signal("kill")` and `terminate_all()` take the same *atomic* whole-tree kill
+`signal("kill")` and `kill_all()` take the same *atomic* whole-tree kill
 path, so they cannot miss a process forked mid-broadcast. Every other signal is
 a best-effort per-member broadcast against a tree that may be forking at that
 instant.
@@ -186,8 +186,8 @@ supported platforms). Two gotchas bite in practice:
   spawned into a *frozen* group starts frozen, and `start()` may not return
   until you `resume()`.
 - **Resume before a graceful shutdown.** `shutdown` opens with a signal a
-  frozen tree can't act on, so it would wait out the whole `shutdown_timeout`.
-  A hard kill (`terminate_all()`, `signal("kill")`, context exit) works on a
+  frozen tree can't act on, so it would wait out the whole `shutdown_grace`.
+  A hard kill (`kill_all()`, `signal("kill")`, context exit) works on a
   frozen tree regardless.
 
 ## Inspecting members

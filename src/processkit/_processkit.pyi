@@ -6,17 +6,14 @@ Keep this in sync with `src/lib.rs`.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from types import TracebackType
 from typing import Literal, final
 
-# A program / path argument: a `str` or an `os.PathLike[str]` (e.g. `pathlib.Path`).
-# `bytes` paths are not accepted (the extension decodes through `str`).
-StrPath = str | os.PathLike[str]
-
-# Signal names accepted by `timeout_signal` / `ProcessGroup.signal`.
-SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
+# `StrPath` (program/path arg: `str` or `os.PathLike[str]`) and `SignalName` are
+# the single source in `_types`, re-exported from the package so callers can
+# annotate with them; imported here for the signatures below.
+from ._types import SignalName, StrPath
 
 # Why a supervised run ended (`SupervisionOutcome.stopped`). "unknown" is a
 # forward-compat fallback that the pinned crate version does not emit.
@@ -126,6 +123,7 @@ class Command:
     async def arun(self) -> str: ...
     async def aexit_code(self) -> int: ...
     async def aprobe(self) -> bool: ...
+    def start(self) -> RunningProcess: ...
     async def astart(self) -> RunningProcess: ...
     def pipe(self, other: Command) -> Pipeline: ...
     def __or__(self, other: Command, /) -> Pipeline: ...
@@ -310,14 +308,14 @@ class ProcessGroup:
         max_memory: int | None = ...,
         max_processes: int | None = ...,
         cpu_quota: float | None = ...,
-        shutdown_timeout: float | None = ...,
+        shutdown_grace: float | None = ...,
         escalate_to_kill: bool | None = ...,
     ) -> None:
         """Resource limits need a Windows Job Object or a Linux cgroup-v2 root:
         ``max_memory`` is **bytes** (whole tree), ``max_processes`` a count, and
         ``cpu_quota`` a fraction of a **single** core (``0.5`` = half a core,
-        ``2.0`` = two cores) — not a share of all cores. ``shutdown_timeout`` is
-        seconds."""
+        ``2.0`` = two cores) — not a share of all cores. ``shutdown_grace`` is the
+        seconds to wait after signalling before escalating to a hard kill."""
 
     def __enter__(self) -> ProcessGroup: ...
     def __exit__(
@@ -341,7 +339,7 @@ class ProcessGroup:
     def signal(self, name: SignalName) -> None: ...
     def suspend(self) -> None: ...
     def resume(self) -> None: ...
-    def terminate_all(self) -> None: ...
+    def kill_all(self) -> None: ...
     def stats(self) -> ProcessGroupStats: ...
     def shutdown(self) -> None: ...
     async def ashutdown(self) -> None: ...
@@ -616,8 +614,8 @@ class OutputTooLarge(ProcessError):
     """Captured output hit an `output_limit(..., on_overflow="error")` ceiling."""
 
     program: str
-    line_limit: int | None
-    byte_limit: int | None
+    max_lines: int | None
+    max_bytes: int | None
     total_lines: int
     total_bytes: int
 

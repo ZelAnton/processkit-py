@@ -47,7 +47,7 @@ return `None` and a second consuming verb raises):
 | `await proc.finish()` | `Finished` | **after streaming stdout** — exit + captured stderr, *without* buffering stdout |
 | `await proc.output()` | `ProcessResult` | capture everything (same as the one-shot `output()`) |
 | `await proc.output_bytes()` | `BytesResult` | capture, stdout as `bytes` |
-| `await proc.profile(every_seconds)` | `RunProfile` | capture + resource samples |
+| `await proc.profile(every_seconds)` | `RunProfile` | exit + CPU/memory samples; output discarded |
 | `await proc.shutdown(grace_seconds)` | `Outcome` | graceful signal → wait → hard-kill |
 
 `Outcome` carries `code: int | None`, `signal: int | None`, `timed_out: bool`,

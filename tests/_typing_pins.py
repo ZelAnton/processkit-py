@@ -37,6 +37,8 @@ if TYPE_CHECKING:
         Runner,
         RunningProcess,
         Signalled,
+        SignalName,
+        StrPath,
         SupervisionOutcome,
         Supervisor,
         Timeout,
@@ -50,6 +52,11 @@ if TYPE_CHECKING:
         assert_type(cmd.output_bytes(), BytesResult)
         assert_type(cmd.exit_code(), int)
         assert_type(cmd.probe(), bool)
+        assert_type(cmd.start(), RunningProcess)
+
+    # The exported aliases are usable as annotations (importable from processkit).
+    def _public_aliases(program: StrPath, signal: SignalName) -> None:
+        assert_type(Command(program).timeout_signal(signal), Command)
 
     async def _command_async_verb_return_types(cmd: Command) -> None:
         assert_type(await cmd.aoutput(), ProcessResult)

@@ -243,7 +243,7 @@ def test_output_limit_error_raises_output_too_large() -> None:
     code = "import sys\nfor i in range(1000):\n    print(i)"
     with pytest.raises(OutputTooLarge) as excinfo:
         Command(PY, ["-c", code]).output_limit(max_lines=10, on_overflow="error").run()
-    assert excinfo.value.line_limit == 10
+    assert excinfo.value.max_lines == 10
     assert excinfo.value.total_lines >= 1000
 
 

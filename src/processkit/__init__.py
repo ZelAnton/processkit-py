@@ -58,6 +58,7 @@ from ._processkit import (
     output_all_bytes,
 )
 from ._runner import ProcessRunner
+from ._types import SignalName, StrPath
 
 try:
     __version__ = version("processkit")
@@ -92,8 +93,10 @@ __all__ = [
     "Runner",
     "RunningProcess",
     "ScriptedRunner",
+    "SignalName",
     "Signalled",
     "StdoutLines",
+    "StrPath",
     "SupervisionOutcome",
     "Supervisor",
     "Timeout",

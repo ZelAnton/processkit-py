@@ -23,11 +23,14 @@ processkit._processkit.ProcessGroup.__new__
 processkit._processkit.Supervisor.__init__
 processkit._processkit.Supervisor.__new__
 
-# --- stub-only type aliases -------------------------------------------------
-# Used only in annotations; not runtime attributes of the compiled module.
-processkit._processkit.SignalName
+# --- type aliases -----------------------------------------------------------
+# StopReason is stub-only (annotation for the compiled module; not a runtime
+# attribute). SignalName is an exported runtime alias in `_types`, but stubtest
+# flags a module-level `Literal` type-alias ("is not a Union") instead of seeing
+# the runtime object — a known false positive. (StrPath, a plain union alias, is
+# not flagged, so no entry.)
 processkit._processkit.StopReason
-processkit._processkit.StrPath
+processkit._types.SignalName
 
 # --- compiled-module __all__ ------------------------------------------------
 # PyO3 emits a module-level __all__ on the extension; the stub does not redeclare

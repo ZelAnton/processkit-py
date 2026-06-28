@@ -94,14 +94,14 @@ impl PyProcessGroup {
         max_memory=None,
         max_processes=None,
         cpu_quota=None,
-        shutdown_timeout=None,
+        shutdown_grace=None,
         escalate_to_kill=None,
     ))]
     fn new(
         max_memory: Option<u64>,
         max_processes: Option<u32>,
         cpu_quota: Option<f64>,
-        shutdown_timeout: Option<f64>,
+        shutdown_grace: Option<f64>,
         escalate_to_kill: Option<bool>,
     ) -> PyResult<Self> {
         // `ProcessGroup::new()` is exactly `with_options(default())`, so always
@@ -121,8 +121,8 @@ impl PyProcessGroup {
             // NaN/inf/non-positive as a `ResourceLimit` error, never a panic.
             options = options.cpu_quota(cores);
         }
-        if let Some(seconds) = shutdown_timeout {
-            options = options.shutdown_timeout(nonnegative_duration(seconds, "shutdown_timeout")?);
+        if let Some(seconds) = shutdown_grace {
+            options = options.shutdown_timeout(nonnegative_duration(seconds, "shutdown_grace")?);
         }
         if let Some(escalate) = escalate_to_kill {
             options = options.escalate_to_kill(escalate);
@@ -225,8 +225,10 @@ impl PyProcessGroup {
         self.group()?.resume().map_err(map_err)
     }
 
-    /// Immediately kill the whole tree (a hard kill, no graceful window).
-    fn terminate_all(&self) -> PyResult<()> {
+    /// Immediately kill the whole tree (a hard kill, no graceful window) — the
+    /// group counterpart of `RunningProcess.kill()`. For a graceful teardown use
+    /// `shutdown()` / `ashutdown()`.
+    fn kill_all(&self) -> PyResult<()> {
         self.group()?.terminate_all().map_err(map_err)
     }
 

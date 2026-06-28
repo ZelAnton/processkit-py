@@ -171,9 +171,11 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 total_lines,
                 total_bytes,
             } => {
+                // Python attr names mirror the `output_limit(max_bytes=, max_lines=)`
+                // builder kwargs (the crate's struct fields are *_limit).
                 let _ = value.setattr("program", program.as_str());
-                let _ = value.setattr("line_limit", *line_limit);
-                let _ = value.setattr("byte_limit", *byte_limit);
+                let _ = value.setattr("max_lines", *line_limit);
+                let _ = value.setattr("max_bytes", *byte_limit);
                 let _ = value.setattr("total_lines", *total_lines);
                 let _ = value.setattr("total_bytes", *total_bytes);
             }

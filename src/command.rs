@@ -364,6 +364,15 @@ impl PyCommand {
     }
 
     /// Start the command and return a `RunningProcess` for streaming and
+    /// interactive I/O. The process runs concurrently — this returns as soon as
+    /// it has spawned, not when it finishes. Sync counterpart of `astart()`.
+    fn start(&self, py: Python<'_>) -> PyResult<PyRunningProcess> {
+        block_on_interruptible(py, self.inner.start())?
+            .map(PyRunningProcess::from)
+            .map_err(map_err)
+    }
+
+    /// Start the command and return a `RunningProcess` for streaming and
     /// interactive I/O. The process runs concurrently — this resolves as soon as
     /// it has spawned, not when it finishes.
     fn astart<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

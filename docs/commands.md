@@ -184,7 +184,7 @@ try:
         max_bytes=8 * 1024 * 1024, on_overflow="error"
     ).run()
 except OutputTooLarge as e:
-    print(e.total_bytes, e.byte_limit)
+    print(e.total_bytes, e.max_bytes)
 ```
 
 `on_overflow` is `"drop_oldest"` (keep the newest, the default), `"drop_newest"`
@@ -298,7 +298,7 @@ capturing verbs do not. Each carries **structured fields**, not just a message:
 | `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr` |
 | `ProcessNotFound` | the program couldn't be located / spawned | `program` |
 | `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file) | `program` |
-| `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `line_limit`, `byte_limit`, `total_lines`, `total_bytes` |
+| `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `max_lines`, `max_bytes`, `total_lines`, `total_bytes` |
 | `ResourceLimit` | a memory / process / CPU cap was invalid or couldn't be enforced | `message` |
 | `Unsupported` | the platform can't perform the requested operation | `operation` |
 

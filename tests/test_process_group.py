@@ -141,18 +141,36 @@ def test_resource_limited_group_runs() -> None:
         pytest.skip("resource limits not enforceable in this environment")
 
 
+def test_group_shutdown_grace_kwarg_tears_down() -> None:
+    # The teardown-policy ceilings (`shutdown_grace`, `escalate_to_kill`) are not
+    # resource limits, so construction needs no Job Object / cgroup root. This is
+    # the only call site that passes `shutdown_grace=` — it pins the renamed kwarg
+    # against both the stub (mypy here) and the Rust binding (a name mismatch would
+    # raise at construction).
+    with ProcessGroup(shutdown_grace=0.5, escalate_to_kill=True) as group:
+        running = group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
+        pid = running.pid
+        group.shutdown()  # signal -> wait shutdown_grace -> escalate to hard kill
+
+    assert pid is not None
+    assert wait_dead(pid, timeout=10.0), "shutdown_grace teardown did not reap the child"
+
+
 # --- signals / suspend / resume / terminate / stats -------------------------
 
 
 def test_group_suspend_resume_terminate() -> None:
     with ProcessGroup() as group:
-        group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
+        running = group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
+        pid = running.pid
         try:
             group.suspend()
             group.resume()
         except Unsupported:
             pass
-        group.terminate_all()
+        group.kill_all()
+        assert pid is not None
+        assert wait_dead(pid, timeout=10.0), "kill_all did not reap the group member"
 
 
 def test_group_signal() -> None:

@@ -269,6 +269,16 @@ def test_running_process_sync_with_reaps_tree(tmp_path: pathlib.Path) -> None:
     assert wait_dead(grandchild, timeout=10.0), "grandchild survived the with-block exit"
 
 
+def test_command_start_is_sync_twin_of_astart(tmp_path: pathlib.Path) -> None:
+    # Command.start() is the synchronous counterpart of astart(): sync setup
+    # returning a RunningProcess that owns a private tree and reaps it on exit —
+    # no detour through Runner() needed.
+    pid_file = tmp_path / "gc.pid"
+    with Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]).start():
+        grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+    assert wait_dead(grandchild, timeout=10.0), "Command().start() handle didn't reap on exit"
+
+
 def test_running_process_async_with_reaps_tree(tmp_path: pathlib.Path) -> None:
     pid_file = tmp_path / "gc.pid"
 

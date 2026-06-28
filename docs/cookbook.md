@@ -135,7 +135,7 @@ tail = Command("chatty-tool").output_limit(max_bytes=1024 * 1024).output()
 try:
     Command("untrusted-tool").output_limit(max_bytes=8 * 1024 * 1024, on_overflow="error").run()
 except OutputTooLarge as e:
-    print(e.total_bytes, e.byte_limit)
+    print(e.total_bytes, e.max_bytes)
 ```
 
 `on_overflow` is `"drop_oldest"` (keep most recent, the default), `"drop_newest"`
@@ -166,7 +166,7 @@ for a standalone `astart()` / `start()` handle that means a hard kill of its
 whole private tree — even if the block raises, without waiting on Python's GC:
 
 ```python
-from processkit import Command, Runner
+from processkit import Command
 
 async with await Command("flaky-server").astart() as proc:
     async for line in proc.stdout_lines():
@@ -174,8 +174,8 @@ async with await Command("flaky-server").astart() as proc:
             break
 # proc (and its children) are reaped here
 
-# Sync handles work too:
-with Runner().start(Command("worker")) as proc:
+# Sync handles work too — start() is the synchronous twin of astart():
+with Command("worker").start() as proc:
     ...                              # do other work
 # proc torn down here
 ```
@@ -367,7 +367,7 @@ with ProcessGroup() as group:
     group.suspend()            # pause the whole tree
     group.resume()
     group.signal("term")       # term | kill | int | hup | quit | usr1 | usr2
-    group.terminate_all()      # immediate hard kill
+    group.kill_all()           # immediate hard kill
 ```
 
 ## Handle errors

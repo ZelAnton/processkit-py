@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunningProcess` live introspection (`elapsed_seconds`, `cpu_time_seconds`,
   `peak_memory_bytes`, `stdout_line_count` / `stderr_line_count`, `owns_group`),
   plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`.
+- Synchronous `Command.start()` — a blocking twin of `astart()` returning a live
+  `RunningProcess` for streaming a child from synchronous code (its consuming
+  methods `wait` / `finish` / `output` / … remain coroutines, awaited from an
+  event loop).
 - `RecordReplayRunner` test double — `record(path)` real runs then `save()`, and
   `replay(path)` offline; plus `output_bytes` on `Runner` / `ScriptedRunner`.
 - `RecordingRunner` spy test double — `RecordingRunner.replying(reply)` answers
@@ -63,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PermissionError` (matching `asyncio` / `subprocess`), so the stdlib `except`
   clauses catch them. The data-carrying ones expose structured fields — e.g.
   `NonZeroExit.code` / `.stdout` / `.stderr` / `.program`,
-  `Timeout.timeout_seconds`, `Signalled.signal`, `OutputTooLarge.byte_limit` /
+  `Timeout.timeout_seconds`, `Signalled.signal`, `OutputTooLarge.max_bytes` /
   `.total_bytes`, `Unsupported.operation`, `ResourceLimit.message` — so a failure
   can be inspected programmatically, not just read as a message.
 - Blocking synchronous calls are interruptible: `Ctrl+C` (SIGINT) raises
@@ -89,10 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New result types: `Outcome`, `Finished`, `OutputEvent`.
 - Higher-level features:
   - **Resource limits** on `ProcessGroup`: keyword-only `max_memory`,
-    `max_processes`, `cpu_quota`, `shutdown_timeout`, `escalate_to_kill`
+    `max_processes`, `cpu_quota`, `shutdown_grace`, `escalate_to_kill`
     (enforced via the Windows Job Object or a Linux cgroup-v2 *root*).
   - **Signals & observability** on `ProcessGroup`: `signal("term"|…)`,
-    `suspend()`, `resume()`, `terminate_all()`, and `stats()` →
+    `suspend()`, `resume()`, `kill_all()`, and `stats()` →
     `ProcessGroupStats`.
   - **Pipelines**: `Command | Command` (or `.pipe()`) → `Pipeline`, with the
     sync/async run verbs (incl. `output_bytes()` / `aoutput_bytes()` for a binary
@@ -160,6 +164,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Closed-set string parameters and return values are typed as `Literal` in the
   stubs (signal names, `restart`, `mechanism`, `SupervisionOutcome.stopped`,
   `OutputEvent.stream`) for editor autocomplete and `mypy` typo-catching.
+- Exported the `StrPath` (`str | os.PathLike[str]`) and `SignalName` (the signal-name
+  `Literal`) type aliases from the package, so your own wrappers can annotate against
+  the same types the API accepts.
 - Renamed `ProcessGroup(memory_max=…)` → **`max_memory`**, so every ceiling on the
   surface follows the `max_*` convention (`max_processes`, `output_limit(max_bytes=…,
   max_lines=…)`, `Supervisor(max_restarts=…, max_backoff=…)`). The crate builder
@@ -168,6 +175,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CPU-cores, e.g. `1.7` ≈ 1.7 cores busy).
 - Renamed `RunningProcess.start_kill()` → **`kill()`**, matching
   `subprocess.Popen.kill()` (fire-and-forget; does not wait for exit).
+- Renamed `ProcessGroup.terminate_all()` → **`kill_all()`** and the
+  `ProcessGroup(shutdown_timeout=…)` ceiling → **`shutdown_grace`**, so the group's
+  teardown surface reads as what it does — a hard kill of the whole tree, after an
+  optional grace period — and lines up with `RunningProcess.kill()` and
+  `Command.timeout_grace()`. The crate keeps `terminate_all()` / `shutdown_timeout()`.
+- Renamed the `OutputTooLarge` overflow fields `line_limit` / `byte_limit` →
+  **`max_lines`** / **`max_bytes`**, so the caps reported on overflow match the
+  `output_limit(max_bytes=…, max_lines=…)` kwargs that set them.
 - `ProcessResult.combined` is now a **property** (was `combined()`), matching the
   other read accessors (`stdout`, `code`, …).
 - Renamed `Outcome.is_success` / `Finished.is_success` → **`exited_zero`**. These

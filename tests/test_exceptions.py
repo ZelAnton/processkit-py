@@ -93,13 +93,14 @@ def test_signalled_carries_structured_fields() -> None:
 
 
 def test_output_too_large_carries_byte_fields() -> None:
-    # The byte-cap overflow path carries `byte_limit`/`total_bytes` (the line-cap
-    # path is covered elsewhere). Pins those two fields against a silent rename.
+    # The byte-cap overflow path carries `max_bytes`/`total_bytes` (the line-cap
+    # path is covered elsewhere). Pins those two fields against a silent rename;
+    # `max_bytes`/`max_lines` mirror the `output_limit(...)` builder kwargs.
     flood = Command(PY, ["-c", "import sys; sys.stdout.write('x' * 100_000)"])
     with pytest.raises(OutputTooLarge) as excinfo:
         flood.output_limit(max_bytes=1024, on_overflow="error").run()
     exc = excinfo.value
-    assert exc.byte_limit == 1024
+    assert exc.max_bytes == 1024
     assert exc.total_bytes >= 1024
     assert exc.program
 

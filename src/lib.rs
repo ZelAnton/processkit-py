@@ -43,8 +43,10 @@ use crate::supervisor::{PySupervisionOutcome, PySupervisor};
 // free-threaded build importing it does NOT re-enable the GIL. Sound here because
 // the binding holds no unsynchronized shared state — the tokio runtime is a
 // managed singleton, the exception caches use `PyOnceLock`, stream handles are
-// `Arc<Mutex<…>>`, and every pyclass is guarded by PyO3's own per-object borrow
-// checking. A no-op on the standard (GIL) build.
+// `Arc<Mutex<…>>`, the opt-in `tracing` subscriber is a stateless ZST layer over
+// `tracing`'s internally-synchronized global dispatch (installed once via an
+// `OnceLock`, forwarding to thread-safe `logging`), and every pyclass is guarded
+// by PyO3's own per-object borrow checking. A no-op on the standard (GIL) build.
 #[pymodule(gil_used = false)]
 fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;

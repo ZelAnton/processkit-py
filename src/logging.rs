@@ -65,14 +65,15 @@ impl<S: Subscriber> Layer<S> for PyLoggingLayer {
         event.record(&mut fields);
         let message = fields.render();
 
-        // Best-effort. Events fire on tokio worker threads (the GIL is released
-        // there), so re-acquiring it is safe and never deadlocks. `try_attach`
-        // (not `attach`) returns `None` — dropping the event — when the
-        // interpreter is finalizing or mid-GC: this is a kill-on-drop library
-        // whose teardown paths also emit events, which could fire during shutdown,
-        // and `attach` would panic/crash there. A logging failure is likewise
-        // dropped, never propagated — we must not leave a Python error set on a
-        // runtime thread.
+        // Best-effort. The GIL may or may not be held when an event fires (most
+        // run/teardown events fire on a tokio worker or under `py.detach`, with it
+        // released; a teardown on `Drop` could fire with it held). `Python::try_attach`
+        // is re-entrant-safe either way and never deadlocks, and crucially returns
+        // `None` — dropping the event — once the interpreter is finalizing: this is a
+        // kill-on-drop library whose teardown paths also emit events, which can fire
+        // during shutdown, where the plain `attach` would panic/crash. A logging
+        // failure is likewise dropped, never propagated — we must not leave a Python
+        // error set on a runtime thread.
         let _ = Python::try_attach(|py| {
             let _ = forward(py, &target, level, &message);
         });

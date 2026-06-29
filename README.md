@@ -394,6 +394,26 @@ assert scripted.run(Command("git", ["rev-parse", "HEAD"])) == "deadbeef"
 `RecordingRunner` spies on *what* your code ran.
 *Deeper: [Testing your code](docs/testing.md).*
 
+### Seeing what ran (observability)
+
+Opt in once and processkit forwards its internal run events to Python's
+`logging` — useful when a spawn or teardown misbehaves in production:
+
+```python
+import logging
+from processkit import Command, enable_logging
+
+logging.basicConfig(level=logging.DEBUG)
+enable_logging()                          # idempotent; off by default
+
+Command("git", ["rev-parse", "HEAD"]).run()
+# DEBUG:processkit:child spawned program=git pid=Some(12345) mechanism=…
+```
+
+Records land on the `processkit` logger (filter it like any other); `argv` and
+`env` are never logged (they routinely carry secrets).
+*Deeper: [the logging recipe](docs/cookbook.md#see-what-processkit-runs-logging).*
+
 ## Stability
 
 processkit follows [Semantic Versioning](https://semver.org/). As of **1.0** the

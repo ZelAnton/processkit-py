@@ -262,5 +262,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version-specific free-threaded wheel** for CPython 3.14t (PEP 703).
 - The `RecordReplayRunner` test double enables the crate's `record` feature,
   which pulls `serde` / `serde_json` into the compiled wheel.
+- `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
+  `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
 [Unreleased]: https://github.com/ZelAnton/processkit-py/commits/main

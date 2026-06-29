@@ -53,9 +53,9 @@ ship: it collects every per-OS caveat in one place.
 ## Packaging
 
 Unlike the Rust crate's compile-time feature flags, the Python wheel ships **one
-surface with everything enabled** — resource limits, signals/stats, and
-record/replay are all present in every published wheel. There is nothing to opt
-into at install time:
+surface with everything enabled** — resource limits, signals/stats,
+record/replay, and opt-in logging are all present in every published wheel.
+There is nothing to opt into at install time:
 
 ```bash
 pip install processkit-py   # supported path once the first PyPI release lands (import name: processkit)

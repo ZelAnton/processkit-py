@@ -464,8 +464,13 @@ enable_logging()        # idempotent; returns False if another library already
                         # owns the process-global tracing subscriber
 
 Command("git", ["rev-parse", "HEAD"]).run()
-# DEBUG:processkit:child spawned program=git pid=… mechanism=…
+# DEBUG:processkit:child spawned program=git pid=Some(12345) mechanism=…
+# DEBUG:processkit:process exited program=git outcome=Exited(0) elapsed_ms=7
 ```
+
+(`mechanism` is the platform's containment — `JobObject` on Windows, a process
+group / cgroup on POSIX. Fields are forwarded verbatim, so `pid` shows the core's
+`Some(…)` rendering.)
 
 Records land on the `processkit` logger (filter it like any other) — DEBUG for a
 normal run, WARNING for an edge case. **argv and env are never logged** (the core

@@ -54,6 +54,7 @@ from ._processkit import (
     Unsupported,
     aoutput_all,
     aoutput_all_bytes,
+    enable_logging,
     output_all,
     output_all_bytes,
 )
@@ -101,6 +102,7 @@ __all__ = [
     "Unsupported",
     "aoutput_all",
     "aoutput_all_bytes",
+    "enable_logging",
     "output_all",
     "output_all_bytes",
     "wait_for",

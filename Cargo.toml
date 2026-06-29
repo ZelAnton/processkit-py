@@ -31,11 +31,34 @@ pyo3 = { version = "0.29", features = ["abi3-py310"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # The Rust core. Exact pin — the binding tracks API/behaviour churn deliberately,
 # not transitively (a 2.0.0 was published then yanked upstream; pin guards us).
-# `limits` (whole-tree resource caps) implies `stats` (resource measurement);
-# both back the sandboxing/observability surface. `record` enables the
-# `RecordReplayRunner` test double (pulls serde/serde_json for the cassette).
-processkit = { version = "=1.1.0", features = ["limits", "record"] }
+#
+# Features are listed EXPLICITLY with `default-features = false`, so a change to
+# the crate's default set can never silently alter our public surface:
+#   - process-control — `ProcessGroup.signal/suspend/resume/members` (the crate's
+#     own default; pure code, no extra deps). Listed so it stays on regardless.
+#   - limits — `ResourceLimits` (`max_memory`/`max_processes`/`cpu_quota`); implies
+#     `stats` (`ProcessGroupStats`, `RunningProcess.cpu_time`/`peak_memory_bytes`,
+#     `profile()` / `RunProfile`).
+#   - record — the `RecordReplayRunner` cassette double (pulls serde/serde_json).
+#   - tracing — lets the crate emit a per-run tracing event, which the opt-in
+#     `enable_logging()` bridges to Python's `logging` (see src/logging.rs).
+# Deliberately NOT enabled: `mock` — a Rust-only `mockall` `MockRunner` for Rust
+# tests; it has no Python value (the Python test doubles come from the crate's
+# always-on `doubles` surface — ScriptedRunner / RecordingRunner — plus the
+# `record`-gated cassette RecordReplayRunner enabled above).
+processkit = { version = "=1.1.0", default-features = false, features = [
+  "process-control",
+  "limits",
+  "record",
+  "tracing",
+] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# Bridge the crate's `tracing` events to Python `logging` via the opt-in
+# `enable_logging()` (src/logging.rs). `registry` is the only `tracing-subscriber`
+# piece we need (a `Layer` over its span store); the heavy fmt/env-filter/ansi
+# default features stay off to keep wheels lean.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
 [profile.release]
 lto = true

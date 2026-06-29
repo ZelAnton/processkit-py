@@ -64,6 +64,12 @@ take per-call args, not a `Command`, and it has no `start`/`astart`.)
 The sync and async surfaces are twins (`run` ↔ `arun`), so async code injects
 the very same runner objects and awaits the `a`-prefixed verbs.
 
+> These doubles are the *real* ones — they return genuine `ProcessResult` /
+> `RunningProcess` objects, so the code under test behaves identically. (The Rust
+> crate also ships a `mock` Cargo feature — a `mockall`-generated mock of its
+> runner trait — but that is for *Rust* tests; it has no Python use, so the binding
+> does not enable it. You get your doubles here, not from a mocking library.)
+
 *Deeper: the verb vocabulary and what each return type carries — [Running commands](commands.md).*
 
 ## Scripting replies: ScriptedRunner

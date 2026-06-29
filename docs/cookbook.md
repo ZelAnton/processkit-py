@@ -449,3 +449,26 @@ inv = spy.only_call()                 # the one call (raises unless exactly one)
 assert inv.program == "git"
 assert inv.args == ["push", "--tags"]
 ```
+
+## See what processkit runs (logging)
+
+Opt in once with `enable_logging()` and `processkit` forwards its internal run
+events to Python's `logging`:
+
+```python
+import logging
+from processkit import Command, enable_logging
+
+logging.basicConfig(level=logging.DEBUG)
+enable_logging()        # idempotent; returns False if another library already
+                        # owns the process-global tracing subscriber
+
+Command("git", ["rev-parse", "HEAD"]).run()
+# DEBUG:processkit:child spawned program=git pid=… mechanism=…
+```
+
+Records land on the `processkit` logger (filter it like any other) — DEBUG for a
+normal run, WARNING for an edge case. **argv and env are never logged** (the core
+omits them — they routinely carry secrets). It's a deliberate **opt-in**: enabling
+it installs a process-global subscriber and adds a little per-run overhead, so it's
+a debugging/observability switch, off by default.

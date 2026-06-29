@@ -16,6 +16,7 @@ mod command;
 mod convert;
 mod errors;
 mod group;
+mod logging;
 mod result;
 mod runner;
 mod running;
@@ -74,6 +75,7 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(batch::aoutput_all, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(batch::output_all_bytes, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(batch::aoutput_all_bytes, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(logging::enable_logging, m)?)?;
 
     let py = m.py();
     // Register the single-base exceptions, normalizing `__module__` to the

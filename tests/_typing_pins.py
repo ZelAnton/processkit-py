@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         Supervisor,
         Timeout,
         Unsupported,
+        enable_logging,
         output_all,
         output_all_bytes,
     )
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     def _batch_return_types(cmds: list[Command]) -> None:
         assert_type(output_all(cmds), list[ProcessResult | ProcessError])
         assert_type(output_all_bytes(cmds), list[BytesResult | ProcessError])
+        assert_type(enable_logging(), bool)
 
     def _pipeline_and_runner_return_types(pipe: Pipeline, runner: Runner, cmd: Command) -> None:
         assert_type(pipe.run(), str)

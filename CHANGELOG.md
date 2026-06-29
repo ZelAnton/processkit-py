@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CliClient(program, *, default_timeout=…, default_env=…, default_env_remove=…)`
   — a typed wrapper for a tool you call repeatedly, with `run` / `output` /
   `output_bytes` / `exit_code` / `probe` (+ async) taking just the per-call args.
+- `enable_logging()` — opt-in observability: forwards the core's per-run events to
+  Python's `logging` (a `processkit` logger; DEBUG for a run, WARNING for an edge
+  case). Idempotent; off by default; `argv`/`env` are never logged (secrets). Use
+  `logging.basicConfig(level=…)` and filter the `processkit` logger as usual.
 - `RunningProcess` live introspection (`elapsed_seconds`, `cpu_time_seconds`,
   `peak_memory_bytes`, `stdout_line_count` / `stderr_line_count`, `owns_group`),
   plus `output_bytes()` and `profile(every_seconds)` → `RunProfile`. A `RunProfile`

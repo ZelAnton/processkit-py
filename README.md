@@ -74,11 +74,9 @@ child.
 > major version, so `1.x` upgrades are backward-compatible. See
 > [CHANGELOG.md](CHANGELOG.md), and [ROADMAP.md](ROADMAP.md) for how it was built.
 
-This is a thin [PyO3](https://pyo3.rs/) binding to the published
-[`processkit`](https://crates.io/crates/processkit) Rust crate — **not** a
-reimplementation. All the hard platform code (Job Object containment, cgroup v2,
-race-free spawn, POSIX process groups) lives in the crate; the Python layer
-exposes a typed, asyncio-native surface with context-manager teardown.
+The hard platform work — Job Object containment, cgroup v2, race-free spawn,
+POSIX process groups — runs in a compiled native core, so the Python layer stays
+a thin, typed, asyncio-native surface with context-manager teardown.
 
 ## Install
 
@@ -432,13 +430,13 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 The first release to PyPI is pending (`pip install processkit-py` is the supported
 path once published; the import name is `processkit`). Until then — or on a platform without a prebuilt wheel
-(Windows on ARM, 32-bit) — build from source, which needs a
-[Rust toolchain](https://rustup.rs/):
+(Windows on ARM, 32-bit) — build from source (see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the build prerequisites):
 
 ```bash
 git clone https://github.com/ZelAnton/processkit-py
 cd processkit-py
-uv run maturin develop
+pip install .
 ```
 
 ## Contributing

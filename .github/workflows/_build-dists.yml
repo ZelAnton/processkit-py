@@ -49,7 +49,7 @@ jobs:
           persist-credentials: false
       # Host toolchain for the Windows/macOS builds; the Linux manylinux container
       # installs its own Rust via the cibuildwheel `before-all` hook (pyproject.toml).
-      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
         with:
           toolchain: stable
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0

@@ -370,10 +370,15 @@ jobs:
       # here — a missing publisher surfaces at the pivot with a clear error + a
       # setup link, before anything is pushed to the remote.
 
-      # Mint a short-lived GitHub App installation token so the push to `main` runs as
-      # the App (which sits in the branch-protection ruleset's bypass list). Skipped
-      # until RELEASE_APP_ID is set; then the push falls back to GITHUB_TOKEN. See
-      # release-token-bypass.md.
+      # Mint a short-lived GitHub App installation token (the `ZelAnton-release-bot`
+      # App, id in `RELEASE_APP_ID`). Pushing the release commit + tag to `main` with it
+      # makes the **App** the actor, and the App sits in the branch-protection ruleset's
+      # bypass list, so the push is allowed. The default `github-actions[bot]` CANNOT be
+      # granted a ruleset bypass (it's a system actor, not an App), and a PAT would
+      # expire — an App token is short-lived and auto-revoked. Needs repo variable
+      # `RELEASE_APP_ID` + secret `RELEASE_APP_PRIVATE_KEY`; until both are set this step
+      # is skipped and the push falls back to `GITHUB_TOKEN` (fine only while `main` is
+      # unprotected). See release-token-bypass.md.
       - name: Mint GitHub App token
         id: app-token
         if: ${{ vars.RELEASE_APP_ID != '' }}

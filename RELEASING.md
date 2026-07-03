@@ -33,10 +33,16 @@ provenance attestations.
    with workflow name `test-release.yml` (Environment blank), or set a
    `TESTPYPI_API_TOKEN` secret.
 
-3. **(Only if `main` is protected with required PRs)** set up the GitHub App that
-   lets the release push the version commit + tag directly to `main` — see
-   [release-token-bypass.md](release-token-bypass.md). When `main` is unprotected,
-   nothing is needed (the push uses the default `GITHUB_TOKEN`).
+3. **GitHub App for the push to protected `main`** — **required** (`main` has branch
+   protection). The release pushes the version commit + `v<version>` tag to `main` as
+   the **`ZelAnton-release-bot`** App, which sits in the ruleset's bypass list; the
+   default `github-actions[bot]` **cannot** be granted a ruleset bypass (system actor,
+   not an App). The repo variable `RELEASE_APP_ID` (`3951739`, the shared App) is
+   already set — add the secret **`RELEASE_APP_PRIVATE_KEY`** = the App's `.pem` private
+   key (the same App/key as the sibling repos). See
+   [release-token-bypass.md](release-token-bypass.md). Until the secret is set the App
+   step is skipped and the push falls back to `GITHUB_TOKEN`, which the protection
+   rejects — so set it before the first release.
 
 ## Cutting a release
 

@@ -159,6 +159,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   x86_64 musllinux wheels on every push (aarch64 builds natively at release).
 - Packaging metadata for the PyPI page: Trove classifiers (CPython 3.10–3.14, the
   supported operating systems, topics) and project URLs (Documentation, Issues).
+- Runnable [`examples/`](examples/) — self-contained, cross-platform programs, one
+  per target niche (whole-tree no-orphan teardown, a readiness-gated server,
+  supervision-until-healthy, a resource-limited sandbox). Each is exercised in CI.
 
 ### Changed
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the

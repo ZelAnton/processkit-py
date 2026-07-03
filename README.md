@@ -170,6 +170,11 @@ to …" tasks to working snippets — then read
 | [Testing your code](docs/testing.md) | The runner seam, scripted/record-replay doubles, `CliClient` |
 | [Platform support](docs/platforms.md) | Mechanisms, all capability matrices, every caveat |
 
+Prefer whole programs to snippets? The **[`examples/`](examples/)** directory has
+runnable, self-contained scripts — one per niche (no-orphan teardown, a
+readiness-gated server, supervision, a resource-limited sandbox). Each runs on
+Windows, Linux, and macOS and is exercised in CI.
+
 ## A tour of the capabilities
 
 Each section below is a taste with a pointer to its full guide.

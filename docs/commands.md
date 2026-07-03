@@ -94,7 +94,7 @@ directory. Pass an absolute program path when you combine a relative tool with a
 
 ## Environment and sandboxing
 
-Four builders compose, applied in a fixed order at spawn:
+The environment builders compose, applied in a fixed order at spawn:
 
 ```python
 # Mutate the inherited environment.

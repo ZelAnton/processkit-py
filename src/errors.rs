@@ -111,13 +111,16 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             E::Exit { .. } => NonZeroExit::new_err(message),
             E::Signalled { .. } => Signalled::new_err(message),
             E::NotFound { .. } => PyErr::from_type(cached(&PROCESS_NOT_FOUND, py), message),
-            // The real spawn path reports a missing program as `Spawn` carrying
-            // an `io::Error` of kind `NotFound`; surface that as
-            // `ProcessNotFound` too. A permission failure (a non-executable file,
-            // EACCES) maps to `PermissionDenied` for the same stdlib-parity reason.
-            E::Spawn { source, .. } if source.kind() == ErrorKind::NotFound => {
-                PyErr::from_type(cached(&PROCESS_NOT_FOUND, py), message)
-            }
+            // A genuine missing program is *always* `E::NotFound` (the crate funnels
+            // every program-not-found case there — see its `is_not_found()`), handled
+            // above. A `Spawn` of `NotFound` kind is therefore NOT a missing program:
+            // it's a bad `cwd` or a file that's on `PATH` but not directly executable
+            // (a Windows `.cmd`/`.bat` needing `cmd.exe`). Those must fall through to
+            // the generic `ProcessError` — mapping them to `ProcessNotFound`/
+            // `FileNotFoundError` would mislead `except FileNotFoundError` fallbacks.
+            // A spawn-time permission failure (EACCES) still maps to `PermissionDenied`
+            // for stdlib parity — the crate has no up-front reclassification for it, so
+            // a `Spawn` of `PermissionDenied` kind really is a spawn EACCES.
             E::Spawn { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
                 PyErr::from_type(cached(&PERMISSION_DENIED, py), message)
             }

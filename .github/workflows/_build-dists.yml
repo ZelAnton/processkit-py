@@ -87,11 +87,12 @@ jobs:
         with:
           name: release-meta
           path: .
-      # `maturin sdist` packages source only (no compile), so no Rust toolchain here.
-      # Major-bound pin (matches the cibuildwheel pin) so a maturin 2.x can't change
-      # sdist behavior under us.
+      # `maturin sdist` packages source only (no compile), so no Rust toolchain here
+      # (hence a standalone `uvx`, not `uv run`, which would try to build the project).
+      # Floor matches the authoritative `[build-system]`/dev-group maturin pin
+      # (`>=1.14.1,<2.0`) so the shipped sdist isn't built by an older or a 2.x maturin.
       - name: Build sdist
-        run: uvx 'maturin>=1,<2' sdist --out dist
+        run: uvx 'maturin>=1.14.1,<2.0' sdist --out dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdist

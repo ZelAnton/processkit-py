@@ -62,7 +62,9 @@ multiple platforms.
 
 ## Wheel availability
 
-Prebuilt wheels are published for:
+The first PyPI release is still pending; until it lands, install by
+[building from source](https://github.com/ZelAnton/processkit-py#building-from-source).
+Once released, prebuilt wheels will cover:
 
 | Platform | Architectures |
 |---|---|
@@ -71,8 +73,8 @@ Prebuilt wheels are published for:
 | **macOS** | x86_64 (Intel), arm64 (Apple Silicon) |
 | **Windows** | x64 |
 
-Each row ships both the abi3 GIL wheel (CPython 3.10+) and the free-threaded
-cp314t wheel. Not currently prebuilt: Windows on ARM and 32-bit targets (incl.
-32-bit musl, which has no Rust toolchain). On those, `pip install processkit-py`
-builds from the sdist, which needs a [Rust toolchain](https://rustup.rs/). An
-sdist is published alongside the wheels for source builds anywhere.
+Each row will ship both the abi3 GIL wheel (CPython 3.10+) and the free-threaded
+cp314t wheel, with an sdist alongside for source builds anywhere. Not prebuilt:
+Windows on ARM and 32-bit targets (incl. 32-bit musl, which has no Rust
+toolchain) — there, `pip install processkit-py` builds from the sdist, which needs
+a [Rust toolchain](https://rustup.rs/).

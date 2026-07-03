@@ -79,6 +79,17 @@ def test_process_not_found_carries_program() -> None:
     assert "processkit-no-such-binary-xyzzy" in excinfo.value.program
 
 
+def test_bad_cwd_is_not_misclassified_as_process_not_found() -> None:
+    # A missing working directory is a `Spawn` failure, NOT a missing *program*: it
+    # must surface as a plain ProcessError, never ProcessNotFound/FileNotFoundError
+    # (which would mislead an `except FileNotFoundError` "program is optional" path).
+    # The program here exists; only its cwd does not.
+    with pytest.raises(ProcessError) as excinfo:
+        Command(PY, ["-c", "pass"]).cwd("processkit-no-such-directory-xyzzy").run()
+    assert not isinstance(excinfo.value, ProcessNotFound)
+    assert not isinstance(excinfo.value, FileNotFoundError)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal-kill semantics")
 def test_signalled_carries_structured_fields() -> None:
     # A child that kills itself with a signal surfaces as `Signalled` carrying the

@@ -57,9 +57,11 @@ also a synchronous `proc.kill()` (like `subprocess.Popen.kill()`) for "stop it
 now, I'll `await proc.wait()` for the code myself."
 
 `start()`, `astart()`, and `Runner().start()` put the child in a **private group
-the handle owns**: tearing the handle down kills the whole tree. The shared-group variant —
-`group.start(cmd)` — gives the same handle, but the *group* controls the tree's
-fate (`owns_group` is `False`); see [Process groups](process-groups.md).
+the handle owns**: tearing the handle down kills the whole tree, and `shutdown()`
+works on it. The shared-group variant — `group.start(cmd)` — gives the same handle,
+but the *group* controls the tree's fate (`owns_group` is `False`), so `shutdown()`
+raises `Unsupported` there; tear such a child down via the group (or `kill()`). See
+[Process groups](process-groups.md).
 
 ## Streaming stdout
 

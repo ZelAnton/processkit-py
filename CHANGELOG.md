@@ -247,6 +247,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching every other program-bearing `ProcessError`.
 - `wait_for_port()` no longer leaks the probe socket if the awaiting task is
   cancelled just after the connection is accepted.
+- `wait_for()` now bounds its predicate by `timeout` — an async predicate that
+  hangs no longer ignores the deadline — while propagating the predicate's own
+  exception unchanged and cancelling the in-flight predicate (rather than orphaning
+  it) when the awaiting task is cancelled.
 
 ### Security
 - `repr(Command(...))` no longer renders argv (or env *values*): it now uses the

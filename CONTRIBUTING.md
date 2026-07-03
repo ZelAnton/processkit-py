@@ -69,7 +69,10 @@ native `uv run pytest`, which is faster for day-to-day work.
   apply formatting; don't reformat code you are not changing.
 - **Dependencies** are declared in `pyproject.toml` and pinned in `uv.lock`
   (commit the lockfile). Add them with `uv add`, not by hand.
-- See [`AGENTS.md`](AGENTS.md) for the full, authoritative set of conventions.
+- The authoritative bar is simply what CI enforces — `ruff`, `mypy --strict`, and
+  warning-free `pytest`, plus `cargo fmt` / `clippy` on the Rust side — all
+  configured in [`pyproject.toml`](pyproject.toml); run the
+  [gates above](#build-and-test) locally before opening a pull request.
 
 ## Changelog
 

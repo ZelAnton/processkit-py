@@ -39,7 +39,40 @@ async def wait_for(
     deadline = loop.time() + timeout
     while True:
         outcome = predicate()
-        ready = await outcome if isinstance(outcome, Awaitable) else outcome
+        if isinstance(outcome, Awaitable):
+            # Bound the predicate by the deadline so a hung async predicate (a server
+            # that accepts but never answers) can't outlive ``timeout``. Drive it as an
+            # explicit task under ``asyncio.wait`` rather than ``asyncio.wait_for``:
+            # ``wait_for`` cancels the task *before it runs* at ``timeout<=0`` (which
+            # would break "evaluate at least once"), and its own ``TimeoutError`` is
+            # indistinguishable from one the predicate raises for its own I/O. With
+            # ``asyncio.wait`` we tell the two apart — if our deadline fires the task
+            # isn't ``done``; otherwise ``task.result()`` re-raises the predicate's own
+            # exception untouched.
+            task = asyncio.ensure_future(outcome)
+            remaining = deadline - loop.time()
+            try:
+                done, _pending = await asyncio.wait({task}, timeout=max(remaining, 0.0))
+            except asyncio.CancelledError:
+                # The caller cancelled us. asyncio.wait (unlike asyncio.wait_for) does
+                # NOT cancel its member task, so cancel the predicate ourselves or it
+                # leaks. Drain suppressing *any* exception — the task may have already
+                # finished with its own error the instant we were cancelled, and that
+                # must not replace the cancellation — then re-raise the CancelledError.
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+                raise
+            if task not in done:
+                # Our deadline fired first: cancel the predicate and drain it (again
+                # swallowing whatever it raises on the way down) before timing out.
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+                raise TimeoutError(f"condition not met within {timeout}s")
+            ready = task.result()
+        else:
+            ready = outcome
         if ready:
             return
         remaining = deadline - loop.time()

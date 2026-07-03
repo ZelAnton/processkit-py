@@ -77,6 +77,11 @@ exclude = [
   "compose.yaml",
   ".dockerignore",
   "release-token-bypass.md",
+  # Internal planning / session-handoff docs. They live only in a local commit and
+  # never reach `main`, but exclude them here too so they can never slip into a
+  # source dist from any build tree (belt-and-braces, like release-token-bypass.md).
+  "progress.md",
+  "*-plan.md",
 ]
 
 [tool.ruff]

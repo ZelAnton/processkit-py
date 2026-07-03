@@ -104,7 +104,8 @@ decides what you get back. Each has an `a`-prefixed asyncio twin
 | a yes/no answer | `.probe()` | `bool` — exit 0 → `True`, 1 → `False`, anything else raises |
 | a live handle — streaming, stdin, probes | `.start()` / `.astart()` | `RunningProcess` |
 
-The same vocabulary repeats on every layer (`Runner`, `CliClient`).
+The run-to-completion verbs repeat on the `Runner` and `CliClient` layers too
+(`start` / `astart` live on `Command` and `Runner`).
 *Deeper: [Running commands](docs/commands.md).*
 
 ## Quick start
@@ -320,7 +321,7 @@ stderr, and reported program come from the first stage that didn't exit cleanly.
 Command("worker").inherit_env(["PATH", "HOME", "LANG"]).run()        # allow-list on a cleared env
 Command("worker").gid(1000).groups([1000]).uid(1000).setsid().run()  # POSIX: drop privileges, new session
 Command("helper").create_no_window().run()                           # Windows: no console window
-Command("daemonish").kill_on_parent_death().astart()                 # die with a hard-killed parent
+Command("daemonish").kill_on_parent_death().start()                  # die with a hard-killed parent
 ```
 
 `uid`/`gid`/`groups`/`setsid` are POSIX-only — on Windows the run raises

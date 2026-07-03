@@ -108,6 +108,103 @@ def test_wait_for_rejects_nonpositive_interval() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_for_bounds_a_hanging_async_predicate() -> None:
+    # A hung async predicate must not outlive `timeout`: the deadline bounds the
+    # predicate itself, not just the gaps between polls. A regression (bare await)
+    # would hang until the outer guard fires, so assert it returns *promptly*.
+    async def scenario() -> None:
+        async def never_answers() -> bool:
+            await asyncio.Event().wait()  # blocks forever
+            return True
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(wait_for(never_answers, timeout=0.2, interval=0.01), timeout=5.0)
+        elapsed = loop.time() - start
+        assert elapsed < 2.0, f"wait_for did not bound the hanging predicate ({elapsed:.1f}s)"
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_propagates_predicate_own_exception() -> None:
+    # A predicate that raises its own error (e.g. an I/O `TimeoutError`) must surface
+    # untouched — not be swallowed and relabelled as the generic "condition not met".
+    async def scenario() -> None:
+        async def boom() -> bool:
+            raise TimeoutError("db handshake timed out")
+
+        with pytest.raises(TimeoutError, match="db handshake"):
+            await wait_for(boom, timeout=10.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_async_predicate_runs_once_at_zero_timeout() -> None:
+    # Symmetry with the sync path: an already-true async predicate is evaluated (and
+    # succeeds) even at timeout=0, not cancelled before it runs.
+    async def scenario() -> None:
+        calls = 0
+
+        async def ready() -> bool:
+            nonlocal calls
+            calls += 1
+            return True
+
+        await wait_for(ready, timeout=0.0)
+        assert calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_cancels_inner_predicate_on_outer_cancel() -> None:
+    # Cancelling the task awaiting wait_for must not orphan the in-flight predicate:
+    # asyncio.wait (unlike wait_for) does not cancel its member, so wait_for must.
+    async def scenario() -> None:
+        started = asyncio.Event()
+        cancelled = False
+
+        async def slow() -> bool:
+            nonlocal cancelled
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            return True
+
+        task = asyncio.ensure_future(wait_for(slow, timeout=10.0))
+        await started.wait()  # the predicate is now running inside asyncio.wait
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.01)  # let the inner cancellation settle
+        assert cancelled, "wait_for orphaned the inner predicate task on outer cancel"
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_outer_cancel_wins_over_completed_predicate_exception() -> None:
+    # Race: if the predicate task finishes with its OWN exception at the same instant
+    # the caller cancels wait_for, the cancellation must win (CancelledError) — not the
+    # predicate's exception, or `except CancelledError: cleanup()` silently misses.
+    async def scenario() -> None:
+        started = asyncio.Event()
+
+        async def flaky() -> bool:
+            started.set()
+            raise ValueError("predicate's own error")  # completes without awaiting
+
+        outer = asyncio.ensure_future(wait_for(flaky, timeout=10.0))
+        await started.wait()  # flaky's task is now done with ValueError; outer still in wait
+        outer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+
+    asyncio.run(scenario())
+
+
 # --- wait_for_port / wait_for_line ------------------------------------------
 
 

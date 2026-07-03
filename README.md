@@ -161,6 +161,7 @@ to …" tasks to working snippets — then read
 | Guide | Covers |
 |---|---|
 | [Cookbook](docs/cookbook.md) | Task → snippet recipes for everything below; the fastest way in |
+| [Coming from subprocess](docs/migrating.md) | Translating your `subprocess` / `asyncio.subprocess` code, and what containment adds |
 | [Running commands](docs/commands.md) | The full `Command` builder and every consuming verb, with error semantics |
 | [Process groups](docs/process-groups.md) | Containment, teardown, signals, suspend/resume, members, limits, stats |
 | [Streaming & interactive I/O](docs/streaming.md) | Line streaming, conversational stdin, readiness probes, per-run profiling |

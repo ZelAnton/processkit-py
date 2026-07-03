@@ -162,6 +162,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runnable [`examples/`](examples/) — self-contained, cross-platform programs, one
   per target niche (whole-tree no-orphan teardown, a readiness-gated server,
   supervision-until-healthy, a resource-limited sandbox). Each is exercised in CI.
+- Docs: a **"Coming from subprocess"** guide that maps `subprocess` /
+  `asyncio.subprocess` patterns onto their processkit equivalents (verbs, flags,
+  pipelines, the exception mapping) and shows the whole-tree containment the stdlib
+  can't express.
 
 ### Changed
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the

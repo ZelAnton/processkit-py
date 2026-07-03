@@ -34,13 +34,16 @@ and the same no-orphan guarantee.
 
 **New here?** Start with the [Cookbook](cookbook.md) — short task-to-snippet
 recipes for everything the package does — then read [Running commands](commands.md)
-end to end (it's the vocabulary every other guide builds on). Reach for the rest
-as the need arises, and keep [Platform support](platforms.md) handy before you
-ship: it collects every per-OS caveat in one place.
+end to end (it's the vocabulary every other guide builds on). Coming from the
+standard library? [Coming from subprocess](migrating.md) maps your existing
+`subprocess` / `asyncio.subprocess` patterns onto their processkit equivalents.
+Reach for the rest as the need arises, and keep [Platform support](platforms.md)
+handy before you ship: it collects every per-OS caveat in one place.
 
 | Guide | Covers |
 |---|---|
 | [Cookbook](cookbook.md) | "I want to …" → working snippet, for every capability; the fastest way in |
+| [Coming from subprocess](migrating.md) | Side-by-side translation of `subprocess` / `asyncio.subprocess` patterns, the exception mapping, and the whole-tree containment the stdlib can't give |
 | [Running commands](commands.md) | The `Command` builder end to end — args, env/sandboxing, stdin, stdout/stderr redirection, encodings, output caps, timeouts, privileges — and every consuming verb (`output`, `run`, `probe`, …) with its error semantics |
 | [Process groups](process-groups.md) | Kill-on-drop containment: creating groups, spawning, teardown, whole-tree signals, suspend/resume, member listing, resource limits, stats |
 | [Streaming & interactive I/O](streaming.md) | `astart()` and the live `RunningProcess`: line streaming, interactive stdin, readiness probes (`wait_for_line` / `wait_for_port` / `wait_for`), per-run profiling |

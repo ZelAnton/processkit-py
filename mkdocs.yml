@@ -41,6 +41,7 @@ theme:
 nav:
   - Home: README.md
   - Cookbook: cookbook.md
+  - Coming from subprocess: migrating.md
   - Running commands: commands.md
   - Process groups: process-groups.md
   - Streaming & interactive I/O: streaming.md

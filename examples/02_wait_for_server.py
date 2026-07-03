@@ -1,9 +1,9 @@
 """Start a server, wait until it is ready, use it, then reap the whole tree.
 
-The "start a service, then talk to it" pattern - everywhere in CI orchestration
+The "start a service, then talk to it" pattern — everywhere in CI orchestration
 and integration tests, and a constant Python pain point (racy ``sleep()`` calls,
 leaked server processes). Here the server runs inside a ``ProcessGroup``, so no
-matter how the block exits - success, exception, or timeout - the server and
+matter how the block exits — success, exception, or timeout — the server and
 anything it spawned are gone.
 
 ``wait_for_port`` replaces the usual ``time.sleep(2)  # hope it's up`` guess with
@@ -23,10 +23,11 @@ from processkit import Command, ProcessGroup, wait_for_port
 
 HOST = "127.0.0.1"
 
-# A tiny stand-in HTTP server: bind a port (reusably, so a just-freed port rebinds
-# cleanly on macOS/BSD), then answer every connection with a canned 200. Your real
-# service - uvicorn, a Node process, a database - goes here instead. Kept inline and
-# dependency-free so it starts in milliseconds and the example runs anywhere.
+# A tiny stand-in HTTP server: bind a port (with SO_REUSEADDR, so the just-freed
+# port rebinds without a transient "address already in use"), then answer every
+# connection with a canned 200. Your real service — uvicorn, a Node process, a
+# database — goes where this Command is built. Kept inline and dependency-free so
+# it starts in milliseconds and the example runs anywhere.
 _SERVER = r"""
 import socket, sys
 host, port = sys.argv[1], int(sys.argv[2])
@@ -68,7 +69,16 @@ def _http_status(url: str) -> int:
 async def main() -> None:
     port = _free_port()
     async with ProcessGroup() as group:
-        await group.astart(Command(sys.executable, ["-c", _SERVER, HOST, str(port)]))
+        # A started (backgrounded) server's stdout must be inherited, sent to null,
+        # or actively drained — never left as the default unconsumed pipe, or a real
+        # service that logs to stdout blocks once the pipe fills. "inherit" sends the
+        # server's logs to our console, which is what you usually want anyway.
+        server = (
+            Command(sys.executable, ["-c", _SERVER, HOST, str(port)])
+            .stdout("inherit")
+            .stderr("inherit")
+        )
+        await group.astart(server)
 
         print(f"waiting for the server on {HOST}:{port} ...")
         await wait_for_port(HOST, port, timeout=10)

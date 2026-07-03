@@ -21,10 +21,11 @@ from processkit import Command, Supervisor
 # attempt counter that persists across restarts — standing in for a service that
 # needs a dependency (a port, a migration, a mount) to become ready first.
 _WORKER = """
-import os, sys
-path = sys.argv[1]
-attempt = (int(open(path).read()) if os.path.exists(path) else 0) + 1
-open(path, "w").write(str(attempt))
+import sys
+from pathlib import Path
+counter = Path(sys.argv[1])
+attempt = (int(counter.read_text()) if counter.exists() else 0) + 1
+counter.write_text(str(attempt))
 print(f"worker attempt {attempt}", flush=True)
 sys.exit(0 if attempt >= 3 else 1)
 """

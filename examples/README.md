@@ -2,8 +2,9 @@
 
 Runnable, self-contained programs — each maps to one of the niches processkit is
 built for. They use only the standard library plus `processkit`, spawn their own
-child processes (via the running Python), and work the same on Windows, Linux,
-and macOS. Every one is exercised in CI, so they stay current with the API.
+child processes (via the running Python), and run to a clean exit on Windows,
+Linux, and macOS (the sandbox example degrades gracefully where the kernel forbids
+resource limits). Every one is exercised in CI, so they stay current with the API.
 
 Run any of them from the repository root:
 

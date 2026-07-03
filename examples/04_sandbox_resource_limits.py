@@ -23,20 +23,22 @@ from processkit import Command, ProcessGroup, ResourceLimit, Unsupported
 
 _MiB = 1024 * 1024
 
-# A short-lived stand-in for an untrusted tool doing a little work.
-_TOOL = "import time; time.sleep(0.1)"
+# A short-lived stand-in for an untrusted tool doing a little work. The sleep keeps
+# it alive long enough for the stats() snapshot below to actually catch it running.
+_TOOL = "import time; time.sleep(2)"
 
 
 def _locked_down_tool() -> Command:
-    """An untrusted command tied down independently of the group's limits: an
-    empty environment (only PATH allow-listed), a bounded captured output, and
-    kill-on-parent-death so it cannot outlive us even without explicit teardown."""
+    """An untrusted command tied down independently of the group's limits: an empty
+    environment (only PATH allow-listed), a bounded captured output that *fails* on
+    overflow rather than silently dropping, and kill-on-parent-death so it cannot
+    outlive us even without explicit teardown."""
     return (
         Command(sys.executable, ["-c", _TOOL])
         .env_clear()
         .inherit_env(["PATH"])
         .kill_on_parent_death()
-        .output_limit(max_bytes=8 * _MiB)
+        .output_limit(max_bytes=8 * _MiB, on_overflow="error")
     )
 
 
@@ -53,14 +55,16 @@ def _run(
     ) as group:
         group.start(_locked_down_tool())
         print(f"  mechanism           : {group.mechanism}")
-        # Live usage stats are a bonus, not the point — some mechanisms (a POSIX
-        # process group) can't report them, so don't let that mask the sandbox.
+        # A stats() snapshot: active_process_count is always available; peak memory /
+        # CPU are populated only where the kernel accounts for the whole tree (Windows,
+        # Linux cgroup) and are None on the POSIX process-group backend. Guard the call
+        # anyway — a locked-down environment can refuse even the snapshot.
         try:
             stats = group.stats()
             print(f"  active processes    : {stats.active_process_count}")
-            print(f"  peak memory (bytes) : {stats.peak_memory_bytes}")
+            print(f"  peak memory (bytes) : {stats.peak_memory_bytes}")  # None on process-group
         except Unsupported:
-            print("  usage stats         : unavailable on this platform")
+            print("  usage stats         : unavailable in this environment")
 
 
 def main() -> None:

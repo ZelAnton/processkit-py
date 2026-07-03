@@ -46,7 +46,7 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # tests; it has no Python value (the Python test doubles come from the crate's
 # always-on `doubles` surface — ScriptedRunner / RecordingRunner — plus the
 # `record`-gated cassette RecordReplayRunner enabled above).
-processkit = { version = "=1.1.0", default-features = false, features = [
+processkit = { version = "=1.2.0", default-features = false, features = [
   "process-control",
   "limits",
   "record",

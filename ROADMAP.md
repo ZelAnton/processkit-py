@@ -71,7 +71,7 @@ asyncio.run(main())
 - **Distribution:** abi3 wheels (cp310+) to keep the GIL matrix flat, plus a
   version-specific free-threaded wheel (cp314t, PEP 703); `cibuildwheel` across
   Windows x64, manylinux + musllinux x86_64 / aarch64, macOS x86_64 / arm64.
-- **Versioning:** the crate is at 1.1 (pinned exactly at `=1.1.0`). The binding
+- **Versioning:** the crate is at 1.2 (pinned exactly at `=1.2.0`). The binding
   pins an exact crate version and tracks API churn deliberately, not transitively.
 
 ## Naming & publishing
@@ -200,7 +200,7 @@ Prioritised by Python demand, not crate order.
 - **Async ecosystem fragmentation.** asyncio-only leaves trio / anyio users out.
   Mitigation: scope to asyncio for v1; revisit anyio later (or never).
 - **Binding tracks the `processkit` crate.** Mitigation: pin an exact version
-  (`=1.1.0`); keep the binding thin so churn is cheap to absorb.
+  (`=1.2.0`); keep the binding thin so churn is cheap to absorb.
 - **Distribution.** cdylib + platform FFI across the wheel matrix is fiddly.
   Mitigation: abi3 to flatten the matrix; `cibuildwheel` from day one.
 - **Test seam doesn't port.** See Phase 4 — resolved by a Python-native
@@ -232,4 +232,4 @@ Prioritised by Python demand, not crate order.
    `FileNotFoundError`; `asyncio.CancelledError` surfaces natively on awaited
    cancellation.
 6. **Publish order — resolved.** The crate is published to crates.io and pinned
-   exactly (`=1.1.0`).
+   exactly (`=1.2.0`).

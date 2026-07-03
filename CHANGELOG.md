@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Synchronous `Command` builder over the `processkit` Rust crate (pinned at
-  `=1.1.0`): `output()` (captures a non-zero exit, timeout, and signal-kill as
+  `=1.2.0`): `output()` (captures a non-zero exit, timeout, and signal-kill as
   data), `output_bytes()` (raw-bytes stdout → `BytesResult`), `run()` (returns
   trimmed stdout, raises on failure), `exit_code()`, and `probe()`, configured
   with `arg`/`args`/`cwd`/`env`/`envs`/`env_remove`/`env_clear`/`timeout`/

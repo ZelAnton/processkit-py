@@ -167,7 +167,7 @@ dependencies = [
 name = "processkit"
 version = "1.0.0"
 dependencies = [
- "processkit 1.1.0",
+ "processkit 1.2.0",
  "pyo3",
  "pyo3-async-runtimes",
  "tokio",
@@ -177,9 +177,9 @@ dependencies = [
 
 [[package]]
 name = "processkit"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15499ab6d22fe8795f8b7bbd925019db1ebad1e0fcb2c961f8785ac8ed8c5149"
+checksum = "9d260c8da1b17daaf2f4379bd5c9ec9250d76e0af9c4fcf66e501ab443570ad0"
 dependencies = [
  "async-trait",
  "encoding_rs",

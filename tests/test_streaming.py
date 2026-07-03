@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from processkit import BytesResult, Command, ProcessError, Runner, RunProfile
+from processkit import BytesResult, Command, ProcessError, ProcessGroup, Runner, RunProfile
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead
 from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
@@ -331,3 +331,23 @@ def test_async_with_reaps_tree_even_when_block_raises(tmp_path: pathlib.Path) ->
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(scenario())
     assert wait_dead(captured["pid"], timeout=10.0), "grandchild survived a raising async-with"
+
+
+def test_shared_group_streaming_enforces_command_timeout() -> None:
+    # A command's own .timeout() is enforced while streaming a *shared-group* handle
+    # (group.astart -> stdout_lines): a quiet, never-exiting child is killed at the
+    # deadline and reported as timed-out, instead of leaving the stream pending
+    # forever. This path's deadline watchdog was fixed in the processkit 1.2.0 bump
+    # (it previously armed only for own-group `Command().astart()` handles).
+    async def scenario() -> bool:
+        cmd = Command(PY, ["-c", "import time; time.sleep(60)"]).timeout(1.0)
+        async with ProcessGroup() as group:
+            proc = await group.astart(cmd)
+            async for _line in proc.stdout_lines():  # arms the deadline watchdog
+                pass
+            finished = await proc.finish()
+            return finished.outcome.timed_out
+
+    # Outer bound: if the deadline were not enforced (the pre-1.2.0 behavior) the
+    # stream would hang; fail loudly at 30s instead of hanging the suite.
+    assert asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))

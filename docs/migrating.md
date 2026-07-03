@@ -30,8 +30,8 @@ See [Picking a verb](commands.md#picking-a-verb) for the full set.
 |---|---|
 | `run(cmd, capture_output=True, text=True)` → inspect `.returncode` / `.stdout` | `Command(prog, args).output()` → `ProcessResult` (`.code`, `.stdout`, `.is_success`, `.timed_out`) |
 | `run(cmd, capture_output=True, text=True, check=True).stdout` | `Command(prog, args).run()` (returns **trimmed** stdout, raises on failure) |
-| `run(cmd).returncode` | `Command(prog, args).exit_code()` |
-| `run(cmd).returncode == 0` | `Command(prog, args).probe()` (`True`/`False`) |
+| `run(cmd).returncode` | `Command(prog, args).exit_code()` (raw code) |
+| `run(cmd).returncode == 0` | `Command(prog, args).output().is_success` (total); `.probe()` is a shortcut for `0`/`1`-exit predicate tools |
 | `run(cmd, capture_output=True).stdout` (bytes) | `Command(prog, args).output_bytes()` → `BytesResult` (`.stdout` is `bytes`) |
 
 ```python
@@ -50,6 +50,12 @@ Note the two differences from `run()` in `subprocess`: `.output().stdout` is the
 it **trimmed**; and a non-zero exit is only an error for `.run()`, never for
 `.output()`.
 
+One more divergence to know: unlike `subprocess`'s numeric `.returncode`, the
+*checking* verbs (`exit_code`, `probe`, `run`) **raise** on a timeout or a
+signal-kill instead of returning a code (and `probe()` also raises on any exit code
+other than `0`/`1`). Reach for `.output()` when you want an abnormal exit as
+inspectable data (`.timed_out`, `.signal`) rather than an exception.
+
 ## The common flags
 
 | `subprocess` keyword | `processkit` builder |
@@ -59,7 +65,7 @@ it **trimmed**; and a non-zero exit is only an error for `.run()`, never for
 | `cwd="/path"` | `.cwd("/path")` |
 | `env={...}` (**replaces** the whole environment) | `.env_clear().envs({...})` |
 | add/override one variable on the inherited env | `.env("KEY", "value")` / `.envs({...})` |
-| — (no equivalent) | `.success_codes([0, 1])` — treat listed codes as success (`grep`/`diff`) |
+| — (no equivalent) | `.success_codes([0, 1])` — **replaces** the success set with the listed codes (`grep`/`diff`) |
 
 ```python
 # subprocess: subprocess.run(["slow"], timeout=5) -> raises TimeoutExpired
@@ -173,3 +179,7 @@ that never spawn children of their own, don't need async cancellation to be
 leak-safe, and want zero third-party dependencies, the stdlib is a perfectly good
 choice — `processkit` is deliberately **not** a general `subprocess`-convenience
 replacement. The wedge is the no-orphan guarantee.
+
+---
+
+Next: [Running commands](commands.md) · [Cookbook](cookbook.md)

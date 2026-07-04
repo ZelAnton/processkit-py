@@ -514,6 +514,8 @@ class Invocation:
     def cwd(self) -> str | None: ...
     @property
     def env(self) -> dict[str, str | None]: ...
+    def env_is(self, name: str, value: str) -> bool: ...
+    def has_env(self, name: str) -> bool: ...
     @property
     def has_stdin(self) -> bool: ...
     def has_flag(self, flag: str) -> bool: ...
@@ -587,7 +589,9 @@ class Timeout(ProcessError, TimeoutError):
     """
 
     program: str
-    timeout_seconds: float
+    # `None` when the deadline wasn't known to the checking verb (a
+    # scripted/cassette-replayed timeout with no `timeout()` configured).
+    timeout_seconds: float | None
     stdout: str
     stderr: str
 

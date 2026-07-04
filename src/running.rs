@@ -17,12 +17,7 @@ use crate::errors::{map_err, ProcessError};
 use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
-use crate::runtime::{block_on, drive_async, rt};
-
-/// Map a stdin I/O failure (a broken pipe, a closed child) onto `OSError`.
-fn map_io_err(error: std::io::Error) -> PyErr {
-    PyOSError::new_err(error.to_string())
-}
+use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop, rt};
 
 /// A writable handle to a running process's stdin. Obtain it once via
 /// `RunningProcess.take_stdin()`; all methods are awaitable.
@@ -42,7 +37,7 @@ impl PyProcessStdin {
             let writer = guard
                 .as_mut()
                 .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
-            writer.write(&data).await.map_err(map_io_err)
+            writer.write(&data).await.map_err(PyErr::from)
         })
     }
 
@@ -54,7 +49,7 @@ impl PyProcessStdin {
             let writer = guard
                 .as_mut()
                 .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
-            writer.write_line(&line).await.map_err(map_io_err)
+            writer.write_line(&line).await.map_err(PyErr::from)
         })
     }
 
@@ -66,7 +61,7 @@ impl PyProcessStdin {
             let writer = guard
                 .as_mut()
                 .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
-            writer.flush().await.map_err(map_io_err)
+            writer.flush().await.map_err(PyErr::from)
         })
     }
 
@@ -76,7 +71,7 @@ impl PyProcessStdin {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let writer = { stdin.lock().await.take() };
             match writer {
-                Some(writer) => writer.finish().await.map_err(map_io_err),
+                Some(writer) => writer.finish().await.map_err(PyErr::from),
                 None => Ok(()),
             }
         })
@@ -229,6 +224,10 @@ impl PyRunningProcess {
         _exc_value: Option<Bound<'_, PyAny>>,
         _traceback: Option<Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
+        // Check before taking: a reentrant-runtime error from `block_on` after the
+        // handle is taken would drop (kill-on-drop) a process the caller could
+        // otherwise have torn down correctly from the right context.
+        reject_reentrant_runtime()?;
         if let Some(mut running) = self.inner.take() {
             // Order is load-bearing: `start_kill` before `wait`. Killing first
             // guarantees `wait` reaps promptly even when stdin was handed out via
@@ -260,6 +259,10 @@ impl PyRunningProcess {
         _exc_value: Option<Bound<'py, PyAny>>,
         _traceback: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        // Check before taking: a synchronously-failing `drive_async` (no running
+        // event loop) would otherwise drop the just-taken handle (kill-on-drop)
+        // instead of leaving it in place for the caller to retry correctly.
+        require_event_loop(py)?;
         let running = self.inner.take();
         drive_async(py, async move {
             if let Some(mut running) = running {
@@ -320,6 +323,8 @@ impl PyRunningProcess {
 
     /// Await exit and return the `Outcome`. Consumes the handle.
     fn wait<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        // Checked before `take_running()`: see the comment on `require_event_loop`.
+        require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move { running.wait().await.map(PyOutcome::from) })
     }
@@ -327,6 +332,7 @@ impl PyRunningProcess {
     /// Await exit and return `Finished` (outcome + captured stderr) without
     /// buffering stdout — use this after streaming stdout. Consumes the handle.
     fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(
             py,
@@ -336,6 +342,7 @@ impl PyRunningProcess {
 
     /// Await exit and capture the full `ProcessResult`. Consumes the handle.
     fn output<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
             running.output_string().await.map(PyProcessResult::from)
@@ -344,6 +351,7 @@ impl PyRunningProcess {
 
     /// Await exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
     fn output_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
             running.output_bytes().await.map(PyBytesResult::from)
@@ -354,6 +362,7 @@ impl PyRunningProcess {
     /// `RunProfile`. Consumes the handle.
     fn profile<'py>(&mut self, py: Python<'py>, every_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
         let every = positive_duration(every_seconds, "every_seconds")?;
+        require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
             running.profile(every).await.map(PyRunProfile::from)
@@ -368,6 +377,7 @@ impl PyRunningProcess {
         grace_seconds: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
+        require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
             running.shutdown(grace).await.map(PyOutcome::from)

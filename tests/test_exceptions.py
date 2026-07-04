@@ -66,7 +66,11 @@ def test_nonzero_exit_carries_structured_fields() -> None:
 def test_timeout_error_carries_timeout_seconds() -> None:
     with pytest.raises(Timeout) as excinfo:
         Command(PY, ["-c", "import time; time.sleep(5)"]).timeout(0.3).run()
-    assert excinfo.value.timeout_seconds == pytest.approx(0.3, abs=0.05)
+    # This is the *configured* deadline, not the elapsed time (which would differ
+    # from 0.3 by tens of milliseconds) — a tight tolerance only absorbs the
+    # Duration<->f64 round trip, not measurement noise, so it still distinguishes
+    # the two.
+    assert excinfo.value.timeout_seconds == pytest.approx(0.3, abs=1e-9)
     # The other structured fields are attached too (partial output + program).
     assert isinstance(excinfo.value.stdout, str)
     assert isinstance(excinfo.value.stderr, str)

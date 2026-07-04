@@ -166,46 +166,36 @@ def test_envs_sets_multiple() -> None:
     assert out == "1 2"
 
 
-def test_env_remove_drops_inherited() -> None:
-    os.environ["PK_REMOVE_ME"] = "parent"
-    try:
-        out = (
-            Command(PY, ["-c", "import os; print(os.environ.get('PK_REMOVE_ME', 'GONE'))"])
-            .env_remove("PK_REMOVE_ME")
-            .run()
-        )
-        assert out == "GONE"
-    finally:
-        del os.environ["PK_REMOVE_ME"]
+def test_env_remove_drops_inherited(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PK_REMOVE_ME", "parent")
+    out = (
+        Command(PY, ["-c", "import os; print(os.environ.get('PK_REMOVE_ME', 'GONE'))"])
+        .env_remove("PK_REMOVE_ME")
+        .run()
+    )
+    assert out == "GONE"
 
 
-def test_env_clear_starts_from_empty() -> None:
-    os.environ["PK_CLEAR_MARKER"] = "parent"
-    try:
-        cmd = Command(
-            PY, ["-c", "import os; print(os.environ.get('PK_CLEAR_MARKER', 'GONE'))"]
-        ).env_clear()
-        # The interpreter needs SystemRoot to spawn on Windows; re-add just that
-        # (env var names are case-insensitive on Windows).
-        if sys.platform == "win32":
-            cmd = cmd.env("SYSTEMROOT", os.environ.get("SYSTEMROOT", r"C:\Windows"))
-        assert cmd.run() == "GONE"
-    finally:
-        del os.environ["PK_CLEAR_MARKER"]
+def test_env_clear_starts_from_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PK_CLEAR_MARKER", "parent")
+    cmd = Command(
+        PY, ["-c", "import os; print(os.environ.get('PK_CLEAR_MARKER', 'GONE'))"]
+    ).env_clear()
+    # The interpreter needs SystemRoot to spawn on Windows; re-add just that
+    # (env var names are case-insensitive on Windows).
+    if sys.platform == "win32":
+        cmd = cmd.env("SYSTEMROOT", os.environ.get("SYSTEMROOT", r"C:\Windows"))
+    assert cmd.run() == "GONE"
 
 
-def test_inherit_env_filters_to_allowlist() -> None:
-    os.environ["PK_KEEP"] = "kept"
-    os.environ["PK_DROP"] = "dropped"
-    try:
-        code = "import os; print(os.environ.get('PK_KEEP', '-'), os.environ.get('PK_DROP', '-'))"
-        cmd = Command(PY, ["-c", code]).env_clear().inherit_env(["PK_KEEP"])
-        if sys.platform == "win32":
-            cmd = cmd.env("SYSTEMROOT", os.environ.get("SYSTEMROOT", r"C:\Windows"))
-        assert cmd.run() == "kept -"
-    finally:
-        del os.environ["PK_KEEP"]
-        del os.environ["PK_DROP"]
+def test_inherit_env_filters_to_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PK_KEEP", "kept")
+    monkeypatch.setenv("PK_DROP", "dropped")
+    code = "import os; print(os.environ.get('PK_KEEP', '-'), os.environ.get('PK_DROP', '-'))"
+    cmd = Command(PY, ["-c", code]).env_clear().inherit_env(["PK_KEEP"])
+    if sys.platform == "win32":
+        cmd = cmd.env("SYSTEMROOT", os.environ.get("SYSTEMROOT", r"C:\Windows"))
+    assert cmd.run() == "kept -"
 
 
 # --- bytes output -----------------------------------------------------------
@@ -322,7 +312,7 @@ def test_per_stream_encoding_overrides() -> None:
 def test_stdout_null_rejects_capture_verbs() -> None:
     # null/inherit are non-capturing: the one-shot capture verbs error clearly
     # rather than silently returning empty output.
-    with pytest.raises(ProcessError):
+    with pytest.raises(ProcessError, match="not piped"):
         Command(PY, ["-c", "print('hidden')"]).stdout("null").output()
 
 
@@ -386,7 +376,10 @@ def test_privilege_drop_unsupported_on_windows() -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM trapping is POSIX-specific")
 def test_timeout_grace_delivers_signal_before_kill(tmp_path: pathlib.Path) -> None:
     # On timeout the configured signal is sent and the grace window is honored: a
-    # child that traps SIGTERM runs its handler before any hard kill.
+    # child that traps SIGTERM runs its handler before any hard kill. A generous
+    # timeout (not the tight 0.3s this used to use) gives interpreter startup
+    # room to install the handler even on a loaded CI runner — otherwise SIGTERM
+    # can race startup and land before the handler exists, flaking the test.
     marker = tmp_path / "got_term"
     code = (
         "import signal, sys, time\n"
@@ -396,7 +389,7 @@ def test_timeout_grace_delivers_signal_before_kill(tmp_path: pathlib.Path) -> No
         "signal.signal(signal.SIGTERM, handler)\n"
         "time.sleep(30)\n"
     )
-    Command(PY, ["-c", code]).timeout(0.3).timeout_signal("term").timeout_grace(3.0).output()
+    Command(PY, ["-c", code]).timeout(1.5).timeout_signal("term").timeout_grace(5.0).output()
     assert marker.is_file()  # the child received SIGTERM and ran its handler
 
 

@@ -13,11 +13,36 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from ._processkit import ProcessError
 
 __all__ = ["wait_for", "wait_for_line", "wait_for_port"]
+
+
+def _check_timeout(timeout: float) -> None:
+    if math.isnan(timeout):
+        raise ValueError("timeout must not be NaN")
+
+
+async def _quiesce(task: asyncio.Task[Any]) -> None:
+    """Cancel a task we own and wait for it to settle, without raising its own
+    exception into this frame (the caller inspects ``task.exception()`` /
+    ``task.result()`` afterwards) and without corrupting a *fresh* cancellation
+    that lands on us while doing so. Only call this for a task ``wait_for`` /
+    ``wait_for_line`` created itself — never for a caller-supplied Future/Task
+    (see their ``owns_task`` guards).
+    """
+    task.cancel()
+    try:
+        await asyncio.wait({task})
+    except asyncio.CancelledError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise
 
 
 async def wait_for(
@@ -31,10 +56,15 @@ async def wait_for(
     ``predicate`` may be synchronous or return an awaitable. Polls every
     ``interval`` seconds; raises `TimeoutError` if the deadline passes first. A
     synchronous ``predicate`` runs on the event loop, so keep it non-blocking —
-    use an async ``predicate`` for anything that does I/O.
+    use an async ``predicate`` for anything that does I/O. If ``predicate``'s
+    awaitable is already a `asyncio.Future`/`asyncio.Task` you own, note it is
+    never cancelled by this helper on timeout — only abandoned, so cancel or
+    await it yourself afterwards if that matters. Raises `ValueError` if
+    ``timeout`` is NaN.
     """
     if interval <= 0:
         raise ValueError("interval must be a positive number of seconds")
+    _check_timeout(timeout)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
@@ -50,25 +80,32 @@ async def wait_for(
             # isn't ``done``; otherwise ``task.result()`` re-raises the predicate's own
             # exception untouched.
             task = asyncio.ensure_future(outcome)
+            # `ensure_future` returns a pre-existing Future/Task unchanged: never
+            # cancel or drain an object we didn't create ourselves.
+            owns_task = task is not outcome
             remaining = deadline - loop.time()
             try:
                 done, _pending = await asyncio.wait({task}, timeout=max(remaining, 0.0))
             except asyncio.CancelledError:
-                # The caller cancelled us. asyncio.wait (unlike asyncio.wait_for) does
-                # NOT cancel its member task, so cancel the predicate ourselves or it
-                # leaks. Drain suppressing *any* exception — the task may have already
-                # finished with its own error the instant we were cancelled, and that
-                # must not replace the cancellation — then re-raise the CancelledError.
-                task.cancel()
-                with contextlib.suppress(BaseException):
-                    await task
+                # The caller cancelled us — propagate that, never a TimeoutError.
+                if owns_task:
+                    await _quiesce(task)
                 raise
             if task not in done:
-                # Our deadline fired first: cancel the predicate and drain it (again
-                # swallowing whatever it raises on the way down) before timing out.
-                task.cancel()
-                with contextlib.suppress(BaseException):
-                    await task
+                # Our deadline fired first.
+                if owns_task:
+                    await _quiesce(task)
+                    if not task.cancelled():
+                        exc = task.exception()
+                        if exc is not None:
+                            # The predicate finished with its own exception in the
+                            # same tick as our deadline — that's the real cause,
+                            # not a timeout; let it propagate untouched.
+                            raise exc
+                        if task.result():
+                            # It also finished truthy in that same tick — honor it
+                            # rather than discarding a met condition.
+                            return
                 raise TimeoutError(f"condition not met within {timeout}s")
             ready = task.result()
         else:
@@ -110,27 +147,33 @@ async def wait_for_port(
     """Wait until a TCP connection to ``(host, port)`` succeeds.
 
     Polls every ``interval`` seconds until the port accepts a connection or
-    ``timeout`` seconds elapse, in which case `TimeoutError` is raised.
+    ``timeout`` seconds elapse, in which case `TimeoutError` is raised, chained
+    from the last connection attempt's exception (e.g. a DNS failure survives
+    as the cause instead of being silently dropped). Raises `ValueError` if
+    ``timeout`` is NaN.
     """
     if interval <= 0:
         raise ValueError("interval must be a positive number of seconds")
+    _check_timeout(timeout)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    last_exc: BaseException | None = None
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
-            raise TimeoutError(f"port {host}:{port} not ready within {timeout}s")
+            raise TimeoutError(f"port {host}:{port} not ready within {timeout}s") from last_exc
         # Own the connect as a task: if a timeout or a cancellation races a
         # successful connect, `asyncio.wait_for` can drop the established transport
         # on the floor (a known leak). Owning the task lets us close it instead.
         conn = asyncio.ensure_future(asyncio.open_connection(host, port))
         try:
             _reader, writer = await asyncio.wait_for(conn, timeout=remaining)
-        except (OSError, asyncio.TimeoutError):
+        except (OSError, asyncio.TimeoutError) as exc:
             _close_pending_connection(conn)
+            last_exc = exc
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise TimeoutError(f"port {host}:{port} not ready within {timeout}s") from None
+                raise TimeoutError(f"port {host}:{port} not ready within {timeout}s") from last_exc
             # Don't overshoot the deadline by a full interval on the last retry.
             await asyncio.sleep(min(interval, remaining))
             continue
@@ -153,9 +196,12 @@ async def wait_for_line(
     """Consume from an stdout line iterator until ``predicate(line)`` is true.
 
     Returns the matching line. Raises `TimeoutError` if no line matches within
-    ``timeout`` seconds, or `ProcessError` if the stream ends first. Lines read
-    before the match are consumed; iteration may continue afterwards.
+    ``timeout`` seconds, or propagates whatever `predicate` or the stream itself
+    raised (a `ProcessError` if the stream ends first) untouched — never masked
+    behind the timeout. Lines read before the match are consumed; iteration may
+    continue afterwards. Raises `ValueError` if ``timeout`` is NaN.
     """
+    _check_timeout(timeout)
 
     async def scan() -> str:
         async for line in lines:
@@ -163,13 +209,24 @@ async def wait_for_line(
                 return line
         raise ProcessError("the output stream ended before a matching line")
 
-    # Own the scan as a task so a line that matches at the exact deadline — which
-    # would complete the task just as `wait_for` cancels it — is recovered rather
-    # than dropped (the line is already consumed from the iterator).
+    # Own the scan as a task and bound it with `asyncio.wait` (not
+    # `asyncio.wait_for`, whose own `TimeoutError` would be indistinguishable
+    # from — and can mask — a builtin-`TimeoutError`-family exception `scan()`
+    # raises on its own), so a line that matches at the exact deadline is
+    # recovered rather than dropped (the line is already consumed from the
+    # iterator).
     task = asyncio.ensure_future(scan())
     try:
-        return await asyncio.wait_for(task, timeout)
-    except asyncio.TimeoutError:
-        if task.done() and not task.cancelled() and task.exception() is None:
+        done, _pending = await asyncio.wait({task}, timeout=max(timeout, 0.0))
+    except asyncio.CancelledError:
+        await _quiesce(task)
+        raise
+    if task not in done:
+        await _quiesce(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                raise exc
             return task.result()
         raise TimeoutError(f"no matching line within {timeout}s") from None
+    return task.result()

@@ -460,8 +460,11 @@ impl PyInvocation {
             .map(|p| p.to_string_lossy().into_owned())
     }
 
-    /// The environment overrides as a dict; a `None` value is a removal
-    /// (`env_remove`). Later settings of the same key win (the effective value).
+    /// The environment overrides as a dict, in call order; a `None` value is a
+    /// removal (`env_remove`). This is the **raw** declared list: duplicate keys
+    /// are not folded, so a Windows-style case-insensitive duplicate (`"Path"`
+    /// and `"PATH"`) appears as two separate entries. For the platform-correct
+    /// **effective** check use `env_is()` / `has_env()`.
     #[getter]
     fn env<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
@@ -471,6 +474,19 @@ impl PyInvocation {
             dict.set_item(key, value)?;
         }
         Ok(dict)
+    }
+
+    /// Whether the invocation set `name` to exactly `value` — the platform-
+    /// correct answer (case-insensitive on Windows, last write wins), unlike
+    /// scanning the raw `env` dict by hand.
+    fn env_is(&self, name: &str, value: &str) -> bool {
+        self.inner.env_is(name, value)
+    }
+
+    /// Whether the invocation set `name` to some value; a removal
+    /// (`env_remove`) does not count.
+    fn has_env(&self, name: &str) -> bool {
+        self.inner.has_env(name)
     }
 
     /// Whether a (non-empty) stdin source was supplied.

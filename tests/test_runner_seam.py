@@ -162,8 +162,11 @@ def test_reply_timeout() -> None:
     runner = ScriptedRunner()
     runner.fallback(Reply.timeout())
     assert runner.output(Command("x")).timed_out
-    with pytest.raises(Timeout):
+    with pytest.raises(Timeout) as excinfo:
         runner.run(Command("x"))
+    # Reply.timeout() takes no duration: the deadline is unknown to this
+    # scripted run, so timeout_seconds must read None, not a misleading 0.0.
+    assert excinfo.value.timeout_seconds is None
 
 
 def test_reply_signalled() -> None:
@@ -358,6 +361,32 @@ def test_invocation_captures_cwd_env_stdin(tmp_path: pathlib.Path) -> None:
     assert "LOG" in text  # env name shown
     assert "--flag" not in text  # argv value hidden
     assert "info" not in text  # env value hidden
+
+
+def test_invocation_env_is_and_has_env() -> None:
+    # env_is()/has_env() answer the *effective* override (last write wins),
+    # unlike scanning the raw `env` dict by hand.
+    rec = RecordingRunner.replying(Reply.ok(""))
+    command = Command("tool").env("LOG", "info").env("LOG", "debug").env_remove("DROP")
+    rec.run(command)
+    inv = rec.only_call()
+    assert inv.env_is("LOG", "debug")
+    assert not inv.env_is("LOG", "info")
+    assert inv.has_env("LOG")
+    assert not inv.has_env("DROP")  # removed, not "set"
+    assert not inv.has_env("MISSING")
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="env-key case-insensitivity is Windows-specific"
+)
+def test_invocation_env_is_case_insensitive_on_windows() -> None:
+    rec = RecordingRunner.replying(Reply.ok(""))
+    command = Command("tool").env("Path", "custom")
+    rec.run(command)
+    inv = rec.only_call()
+    assert inv.env_is("PATH", "custom")
+    assert inv.has_env("path")
 
 
 def test_recording_runner_async_records() -> None:

@@ -192,6 +192,28 @@ def test_consumed_handle_raises() -> None:
         asyncio.run(scenario())
 
 
+def test_async_verb_without_running_loop_leaves_handle_usable() -> None:
+    # Calling an async-only consuming verb (e.g. `wait()`) from sync code, with no
+    # asyncio event loop running, must not destroy the still-live process as a
+    # side effect of the error path — it must raise cleanly and leave the handle
+    # intact and reusable, not spend it.
+    proc = Command(PY, ["-c", "import time; time.sleep(30)"]).start()
+    pid = proc.pid
+    assert pid is not None
+    with pytest.raises(ProcessError):
+        # No running event loop: raises synchronously, before any await is
+        # even reachable -- that's the point of this test, not a missing await.
+        proc.wait()  # type: ignore[unused-coroutine]
+    assert proc.pid == pid, "the handle must not be consumed by the failed call"
+    assert is_alive(pid), "the process must still be alive after the failed call"
+
+    async def reap() -> None:
+        await proc.wait()
+
+    asyncio.run(reap())
+    assert wait_dead(pid, timeout=10.0)
+
+
 def test_cancel_mid_stream_kills_tree(tmp_path: pathlib.Path) -> None:
     pid_file = tmp_path / "grandchild.pid"
 

@@ -89,6 +89,29 @@ def test_sync_verb_in_stop_when_surfaces_clear_error() -> None:
     assert "async context" in str(captured[0]), str(captured[0])
 
 
+def test_reentrant_run_call_leaves_the_target_supervisor_usable() -> None:
+    # A sync verb called reentrantly (here, another Supervisor's `run()` called
+    # from inside a stop_when predicate running on the tokio runtime) must have
+    # its reentrant-runtime check run BEFORE the target is taken out of self —
+    # otherwise the failed call would still spend the handle for nothing.
+    target = Supervisor(Command(PY, ["-c", "print('x')"]), restart="never")
+
+    def reentrant_stop(_result: object) -> bool:
+        with pytest.raises(ProcessError):
+            target.run()  # re-enters the runtime: must raise, not spend `target`
+        return True
+
+    driver = Supervisor(
+        Command(PY, ["-c", "print('y')"]),
+        restart="always",
+        stop_when=reentrant_stop,
+    )
+    outcome = driver.run()
+    assert outcome.stopped == "predicate"
+    # `target` must still be usable after the failed reentrant call.
+    assert target.run().final_result.is_success
+
+
 # --- backoff validation -----------------------------------------------------
 
 

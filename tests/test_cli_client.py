@@ -8,8 +8,9 @@ and it has no `start()`), so it is not interchangeable with the runner seam.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
+
+import pytest
 
 from processkit import CliClient, ProcessRunner
 
@@ -53,14 +54,11 @@ def test_cli_client_default_timeout_applies() -> None:
     assert result.timed_out
 
 
-def test_cli_client_default_env_remove() -> None:
-    os.environ["PK_CLI_RM"] = "present"
-    try:
-        client = CliClient(PY, default_env_remove=["PK_CLI_RM"])
-        out = client.run(["-c", "import os; print(os.environ.get('PK_CLI_RM', 'GONE'))"])
-        assert out == "GONE"
-    finally:
-        del os.environ["PK_CLI_RM"]
+def test_cli_client_default_env_remove(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PK_CLI_RM", "present")
+    client = CliClient(PY, default_env_remove=["PK_CLI_RM"])
+    out = client.run(["-c", "import os; print(os.environ.get('PK_CLI_RM', 'GONE'))"])
+    assert out == "GONE"
 
 
 def test_cli_client_is_not_a_process_runner() -> None:

@@ -27,31 +27,34 @@ if sys.platform == "win32":
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     _STILL_ACTIVE = 259
 
+    # Built once at import time, not on every `is_alive` call: the DLL handle
+    # and signatures never change, and `is_alive` is polled in a tight loop by
+    # `wait_until`/`wait_dead`.
+    _kernel32 = WinDLL("kernel32", use_last_error=True)
+    # Declare signatures explicitly: a HANDLE is pointer-width, so the default
+    # `c_int` return type would truncate it on 64-bit Windows.
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    _kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        POINTER(wintypes.DWORD),
+    ]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
     def is_alive(pid: int) -> bool:
         """Whether the process with this PID is currently running."""
-        kernel32 = WinDLL("kernel32", use_last_error=True)
-        # Declare signatures explicitly: a HANDLE is pointer-width, so the
-        # default `c_int` return type would truncate it on 64-bit Windows.
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-        kernel32.GetExitCodeProcess.argtypes = [
-            wintypes.HANDLE,
-            POINTER(wintypes.DWORD),
-        ]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-
-        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
         try:
             code = wintypes.DWORD()
-            if not kernel32.GetExitCodeProcess(handle, byref(code)):
+            if not _kernel32.GetExitCodeProcess(handle, byref(code)):
                 return False
             return code.value == _STILL_ACTIVE
         finally:
-            kernel32.CloseHandle(handle)
+            _kernel32.CloseHandle(handle)
 
 else:
 

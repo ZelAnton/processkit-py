@@ -85,3 +85,37 @@ where
         }
     }
 }
+
+/// Whether an asyncio event loop is currently running on this thread — the
+/// precondition `drive_async`/`future_into_py` need to schedule their bridged
+/// future. Check this *before* a consuming verb takes its handle out of
+/// `self`: `future_into_py` fails synchronously when no loop is running, and by
+/// then the taken value would already be moved into the future it builds, so a
+/// synchronous failure would drop it (kill-on-drop) instead of leaving it in
+/// place for the caller to retry correctly.
+pub(crate) fn require_event_loop(py: Python<'_>) -> PyResult<()> {
+    pyo3_async_runtimes::tokio::get_current_loop(py)
+        .map(|_| ())
+        .map_err(|_| {
+            ProcessError::new_err(
+                "no running asyncio event loop; call this async (a-prefixed) verb \
+                 with `await` from inside a coroutine, not from sync code",
+            )
+        })
+}
+
+/// Whether the calling thread is already inside the shared tokio runtime — the
+/// same condition `block_on_interruptible` rejects above. Check this *before* a
+/// sync consuming verb takes its handle out of `self`, for the same reason
+/// `require_event_loop` is checked before `drive_async`.
+pub(crate) fn reject_reentrant_runtime() -> PyResult<()> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(ProcessError::new_err(
+            "cannot call a synchronous processkit verb from inside an async context \
+             or a callback that runs on the runtime (e.g. a Supervisor stop_when \
+             predicate); use the async (a-prefixed) API, or compute the value before \
+             the callback",
+        ));
+    }
+    Ok(())
+}

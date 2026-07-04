@@ -35,7 +35,11 @@ def test_enable_logging_forwards_runs_to_python_logging(caplog: pytest.LogCaptur
     records = [r for r in caplog.records if r.name == "processkit"]
     assert records, "expected a processkit log record from the run"
     # The crate's per-run event is `debug!("child spawned", program=..., pid=...)`.
-    assert any("spawned" in r.getMessage() for r in records)
-    assert all(r.levelno == logging.DEBUG for r in records)
+    # Assert the level on that specific record, not on every forwarded record —
+    # the crate may also emit its own documented WARNING-level edge events, and
+    # `enable_logging()` is process-global for the rest of the session.
+    spawned = [r for r in records if "spawned" in r.getMessage()]
+    assert spawned, "expected a 'child spawned' record from the run"
+    assert all(r.levelno == logging.DEBUG for r in spawned)
     # The argv sentinel we passed must be absent from every forwarded record.
     assert not any(sentinel in r.getMessage() for r in records)

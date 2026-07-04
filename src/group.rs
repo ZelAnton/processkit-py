@@ -12,7 +12,7 @@ use crate::command::PyCommand;
 use crate::convert::{nonnegative_duration, parse_signal};
 use crate::errors::{map_err, ProcessError};
 use crate::running::PyRunningProcess;
-use crate::runtime::{block_on, drive_async};
+use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
 
 /// A snapshot of a `ProcessGroup`'s resource usage.
 #[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
@@ -162,6 +162,9 @@ impl PyProcessGroup {
         _exc_value: Option<Bound<'py, PyAny>>,
         _traceback: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        // Checked before taking: see the comment on `require_event_loop` in
+        // running.rs for why the order matters (consume-then-fail).
+        require_event_loop(py)?;
         let group = self.inner.take();
         drive_async(py, async move {
             if let Some(group) = group {
@@ -206,8 +209,9 @@ impl PyProcessGroup {
     }
 
     /// Send a signal to every process in the tree. `name` is one of `term`,
-    /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2` (Windows emulates the
-    /// terminate/kill semantics).
+    /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2` — but a Job Object has no
+    /// POSIX signals, so on Windows only `kill` is deliverable; every other
+    /// name raises `Unsupported` there.
     fn signal(&self, name: &str) -> PyResult<()> {
         let signal = parse_signal(name)?;
         self.group()?.signal(signal).map_err(map_err)
@@ -243,6 +247,9 @@ impl PyProcessGroup {
     /// Tear down the whole tree gracefully (sync). Idempotent — a second call is
     /// a no-op.
     fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
+        // Checked before taking: see the comment on `require_event_loop` in
+        // running.rs for why the order matters (consume-then-fail).
+        reject_reentrant_runtime()?;
         if let Some(group) = self.inner.take() {
             block_on(py, shutdown_group(group))?;
         }
@@ -251,6 +258,7 @@ impl PyProcessGroup {
 
     /// Async counterpart of `shutdown()`. Idempotent.
     fn ashutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
         let group = self.inner.take();
         drive_async(py, async move {
             if let Some(group) = group {

@@ -54,6 +54,10 @@ pub(crate) fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<PyTimeoutError>(),
         "A run exceeded its configured timeout. Also a builtin `TimeoutError`.",
     )?;
+    // Class-level default: `map_err` skips the instance `setattr` when the
+    // deadline is unknown (`Duration::ZERO`), so without this the attribute
+    // would be missing entirely (`AttributeError`) instead of reading `None`.
+    timeout.setattr("timeout_seconds", py.None())?;
     let not_found = make_dual_exception(
         py,
         "ProcessNotFound",
@@ -163,7 +167,13 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 stderr,
             } => {
                 let _ = value.setattr("program", program.as_str());
-                let _ = value.setattr("timeout_seconds", timeout.as_secs_f64());
+                // A zero `Duration` means the deadline wasn't known to the checking
+                // verb (a scripted/cassette-replayed timeout with no `timeout()`
+                // configured) — leave the attribute unset (reads `None`) rather than
+                // reporting a misleading literal `0.0`.
+                if !timeout.is_zero() {
+                    let _ = value.setattr("timeout_seconds", timeout.as_secs_f64());
+                }
                 let _ = value.setattr("stdout", stdout.as_str());
                 let _ = value.setattr("stderr", stderr.as_str());
             }

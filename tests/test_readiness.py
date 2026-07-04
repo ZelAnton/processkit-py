@@ -9,12 +9,13 @@ import asyncio
 import contextlib
 import inspect
 import sys
+from collections.abc import AsyncIterator
 
 import pytest
 
 from processkit import Command, ProcessGroup, wait_for, wait_for_line, wait_for_port
 
-from ._programs import free_port
+from ._programs import free_port, refused_port
 
 PY = sys.executable
 
@@ -185,6 +186,39 @@ def test_wait_for_cancels_inner_predicate_on_outer_cancel() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_for_deadline_drain_preserves_outer_cancellation() -> None:
+    # A regression: a caller cancellation landing WHILE wait_for is draining a
+    # just-timed-out predicate used to be swallowed and replaced with a
+    # misleading TimeoutError instead of propagating as CancelledError.
+    async def scenario() -> None:
+        cleanup_started = asyncio.Event()
+
+        async def slow_predicate() -> bool:
+            try:
+                await asyncio.sleep(30)  # never completes on its own
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await asyncio.sleep(0.1)  # cleanup takes a moment to unwind
+                raise
+            return True
+
+        outer = asyncio.ensure_future(wait_for(slow_predicate, timeout=0.05, interval=0.01))
+        await cleanup_started.wait()  # wait_for's deadline fired and cancelled the predicate
+        outer.cancel()  # a fresh cancellation lands while the predicate is still unwinding
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_rejects_nan_timeout() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for(lambda: True, timeout=float("nan"))
+
+    asyncio.run(scenario())
+
+
 def test_wait_for_outer_cancel_wins_over_completed_predicate_exception() -> None:
     # Race: if the predicate task finishes with its OWN exception at the same instant
     # the caller cancels wait_for, the cancellation must win (CancelledError) — not the
@@ -224,12 +258,59 @@ def test_wait_for_port_ready() -> None:
     asyncio.run(scenario())
 
 
-def test_wait_for_port_timeout() -> None:
-    port = free_port()  # nothing is listening
-
+def test_wait_for_port_rejects_nan_timeout() -> None:
     async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for_port("127.0.0.1", 1, timeout=float("nan"))
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_port_chains_last_connection_error() -> None:
+    # A typo'd/unresolvable hostname must not have its evidence (the DNS
+    # failure) silently discarded — it survives as the TimeoutError's cause.
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError) as excinfo:
+            await wait_for_port("this-host-does-not-resolve.invalid", 1, timeout=0.5, interval=0.05)
+        assert isinstance(excinfo.value.__cause__, OSError)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_port_timeout() -> None:
+    async def scenario(port: int) -> None:
         with pytest.raises(TimeoutError):
             await wait_for_port("127.0.0.1", port, timeout=0.5)
+
+    with refused_port() as port:  # nothing is listening
+        asyncio.run(scenario(port))
+
+
+def test_wait_for_line_rejects_nan_timeout() -> None:
+    async def empty_lines() -> AsyncIterator[str]:
+        return
+        yield  # pragma: no cover -- never reached; makes this an async generator
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for_line(empty_lines(), lambda _line: True, timeout=float("nan"))
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_line_propagates_predicate_own_timeout_error() -> None:
+    # A builtin-TimeoutError-family exception the predicate raises for its own
+    # reasons must surface untouched, not be masked behind the generic
+    # "no matching line" message.
+    async def lines() -> AsyncIterator[str]:
+        yield "line one"
+
+    def boom(_line: str) -> bool:
+        raise TimeoutError("db handshake timed out")
+
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError, match="db handshake"):
+            await wait_for_line(lines(), boom, timeout=10.0)
 
     asyncio.run(scenario())
 
@@ -241,12 +322,11 @@ def test_wait_for_line_matches() -> None:
     )
 
     async def scenario() -> str:
-        proc = await Command(PY, ["-c", code]).astart()
-        lines = proc.stdout_lines()
-        matched = await wait_for_line(lines, lambda line: "READY" in line, timeout=10.0)
-        proc.kill()
-        await proc.wait()
-        return matched
+        # `async with`, not a bare `proc.kill()`/`proc.wait()` pair: if the
+        # assertion inside raises, the 5s-sleeping child must still be reaped.
+        async with await Command(PY, ["-c", code]).astart() as proc:
+            lines = proc.stdout_lines()
+            return await wait_for_line(lines, lambda line: "READY" in line, timeout=10.0)
 
     assert "READY" in asyncio.run(scenario())
 
@@ -255,16 +335,15 @@ def test_wait_for_line_matches() -> None:
 
 
 def test_wait_for_port_cancel_propagates() -> None:
-    port = free_port()  # nothing is listening -> the helper stays in its retry loop
-
-    async def scenario() -> None:
+    async def scenario(port: int) -> None:
         task = asyncio.ensure_future(wait_for_port("127.0.0.1", port, timeout=10.0))
         await asyncio.sleep(0.05)  # let it enter the retry loop
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    asyncio.run(scenario())
+    with refused_port() as port:  # nothing is listening -> the helper stays in its retry loop
+        asyncio.run(scenario(port))
 
 
 def test_wait_for_port_closes_raced_connection() -> None:
@@ -303,14 +382,14 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
         real(task)
 
     monkeypatch.setattr(aio, "_close_pending_connection", spy)
-    port = free_port()  # nothing listening -> the OSError path runs the cleanup
 
-    async def scenario() -> None:
+    async def scenario(port: int) -> None:
         task = asyncio.ensure_future(wait_for_port("127.0.0.1", port, timeout=10.0))
         await asyncio.sleep(0.1)  # let a couple of refused-connect retries happen
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    asyncio.run(scenario())
+    with refused_port() as port:  # nothing listening -> the OSError path runs the cleanup
+        asyncio.run(scenario(port))
     assert called, "wait_for_port should route cleanup through _close_pending_connection"

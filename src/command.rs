@@ -149,8 +149,10 @@ impl PyCommand {
     /// non-zero exit is a normal result, like `grep` (`1` = no match) or `diff`
     /// (`1` = differs). Affects `run()` and the captured results' `is_success`
     /// (`ProcessResult` and `BytesResult`); `exit_code()` (raw) and `probe()`
-    /// (0/1) are unchanged. An empty sequence raises `ValueError` (it would accept
-    /// nothing, which is never intended).
+    /// (0/1) are unchanged. An empty sequence raises `ValueError`: the crate
+    /// itself treats an empty accept-set as a no-op (silently keeping the
+    /// previous configuration), which would make this call a confusing silent
+    /// no-op here too — reject it explicitly instead.
     fn success_codes(&self, codes: Vec<i32>) -> PyResult<Self> {
         if codes.is_empty() {
             return Err(PyValueError::new_err(

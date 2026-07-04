@@ -129,7 +129,7 @@ if TYPE_CHECKING:
     ) -> None:
         assert_type(nz.code, int)
         assert_type(nz.stdout, str)
-        assert_type(to.timeout_seconds, float)
+        assert_type(to.timeout_seconds, float | None)
         assert_type(sg.signal, int | None)
         assert_type(nf.program, str)
         assert_type(pd.program, str)

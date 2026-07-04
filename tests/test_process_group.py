@@ -10,16 +10,16 @@ operations, skipping where the platform cannot enforce them.
 
 from __future__ import annotations
 
-import contextlib
 import gc
 import pathlib
 import sys
+import time
 
 import pytest
 
 from processkit import Command, ProcessError, ProcessGroup, ResourceLimit, Unsupported
 
-from ._liveness import is_alive, read_pid_when_ready, wait_dead
+from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
 from ._programs import SPAWN_GRANDCHILD as _SPAWN_GRANDCHILD
 
 PY = sys.executable
@@ -44,17 +44,23 @@ def test_group_teardown_kills_grandchild(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_explicit_shutdown_is_idempotent() -> None:
+def test_explicit_shutdown_is_idempotent(tmp_path: pathlib.Path) -> None:
+    pid_file = tmp_path / "grandchild.pid"
     group = ProcessGroup()
-    group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
+    group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+    grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
+    assert is_alive(grandchild_pid)
     group.shutdown()
     group.shutdown()  # second call is a no-op, not an error
+    assert wait_dead(grandchild_pid, timeout=10.0), (
+        f"grandchild {grandchild_pid} survived shutdown()"
+    )
 
 
 def test_use_after_close_raises() -> None:
     group = ProcessGroup()
     group.shutdown()
-    with pytest.raises(ProcessError):
+    with pytest.raises(ProcessError, match="already closed"):
         group.start(Command(PY, ["-c", "pass"]))
 
 
@@ -179,29 +185,61 @@ def test_group_cpu_quota_kwarg_accepted() -> None:
 
 
 def test_group_suspend_resume_terminate(tmp_path: pathlib.Path) -> None:
-    # As above, assert on the grandchild: it is reparented to init and reaped, so
-    # its PID truly disappears, whereas the killed direct child can persist as an
-    # unreaped zombie for the lifetime of the still-open group handle.
+    # A ticking child gives suspend/resume an observable effect (the tick file
+    # must stall while suspended and advance again after resume); a separate
+    # grandchild-spawning child proves kill_all reaches the whole tree, not just
+    # the direct child (reparented to init and reaped, so its death is portable
+    # — the killed direct child can persist as an unreaped zombie for the
+    # lifetime of the still-open group handle).
     pid_file = tmp_path / "grandchild.pid"
+    tick_file = tmp_path / "ticks"
+    tick_code = (
+        "import sys, time\n"
+        "n = 0\n"
+        "while True:\n"
+        "    n += 1\n"
+        "    open(sys.argv[1], 'w').write(str(n))\n"
+        "    time.sleep(0.05)\n"
+    )
     with ProcessGroup() as group:
+        group.start(Command(PY, ["-c", tick_code, str(tick_file)]))
         group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
         grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
+        assert wait_until(tick_file.exists, timeout=5.0), "tick file was never written"
+
         try:
             group.suspend()
-            group.resume()
         except Unsupported:
-            pass
+            pytest.skip("suspend/resume not supported on this platform")
+        ticks_at_suspend = tick_file.read_text()
+        time.sleep(0.3)
+        assert tick_file.read_text() == ticks_at_suspend, "ticks advanced while suspended"
+        group.resume()
+        assert wait_until(lambda: tick_file.read_text() != ticks_at_suspend, timeout=5.0), (
+            "ticks did not resume after resume()"
+        )
+
         group.kill_all()
         assert wait_dead(grandchild_pid, timeout=10.0), (
             f"grandchild {grandchild_pid} survived kill_all"
         )
 
 
-def test_group_signal() -> None:
+def test_group_signal(tmp_path: pathlib.Path) -> None:
+    # Assert on the grandchild (reparented to init and reaped) rather than the
+    # direct child, which can persist as an unreaped zombie that still answers
+    # `kill(pid, 0)` for the lifetime of the still-open group handle.
+    pid_file = tmp_path / "grandchild.pid"
     with ProcessGroup() as group:
-        group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
-        with contextlib.suppress(Unsupported):
+        group.start(Command(PY, ["-c", _SPAWN_GRANDCHILD, str(pid_file)]))
+        grandchild_pid = read_pid_when_ready(pid_file, timeout=10.0)
+        try:
             group.signal("term")
+        except Unsupported:
+            pytest.skip("signal delivery not supported on this platform")
+        assert wait_dead(grandchild_pid, timeout=10.0), (
+            f"grandchild {grandchild_pid} survived group.signal('term')"
+        )
 
 
 def test_group_signal_unknown_name_rejected() -> None:

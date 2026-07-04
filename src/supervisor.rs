@@ -15,7 +15,7 @@ use crate::convert::{
 };
 use crate::errors::ProcessError;
 use crate::result::PyProcessResult;
-use crate::runtime::{block_on, drive_async};
+use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
 
 /// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
 /// callback. The crate's predicate is infallible (`-> bool`), so a raising or
@@ -214,12 +214,16 @@ impl PySupervisor {
 
     /// Run supervision to completion (sync). Consumes the supervisor.
     fn run(&mut self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
+        // Checked before taking: see the comment on `require_event_loop` in
+        // running.rs for why the order matters (consume-then-fail).
+        reject_reentrant_runtime()?;
         let supervisor = self.take_supervisor()?;
         block_on(py, supervisor.run()).map(|outcome| convert_supervision_outcome(&outcome))
     }
 
     /// Async counterpart of `run()`. Consumes the supervisor.
     fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
         let supervisor = self.take_supervisor()?;
         drive_async(py, async move {
             supervisor

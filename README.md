@@ -13,9 +13,9 @@ asyncio-native form.
 
 [![CI](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml)
+[![PyPI](https://img.shields.io/pypi/v/processkit-py.svg)](https://pypi.org/project/processkit-py/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-<!-- Once published, add: [![PyPI](https://img.shields.io/pypi/v/processkit-py.svg)](https://pypi.org/project/processkit-py/) -->
 
 ```python
 from processkit import Command
@@ -87,8 +87,10 @@ pip install processkit-py   # the import name is `processkit`
 Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on
 every supported minor version, 3.14 included), plus a **version-specific
 free-threaded wheel** for CPython 3.14t ([PEP 703](https://peps.python.org/pep-0703/)
-— importing the extension does not re-enable the GIL). (Until the first PyPI
-release lands, build from source — see [below](#building-from-source).)
+— importing the extension does not re-enable the GIL). See the
+[PyPI project page](https://pypi.org/project/processkit-py/) for released
+versions and files; platforms without a prebuilt wheel build from source — see
+[below](#building-from-source).
 
 ## Picking a verb
 
@@ -435,10 +437,12 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 ## Building from source
 
-The first release to PyPI is pending (`pip install processkit-py` is the supported
-path once published; the import name is `processkit`). Until then — or on a platform without a prebuilt wheel
-(Windows on ARM, 32-bit) — build from source (see
-[CONTRIBUTING.md](CONTRIBUTING.md) for the build prerequisites):
+`pip install processkit-py` (the import name is `processkit`) covers every
+platform with a prebuilt wheel — see the
+[PyPI project page](https://pypi.org/project/processkit-py/) for the current
+release. On a platform without a prebuilt wheel (Windows on ARM, 32-bit),
+build from source instead (see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+build prerequisites):
 
 ```bash
 git clone https://github.com/ZelAnton/processkit-py

@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message; it now shares `wait_for()`'s bounding, so `timeout=0` reliably
   evaluates once instead of sometimes short-circuiting first.
 - `wait_for()`, `wait_for_line()`, and `wait_for_port()` now reject a NaN
-  `timeout`/`interval` with `ValueError` instead of polling forever.
+  `timeout` with `ValueError` instead of polling forever; `wait_for()` and
+  `wait_for_port()` reject a NaN `interval` the same way (`wait_for_line()` has
+  no `interval` parameter).
 - `wait_for_port()` now chains the last connection attempt's exception (e.g. a
   DNS failure) as the raised `TimeoutError`'s `__cause__` instead of discarding
   it.

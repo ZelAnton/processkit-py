@@ -36,13 +36,22 @@ async def _quiesce(task: asyncio.Task[Any]) -> None:
     (see their ``owns_task`` guards).
     """
     task.cancel()
-    try:
-        await asyncio.wait({task})
-    except asyncio.CancelledError:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        raise
+    pending_cancel: asyncio.CancelledError | None = None
+    while True:
+        try:
+            # Never `await task` directly here: that would raise the task's OWN
+            # exception (e.g. from cleanup code that catches its CancelledError
+            # and raises something else instead), which would mask a `raise`d
+            # fresh cancellation below. `asyncio.wait` only raises if THIS
+            # await itself is cancelled again.
+            await asyncio.wait({task})
+        except asyncio.CancelledError as exc:
+            pending_cancel = exc
+            task.cancel()
+            continue
+        break
+    if pending_cancel is not None:
+        raise pending_cancel
 
 
 async def wait_for(
@@ -62,7 +71,7 @@ async def wait_for(
     await it yourself afterwards if that matters. Raises `ValueError` if
     ``timeout`` is NaN.
     """
-    if interval <= 0:
+    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
         raise ValueError("interval must be a positive number of seconds")
     _check_timeout(timeout)
     loop = asyncio.get_running_loop()
@@ -152,7 +161,7 @@ async def wait_for_port(
     as the cause instead of being silently dropped). Raises `ValueError` if
     ``timeout`` is NaN.
     """
-    if interval <= 0:
+    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
         raise ValueError("interval must be a positive number of seconds")
     _check_timeout(timeout)
     loop = asyncio.get_running_loop()

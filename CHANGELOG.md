@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- `Invocation.env_is(name, value)` / `has_env(name)` — the platform-correct
+  (case-insensitive on Windows, last write wins) effective-override check,
+  alongside the existing raw `env` dict (which does not fold duplicate keys).
 
 ### Changed
 - `[project.urls] Homepage` in `pyproject.toml` now points at the project
@@ -16,7 +18,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub repository, which is still linked separately as `Repository`.
 
 ### Fixed
--
+- `wait_for()`'s deadline handling no longer swallows the *caller's* own
+  cancellation (turning it into a misleading `TimeoutError`) if that cancellation
+  lands while the timed-out predicate is being cancelled and drained; it also no
+  longer cancels a pre-existing `asyncio.Future`/`Task` passed in as the
+  predicate's own awaitable (only a task it created itself), no longer discards a
+  condition that turns out true in the same tick as the deadline, and no longer
+  swallows a `SystemExit`/`KeyboardInterrupt` raised by the predicate.
+- `wait_for_line()` no longer masks a builtin-`TimeoutError`-family exception
+  raised by the predicate or the stream itself behind the generic timeout
+  message; it now shares `wait_for()`'s bounding, so `timeout=0` reliably
+  evaluates once instead of sometimes short-circuiting first.
+- `wait_for()`, `wait_for_line()`, and `wait_for_port()` now reject a NaN
+  `timeout`/`interval` with `ValueError` instead of polling forever.
+- `wait_for_port()` now chains the last connection attempt's exception (e.g. a
+  DNS failure) as the raised `TimeoutError`'s `__cause__` instead of discarding
+  it.
+- A consuming verb called without the context it needs — an async verb
+  (`RunningProcess.wait`/`finish`/`output`/`output_bytes`/`profile`/`shutdown`/
+  `__aexit__`, `Supervisor.arun`, `ProcessGroup.ashutdown`/`__aexit__`) called
+  with no running `asyncio` event loop, or a sync verb (`Supervisor.run`,
+  `ProcessGroup.shutdown`/`__exit__`) called from inside an already-running
+  async context — now raises a clear error and leaves the handle intact and
+  reusable. Previously the same misuse destroyed the live process (or spent the
+  handle) as a side effect of the error path.
+- `Timeout.timeout_seconds` is now `None` (not a misleading `0.0`) when the
+  deadline wasn't known to the checking verb (a scripted/cassette-replayed
+  timeout with no `timeout()` configured).
+- `ProcessStdin.write()` / `write_line()` / `flush()` / `close()` now raise the
+  matching stdlib `OSError` subclass (e.g. `BrokenPipeError` for a closed
+  child), not a bare `OSError`.
+- `ProcessGroup.signal()`'s docstring no longer claims Windows "emulates" the
+  POSIX signals — a Job Object only delivers `kill` there; every other name
+  raises `Unsupported`, as it always has.
 
 ## [1.0.0] - 2026-07-04
 
@@ -74,11 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every command with one canned `Reply` and records each call, so a test can
   assert on *what* its code ran: `calls()` returns every `Invocation` (in order)
   and `only_call()` the single one. Each `Invocation` exposes `program`, `args`,
-  `cwd`, `env` (the raw declared overrides, in order — duplicate keys are not
-  folded), `env_is(name, value)` / `has_env(name)` (the platform-correct
-  effective-override check, case-insensitive on Windows), `has_stdin`, and
-  `has_flag(flag)`; its `repr` is redacted (program + arg count + env names,
-  never values). Completes the test-double set.
+  `cwd`, `env`, `has_stdin`, and `has_flag(flag)`; its `repr` is redacted (program
+  + arg count + env names, never values). Completes the test-double set.
 - `ProcessResult` with `stdout`, `stderr`, `code`, `is_success`, `timed_out`,
   `signal`, `program`, `duration_seconds`, `truncated`, and `combined`; plus a
   `BytesResult` (raw-bytes `stdout`, text `stderr`) from `output_bytes()` /
@@ -267,39 +298,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hangs no longer ignores the deadline — while propagating the predicate's own
   exception unchanged and cancelling the in-flight predicate (rather than orphaning
   it) when the awaiting task is cancelled.
-- `wait_for()`'s deadline handling no longer swallows the *caller's* own
-  cancellation (turning it into a misleading `TimeoutError`) if that cancellation
-  lands while the timed-out predicate is being cancelled and drained; it also no
-  longer cancels a pre-existing `asyncio.Future`/`Task` passed in as the
-  predicate's own awaitable (only a task it created itself), no longer discards a
-  condition that turns out true in the same tick as the deadline, and no longer
-  swallows a `SystemExit`/`KeyboardInterrupt` raised by the predicate.
-- `wait_for_line()` no longer masks a builtin-`TimeoutError`-family exception
-  raised by the predicate or the stream itself behind the generic timeout
-  message; it now shares `wait_for()`'s bounding, so `timeout=0` reliably
-  evaluates once instead of sometimes short-circuiting first.
-- `wait_for()`, `wait_for_line()`, and `wait_for_port()` now reject a NaN
-  `timeout` with `ValueError` instead of polling forever.
-- `wait_for_port()` now chains the last connection attempt's exception (e.g. a
-  DNS failure) as the raised `TimeoutError`'s `__cause__` instead of discarding
-  it.
-- A consuming verb called without the context it needs — an async verb
-  (`RunningProcess.wait`/`finish`/`output`/`output_bytes`/`profile`/`shutdown`/
-  `__aexit__`, `Supervisor.arun`, `ProcessGroup.ashutdown`/`__aexit__`) called
-  with no running `asyncio` event loop, or a sync verb (`Supervisor.run`,
-  `ProcessGroup.shutdown`/`__exit__`) called from inside an already-running
-  async context — now raises a clear error and leaves the handle intact and
-  reusable. Previously the same misuse destroyed the live process (or spent the
-  handle) as a side effect of the error path.
-- `Timeout.timeout_seconds` is now `None` (not a misleading `0.0`) when the
-  deadline wasn't known to the checking verb (a scripted/cassette-replayed
-  timeout with no `timeout()` configured).
-- `ProcessStdin.write()` / `write_line()` / `flush()` / `close()` now raise the
-  matching stdlib `OSError` subclass (e.g. `BrokenPipeError` for a closed
-  child), not a bare `OSError`.
-- `ProcessGroup.signal()`'s docstring no longer claims Windows "emulates" the
-  POSIX signals — a Job Object only delivers `kill` there; every other name
-  raises `Unsupported`, as it always has.
 
 ### Security
 - `repr(Command(...))` no longer renders argv (or env *values*): it now uses the

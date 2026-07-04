@@ -105,6 +105,8 @@ def test_wait_for_rejects_nonpositive_interval() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError):
             await wait_for(lambda: True, timeout=1.0, interval=0)
+        with pytest.raises(ValueError):
+            await wait_for(lambda: True, timeout=1.0, interval=float("nan"))
 
     asyncio.run(scenario())
 
@@ -211,6 +213,35 @@ def test_wait_for_deadline_drain_preserves_outer_cancellation() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_for_second_cancellation_during_drain_does_not_leak_task_exception() -> None:
+    # A regression for _quiesce's own drain: if a SECOND cancellation lands
+    # while it is still draining an already-cancelling predicate, and that
+    # predicate's cleanup then raises its own (non-CancelledError) exception,
+    # the fresh cancellation must still win — not get replaced by the
+    # predicate's unrelated error.
+    async def scenario() -> None:
+        first_cancel_seen = asyncio.Event()
+
+        async def flaky_predicate() -> bool:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                first_cancel_seen.set()
+                try:
+                    await asyncio.sleep(30)  # a second cancellation lands here
+                except asyncio.CancelledError:
+                    raise ValueError("cleanup failed") from None  # NOT re-raised
+            return True
+
+        outer = asyncio.ensure_future(wait_for(flaky_predicate, timeout=0.05, interval=0.01))
+        await first_cancel_seen.wait()  # wait_for's deadline fired; predicate mid-cleanup
+        outer.cancel()  # a fresh, second cancellation lands while still draining
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+
+    asyncio.run(scenario())
+
+
 def test_wait_for_rejects_nan_timeout() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="NaN"):
@@ -262,6 +293,8 @@ def test_wait_for_port_rejects_nan_timeout() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="NaN"):
             await wait_for_port("127.0.0.1", 1, timeout=float("nan"))
+        with pytest.raises(ValueError):
+            await wait_for_port("127.0.0.1", 1, timeout=1.0, interval=float("nan"))
 
     asyncio.run(scenario())
 

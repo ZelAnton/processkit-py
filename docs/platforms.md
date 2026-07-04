@@ -70,11 +70,12 @@ Once released, prebuilt wheels will cover:
 |---|---|
 | **Linux** (manylinux, glibc) | x86_64, aarch64 |
 | **Linux** (musllinux, musl — Alpine) | x86_64, aarch64 |
-| **macOS** | x86_64 (Intel), arm64 (Apple Silicon) |
+| **macOS** | arm64 (Apple Silicon) |
 | **Windows** | x64 |
 
 Each row will ship both the abi3 GIL wheel (CPython 3.10+) and the free-threaded
 cp314t wheel, with an sdist alongside for source builds anywhere. Not prebuilt:
-Windows on ARM and 32-bit targets (incl. 32-bit musl, which has no Rust
-toolchain) — there, `pip install processkit-py` builds from the sdist, which needs
-a [Rust toolchain](https://rustup.rs/).
+**Intel macOS** (x86_64 — GitHub retired the free Intel runner), Windows on ARM,
+and 32-bit targets (incl. 32-bit musl, which has no Rust toolchain) — there,
+`pip install processkit-py` builds from the sdist, which needs a
+[Rust toolchain](https://rustup.rs/).

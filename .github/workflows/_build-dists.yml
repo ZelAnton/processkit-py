@@ -33,14 +33,15 @@ jobs:
   # The abi3 wheel (cp310, runs on every GIL CPython 3.10+) plus a free-threaded
   # cp314t wheel per OS/arch. Each runner builds its own native arch (no
   # cross-compile): Linux x86_64 (manylinux), Linux aarch64 (native ARM runner),
-  # Windows x64, macOS x86_64 (macos-13) and arm64 (macos-14).
+  # Windows x64, macOS arm64 (macos-14). Intel macOS (x86_64) is NOT built —
+  # GitHub retired the free `macos-13` Intel runner; Intel Macs install from the sdist.
   # ---------------------------------------------------------------------------
   build_wheels:
     name: wheels (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-13, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

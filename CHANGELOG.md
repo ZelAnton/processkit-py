@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Changed
--
+- `[project.urls] Homepage` in `pyproject.toml` now points at the project
+  overview site (https://zelanton.github.io/processkit/) instead of the
+  GitHub repository, which is still linked separately as `Repository`.
 
 ### Fixed
 -

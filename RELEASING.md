@@ -63,6 +63,7 @@ GitHub Release (wheels + sdist + `SHA256SUMS`).
 3. **After the first release:** uncomment the PyPI badge in `README.md`, and
    refresh the README prose that still says the release is pending (the
    build-from-source intro and the "first release to PyPI is pending" note).
+   Done for v1.0.0 — not needed again for subsequent releases.
 
 ## Docs site
 

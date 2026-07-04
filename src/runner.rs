@@ -461,10 +461,13 @@ impl PyInvocation {
     }
 
     /// The environment overrides as a dict, in call order; a `None` value is a
-    /// removal (`env_remove`). This is the **raw** declared list: duplicate keys
-    /// are not folded, so a Windows-style case-insensitive duplicate (`"Path"`
-    /// and `"PATH"`) appears as two separate entries. For the platform-correct
-    /// **effective** check use `env_is()` / `has_env()`.
+    /// removal (`env_remove`). This is **not** the platform-correct effective
+    /// override: an exact-same-key duplicate collapses to its last value (plain
+    /// Python dict semantics), but a Windows-style *differently-cased*
+    /// duplicate (`"Path"` and `"PATH"`) survives as two separate entries,
+    /// since dict keys compare case-sensitively — dict semantics decide, not
+    /// the platform's env-key rules. For the platform-correct check use
+    /// `env_is()` / `has_env()` regardless of case.
     #[getter]
     fn env<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);

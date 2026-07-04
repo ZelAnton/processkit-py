@@ -375,6 +375,11 @@ def test_invocation_env_is_and_has_env() -> None:
     assert inv.has_env("LOG")
     assert not inv.has_env("DROP")  # removed, not "set"
     assert not inv.has_env("MISSING")
+    # `env` is plain Python dict semantics, not platform env-key rules: a
+    # same-case duplicate key collapses to its last value here too (dict
+    # construction, not folding) -- only a *differently-cased* Windows
+    # duplicate would survive as two separate entries.
+    assert inv.env == {"LOG": "debug", "DROP": None}
 
 
 @pytest.mark.skipif(

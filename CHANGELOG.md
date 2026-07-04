@@ -9,8 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `Invocation.env_is(name, value)` / `has_env(name)` — the platform-correct
-  (case-insensitive on Windows, last write wins) effective-override check,
-  alongside the existing raw `env` dict (which does not fold duplicate keys).
+  (case-insensitive on Windows, last write wins) effective-override check. The
+  existing `env` dict is plain Python dict semantics, not platform env-key
+  rules: a same-case duplicate key collapses to its last value, but a
+  differently-cased Windows duplicate (`"Path"`/`"PATH"`) survives as two
+  separate entries — use `env_is()`/`has_env()` for the correct answer either
+  way.
 
 ### Changed
 - `[project.urls] Homepage` in `pyproject.toml` now points at the project

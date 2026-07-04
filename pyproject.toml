@@ -41,7 +41,7 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/ZelAnton/processkit-py"
+Homepage = "https://zelanton.github.io/processkit/"
 Repository = "https://github.com/ZelAnton/processkit-py"
 Documentation = "https://github.com/ZelAnton/processkit-py/tree/main/docs"
 Changelog = "https://github.com/ZelAnton/processkit-py/blob/main/CHANGELOG.md"

@@ -116,7 +116,46 @@ jobs:
       # `uv run` provisions the interpreter, syncs the env (building the Rust
       # extension via `maturin develop`), then runs pytest. The `--python` flag is
       # added only for the free-threaded entry.
-      - run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
+      #
+      # Coverage (`--cov`, from the `[tool.coverage.run]` config in pyproject.toml)
+      # is measured on exactly one representative leg (ubuntu-latest, abi3/GIL):
+      # the pure-Python surface being measured has no OS-specific or free-
+      # threading-specific code paths, so instrumenting all 8 legs would only add
+      # overhead for an identical number. `--cov` (no path argument) picks up
+      # `[tool.coverage.run] source` from pyproject.toml; `parallel = true` there
+      # plus pytest-cov's built-in xdist support combine each `-n auto` worker's
+      # data so the total isn't undercounted.
+      - name: Run tests
+        if: matrix.os != 'ubuntu-latest' || matrix.python != ''
+        run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
+      - name: Run tests with coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.python == ''
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-report=html
+      # Coverage measures Python only -- see the `[tool.coverage.run]` comment in
+      # pyproject.toml. No threshold is enforced (yet): this is the first CI run to
+      # measure coverage at all, so the current baseline number isn't established.
+      # Once a few runs have landed, revisit adding a non-blocking `fail_under` (or
+      # promote it to blocking) as a deliberate follow-up, not a threshold picked
+      # blind today.
+      - name: Publish coverage summary
+        if: matrix.os == 'ubuntu-latest' && matrix.python == ''
+        run: |
+          {
+            echo '## Coverage (Python only)'
+            echo 'The compiled `_processkit` extension is not measured here -- see its own Rust test suite.'
+            echo '```'
+            uv run coverage report
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: |
+            htmlcov/
+            coverage.xml
+          if-no-files-found: error
 
   test-privileged:
     name: test (linux, privileged root + delegated cgroup v2)

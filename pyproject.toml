@@ -63,6 +63,7 @@ dev = [
   "pre-commit>=4.0.0",
   "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.8.0",
+  "hypothesis>=6.156.1",
 ]
 # The mkdocs toolchain, split out of `dev` so the Docs CI job's `uv run --group
 # docs` rides the locked `uv.lock` tree (reproducible, cached) instead of an

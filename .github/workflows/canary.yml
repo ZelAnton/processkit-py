@@ -1,0 +1,99 @@
+name: Canary (processkit crate)
+
+# Weekly, informational-only signal for API drift: builds and tests the binding
+# against the NEWEST published version of the `processkit` crate on crates.io,
+# in place of the exact pin in Cargo.toml (see that file's `processkit = "=1.2.0"`
+# comment for why the pin is exact and deliberate). The version bump below is
+# applied only to this runner's ephemeral checkout -- nothing is ever committed
+# or pushed back to the repo, so the real pin bump stays a deliberate, reviewed
+# change. This is deliberately a separate workflow from `ci.yml` (which it never
+# edits): a schedule-triggered failure here only reddens this workflow's own
+# status (and emails the actor who last touched this file, same as
+# nightly-hardening.yml) -- it can never redden a push/PR gate, since nothing in
+# ci.yml or branch protection depends on it.
+on:
+  schedule:
+    # 06:41 UTC every Tuesday -- off-the-hour and distinct from codeql.yml's
+    # Monday 05:32 UTC and nightly-hardening.yml's daily 03:17 UTC slots, so
+    # scheduled workflows don't contend for runner capacity at the same instant.
+    - cron: '41 6 * * 2'
+  workflow_dispatch:
+
+concurrency:
+  group: canary
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: canary (latest processkit crate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Discover the pinned vs. newest processkit crate version
+        id: discover
+        run: |
+          set -euo pipefail
+          current=$(grep -oP '^processkit = \{ version = "=\K[0-9.]+' Cargo.toml)
+          latest=$(curl -sSL --fail \
+            --user-agent "processkit-py-canary (https://github.com/ZelAnton/processkit-py)" \
+            https://crates.io/api/v1/crates/processkit | jq -r '.crate.max_stable_version')
+          echo "Pinned in Cargo.toml: $current"
+          echo "Newest on crates.io: $latest"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      # The bump + build/test steps only run when a newer version actually
+      # exists, so an already-current pin doesn't waste a rebuild every week.
+      - name: Bump the pin in the working copy (never committed)
+        if: steps.discover.outputs.latest != steps.discover.outputs.current
+        env:
+          CURRENT: ${{ steps.discover.outputs.current }}
+          LATEST: ${{ steps.discover.outputs.latest }}
+        run: |
+          set -euo pipefail
+          sed -i "s/processkit = { version = \"=${CURRENT}\"/processkit = { version = \"=${LATEST}\"/" Cargo.toml
+          grep -n '^processkit = ' Cargo.toml
+          cargo update -p processkit --precise "${LATEST}"
+
+      - name: Build + test the binding against the newest crate
+        id: build
+        if: steps.discover.outputs.latest != steps.discover.outputs.current
+        # `uv run` provisions the interpreter and syncs the environment; an
+        # explicit `maturin develop` first guarantees the extension is rebuilt
+        # against the bumped Cargo.toml/Cargo.lock rather than relying on uv's
+        # own staleness detection to notice a Rust-only source change.
+        run: |
+          uv run maturin develop
+          uv run pytest
+
+      - name: Job summary
+        if: always()
+        env:
+          CURRENT: ${{ steps.discover.outputs.current }}
+          LATEST: ${{ steps.discover.outputs.latest }}
+          OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          {
+            echo "## Canary: processkit crate freshness"
+            echo
+            if [ "$LATEST" = "$CURRENT" ]; then
+              echo "Pinned version \`$CURRENT\` is already the newest on crates.io -- nothing to build/test."
+            elif [ "$OUTCOME" = "success" ]; then
+              echo "Fresh crate **$LATEST** (pinned: \`$CURRENT\`) -- build/tests: :white_check_mark: green."
+            else
+              echo "Fresh crate **$LATEST** (pinned: \`$CURRENT\`) -- build/tests: :x: red."
+              echo "See the failed step above for details."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

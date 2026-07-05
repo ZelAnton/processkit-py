@@ -8,6 +8,7 @@
 #   docker compose run --build --rm test uv run pytest -q tests/test_async.py
 services:
   test:
+    image: processkit-py-test
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -15,6 +16,34 @@ services:
     # `cgroup_v2` containment mechanism — the same path the CI Linux runner
     # exercises. Remove this line to test the POSIX `process_group` fallback.
     privileged: true
+    # Share the host's cgroup namespace (rather than a private one) so
+    # `/proc/self/cgroup` reports this container's REAL path in the host's
+    # cgroup-v2 hierarchy instead of a virtualized `/`. Actual resource-limit
+    # *enforcement* (not just mechanism selection) additionally requires this
+    # process to be re-parented into the real hierarchy root before it runs —
+    # see scripts/ci-privileged-check.sh, used by the CI `test-privileged` job
+    # — because the "no internal processes" rule only exempts the true root,
+    # never a cgroup-namespace-virtualized one (see docs/platforms.md).
+    cgroup: host
     # A real init reaps the short-lived child/grandchild processes the teardown
     # tests spawn, so nothing lingers as a zombie.
+    init: true
+
+  # Root, but deliberately NOT privileged: `/sys/fs/cgroup` stays read-only (no
+  # CAP_SYS_ADMIN), so `ProcessGroup` always falls back to the POSIX
+  # `process_group` mechanism here, never `cgroup_v2`. This is its own service
+  # (not a `test` variant) because of a documented processkit-rs limitation
+  # (see the "Linux cgroup caveat" on `Command::uid()`'s doc comment): under the
+  # `cgroup_v2` mechanism, a privilege-dropped `Command` tries to join its
+  # (root-owned, auto-created) cgroup *after* the OS has already dropped to the
+  # unprivileged uid, which fails with EACCES — so
+  # test_privilege_drop_args_actually_drop_privilege can only actually PASS
+  # where cgroup v2 delegation is inactive. Used by the CI `test-privileged`
+  # job's root-euid half; shares the `test` image (same build) via the explicit
+  # `image:` tag below, so `--build` on either service produces the same image.
+  test-root:
+    image: processkit-py-test
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     init: true

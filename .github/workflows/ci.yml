@@ -118,6 +118,82 @@ jobs:
       # added only for the free-threaded entry.
       - run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
 
+  test-privileged:
+    name: test (linux, privileged root + delegated cgroup v2)
+    runs-on: ubuntu-latest
+    # The only CI lane that actually exercises two Linux-only, root/cgroup-v2-
+    # gated paths the `test` matrix above silently skips everywhere (GH-hosted
+    # runners are never root and never have a delegated cgroup v2):
+    #
+    #   1. Real privilege-drop enforcement --
+    #      test_privilege_drop_args_actually_drop_privilege (gated on
+    #      `os.geteuid() != 0`).
+    #   2. cgroup v2 resource-limit enforcement -- ProcessGroup(max_memory=...,
+    #      max_processes=..., cpu_quota=...) resolving to the `cgroup_v2`
+    #      mechanism (not the POSIX `process_group` fallback), with the limits
+    #      actually accepted by the kernel.
+    #
+    # Both run inside the existing Docker harness (compose.yaml / docker/Dockerfile)
+    # via `docker compose run --build --rm ...`, as two separate services/steps: a
+    # documented processkit-rs limitation (the "Linux cgroup caveat" on
+    # `Command::uid()`'s doc comment) means a privilege-dropped Command can never
+    # succeed under an active cgroup_v2 delegation (it tries to join its own
+    # root-owned auto-created cgroup AFTER the OS has dropped it to the
+    # unprivileged uid, which EACCESs) -- so the two paths need different
+    # container privilege postures, not just different pytest selections. Each
+    # step's JUnit report is checked by scripts/ci-privileged-guard.py so a
+    # silently-skipped gated test (wrong euid, no cgroup delegation, a
+    # process_group fallback, ...) fails the job instead of passing vacuously.
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Root, no cgroup delegation -- privilege-drop enforcement
+        run: |
+          mkdir -p artifacts
+          docker compose run --build --rm -v "$PWD/artifacts:/app/artifacts" test-root \
+            uv run pytest --junitxml=artifacts/root-junit.xml
+      - name: Guard against a silently-skipped privilege-drop test
+        run: >-
+          python3 scripts/ci-privileged-guard.py artifacts/root-junit.xml
+          tests/test_command.py::test_privilege_drop_args_actually_drop_privilege
+      - name: Privileged root, delegated cgroup v2 -- resource-limit enforcement
+        # scripts/ci-privileged-check.sh re-parents into the real cgroup-v2 root
+        # (needs compose.yaml's `privileged: true` + `cgroup: host` on the `test`
+        # service), asserts the mechanism is actually cgroup_v2, then runs the
+        # suite (minus the privilege-drop test -- see the job comment above).
+        #
+        # continue-on-error: unlike privilege-drop above (which only needs the
+        # container to run as root -- host-independent), delegated cgroup v2
+        # depends on the GH-hosted runner's host cgroup version / cgroup
+        # namespace mode / controller availability, none of which has been
+        # empirically confirmed on actual GH infrastructure yet (verified so
+        # far only locally, in a Docker Desktop-family engine on a developer
+        # machine -- never yet on a real GH-hosted runner). This mechanism has
+        # historically needed post-hoc CI fixes. This is a conscious, documented
+        # decision (not an oversight): keep this step non-blocking for its first
+        # real GH-hosted run(s) so a delegation failure specific to GH's runner
+        # posture doesn't block pushes while it's being confirmed. Once a real
+        # GH Actions run confirms the mechanism resolves to cgroup_v2 here,
+        # remove `continue-on-error` from this step and the guard step below to
+        # restore it as a full blocking gate.
+        continue-on-error: true
+        run: |
+          docker compose run --build --rm -v "$PWD/artifacts:/app/artifacts" test \
+            bash scripts/ci-privileged-check.sh
+      - name: Guard against a silently-skipped / process_group-fallback cgroup v2 run
+        # Also continue-on-error, for the same reason as the step above: if the
+        # cgroup v2 delegation step failed (or was skipped) before producing a
+        # JUnit report, this guard would fail on the missing/incomplete file.
+        # Remove alongside the continue-on-error above once confirmed on a real
+        # GH-hosted run.
+        continue-on-error: true
+        run: >-
+          python3 scripts/ci-privileged-guard.py artifacts/privileged-junit.xml
+          tests/test_process_group.py::test_resource_limited_group_runs
+          tests/test_process_group.py::test_group_cpu_quota_kwarg_accepted
+          tests/test_process_group.py::test_group_reports_a_mechanism
+
   build:
     name: build (${{ matrix.os }})
     strategy:

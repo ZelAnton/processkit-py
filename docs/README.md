@@ -104,9 +104,12 @@ asyncio.run(main())
 
 ## API reference
 
-The hand-written type stubs (`processkit/_processkit.pyi`) are the authoritative
-per-item surface, fully typed for your IDE and `mypy`. These guides are the
-narrative layer on top — they explain how the pieces compose, with the platform
-fine print collected in [Platform support](platforms.md). The underlying
-algorithms (the OS containment mechanisms, race-free spawn) live in the
+The [API reference](api-reference.md) is the complete, per-symbol index of the
+public surface — every class, function, protocol, type alias, and exception,
+plus the `processkit.testing` submodule. It is generated straight from the type
+stubs and docstrings (the same source your IDE and `mypy` read), so it never
+drifts from the real API. These guides are the narrative layer on top — they
+explain how the pieces compose, with the platform fine print collected in
+[Platform support](platforms.md). The underlying algorithms (the OS containment
+mechanisms, race-free spawn) live in the
 [`processkit`](https://docs.rs/processkit) Rust crate.

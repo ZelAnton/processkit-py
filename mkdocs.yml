@@ -50,6 +50,7 @@ nav:
   - Supervision: supervision.md
   - Testing your code: testing.md
   - Platform support: platforms.md
+  - API reference: api-reference.md
   - Architecture: internals.md
 
 markdown_extensions:
@@ -65,3 +66,33 @@ markdown_extensions:
 
 plugins:
   - search
+  # The API reference (docs/api-reference.md) is a list of `::: processkit.<name>`
+  # autodoc directives; mkdocstrings renders each from the type stub + docstrings.
+  # `allow_inspection: false` forces griffe's *static* (AST) analysis: the Docs CI
+  # job builds with `uv sync --only-group docs --no-install-project`, so the
+  # compiled `_processkit` extension is never importable — griffe reads
+  # `src/processkit/_processkit.pyi` (and the pure-Python shim modules) instead,
+  # keeping the strict build extension-free. `docs/api-reference.md` is generated
+  # by `scripts/gen_api_reference.py` (with a `--check` drift guard); do not edit
+  # it by hand.
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            allow_inspection: false
+            docstring_style: null
+            heading_level: 3
+            inherited_members: true
+            members_order: source
+            separate_signature: true
+            show_bases: false
+            show_if_no_docstring: true
+            show_root_full_path: false
+            show_root_heading: true
+            show_signature_annotations: true
+            show_source: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            signature_crossrefs: false

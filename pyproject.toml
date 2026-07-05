@@ -59,8 +59,21 @@ dev = [
 ]
 # The mkdocs toolchain, split out of `dev` so the Docs CI job's `uv run --group
 # docs` rides the locked `uv.lock` tree (reproducible, cached) instead of an
-# unlocked `uvx --with`.
-docs = ["mkdocs-material>=9,<10"]
+# unlocked `uvx --with`. `mkdocstrings[python]` renders the API reference from
+# the type stub + docstrings via griffe's *static* (AST) analysis — the Docs CI
+# job builds with `--no-install-project`, so the compiled `_processkit`
+# extension is never importable; `allow_inspection: false` in mkdocs.yml keeps
+# griffe reading `_processkit.pyi` (and the pure-Python shim modules) instead.
+docs = [
+  "mkdocs-material>=9,<10",
+  "mkdocstrings[python]>=0.27,<1",
+  # mkdocstrings renders each callable's signature in a formatted code block
+  # (`separate_signature: true`); it uses Ruff to format it when present. Ruff
+  # is already a `dev` gate here — pinning it into `docs` too keeps the
+  # published API-reference signatures readable (multi-line for the wide
+  # `Supervisor(...)` / `CliClient(...)` constructors) instead of one long line.
+  "ruff>=0.15.20",
+]
 
 [tool.maturin]
 # Build abi3 wheels (cp310+) to keep the wheel matrix flat across Python versions.

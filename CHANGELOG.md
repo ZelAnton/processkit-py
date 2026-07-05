@@ -226,6 +226,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prebuilt wheels for **Intel macOS** (x86_64), cross-compiled from the arm64
   (Apple Silicon) runner. Previously Intel Mac users installed from the sdist
   (needing a Rust toolchain); both macOS architectures are now covered.
+- An **API reference** section on the documentation site — a complete,
+  per-symbol index of the public surface (every class, function, protocol, type
+  alias, and exception, plus the `processkit.testing` submodule), reachable from
+  the site navigation. It is rendered by `mkdocstrings` straight from the type
+  stub (`_processkit.pyi`) and docstrings via griffe's *static* analysis (no
+  compiled extension needed, so it builds in the extension-free Docs CI), and a
+  drift guard (`scripts/gen_api_reference.py --check` plus
+  `tests/test_api_reference.py`) fails if the page ever omits — or invents — a
+  public symbol, so the reference cannot silently diverge from the real API.
 
 ### Changed
 - `[project.urls] Homepage` in `pyproject.toml` now points at the project

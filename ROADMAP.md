@@ -200,8 +200,15 @@ Prioritised by Python demand, not crate order.
 - **Teardown reliability from Python.** `__del__` is unreliable; `atexit` does
   not fire on `SIGKILL` / `os._exit`. Mitigation: lean on `with` / `async with`;
   lean on Windows `KILL_ON_JOB_CLOSE`; document Linux as best-effort, honestly.
-- **Async ecosystem fragmentation.** asyncio-only leaves trio / anyio users out.
-  Mitigation: scope to asyncio for v1; revisit anyio later (or never).
+- **Async ecosystem fragmentation — assessed (Open decision #2).** The surface
+  is asyncio-native by design. This is narrower than "leaves anyio users out":
+  anyio's asyncio backend runs a real asyncio loop, so anyio-on-asyncio (and
+  uvloop) work today — only native trio, anyio-on-trio, and curio are excluded,
+  because the `pyo3-async-runtimes` bridge is asyncio-wired and has no trio
+  backend. Mitigation: documented explicitly (`docs/event-loops.md`) rather than
+  left implicit; native-trio reach is deferred (not "never" — see the reconsider
+  triggers in Open decision #2), since it means rewriting the highest-risk bridge
+  component against trio's different cancellation model.
 - **Binding tracks the `processkit` crate.** Mitigation: pin an exact version
   (`=1.2.0`); keep the binding thin so churn is cheap to absorb.
 - **Distribution.** cdylib + platform FFI across the wheel matrix is fiddly.
@@ -213,7 +220,9 @@ Prioritised by Python demand, not crate order.
 
 - Not a general subprocess-convenience library — cede that to `sh` / `plumbum` /
   `psutil`.
-- No trio / curio support in v1.
+- No **native trio / curio** support — a standing decision (Open decision #2),
+  not merely a v1 cut. asyncio, uvloop, and anyio-on-asyncio *are* supported; it
+  is specifically the trio-family loops that are out.
 - No pure-Python fallback — without the compiled extension there is no
   guarantee, so it is not a supported configuration.
 - No Windows-pre-10, no cgroup v1.
@@ -222,8 +231,36 @@ Prioritised by Python demand, not crate order.
 
 1. **Name — resolved.** Published as `processkit-py` (PyPI; import name
    `processkit`) / repo `processkit-py`. See *Naming & publishing*.
-2. **Async-only vs anyio-backed** for future trio reach — **still open**; shipped
-   asyncio-only for 1.0, anyio remains a possible later addition.
+2. **Async-runtime reach (asyncio vs anyio / trio) — resolved.** The async
+   surface stays **asyncio-native**, and that is a standing decision, not a
+   v1-only stopgap. The bridge is `pyo3-async-runtimes` (`future_into_py` /
+   `get_current_loop` in `runtime.rs`), which targets asyncio: every
+   `a`-prefixed verb hands back an `asyncio.Future`, and the streaming handles
+   are scheduled onto a running asyncio loop. What that supports and excludes:
+   - **asyncio (native) and uvloop** — fully supported; uvloop is just an
+     asyncio loop policy, so the bridge sees an ordinary running loop.
+   - **anyio on its asyncio backend** — works today, unchanged: that backend
+     runs a real asyncio loop underneath, so the bridged awaitables await and
+     `get_running_loop()` resolves. The anyio *ecosystem* is **not** shut out.
+   - **native trio, anyio-on-trio, curio** — not supported: no asyncio loop is
+     present, the bridged futures are not trio-awaitable, and
+     `pyo3-async-runtimes` ships no trio backend.
+   Cost of changing this: native trio would mean replacing the asyncio bridge
+   with a loop-agnostic one (no upstream trio backend exists) *and* re-mapping
+   the crate's kill-on-cancel guarantee from asyncio's edge-triggered
+   `CancelledError` onto trio's level-triggered cancel-scope model — a
+   from-scratch rewrite of the single highest-risk component (the
+   tokio↔frontend bridge) on a binding whose thesis is "stay thin, don't
+   reimplement." The pure-Python readiness helpers (`_aio.py`) *could* move to
+   anyio primitives cheaply, but on their own that only makes `wait_for_port` /
+   `wait_until` loop-agnostic while everything you'd wait *for* (`astart` and
+   the streaming handles) stays asyncio-bound — an incoherent half-measure, so
+   it is not pursued in isolation. **No implementation tasks are opened now.**
+   Reconsider if a concrete trio demand signal appears, `pyo3-async-runtimes`
+   grows a trio backend, or a loop-agnostic bridge lands upstream — at which
+   point the cheap first step is porting `_aio.py` to anyio, then evaluating a
+   loop-agnostic compiled bridge. Documented for users in
+   `docs/event-loops.md`.
 3. **Sync API as a first-class surface, or async-only? — resolved.** Sync is a
    first-class secondary surface (run-to-completion verbs + `ProcessGroup`);
    streaming/interactive handles are async-only.

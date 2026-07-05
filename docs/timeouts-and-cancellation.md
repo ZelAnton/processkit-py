@@ -258,5 +258,6 @@ backoff.
 
 Next: [Supervision](supervision.md) ·
 [Streaming & interactive I/O](streaming.md) ·
+[Async runtimes & event loops](event-loops.md) ·
 [Process groups](process-groups.md) ·
 [Cookbook](cookbook.md)

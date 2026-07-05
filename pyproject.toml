@@ -40,6 +40,13 @@ classifiers = [
 
 dependencies = []
 
+# Autoload the pytest plugin (testing-seam fixtures + the `no_real_spawn` guard)
+# in any pytest session where processkit is installed. The plugin module is pure
+# Python and import-safe; pytest is not a runtime dependency (the entry point is
+# only consulted by pytest, which is present exactly when the plugin is loaded).
+[project.entry-points.pytest11]
+processkit = "processkit.pytest_plugin"
+
 [project.urls]
 Homepage = "https://zelanton.github.io/processkit/"
 Repository = "https://github.com/ZelAnton/processkit-py"

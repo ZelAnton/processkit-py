@@ -19,6 +19,7 @@ test can't tell the difference.
 > production code, not test scaffolding.
 
 - [The runner seam](#the-runner-seam)
+- [The pytest plugin: ready-made fixtures](#the-pytest-plugin-ready-made-fixtures)
 - [Scripting replies: ScriptedRunner](#scripting-replies-scriptedrunner)
 - [Scripted streaming: a live handle, no child](#scripted-streaming-a-live-handle-no-child)
 - [Record/replay cassettes: RecordReplayRunner](#recordreplay-cassettes-recordreplayrunner)
@@ -71,6 +72,105 @@ the very same runner objects and awaits the `a`-prefixed verbs.
 > does not enable it. You get your doubles here, not from a mocking library.)
 
 *Deeper: the verb vocabulary and what each return type carries — [Running commands](commands.md).*
+
+## The pytest plugin: ready-made fixtures
+
+Installing processkit registers a **pytest plugin** — a `pytest11` entry point,
+autoloaded in every pytest session, with nothing to add to your `conftest.py`. It
+turns the doubles above into fixtures, so wiring one into a test is a single
+parameter rather than a line of construction. Each fixture yields one of the
+doubles below, so it satisfies the same `ProcessRunner` seam and spawns no real
+process:
+
+| Fixture | Yields | Notes |
+|---|---|---|
+| `scripted_runner` | a fresh [`ScriptedRunner`](#scripting-replies-scriptedrunner) | teach it replies with `.on()` / `.when()` / `.fallback()` |
+| `recording_runner` | a [`RecordingRunner`](#asserting-on-calls-recordingrunner) spy | replies `Reply.ok("")` (a clean exit 0, empty stdout — the neutral default) to every call and records each one |
+| `record_replay_runner` | a [`RecordReplayRunner`](#recordreplay-cassettes-recordreplayrunner) cassette | replay by default, record on demand — see below |
+
+```python
+from processkit import Command
+from processkit.testing import Reply
+
+def latest_commit(runner):
+    return runner.run(Command("git", ["rev-parse", "HEAD"]))
+
+def test_latest_commit(scripted_runner):
+    scripted_runner.on(["git", "rev-parse"], Reply.ok("deadbeef"))
+    assert latest_commit(scripted_runner) == "deadbeef"     # no git spawned
+```
+
+### The cassette fixture: record ↔ replay
+
+`record_replay_runner` binds a [cassette](#recordreplay-cassettes-recordreplayrunner)
+to the test. Which way it runs is a **switch, off (replay) by default** so CI
+never spawns by accident — chosen the way vcr-like tools do it, in precedence
+order:
+
+1. `pytest --processkit-record` (CLI flag) forces **record** mode; otherwise
+2. the `PROCESSKIT_RECORD` environment variable, when set, decides by its
+   truthiness (`1`/`true`/`yes`/`on` → record); otherwise
+3. the `processkit_record` ini option (a bool) decides; defaulting to **replay**.
+
+In record mode the cassette is captured against real processes and `save()`d on
+teardown; in replay mode it is served offline, never spawning. The file lives
+under the test's `tmp_path` by default — set the `processkit_cassette_dir` ini
+option (a relative path resolves against the rootdir) to a committed fixtures
+directory to **keep** cassettes across runs. Its name is derived deterministically
+from the test's node id, so each test gets its own.
+
+The workflow is the usual vcr one — *record once, replay forever*:
+
+```ini
+# pytest.ini (or [tool.pytest.ini_options] in pyproject.toml)
+[pytest]
+processkit_cassette_dir = tests/cassettes
+```
+
+```python
+import sys
+from processkit import Command
+
+def test_offline(record_replay_runner):
+    # `pytest --processkit-record` once: spawns for real and writes the cassette.
+    # Every run after: served from tests/cassettes/…json, no process spawned.
+    out = record_replay_runner.run(Command(sys.executable, ["--version"]))
+    assert out.startswith("Python")
+```
+
+> Cassettes store `program`/`args`/`cwd`/`stdout`/`stderr` **verbatim** and can
+> carry secrets — review one before committing it (see
+> [Record/replay cassettes](#recordreplay-cassettes-recordreplayrunner) for the
+> full semantics and the redaction boundary).
+
+### The no-real-spawn guard
+
+Mark a test `@pytest.mark.no_real_spawn` and any **real** process spawn through
+`Command` / `Pipeline` / `Runner` / `ProcessGroup` inside it fails loudly (via
+`pytest.fail`, which no `except` in the code under test can swallow) — so a
+forgotten double can't quietly reach the OS:
+
+```python
+import pytest
+from processkit import Command
+
+@pytest.mark.no_real_spawn
+def test_stays_hermetic(scripted_runner):
+    scripted_runner.fallback(Reply.ok("ok"))
+    assert my_code(scripted_runner) == "ok"   # injected double: fine
+    # Command("git", ["status"]).run()        # would fail the test, loudly
+```
+
+The marker is registered by the plugin, so it passes `--strict-markers`. Injected
+doubles keep working — only the real-spawn primitives are blocked. The interception
+replaces those verbs on the compiled classes for the duration of the test (the
+reliable seam, since PyO3 forbids subclassing or per-instance patching of them),
+which catches a spawn even through a `Command` reference imported before the test
+ran. The honest boundary: the injection-point APIs (`CliClient`, `output_all` and
+friends, `Supervisor`) reach the OS entirely inside the Rust extension when given
+the default real runner, with no Python seam to intercept — so pass them a
+test-double `runner=` in a guarded test rather than relying on the guard to catch
+their default path.
 
 ## Scripting replies: ScriptedRunner
 

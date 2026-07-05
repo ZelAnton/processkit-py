@@ -467,6 +467,35 @@ assert inv.program == "git"
 assert inv.args == ["push", "--tags"]
 ```
 
+## Use the pytest fixtures
+
+Installing processkit registers a pytest plugin (via a `pytest11` entry point) —
+nothing to add to `conftest.py`. It hands you the doubles as fixtures, so
+injecting one is a single parameter:
+
+```python
+from processkit import Command
+from processkit.testing import Reply
+
+def latest_commit(runner):
+    return runner.run(Command("git", ["rev-parse", "HEAD"]))
+
+def test_latest_commit(scripted_runner):        # fixture: a fresh ScriptedRunner
+    scripted_runner.on(["git", "rev-parse"], Reply.ok("deadbeef"))
+    assert latest_commit(scripted_runner) == "deadbeef"
+
+def test_deploy_pushes_tags(recording_runner):  # fixture: a RecordingRunner spy
+    recording_runner.run(Command("git", ["push", "--tags"]))
+    assert recording_runner.only_call().args == ["push", "--tags"]
+```
+
+The `record_replay_runner` fixture serves a per-test cassette — replay by
+default, record with `pytest --processkit-record` (or the `PROCESSKIT_RECORD`
+env var / `processkit_record` ini). Point `processkit_cassette_dir` (ini) at a
+committed fixtures directory to keep cassettes. Mark a test
+`@pytest.mark.no_real_spawn` to make any real spawn inside it fail loudly. Full
+details in [Testing your code](testing.md#the-pytest-plugin-ready-made-fixtures).
+
 ## See what processkit runs (logging)
 
 Opt in once with `enable_logging()` and `processkit` forwards its internal run

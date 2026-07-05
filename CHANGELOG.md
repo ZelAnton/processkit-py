@@ -56,6 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message string.
 
 ### Added
+- A **pytest plugin**, autoloaded via a `pytest11` entry point in every pytest
+  session where processkit is installed (nothing to add to `conftest.py`; the
+  plugin module is pure Python and import-safe). It exposes the
+  `processkit.testing` doubles as ready-made fixtures — `scripted_runner` (a fresh
+  `ScriptedRunner`), `recording_runner` (a `RecordingRunner` spy replying
+  `Reply.ok("")`, the neutral default), and `record_replay_runner` (a
+  `RecordReplayRunner` bound to a per-test cassette) — so injecting a test double
+  is a single fixture parameter. The cassette fixture is replay-by-default with a
+  vcr-style switch to record (`--processkit-record` CLI flag, then the
+  `PROCESSKIT_RECORD` env var, then the `processkit_record` ini option, in that
+  precedence); its file lives under the test's `tmp_path` unless the
+  `processkit_cassette_dir` ini option points at a kept directory, and its name is
+  derived deterministically from the test's node id. A `@pytest.mark.no_real_spawn`
+  marker (registered so it passes `--strict-markers`) makes any real spawn through
+  `Command`/`Pipeline`/`Runner`/`ProcessGroup` inside the marked test fail loudly,
+  while injected doubles keep working. Documented in `docs/testing.md` and the
+  cookbook.
 - `Args` and `ReadableBuffer` type aliases (`from processkit import Args,
   ReadableBuffer`). `Args` (`list[StrPath] | tuple[StrPath, ...]`) replaces
   `Sequence[str]`/`Sequence[StrPath]` on every argv-like parameter

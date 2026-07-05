@@ -2,6 +2,13 @@
 
 Thanks for your interest in improving **processkit**.
 
+Before diving into the code, read [`docs/internals.md`](docs/internals.md) —
+the architecture reference: the binding-crate/Python-package layering, the
+boundary between this repo and the upstream `processkit` crate, the Python →
+PyO3 → crate → typed-exception call flow, the module conventions
+(`register(m)`, `runner_pymethods!`, config-as-kwargs, sync/async verb
+parity), and how the stub/runtime/`__all__` drift guard works.
+
 ## Prerequisites
 
 - Python 3.12 (uv provisions the exact interpreter pinned in `.python-version`).

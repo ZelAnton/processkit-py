@@ -50,6 +50,7 @@ nav:
   - Supervision: supervision.md
   - Testing your code: testing.md
   - Platform support: platforms.md
+  - Architecture: internals.md
 
 markdown_extensions:
   - admonition

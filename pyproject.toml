@@ -122,7 +122,7 @@ exclude = [
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests", "scripts"]
+src = ["src", "tests", "scripts", "examples"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
@@ -131,7 +131,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-files = ["src", "tests", "scripts"]
+files = ["src", "tests", "scripts", "examples"]
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true

@@ -833,8 +833,9 @@ def test_stdout_tee_is_inert_under_stdout_inherit(tmp_path: pathlib.Path) -> Non
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="/dev/full (a sink whose every write fails with ENOSPC) is POSIX-only",
+    sys.platform in ("win32", "darwin"),
+    reason="/dev/full (a sink whose every write fails with ENOSPC) is Linux-only"
+    " - absent on win32 and not usable the same way on darwin",
 )
 def test_tee_write_error_is_isolated_from_the_run(tmp_path: pathlib.Path) -> None:
     # /dev/full accepts open() but fails every write with ENOSPC. The crate

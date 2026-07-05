@@ -118,6 +118,26 @@ class Command:
     def encoding(self, label: str) -> Command: ...
     def stdout_encoding(self, label: str) -> Command: ...
     def stderr_encoding(self, label: str) -> Command: ...
+    def stdout_tee(self, path: StrPath, *, append: bool = ...) -> Command:
+        """Tee every decoded stdout line (line + ``\\n``) to the file at ``path``
+        as it is produced, while the run *also* keeps capturing the full output
+        (the sink does not steal from ``ProcessResult.stdout``).
+
+        The sink is a **file path only** (``str`` / ``os.PathLike[str]``) — an
+        arbitrary Python writer is deliberately not supported here (a separate,
+        deferred feature). The file is opened **at build time** (not at run):
+        created if absent and truncated, or opened in append mode when
+        ``append=True``; an unopenable path raises the matching ``OSError``
+        subclass right here. Inert unless stdout is piped through the line pump
+        — a no-op under ``stdout("inherit")`` / ``stdout("null")`` and under
+        ``output_bytes()`` (raw capture)."""
+
+    def stderr_tee(self, path: StrPath, *, append: bool = ...) -> Command:
+        """Tee every decoded stderr line to the file at ``path``. Same contract
+        as ``stdout_tee`` — a file-path sink, opened at build time (truncate by
+        default or ``append``), coexisting with capture, inert unless stderr is
+        piped through the line pump."""
+
     def kill_on_parent_death(self) -> Command: ...
     def create_no_window(self) -> Command: ...
     def uid(self, uid: int) -> Command: ...

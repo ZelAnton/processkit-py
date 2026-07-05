@@ -1,5 +1,6 @@
 //! Small converters from Python-facing strings / numbers to crate types.
 
+use std::path::Path;
 use std::time::Duration;
 
 use processkit::Encoding;
@@ -35,6 +36,35 @@ pub(crate) fn nonnegative_duration(seconds: f64, what: &str) -> PyResult<Duratio
     }
     Duration::try_from_secs_f64(seconds)
         .map_err(|err| PyValueError::new_err(format!("invalid {what}: {err}")))
+}
+
+/// Open a file to receive a `stdout_tee`/`stderr_tee` line stream, converting it
+/// into the crate-required async sink (`W: tokio::io::AsyncWrite + Send + Unpin +
+/// 'static`, which `tokio::fs::File` satisfies).
+///
+/// The file is opened **now**, from the synchronous builder-method context — the
+/// crate takes a concrete `W: AsyncWrite` on `stdout_tee()`, not a lazy factory
+/// invoked at spawn, so there is no "open on run" hook to defer to. It is created
+/// if absent; an existing file is **truncated** by default (`open(path, "w")`
+/// semantics), or **appended** to when `append` is set (`"a"`). A path that can't
+/// be opened for writing — a missing parent directory, a directory, a permission
+/// denial — surfaces as the matching stdlib `OSError` subclass (PyO3 maps
+/// `std::io::Error` for us: `FileNotFoundError`, `IsADirectoryError`,
+/// `PermissionError`, …), not a panic.
+///
+/// `from_std` only wraps the already-open handle, so it needs no active runtime
+/// and is safe to call from the sync builder; the actual line writes happen later
+/// on the capture pump, dispatched to the managed runtime's blocking pool.
+pub(crate) fn open_tee_sink(path: &Path, append: bool) -> PyResult<tokio::fs::File> {
+    let std_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        // `truncate` and `append` are mutually exclusive here (exactly one is
+        // true), so this never trips the platforms that reject truncate+append.
+        .truncate(!append)
+        .append(append)
+        .open(path)?;
+    Ok(tokio::fs::File::from_std(std_file))
 }
 
 /// Map a Python stdio-mode label to the crate `StdioMode`.

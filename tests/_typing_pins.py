@@ -61,6 +61,12 @@ if TYPE_CHECKING:
     def _public_aliases(program: StrPath, signal: SignalName) -> None:
         assert_type(Command(program).timeout_signal(signal), Command)
 
+    # tee-to-file builders return a Command (chainable) and take a StrPath sink
+    # plus the keyword-only `append` flag.
+    def _tee_builder_return_types(cmd: Command, path: StrPath) -> None:
+        assert_type(cmd.stdout_tee(path), Command)
+        assert_type(cmd.stderr_tee(path, append=True), Command)
+
     async def _command_async_verb_return_types(cmd: Command) -> None:
         assert_type(await cmd.aoutput(), ProcessResult)
         assert_type(await cmd.arun(), str)

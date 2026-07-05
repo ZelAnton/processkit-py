@@ -58,9 +58,11 @@ processkit = { version = "=1.2.0", default-features = false, features = [
 ] }
 # `rt-multi-thread` for the managed runtime; `time`/`sync` are used directly by
 # the binding (`tokio::time::timeout` in runtime.rs, `tokio::sync::Mutex` in
-# running.rs) — declared explicitly so they don't ride silently on whatever
+# running.rs); `fs` backs the `stdout_tee`/`stderr_tee` file sinks
+# (`tokio::fs::File::from_std` in convert.rs — writes dispatched to the runtime's
+# blocking pool). Declared explicitly so they don't ride silently on whatever
 # `pyo3-async-runtimes` happens to enable.
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "fs"] }
 # Bridge the crate's `tracing` events to Python `logging` via the opt-in
 # `enable_logging()` (src/logging.rs). `registry` is the only `tracing-subscriber`
 # piece we need (a `Layer` over its span store); the heavy fmt/env-filter/ansi

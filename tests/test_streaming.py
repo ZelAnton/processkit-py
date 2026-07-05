@@ -444,6 +444,42 @@ def test_running_process_output_bytes() -> None:
     assert result.stdout == bytes([1, 2, 255])
 
 
+# --- stdout_tee / stderr_tee — file sink, async paths (T-004) ----------------
+
+
+def test_stdout_tee_with_aoutput_keeps_capture(tmp_path: pathlib.Path) -> None:
+    # The async whole-run capture verb (aoutput) tees each line to the file while
+    # keeping the captured result whole — the async twin of the sync `output()`
+    # tee coverage.
+    sink = tmp_path / "out.log"
+
+    async def scenario() -> ProcessResult:
+        code = "print('alpha', flush=True); print('beta', flush=True)"
+        return await Command(PY, ["-c", code]).stdout_tee(sink).aoutput()
+
+    result = asyncio.run(scenario())
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert sink.read_bytes() == b"alpha\nbeta\n"
+
+
+def test_stdout_tee_streams_with_start_and_stdout_lines(tmp_path: pathlib.Path) -> None:
+    # The tee also works with the streaming line verbs (start + stdout_lines), not
+    # only the whole-run capture verbs: the file receives the same lines the
+    # iterator yields, flushed by the pump at stream end.
+    sink = tmp_path / "out.log"
+
+    async def scenario() -> list[str]:
+        proc = await Command(PY, ["-c", _PRINT_LINES]).stdout_tee(sink).astart()
+        lines = [line.rstrip() async for line in proc.stdout_lines()]
+        await proc.afinish()
+        return lines
+
+    lines = asyncio.run(scenario())
+    assert lines == [f"line{i}" for i in range(5)]
+    assert sink.read_bytes() == b"".join(f"line{i}\n".encode() for i in range(5))
+
+
 # --- context-manager teardown (standalone start() owns a private tree) -------
 
 

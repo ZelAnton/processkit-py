@@ -13,6 +13,7 @@ the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
 - [Streaming stdout](#streaming-stdout)
+- [Tee output to a file](#tee-output-to-a-file)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
 - [Interactive stdin](#interactive-stdin)
 - [Readiness probes](#readiness-probes)
@@ -111,6 +112,67 @@ to know:
 
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*
+
+## Tee output to a file
+
+Sometimes you want *both*: a live log written to a file **and** the captured
+result in hand — a build whose output tails into `build.log` while you still get
+the final `ProcessResult` to inspect. `stdout_tee(path)` / `stderr_tee(path)` do
+that in one line, with no manual loop over `stdout_lines()`:
+
+```python
+from processkit import Command
+
+result = Command("cargo", ["build", "--release"]).stdout_tee("build.log").output()
+
+# The file received the live stream, line by line, as it was produced …
+assert open("build.log").read().startswith("   Compiling")
+# … and capture is untouched — the tee does not steal output from the result.
+print(result.stdout)          # the full captured stdout, same as without the tee
+```
+
+Each decoded line is written to the file as it lands, followed by a `\n` (a CRLF
+terminator is normalized to `\n`). The tee runs *independently* of capture, so
+`result.stdout` still holds the whole output. It also works with the streaming
+verbs — `start()` + `stdout_lines()` / `output_events()` — not just the one-shot
+capture verbs; the same lines flow to the iterator and the file.
+
+Things to know:
+
+- **A file path, not an arbitrary writer.** The sink is a filesystem path (`str`
+  or `os.PathLike[str]`). Teeing to a *Python* object as a live async writer (a
+  `io.StringIO`, a socket, your own class) is **not supported yet** — a bridge
+  that dispatches each line to a thread, re-acquires the GIL, and honors
+  backpressure across the FFI boundary is a separate, deferred feature. For now,
+  tee to a file; if you need the lines in Python, loop over `stdout_lines()`
+  yourself.
+- **The file is opened now, at build time.** `stdout_tee(path)` opens the file
+  the moment you call it (the crate takes a concrete sink, not a lazy factory),
+  **not** when the command runs. So an unopenable path — a missing parent
+  directory, a directory, a permission denial — raises the matching `OSError`
+  (`FileNotFoundError`, `IsADirectoryError`, `PermissionError`, …) right at the
+  builder call, before any run verb.
+- **Truncate by default, or append.** The file is created if absent and
+  truncated; pass `append=True` to open it in append mode instead (to grow an
+  existing log). Because the open handle is shared across re-runs of the *same*
+  built `Command` (retries, a reused command, `Supervisor` incarnations), those
+  sequential runs **append** to the one file with no delimiter, and concurrent
+  clones (pipeline stages) **interleave**. For per-run separation, build a fresh
+  `Command` (a fresh path) per run.
+- **A slow sink applies backpressure, it does not block the runtime.** The tee
+  write is awaited on the capture pump, so a slow disk slows the pump, fills the
+  OS pipe, and makes the child block on its next write — rather than stalling the
+  event loop. A sink that blocks *forever* (not merely slow) parks the pump until
+  teardown; a plain file never does this.
+- **A tee write error is isolated.** If a write to the file fails mid-run, the
+  tee is disabled for the rest of the run and a warning is emitted (under
+  [`enable_logging()`](cookbook.md#see-what-processkit-runs-logging)) — the run
+  itself and its captured result are unaffected, never broken by the sink.
+- **No-op unless the line pump runs.** The tee fires from the line-capture pump,
+  so it is inert under `stdout("inherit")` / `stdout("null")` (no pump) and under
+  `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs
+  — `output()` / `aoutput()`, `run()`, or `start()` + `stdout_lines()` /
+  `output_events()`.
 
 ## Interleaved stdout and stderr
 

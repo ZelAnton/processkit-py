@@ -153,6 +153,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Command.no_timeout()` — run without a timeout, and (unlike simply leaving
   it unset) opt out of a client-wide `CliClient` `default_timeout` gap-fill.
   Clears a prior `.timeout()`; the last of the two wins.
+- `Command.stdout_tee(path, *, append=False)` / `stderr_tee(path, *,
+  append=False)` — tee every decoded line of the stream to a file *as it is
+  produced* (the line plus a `\n`, CRLF normalized) while the run **also** keeps
+  capturing the full output: the one-line way to "stream a log to a file and
+  still get the captured `ProcessResult`", without a manual loop over
+  `stdout_lines()`. The sink is a **file path** (`str` / `os.PathLike[str]`);
+  teeing to an arbitrary Python object as a live async writer is deliberately
+  **not** supported yet (a separate, deferred feature — dispatching each line to
+  a thread, re-acquiring the GIL, honoring backpressure across the FFI boundary
+  is its own scope). The file is opened **at build time** — the crate takes a
+  concrete sink, not a lazy factory — so an unopenable path (missing parent
+  directory, a directory, a permission denial) raises the matching `OSError`
+  subclass right at the builder call, not at run; it is created/truncated by
+  default, or appended to with `append=True`. Inherited crate semantics: a slow
+  sink applies backpressure (it does not block the runtime); a tee write error
+  disables the tee for the rest of the run without breaking the run or its
+  captured result (warned under `enable_logging()`); and the tee is inert unless
+  the line pump runs — a no-op under `stdout("inherit")` / `stdout("null")` and
+  under `output_bytes()` (raw capture), working with the line verbs (`output()`
+  / `aoutput()` / `run()`, `start()` + `stdout_lines()` / `output_events()`). A
+  reused command's shared sink handle **appends** across sequential re-runs
+  (retries, `Supervisor` incarnations) and **interleaves** across concurrent
+  pipeline stages.
 - `Command.command_line()` — render the command as a single shell-quoted line
   for display (logs, error messages, a dry-run echo); includes argv, unlike
   the redacted `repr()`. Never used to actually execute anything. Plus

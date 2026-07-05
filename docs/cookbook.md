@@ -159,6 +159,33 @@ async for event in proc.output_events():
     print(event.stream, event.text)   # "stdout" / "stderr"
 ```
 
+## Stream a log to a file and still get the captured result
+
+`stdout_tee(path)` / `stderr_tee(path)` write the live stream to a file *and*
+leave the full output in the captured result — no manual `stdout_lines()` loop,
+and the one-shot verbs (`output()`, `run()`) still work:
+
+```python
+from processkit import Command
+
+result = Command("cargo", ["build"]).stdout_tee("build.log").output()
+# build.log has the live, line-by-line stream; result.stdout has the whole thing.
+print(result.stdout)                 # capture is untouched — the tee is a copy
+```
+
+The file is opened **when you call the builder** (a bad path raises `OSError`
+there, not at run) and truncated by default — pass `append=True` to grow an
+existing log. Separate files for each stream:
+
+```python
+Command("noisy-tool").stdout_tee("out.log").stderr_tee("err.log").run()
+```
+
+The sink is a **file path**, not an arbitrary Python writer (teeing to a Python
+object is a deferred feature) — if you need the lines *in Python*, loop over
+`stdout_lines()` instead. See [Streaming](streaming.md#tee-output-to-a-file) for
+backpressure, the no-op conditions, and write-error isolation.
+
 ## Tear a standalone process down deterministically
 
 A `RunningProcess` is a context manager. Exiting the block kills the process —

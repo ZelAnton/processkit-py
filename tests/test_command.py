@@ -717,6 +717,135 @@ def test_cancel_on_tears_down_the_run_and_raises_cancelled() -> None:
     asyncio.run(scenario())
 
 
+# --- stdout_tee / stderr_tee — file sink (T-004) -----------------------------
+
+# Two flushed stdout lines; the tee writes each decoded line + "\n" as it lands,
+# while capture keeps the whole output.
+_TEE_TWO_LINES = "print('alpha', flush=True); print('beta', flush=True)"
+
+
+def test_stdout_tee_writes_lines_and_keeps_capture(tmp_path: pathlib.Path) -> None:
+    # The live stream reaches the file sink line by line (each terminated with a
+    # single "\n", CRLF normalized by the pump), AND the captured result is
+    # intact — the tee does not steal output from ProcessResult.stdout.
+    sink = tmp_path / "out.log"
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(sink).output()
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert sink.read_bytes() == b"alpha\nbeta\n"
+
+
+def test_stderr_tee_writes_lines_and_keeps_capture(tmp_path: pathlib.Path) -> None:
+    sink = tmp_path / "err.log"
+    code = "import sys; print('to-err', file=sys.stderr, flush=True); print('to-out', flush=True)"
+    result = Command(PY, ["-c", code]).stderr_tee(sink).output()
+    assert result.stdout.strip() == "to-out"
+    assert "to-err" in result.stderr
+    assert sink.read_bytes() == b"to-err\n"
+
+
+def test_stdout_and_stderr_tee_to_separate_files(tmp_path: pathlib.Path) -> None:
+    # Both sinks can be active at once, each receiving only its own stream.
+    out = tmp_path / "out.log"
+    err = tmp_path / "err.log"
+    code = (
+        "import sys; print('o1', flush=True); "
+        "print('e1', file=sys.stderr, flush=True); print('o2', flush=True)"
+    )
+    result = Command(PY, ["-c", code]).stdout_tee(out).stderr_tee(err).output()
+    assert result.stdout.splitlines() == ["o1", "o2"]
+    assert "e1" in result.stderr
+    assert out.read_bytes() == b"o1\no2\n"
+    assert err.read_bytes() == b"e1\n"
+
+
+def test_tee_truncates_the_sink_by_default(tmp_path: pathlib.Path) -> None:
+    # The file is opened create/truncate by default — stale content is gone.
+    sink = tmp_path / "out.log"
+    sink.write_bytes(b"stale-content\nmore-stale\n")
+    Command(PY, ["-c", "print('fresh', flush=True)"]).stdout_tee(sink).output()
+    assert sink.read_bytes() == b"fresh\n"
+
+
+def test_tee_append_mode_preserves_existing_content(tmp_path: pathlib.Path) -> None:
+    # append=True opens the file in append mode instead of truncating it.
+    sink = tmp_path / "out.log"
+    sink.write_bytes(b"prior\n")
+    Command(PY, ["-c", "print('added', flush=True)"]).stdout_tee(sink, append=True).output()
+    assert sink.read_bytes() == b"prior\nadded\n"
+
+
+def test_tee_reused_command_appends_across_sequential_runs(tmp_path: pathlib.Path) -> None:
+    # The sink is opened once, at build time, and the single open handle is shared
+    # across runs of the same built Command — so sequential re-runs append to the
+    # one file (the crate holds the sink in an Arc<Mutex<…>>), with no delimiter.
+    sink = tmp_path / "out.log"
+    cmd = Command(PY, ["-c", "print('run', flush=True)"]).stdout_tee(sink)
+    cmd.output()
+    cmd.output()
+    assert sink.read_bytes() == b"run\nrun\n"
+
+
+def test_tee_opens_the_file_at_build_time_not_at_run(tmp_path: pathlib.Path) -> None:
+    # The crate takes a concrete AsyncWrite on stdout_tee(), so the file is opened
+    # the moment the builder method is called — a bad path (missing parent dir)
+    # raises an OSError right here, before any run verb, not a panic.
+    cmd = Command(PY, ["-c", "pass"])
+    bad = tmp_path / "no-such-dir" / "out.log"
+    with pytest.raises(OSError):
+        cmd.stdout_tee(bad)
+
+
+def test_tee_directory_path_raises_oserror(tmp_path: pathlib.Path) -> None:
+    # A directory can't be opened as a writable file — a clean OSError, not a panic.
+    with pytest.raises(OSError):
+        Command(PY, ["-c", "pass"]).stderr_tee(tmp_path)
+
+
+def test_stdout_tee_is_inert_under_output_bytes(tmp_path: pathlib.Path) -> None:
+    # output_bytes() captures stdout raw (no line pump), so the tee — which fires
+    # from the line pump — is a no-op: the file stays empty, capture is unaffected.
+    sink = tmp_path / "out.log"
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(sink).output_bytes()
+    assert result.stdout.split() == [b"alpha", b"beta"]
+    assert sink.read_bytes() == b""
+
+
+def test_stdout_tee_is_inert_under_stdout_null(tmp_path: pathlib.Path) -> None:
+    # stdout("null") runs no capture pump — the tee is inert (empty file). null is
+    # non-capturing, so the run goes through start() + outcome() (the capture verbs
+    # reject a non-piped stdout), which still completes the child cleanly.
+    sink = tmp_path / "out.log"
+    outcome = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("null").stdout_tee(sink).start().outcome()
+    assert outcome.exited_zero
+    assert sink.read_bytes() == b""
+
+
+def test_stdout_tee_is_inert_under_stdout_inherit(tmp_path: pathlib.Path) -> None:
+    # stdout("inherit") sends the child's stdout to the parent's — no capture pump,
+    # so the tee is inert. Like null, inherit is non-capturing, so run it via
+    # start() + outcome().
+    sink = tmp_path / "out.log"
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("inherit").stdout_tee(sink)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert sink.read_bytes() == b""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="/dev/full (a sink whose every write fails with ENOSPC) is POSIX-only",
+)
+def test_tee_write_error_is_isolated_from_the_run(tmp_path: pathlib.Path) -> None:
+    # /dev/full accepts open() but fails every write with ENOSPC. The crate
+    # disables the tee on the write error and keeps going — the run and its
+    # captured result are unaffected, and no exception surfaces to the caller.
+    # The captured stdout must still be whole even though the sink took nothing.
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee("/dev/full").output()
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
 def test_cancel_on_replaces_a_prior_token() -> None:
     # Command.cancel_on REPLACES (not gap-fills) — the last call wins, so
     # firing the FIRST token must not cancel a command whose cancel_on() was

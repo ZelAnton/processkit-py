@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 
 use crate::cancellation::PyCancellationToken;
 use crate::convert::{
-    build_output_buffer_policy, build_retry_policy, nonnegative_duration, parse_encoding,
-    parse_retry_if, parse_signal, parse_stdio_mode, positive_duration,
+    build_output_buffer_policy, build_retry_policy, nonnegative_duration, open_tee_sink,
+    parse_encoding, parse_retry_if, parse_signal, parse_stdio_mode, positive_duration,
 };
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
@@ -282,6 +282,63 @@ impl PyCommand {
     fn stderr_encoding(&self, label: &str) -> PyResult<Self> {
         Ok(Self {
             inner: self.inner.clone().stderr_encoding(parse_encoding(label)?),
+        })
+    }
+
+    /// Tee every decoded stdout line to the file at `path` as it is produced —
+    /// the line **plus** a trailing `\n` — while the run *also* keeps capturing
+    /// the full output: the sink does not steal output from `ProcessResult.stdout`.
+    /// The one-line way to "stream a log to a file and still get the captured
+    /// result", without a manual loop over `stdout_lines()`.
+    ///
+    /// **Sink form — a file path only.** This binding accepts a filesystem path
+    /// (`str` or `os.PathLike[str]`), not an arbitrary Python writer: teeing to a
+    /// caller-supplied Python object as an async writer (dispatching each line to a
+    /// thread pool, re-acquiring the GIL, honoring backpressure) is a separate,
+    /// deliberately-deferred feature, not silently supported here. Pass a path.
+    ///
+    /// **File lifecycle — opened now, at build time.** The crate takes a concrete
+    /// async sink on `stdout_tee()`, not a lazy factory, so the file is opened the
+    /// moment you call this builder method (not when the command runs). It is
+    /// created if absent and, by default, **truncated**; pass ``append=True`` to
+    /// open in append mode instead. A path that can't be opened for writing raises
+    /// immediately — the matching `OSError` subclass (`FileNotFoundError` for a
+    /// missing parent directory, `PermissionError`, `IsADirectoryError`, …).
+    ///
+    /// Because the open handle is shared across clones and re-runs (the crate holds
+    /// the sink in an `Arc<Mutex<…>>`), sequential re-runs of the same built
+    /// command — retries, a reused `Command`, `Supervisor` incarnations — **append**
+    /// to the one file with no delimiter; concurrent clones (pipeline stages)
+    /// **interleave**. For per-run separation, build a fresh `Command` (a fresh
+    /// path) per run.
+    ///
+    /// **No-op conditions (inherited from the crate).** The tee fires from the
+    /// line-capture pump, so it is inert under ``stdout("inherit")`` /
+    /// ``stdout("null")`` (no pump runs) and under `output_bytes()` (raw capture,
+    /// no line pump). Use it with the line verbs — `output()` / `aoutput()`,
+    /// `run()`, or `start()` + `stdout_lines()` / `output_events()`. A slow sink
+    /// applies backpressure (the pump slows, the OS pipe fills, the child blocks on
+    /// its next write) rather than blocking the runtime; a write error disables the
+    /// tee for the rest of the run — the run and its captured result are
+    /// unaffected — surfaced as a `tracing` warning under `enable_logging()`.
+    #[pyo3(signature = (path, *, append = false))]
+    fn stdout_tee(&self, path: PathBuf, append: bool) -> PyResult<Self> {
+        let sink = open_tee_sink(&path, append)?;
+        Ok(Self {
+            inner: self.inner.clone().stdout_tee(sink),
+        })
+    }
+
+    /// Tee every decoded stderr line to the file at `path` as it is produced.
+    /// Same contract as `stdout_tee` — a file-path sink (not an arbitrary Python
+    /// writer), opened at build time (created, truncated by default or ``append``),
+    /// coexisting with capture, and inert unless stderr is piped through the line
+    /// pump.
+    #[pyo3(signature = (path, *, append = false))]
+    fn stderr_tee(&self, path: PathBuf, append: bool) -> PyResult<Self> {
+        let sink = open_tee_sink(&path, append)?;
+        Ok(Self {
+            inner: self.inner.clone().stderr_tee(sink),
         })
     }
 

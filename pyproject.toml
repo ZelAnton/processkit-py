@@ -63,6 +63,7 @@ dev = [
   "pre-commit>=4.0.0",
   "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.8.0",
+  "pytest-cov>=7.0.0",
   "hypothesis>=6.156.1",
 ]
 # The mkdocs toolchain, split out of `dev` so the Docs CI job's `uv run --group
@@ -156,6 +157,39 @@ pythonpath = ["."]
 # cross-platform, unlike `signal` (POSIX-only, and this suite runs on Windows).
 timeout = 60
 timeout_method = "thread"
+
+[tool.coverage.run]
+# Coverage is deliberately scoped to the *pure-Python* surface only: the
+# hand-written `src/processkit/*.py` modules (the public API shim, the async
+# helpers, the pytest plugin, the testing doubles) plus the release tooling in
+# `scripts/release/`. The compiled `_processkit` extension (the PyO3/Rust
+# binding) is native code — coverage.py has no way to instrument it, and
+# couldn't even if asked to: it is exercised (indirectly, through every test
+# that calls into `Command`/`ProcessGroup`/etc.) but its *own* line/branch
+# coverage is tracked by the `processkit` Rust crate's own test suite, not
+# here. Nothing needs to be listed in `omit` for it (there is no `.py` file to
+# match — `_processkit.pyi` is a stub, never imported, so coverage.py never
+# sees it) but this comment exists so the percentage below is never read as
+# "how well the Rust core is tested".
+source = ["src/processkit", "scripts/release"]
+branch = true
+# One data file per pytest-xdist worker (`.coverage.<host>.<pid>.<rand>`),
+# combined by pytest-cov at session end — without this, concurrent workers
+# racing to write the same `.coverage` file would silently under-report
+# (last writer wins instead of a proper union of all workers' lines).
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
 
 [tool.cibuildwheel]
 # Two wheel families per OS/arch:

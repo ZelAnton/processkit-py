@@ -266,6 +266,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prebuilt wheels for **Intel macOS** (x86_64), cross-compiled from the arm64
   (Apple Silicon) runner. Previously Intel Mac users installed from the sdist
   (needing a Rust toolchain); both macOS architectures are now covered.
+- Prebuilt wheels for **Windows on ARM (arm64)**, built natively on GitHub's
+  free-for-public-repos `windows-11-arm` runner. Both families ship — the abi3
+  GIL wheel (CPython 3.10+) and the free-threaded cp314t wheel — so ARM64
+  Windows users (a growing laptop segment) get a binary `pip install` instead
+  of a from-source build needing a Rust toolchain. No cibuildwheel override was
+  needed: it already provides a native ARM64 CPython 3.10 (for the abi3 wheel)
+  and a native ARM64 cp314t, so the existing `build`/`skip` selectors cover
+  win_arm64 unchanged.
 - An **API reference** section on the documentation site — a complete,
   per-symbol index of the public surface (every class, function, protocol, type
   alias, and exception, plus the `processkit.testing` submodule), reachable from

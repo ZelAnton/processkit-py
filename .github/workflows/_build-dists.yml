@@ -32,18 +32,22 @@ jobs:
   # ---------------------------------------------------------------------------
   # The abi3 wheel (cp310, runs on every GIL CPython 3.10+) plus a free-threaded
   # cp314t wheel per OS/arch. Each runner builds its own native arch: Linux
-  # x86_64 (manylinux), Linux aarch64 (native ARM runner), Windows x64. The
-  # macOS runner (macos-14, Apple Silicon) is the one exception — it CROSS-
-  # compiles both arm64 (native) and x86_64 (Intel), since GitHub retired the
-  # free `macos-13` Intel runner but Rust cross-compiles darwin-x86_64 from an
-  # arm64 host trivially (rustup target + cibuildwheel's `CIBW_ARCHS_MACOS`).
+  # x86_64 (manylinux), Linux aarch64 (native ARM runner), Windows x64, and
+  # Windows arm64 (the `windows-11-arm` native ARM runner — free for public
+  # repos; cibuildwheel ships both an ARM64 CPython 3.10 for the abi3 wheel and
+  # an ARM64 cp314t for the free-threaded one, so both families build natively,
+  # no cross-compile). The macOS runner (macos-14, Apple Silicon) is the one
+  # exception — it CROSS-compiles both arm64 (native) and x86_64 (Intel), since
+  # GitHub retired the free `macos-13` Intel runner but Rust cross-compiles
+  # darwin-x86_64 from an arm64 host trivially (rustup target + cibuildwheel's
+  # `CIBW_ARCHS_MACOS`).
   # ---------------------------------------------------------------------------
   build_wheels:
     name: wheels (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

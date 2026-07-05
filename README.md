@@ -440,9 +440,9 @@ type stubs — is stable: breaking changes land only in a new major version, so
 `pip install processkit-py` (the import name is `processkit`) covers every
 platform with a prebuilt wheel — see the
 [PyPI project page](https://pypi.org/project/processkit-py/) for the current
-release. On a platform without a prebuilt wheel (Windows on ARM, 32-bit),
-build from source instead (see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-build prerequisites):
+release. On a platform without a prebuilt wheel (32-bit targets), build from
+source instead (see [CONTRIBUTING.md](CONTRIBUTING.md) for the build
+prerequisites):
 
 ```bash
 git clone https://github.com/ZelAnton/processkit-py

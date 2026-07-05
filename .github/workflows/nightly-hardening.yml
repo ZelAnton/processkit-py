@@ -1,0 +1,71 @@
+name: Nightly hardening
+
+# Runs nightly (never on push/PR) plus on manual dispatch. This is deliberately
+# separate from the `CI` workflow (ci.yml): it exists to catch the *rare*
+# teardown races and leaks that a single small stress run in the PR gate is
+# unlikely to surface, at a cost (full OS matrix x free-threaded interpreter x
+# repeated suite runs, with scaled-up stress iterations) that would be too slow
+# to pay on every push/PR. A failure here shows up as a red status for this
+# workflow in the Actions tab, and GitHub additionally emails the actor who
+# last modified this workflow file when a schedule-triggered run fails — both
+# are informative-only signals; this workflow never gates a PR (it has no
+# `pull_request`/`push` trigger, and nothing in `ci.yml` depends on it).
+on:
+  schedule:
+    # 03:17 UTC daily. Off-the-hour and distinct from codeql.yml's weekly
+    # '32 5 * * 1' slot, so the two scheduled workflows don't contend for
+    # runner capacity at the same instant.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-hardening
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    # Same (OS x interpreter) matrix as `ci.yml`'s `test` job (full OS coverage
+    # + the free-threaded 3.14t build), but every entry here additionally
+    # scales up the hardening tests' iteration counts and repeats the whole
+    # suite several times per run, to raise the odds of tripping a rare,
+    # timing-dependent teardown race that a single fast pass would miss.
+    name: stress (${{ matrix.os }}, ${{ matrix.python || 'abi3' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+        python: ['', '3.14t']
+    runs-on: ${{ matrix.os }}
+    # `PROCESSKIT_STRESS_SCALE` multiplies the iteration/spawn counts in
+    # tests/test_hardening.py (default 1, i.e. the fast PR-gate values); this
+    # does not change PR-gate behavior since `ci.yml` never sets this variable.
+    env:
+      PROCESSKIT_STRESS_SCALE: '10'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      # Repeat the full suite several times in one job run (rather than only
+      # scaling iteration counts within a single run) to also catch flaky
+      # races that depend on process/OS scheduling variance between separate
+      # interpreter invocations, not just on in-process repetition count.
+      # `shell: bash` runs the same POSIX loop on every OS in the matrix,
+      # including windows-latest (Actions ships Git Bash there).
+      - name: Run the suite repeatedly with scaled-up stress iterations
+        shell: bash
+        run: |
+          set -e
+          for i in $(seq 1 5); do
+            echo "::group::Suite run $i/5"
+            uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
+            echo "::endgroup::"
+          done

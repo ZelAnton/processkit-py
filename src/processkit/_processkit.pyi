@@ -12,10 +12,10 @@ from typing import Literal, final
 
 # `StrPath` (program/path arg: `str` or `os.PathLike[str]`), `Args` (an argv-like
 # list/tuple of them — deliberately not `Sequence[StrPath]`, see `_types.py`),
-# `SignalName`, `RetryIf`, and `ReadableBuffer` are the single source in
-# `_types`, re-exported from the package so callers can annotate with them;
-# imported here for the signatures below.
-from ._types import Args, ReadableBuffer, RetryIf, SignalName, StrPath
+# `SignalName`, `RetryIf`, `Priority`, and `ReadableBuffer` are the single
+# source in `_types`, re-exported from the package so callers can annotate
+# with them; imported here for the signatures below.
+from ._types import Args, Priority, ReadableBuffer, RetryIf, SignalName, StrPath
 
 @final
 class ProcessResult:
@@ -145,6 +145,7 @@ class Command:
     def groups(self, gids: Sequence[int]) -> Command: ...
     def setsid(self) -> Command: ...
     def umask(self, mask: int) -> Command: ...
+    def priority(self, level: Priority) -> Command: ...
     def output_limit(
         self,
         *,

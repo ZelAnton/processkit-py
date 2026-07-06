@@ -25,6 +25,8 @@ from processkit import (
     Command,
     NonZeroExit,
     OutputTooLarge,
+    PermissionDenied,
+    Priority,
     ProcessError,
     ProcessNotFound,
     Timeout,
@@ -474,6 +476,7 @@ def test_builder_knobs_chain_builds() -> None:
         .groups([0])
         .setsid()
         .umask(0o022)
+        .priority("normal")
     )
     assert isinstance(cmd, Command)
     # The cross-platform lifetime knobs actually run.
@@ -536,6 +539,81 @@ def test_umask_unsupported_on_windows() -> None:
     with pytest.raises(Unsupported) as excinfo:
         Command(PY, ["-c", "print('x')"]).umask(0o022).run()
     assert excinfo.value.operation
+
+
+def test_priority_rejects_unknown_preset() -> None:
+    with pytest.raises(ValueError, match="priority"):
+        Command(PY, ["-c", "print(1)"]).priority("bogus")  # type: ignore[arg-type]
+
+
+# `nice(2)` value each preset maps to on Unix (see `Priority`'s doc comment in
+# the crate); mirrored below for the Windows priority-class flags.
+_POSIX_NICE = {
+    "idle": 19,
+    "below_normal": 10,
+    "normal": 0,
+    "above_normal": -5,
+    "high": -10,
+}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.getpriority is POSIX-only")
+@pytest.mark.parametrize("preset", ["idle", "below_normal", "normal"])
+def test_priority_actually_applies_nice_value_on_posix(preset: Priority) -> None:
+    # These three never *lower* the nice value below the inherited default (0),
+    # so no privilege is needed — real effect checked via the child's own
+    # `os.getpriority()`, not just a chain-build.
+    code = "import os; print(os.getpriority(os.PRIO_PROCESS, 0))"
+    out = Command(PY, ["-c", code]).priority(preset).run()
+    assert int(out) == _POSIX_NICE[preset]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.getpriority is POSIX-only")
+@pytest.mark.parametrize("preset", ["above_normal", "high"])
+def test_priority_negative_nice_applies_or_needs_privilege_on_posix(preset: Priority) -> None:
+    # `above_normal`/`high` *lower* the nice value below the inherited default
+    # (0), which an unprivileged POSIX user typically cannot do (needs
+    # `CAP_SYS_NICE`/root) — real effect where the runner has the privilege
+    # (e.g. this repo's root Docker harness), a clean `PermissionDenied`
+    # (never a silent downgrade to a less-negative nice value) otherwise.
+    code = "import os; print(os.getpriority(os.PRIO_PROCESS, 0))"
+    cmd = Command(PY, ["-c", code]).priority(preset)
+    try:
+        out = cmd.run()
+    except PermissionDenied:
+        return
+    assert int(out) == _POSIX_NICE[preset]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="priority class is a Windows-only concept")
+@pytest.mark.parametrize("preset", ["idle", "below_normal", "normal", "above_normal", "high"])
+def test_priority_actually_applies_priority_class_on_windows(preset: Priority) -> None:
+    # No privilege is needed for any Windows priority class (unlike Unix's
+    # negative-nice presets) — real effect checked via `GetPriorityClass`
+    # through `ctypes` (no extra dependency needed for a one-off syscall).
+    import ctypes
+
+    priority_class = {
+        "idle": 0x0000_0040,  # IDLE_PRIORITY_CLASS
+        "below_normal": 0x0000_4000,  # BELOW_NORMAL_PRIORITY_CLASS
+        "normal": 0x0000_0020,  # NORMAL_PRIORITY_CLASS
+        "above_normal": 0x0000_8000,  # ABOVE_NORMAL_PRIORITY_CLASS
+        "high": 0x0000_0080,  # HIGH_PRIORITY_CLASS
+    }[preset]
+    proc = Command(PY, ["-c", "import time; time.sleep(30)"]).priority(preset).start()
+    try:
+        assert proc.pid is not None
+        # PROCESS_QUERY_LIMITED_INFORMATION — enough to read the priority class.
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, proc.pid)
+        assert handle, "OpenProcess failed"
+        try:
+            got = ctypes.windll.kernel32.GetPriorityClass(handle)
+            assert got == priority_class, f"expected {priority_class:#x}, got {got:#x}"
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    finally:
+        proc.kill()
+        proc.outcome()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM trapping is POSIX-specific")

@@ -64,7 +64,7 @@ from ._processkit import (
     output_all_bytes,
 )
 from ._protocols import ProcessRunner, StreamingRunner
-from ._types import Args, ReadableBuffer, RetryIf, SignalName, StrPath
+from ._types import Args, Priority, ReadableBuffer, RetryIf, SignalName, StrPath
 
 
 def __getattr__(name: str) -> str:
@@ -98,6 +98,7 @@ __all__ = [
     "OutputTooLarge",
     "PermissionDenied",
     "Pipeline",
+    "Priority",
     "ProcessError",
     "ProcessGroup",
     "ProcessGroupStats",

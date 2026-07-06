@@ -140,6 +140,8 @@ Exported so your own wrappers can annotate against the same types the API accept
 
 ::: processkit.Args
 
+::: processkit.Priority
+
 ::: processkit.ReadableBuffer
 
 ::: processkit.RetryIf

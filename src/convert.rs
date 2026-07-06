@@ -7,6 +7,7 @@ use processkit::prelude::Encoding;
 use processkit::Error as PkError;
 use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;
+use processkit::Priority;
 use processkit::RetryPolicy;
 use processkit::Signal as PkSignal;
 use processkit::StdioMode;
@@ -75,6 +76,26 @@ pub(crate) fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
         "null" | "discard" => Ok(StdioMode::Null),
         other => Err(PyValueError::new_err(format!(
             "unknown stdio mode {other:?}; use one of: pipe, inherit, null"
+        ))),
+    }
+}
+
+/// Map a `Command.priority(level)` preset name to the crate `Priority` — a
+/// direct snake_case mirror of the crate's enum variant names (`Idle` ->
+/// `"idle"`, `BelowNormal` -> `"below_normal"`, `Normal` -> `"normal"`,
+/// `AboveNormal` -> `"above_normal"`, `High` -> `"high"`). The crate's
+/// `Priority` is `#[non_exhaustive]`, so this match keeps a `_ =>` fallback
+/// (unreachable today) rather than assuming these five variants are
+/// exhaustive forever.
+pub(crate) fn parse_priority(level: &str) -> PyResult<Priority> {
+    match level {
+        "idle" => Ok(Priority::Idle),
+        "below_normal" => Ok(Priority::BelowNormal),
+        "normal" => Ok(Priority::Normal),
+        "above_normal" => Ok(Priority::AboveNormal),
+        "high" => Ok(Priority::High),
+        other => Err(PyValueError::new_err(format!(
+            "unknown priority {other:?}; use one of: idle, below_normal, normal, above_normal, high"
         ))),
     }
 }

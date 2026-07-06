@@ -14,9 +14,11 @@ named retry-classifier presets accepted by `Command.retry()` / `CliClient`'s
 `default_retry_if=`; `ReadableBuffer` is what `Command.stdin_bytes()` /
 `ProcessStdin.write()` accept — `bytes` and every other object PyO3 extracts
 a byte buffer from via the buffer protocol (`bytearray`, `memoryview`), not
-just `bytes` itself. Kept here as the single runtime+stub source (the
+just `bytes` itself. `Priority` is the set of named CPU-scheduling presets
+accepted by `Command.priority()` — a direct snake_case mirror of the crate's
+`Priority` enum variants. Kept here as the single runtime+stub source (the
 compiled module's `.pyi` imports them), so a caller can
-`from processkit import Args, ReadableBuffer, RetryIf, SignalName, StrPath`.
+`from processkit import Args, Priority, ReadableBuffer, RetryIf, SignalName, StrPath`.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ StrPath = str | os.PathLike[str]
 Args = list[StrPath] | tuple[StrPath, ...]
 SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
 RetryIf = Literal["transient", "transient_or_timeout"]
+Priority = Literal["idle", "below_normal", "normal", "above_normal", "high"]
 ReadableBuffer = bytes | bytearray | memoryview
 
-__all__ = ["Args", "ReadableBuffer", "RetryIf", "SignalName", "StrPath"]
+__all__ = ["Args", "Priority", "ReadableBuffer", "RetryIf", "SignalName", "StrPath"]

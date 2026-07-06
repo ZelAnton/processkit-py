@@ -12,7 +12,8 @@ use pyo3::prelude::*;
 use crate::cancellation::PyCancellationToken;
 use crate::convert::{
     build_output_buffer_policy, build_retry_policy, nonnegative_duration, open_tee_sink,
-    parse_encoding, parse_retry_if, parse_signal, parse_stdio_mode, positive_duration,
+    parse_encoding, parse_priority, parse_retry_if, parse_signal, parse_stdio_mode,
+    positive_duration,
 };
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
@@ -397,6 +398,28 @@ impl PyCommand {
         Self {
             inner: self.inner.clone().umask(mask),
         }
+    }
+
+    /// Set the child's CPU-scheduling priority: one of `"idle"`,
+    /// `"below_normal"`, `"normal"`, `"above_normal"`, `"high"` — a direct
+    /// snake_case mirror of the crate's `Priority` variants. Unix: applied via
+    /// `setpriority`/`nice` through the same `pre_exec` seam as `uid`/`gid`/
+    /// `groups`/`setsid`/`umask`. Windows: OR'd into the process-creation
+    /// priority class, alongside `create_no_window`.
+    ///
+    /// Unlike the privilege/POSIX-only knobs above, `priority` is supported on
+    /// **both** platform families and never raises `Unsupported`. The one
+    /// caveat is `"high"` on Unix: lowering `nice` below its inherited value
+    /// needs `CAP_SYS_NICE` (Linux) or an equivalent privilege elsewhere;
+    /// without it the OS refuses the change and the run raises
+    /// `PermissionDenied` (never a silent downgrade to a lower priority) —
+    /// Windows needs no special privilege for its `HIGH_PRIORITY_CLASS`.
+    /// Last-write-wins, like `timeout`.
+    fn priority(&self, level: &str) -> PyResult<Self> {
+        let priority = parse_priority(level)?;
+        Ok(Self {
+            inner: self.inner.clone().priority(priority),
+        })
     }
 
     /// Cap how much captured output is retained. Pass at least one of

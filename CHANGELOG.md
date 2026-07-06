@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Command.umask(mask)` — set the child's POSIX file-mode creation mask; on a
   non-POSIX platform the run raises `Unsupported`, matching the existing
   `uid`/`gid`/`groups`/`setsid` verbs.
+- `Command.priority(level)` — set the child's CPU-scheduling priority, one of
+  the named presets `"idle"`, `"below_normal"`, `"normal"`, `"above_normal"`,
+  `"high"` (new `Priority` type alias). Unix `nice`/`setpriority`, Windows
+  priority class — unlike the privilege/POSIX-only verbs above, supported on
+  **both** platform families, so it never raises `Unsupported`. Raising to
+  `"high"` on Unix without `CAP_SYS_NICE`/root raises `PermissionDenied`
+  instead of silently applying a lower priority.
 
 ### Changed
 -

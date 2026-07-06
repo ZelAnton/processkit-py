@@ -494,6 +494,24 @@ assert inv.program == "git"
 assert inv.args == ["push", "--tags"]
 ```
 
+For a `--dry-run`/`--echo` mode — assert on (or print) the *rendered command
+line*, with no reply to script and no output to replay — inject a
+`DryRunRunner`. It never spawns, renders each command to its display-quoted
+line, and returns a synthetic success:
+
+```python
+from processkit import Command
+from processkit.testing import DryRunRunner
+
+def prune(runner):
+    runner.run(Command("rm", ["-rf", "build"]))
+
+dry = DryRunRunner()
+prune(dry)
+assert dry.only_command() == "rm -rf build"   # nothing spawned
+# dry.on_invocation(print) would echo each line live instead.
+```
+
 ## Use the pytest fixtures
 
 Installing processkit registers a pytest plugin (via a `pytest11` entry point) —

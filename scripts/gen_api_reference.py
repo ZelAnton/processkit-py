@@ -156,7 +156,14 @@ SECTIONS: tuple[Section, ...] = (
         "Runner test doubles, in the `processkit.testing` submodule. Inject one "
         "in tests — all satisfy the `ProcessRunner` protocol — so the code under "
         "test spawns no real processes.",
-        ("ScriptedRunner", "RecordReplayRunner", "RecordingRunner", "Reply", "Invocation"),
+        (
+            "ScriptedRunner",
+            "RecordReplayRunner",
+            "RecordingRunner",
+            "DryRunRunner",
+            "Reply",
+            "Invocation",
+        ),
         module=_TESTING_MODULE,
     ),
 )

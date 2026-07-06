@@ -8,7 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- `processkit.testing.DryRunRunner` — a render-only test double that never
+  spawns a process: every verb renders the command to its display-quoted line
+  (via the crate's own `Command.command_line()` quoting) and returns a
+  synthetic success, the seam behind a tool's own `--dry-run`/`--echo` mode.
+  Inspect the rendered lines with `commands()` / `only_command()`, or stream
+  them live as each call happens with `on_invocation(callback)`. Works at every
+  runner injection point (`output_all` and friends, `Supervisor`, `CliClient`,
+  `runner=`), like the other doubles. (Binds `processkit` 2.1.0's
+  `testing::DryRunRunner`.)
 
 ### Changed
 -

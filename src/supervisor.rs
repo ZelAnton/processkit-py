@@ -338,6 +338,14 @@ impl PySupervisor {
         // the crate's own default is already a sensible bounded tail (a
         // long-lived supervised process is often chatty), so this only applies
         // when the caller sets at least one of the cap sizes.
+        //
+        // processkit 2.1.0's `output_bytes` byte-cap behavior change does NOT
+        // reach here (T-015): a `Supervisor` has no `output_bytes` verb — every
+        // incarnation is captured line-based into a `ProcessResult<String>`
+        // (`SupervisionOutcome.final_result`), never raw bytes. So
+        // `capture_max_bytes`/`capture_max_lines` govern that line-captured
+        // output only; there is no raw-stdout path for the new byte ceiling to
+        // newly bound, and `final_result.truncated` keeps its existing meaning.
         if capture_max_bytes.is_some()
             || capture_max_lines.is_some()
             || capture_on_overflow.is_some()

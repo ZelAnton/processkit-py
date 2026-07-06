@@ -21,7 +21,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyFileNotFoundError, PyPermissionError, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyTuple, PyType};
+use pyo3::types::{PyBytes, PyDict, PyTuple, PyType};
 
 // Exception hierarchy: a single `ProcessError` root with one subclass per
 // failure mode the crate distinguishes.
@@ -230,6 +230,28 @@ pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
         }
         if let Some(stderr) = error.stderr() {
             let _ = value.setattr("stderr", stderr);
+        }
+        // The exact raw stdout bytes, on the three stream-bearing exceptions
+        // (`NonZeroExit`/`Timeout`/`Signalled`) the stub declares
+        // `stdout_bytes: bytes | None` for. Gate on stream *presence*
+        // (`error.stdout()` is `Some` for exactly those three variants —
+        // `Exit`/`Timeout`/`Signalled`), NOT on `error.stdout_bytes()` being
+        // `Some`: the crate populates `stdout_bytes` only for an error that came
+        // from a checking verb over `output_bytes()` (`BytesResult.ensure_success()`,
+        // the bytes-path `exit_code()`), so `error.stdout_bytes()` is `None` for a
+        // stream-bearing error produced on the text path (`run()`/`output()`) — yet
+        // the stub promises the attribute is present there too (reading `None`). So,
+        // like `signal`/`diagnostic` below, it must be set for the whole
+        // stream-bearing family, not only when raw bytes happen to be carried; a
+        // purely `stdout_bytes()`-conditional `setattr` would leave it missing
+        // (`AttributeError`) on the text path, tripping the stub's own
+        // phantom-attribute guard (`test_exceptions.py`). When `Some`, these are the
+        // exact pre-decode bytes that `stdout` (above) is a lossy UTF-8 view of.
+        if error.stdout().is_some() {
+            let _ = value.setattr(
+                "stdout_bytes",
+                error.stdout_bytes().map(|bytes| PyBytes::new(py, bytes)),
+            );
         }
 
         // The handful of fields with no `Error` accessor still need a direct match.

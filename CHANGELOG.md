@@ -65,9 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly like `no_timeout()`.
 - `Command.retry_never()` — explicitly opt one command out of retrying, even
   when it runs through a `CliClient` configured with a `default_retry_if`.
+- `NonZeroExit` / `Timeout` / `Signalled` now carry a `stdout_bytes: bytes | None`
+  field — the exact raw stdout bytes when the error came from a checking verb over
+  `output_bytes()` (e.g. `BytesResult.ensure_success()`), `None` on the text path
+  (`run()` / `output()`) where `stdout` is already the complete decoded text.
+  When present, these are the exact pre-decode bytes `stdout` is a lossy UTF-8
+  view of (they differ only for non-UTF-8 output). Binds processkit 2.1.0's
+  `Error::stdout_bytes()`.
 
 ### Changed
--
+- `Command.output_limit(max_bytes=...)`'s byte ceiling now also bounds the raw
+  stdout of `output_bytes()` / `aoutput_bytes()`, matching processkit 2.1.0 —
+  previously a byte cap bounded only the line-pumped stderr and raw stdout was
+  always unbounded. Under `on_overflow="error"` an over-cap `output_bytes()` run
+  now raises `OutputTooLarge` (with `max_lines=None` — raw bytes have no line
+  count) where it once returned all bytes; under a drop mode its retained bytes
+  are bounded to a head/tail with `BytesResult.truncated` set. A `max_lines` cap
+  still never bounds raw stdout. This applies to every inherited `output_bytes`
+  consumer that runs a `Command` built with such a policy (`CliClient`,
+  `Pipeline`, `RunningProcess`, `ProcessGroup`, and the `runner=` doubles). The
+  `Supervisor` capture policy is unaffected — it captures line-based output only
+  and has no `output_bytes` verb.
 
 ### Fixed
 -

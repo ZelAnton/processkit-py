@@ -248,9 +248,11 @@ impl PyBytesResult {
         self.inner.duration().as_secs_f64()
     }
 
-    /// Whether captured stderr was truncated by an `output_limit(...)` cap.
-    /// (Raw stdout from `output_bytes()` is never line-capped — bound a flooding
-    /// child with a `timeout` instead.)
+    /// Whether captured output was truncated by an `output_limit(...)` cap — the
+    /// line-captured stderr under any cap, and (since processkit 2.1.0) the raw
+    /// stdout too when an `output_limit(max_bytes=...)` byte ceiling bounds it to
+    /// a head/tail. A `max_lines` cap never truncates raw stdout (bytes have no
+    /// line count); only a `max_bytes` cap does.
     #[getter]
     fn truncated(&self) -> bool {
         self.inner.truncated()

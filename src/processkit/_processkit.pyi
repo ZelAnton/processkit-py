@@ -772,6 +772,12 @@ class NonZeroExit(ProcessError):
     code: int
     stdout: str
     stderr: str
+    # The exact raw stdout bytes when this error came from a checking verb over
+    # `output_bytes()` (e.g. `BytesResult.ensure_success()`); `None` on the text
+    # path (`run()` / `output()`), where `stdout` above is already the complete
+    # decoded text. When present, these are the exact pre-decode bytes `stdout`
+    # is a lossy UTF-8 view of (they differ only for non-UTF-8 output).
+    stdout_bytes: bytes | None
     # The best human-facing message: captured stderr if it carries text,
     # otherwise captured stdout; `None` if both streams are blank.
     diagnostic: str | None
@@ -793,6 +799,10 @@ class Timeout(ProcessError, TimeoutError):
     timeout_seconds: float | None
     stdout: str
     stderr: str
+    # See `NonZeroExit.stdout_bytes` — the exact partial raw stdout bytes captured
+    # before the kill when the timeout came from a checking verb over
+    # `output_bytes()`; `None` on the text path.
+    stdout_bytes: bytes | None
     # See `NonZeroExit.diagnostic` — the partial output of a hung-then-killed run.
     diagnostic: str | None
 
@@ -803,6 +813,10 @@ class Signalled(ProcessError):
     signal: int | None
     stdout: str
     stderr: str
+    # See `NonZeroExit.stdout_bytes` — the exact raw stdout bytes captured before
+    # the signal-kill when the error came from a checking verb over
+    # `output_bytes()`; `None` on the text path.
+    stdout_bytes: bytes | None
     # See `NonZeroExit.diagnostic` — the output captured before the signal-kill.
     diagnostic: str | None
 

@@ -264,13 +264,43 @@ def test_output_limit_drop_newest_keeps_earliest_lines() -> None:
 
 
 def test_output_bytes_truncated_reflects_stderr_cap() -> None:
-    # `BytesResult.truncated` tracks only *stderr* capping — raw stdout bytes
-    # are never line-capped (see the stub's `truncated` docstring) — so an
-    # output_limit breach must still surface via stderr overflow.
+    # A `max_lines` cap can only truncate the line-pumped stderr — raw stdout
+    # bytes have no line count, so a *line* cap never bounds them (a `max_bytes`
+    # cap does now, since processkit 2.1.0 — see
+    # `test_output_bytes_byte_cap_drop_truncates_and_bounds_stdout`). Here the
+    # breach is a stderr line-cap overflow, and that is what sets `truncated`.
     code = "import sys\nfor i in range(1000):\n    sys.stderr.write('x' * 80 + chr(10))"
     result = Command(PY, ["-c", code]).output_limit(max_lines=10).output_bytes()
     assert result.is_success
     assert result.truncated
+
+
+def test_output_bytes_byte_cap_error_raises_output_too_large() -> None:
+    # processkit 2.1.0 behavior change: a `max_bytes` ceiling now bounds the raw
+    # stdout of `output_bytes()` too (not just line-pumped stderr). Under
+    # `on_overflow="error"` an over-cap flood raises `OutputTooLarge` with
+    # `max_lines=None` (raw bytes have no line count) where it once returned all
+    # bytes. Exercises the byte path specifically — the line path is covered by
+    # `test_output_limit_error_raises_output_too_large` above.
+    code = "import sys; sys.stdout.buffer.write(b'x' * 100_000)"
+    with pytest.raises(OutputTooLarge) as excinfo:
+        Command(PY, ["-c", code]).output_limit(max_bytes=1024, on_overflow="error").output_bytes()
+    exc = excinfo.value
+    assert exc.max_bytes == 1024
+    assert exc.max_lines is None
+    assert exc.total_bytes >= 1024
+
+
+def test_output_bytes_byte_cap_drop_truncates_and_bounds_stdout() -> None:
+    # The drop-mode half of the 2.1.0 byte-cap change: retained raw stdout bytes
+    # are bounded to a head/tail and `BytesResult.truncated` is set (before 2.1.0
+    # the raw bytes came back in full, untruncated).
+    code = "import sys; sys.stdout.buffer.write(b'x' * 100_000)"
+    result = Command(PY, ["-c", code]).output_limit(max_bytes=1024).output_bytes()
+    assert result.is_success
+    assert result.truncated
+    # Bounded to the cap, not the full 100_000-byte flood.
+    assert len(result.stdout) <= 1024
 
 
 def test_output_limit_requires_a_cap() -> None:

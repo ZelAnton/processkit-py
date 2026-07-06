@@ -140,6 +140,34 @@ def test_signalled_carries_structured_fields() -> None:
     _assert_no_phantom_stub_attrs(exc)
 
 
+def test_nonzero_exit_over_output_bytes_carries_stdout_bytes() -> None:
+    # A checking verb over the bytes path (`BytesResult.ensure_success()`) raises
+    # `NonZeroExit` carrying the EXACT raw stdout bytes on `stdout_bytes` (crate
+    # 2.1.0's `Error::stdout_bytes()`), even when that stdout isn't valid UTF-8 —
+    # `.stdout` (the lossy text) would mangle it, `.stdout_bytes` is exact.
+    code = "import sys; sys.stdout.buffer.write(bytes([0, 255, 1, 254])); sys.exit(3)"
+    result = Command(PY, ["-c", code]).output_bytes()  # a non-zero exit is data here
+    assert result.stdout == bytes([0, 255, 1, 254])
+    with pytest.raises(NonZeroExit) as excinfo:
+        result.ensure_success()
+    exc = excinfo.value
+    assert exc.code == 3
+    assert exc.stdout_bytes == bytes([0, 255, 1, 254])
+    _assert_no_phantom_stub_attrs(exc)
+
+
+def test_text_path_nonzero_exit_has_stdout_bytes_none() -> None:
+    # The companion to the above: on the text path (`run()`/`output()`)
+    # `stdout_bytes` is present but `None` — the attribute is always set (so the
+    # `stdout_bytes: bytes | None` stub never lies with an `AttributeError`), it
+    # just carries no raw bytes there because `.stdout` is already the full text.
+    code = "import sys; print('to-out'); sys.exit(7)"
+    with pytest.raises(NonZeroExit) as excinfo:
+        Command(PY, ["-c", code]).run()
+    assert excinfo.value.stdout_bytes is None
+    _assert_no_phantom_stub_attrs(excinfo.value)
+
+
 def test_output_too_large_carries_byte_fields() -> None:
     # The byte-cap overflow path carries `max_bytes`/`total_bytes` (the line-cap
     # path is covered elsewhere). Pins those two fields against a silent rename;

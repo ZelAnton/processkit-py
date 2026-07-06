@@ -502,9 +502,20 @@ impl PyCommand {
     /// a single newline-free flood is one (unbounded) line. `on_overflow`
     /// decides what happens at the cap: `"drop_oldest"` keeps the most recent
     /// output, `"drop_newest"` keeps the earliest, `"error"` raises
-    /// `OutputTooLarge`. The cap applies to line-captured output (`output()` /
-    /// streamed `finish()`); raw `output_bytes()` stdout is never line-capped
-    /// (only its stderr is) — bound a flooding child with a `timeout` instead.
+    /// `OutputTooLarge`.
+    ///
+    /// A `max_lines` cap applies to line-captured output (`output()` / streamed
+    /// `finish()`) only — raw bytes have no line count, so it never bounds the
+    /// stdout of `output_bytes()`. A `max_bytes` cap applies to *both* that
+    /// line-captured output **and** the raw stdout of `output_bytes()` /
+    /// `aoutput_bytes()` (since processkit 2.1.0 — earlier the byte ceiling
+    /// bounded only the line-pumped stderr and raw stdout was always unbounded).
+    /// Under `on_overflow="error"` an `output_bytes()` run over the byte cap
+    /// raises `OutputTooLarge` (with `max_lines=None`); under a drop mode its
+    /// retained bytes are bounded to a head/tail with `BytesResult.truncated`
+    /// set. This carries through every inherited `output_bytes` consumer
+    /// (`CliClient`, `Pipeline`, `RunningProcess`, `ProcessGroup`, the runner
+    /// doubles) that runs a `Command` built with this policy.
     #[pyo3(signature = (*, max_bytes=None, max_lines=None, on_overflow="drop_oldest"))]
     fn output_limit(
         &self,

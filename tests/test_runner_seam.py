@@ -40,6 +40,8 @@ from processkit.testing import (
     ScriptedRunner,
 )
 
+from .conftest import NO_SUCH_PROGRAM
+
 PY = sys.executable
 
 
@@ -314,6 +316,31 @@ def test_cassette_output_bytes_is_unsupported(tmp_path: pathlib.Path) -> None:
     rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
     with pytest.raises(Unsupported):
         rec.output_bytes(Command(PY, ["-c", "print('x')"]))
+
+
+def test_cassette_records_and_replays_a_failed_call(tmp_path: pathlib.Path) -> None:
+    # processkit 2.1.0: a cassette now records a *failed* call too (previously
+    # only successful calls were recordable, and a failed real run replayed as
+    # a misleading `CassetteMiss` instead of the real error). Record a genuine
+    # spawn failure (a missing program), then replay it and check the SAME
+    # typed exception comes back with the SAME structured fields — not a
+    # `CassetteMiss` and not a lossy/generic `ProcessError`.
+    cassette = tmp_path / "failure.json"
+
+    recorder = RecordReplayRunner.record(str(cassette))
+    with pytest.raises(ProcessNotFound) as recorded:
+        recorder.run(Command(NO_SUCH_PROGRAM))
+    recorder.save()
+    assert cassette.is_file()
+
+    replayer = RecordReplayRunner.replay(str(cassette))
+    with pytest.raises(ProcessNotFound) as replayed:
+        replayer.run(Command(NO_SUCH_PROGRAM))
+
+    assert type(replayed.value) is type(recorded.value)
+    assert replayed.value.program == recorded.value.program
+    assert NO_SUCH_PROGRAM in replayed.value.program
+    assert str(replayed.value) == str(recorded.value)
 
 
 # --- ProcessRunner protocol conformance -------------------------------------

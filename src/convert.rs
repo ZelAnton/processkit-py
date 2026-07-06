@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use processkit::prelude::Encoding;
 use processkit::Error as PkError;
+use processkit::LineTerminator;
 use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;
 use processkit::Priority;
@@ -108,6 +109,25 @@ pub(crate) fn parse_overflow_mode(on_overflow: &str) -> PyResult<OverflowMode> {
         "error" => Ok(OverflowMode::Error),
         other => Err(PyValueError::new_err(format!(
             "unknown on_overflow {other:?}; use one of: drop_oldest, drop_newest, error"
+        ))),
+    }
+}
+
+/// Map a `line_terminator`/`stdout_line_terminator`/`stderr_line_terminator`
+/// preset name to the crate's `LineTerminator` — the crate enum has exactly
+/// two variants (`Newline`, the default, and `CarriageReturn`), so there is no
+/// third preset to invent here. `"newline"` (alias `"lf"`) keeps the pre-1.0
+/// behavior of splitting on `\n` only; `"carriage_return"` (alias `"cr"`)
+/// additionally treats a bare `\r` (one not immediately followed by `\n`) as
+/// a frame terminator, delivered live — the mode `curl`/`pip`/`apt`-style
+/// `\r`-redrawn progress bars need to stream one frame at a time instead of
+/// piling up into a single line that only surfaces at EOF.
+pub(crate) fn parse_line_terminator(mode: &str) -> PyResult<LineTerminator> {
+    match mode {
+        "newline" | "lf" => Ok(LineTerminator::Newline),
+        "carriage_return" | "cr" => Ok(LineTerminator::CarriageReturn),
+        other => Err(PyValueError::new_err(format!(
+            "unknown line_terminator {other:?}; use one of: newline, lf, carriage_return, cr"
         ))),
     }
 }

@@ -12,8 +12,8 @@ use pyo3::prelude::*;
 use crate::cancellation::PyCancellationToken;
 use crate::convert::{
     build_output_buffer_policy, build_retry_policy, nonnegative_duration, open_tee_sink,
-    parse_encoding, parse_priority, parse_retry_if, parse_signal, parse_stdio_mode,
-    positive_duration,
+    parse_encoding, parse_line_terminator, parse_priority, parse_retry_if, parse_signal,
+    parse_stdio_mode, positive_duration,
 };
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
@@ -160,6 +160,22 @@ impl PyCommand {
         }
     }
 
+    /// Like `timeout()`, but takes an `Optional[float]` — convenient when the
+    /// timeout comes from config as `seconds | None`. `seconds` (a `float`) is
+    /// equivalent to `timeout(seconds)` (validated the same way); `None` is
+    /// equivalent to `no_timeout()` — it clears a prior `timeout()`, it does not
+    /// leave the setting untouched. Last write wins against any earlier call
+    /// from this family (`timeout`/`timeout_grace`/`no_timeout`).
+    fn timeout_opt(&self, seconds: Option<f64>) -> PyResult<Self> {
+        let timeout = match seconds {
+            Some(seconds) => Some(positive_duration(seconds, "timeout_opt")?),
+            None => None,
+        };
+        Ok(Self {
+            inner: self.inner.clone().timeout_opt(timeout),
+        })
+    }
+
     /// Tear this run down (raising `Cancelled`) when `token` fires. A
     /// cancelled run is never retried — `retry()`/`Supervisor` both treat
     /// `Cancelled` as terminal, since another attempt could only fail the
@@ -242,6 +258,17 @@ impl PyCommand {
         })
     }
 
+    /// Explicitly opt this one command out of retrying — even when it runs
+    /// through a `CliClient` configured with a `default_retry`. Use this when
+    /// a specific call must never be retried (e.g. it has side effects unsafe
+    /// to repeat) while the rest of the client's calls still get its default
+    /// retry policy. Last write wins against any earlier `retry()`/`retry_with()`.
+    fn retry_never(&self) -> Self {
+        Self {
+            inner: self.inner.clone().retry_never(),
+        }
+    }
+
     /// Where the child's stdout goes: `"pipe"` (capture — the default), `"inherit"`
     /// (the parent's stdout), or `"null"` (discard). Capture verbs and streaming
     /// see output only in `"pipe"` mode.
@@ -283,6 +310,53 @@ impl PyCommand {
     fn stderr_encoding(&self, label: &str) -> PyResult<Self> {
         Ok(Self {
             inner: self.inner.clone().stderr_encoding(parse_encoding(label)?),
+        })
+    }
+
+    /// Choose where the line pump splits **both** streams into lines. The
+    /// default is `"newline"` (alias `"lf"`) — split on `\n` only, the crate's
+    /// pre-1.0 behavior. Pass `"carriage_return"` (alias `"cr"`) to also treat a
+    /// bare `\r` (one not immediately followed by `\n`) as a frame terminator,
+    /// delivered live — the mode carriage-return progress output
+    /// (`curl`/`pip`/`apt`: a bar redrawn in place with `\r`, no `\n` until the
+    /// end) needs to stream one frame at a time instead of piling up into a
+    /// single line that only surfaces at EOF. A `\r\n` pair still counts as one
+    /// terminator (no spurious empty line), so ordinary CRLF text reads
+    /// identically either way. This is the one shared notion of "a line" for
+    /// `stdout_lines()`/`output_events()`, the per-line handlers, `stdout_tee`/
+    /// `stderr_tee`, and `output_string` alike — set both streams at once here,
+    /// or independently with `stdout_line_terminator`/`stderr_line_terminator`
+    /// when only one stream carries progress output. Unknown preset raises
+    /// `ValueError`.
+    fn line_terminator(&self, mode: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .line_terminator(parse_line_terminator(mode)?),
+        })
+    }
+
+    /// Choose where the line pump splits **stdout** into lines (see
+    /// `line_terminator`); stderr framing is left untouched.
+    fn stdout_line_terminator(&self, mode: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .stdout_line_terminator(parse_line_terminator(mode)?),
+        })
+    }
+
+    /// Choose where the line pump splits **stderr** into lines (see
+    /// `line_terminator`); stdout framing is left untouched. Handy when
+    /// progress output lands on stderr while stdout stays newline-structured.
+    fn stderr_line_terminator(&self, mode: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .stderr_line_terminator(parse_line_terminator(mode)?),
         })
     }
 

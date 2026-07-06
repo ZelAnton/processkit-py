@@ -149,7 +149,15 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "Type aliases",
         "Exported so your own wrappers can annotate against the same types the API accepts.",
-        ("Args", "Priority", "ReadableBuffer", "RetryIf", "SignalName", "StrPath"),
+        (
+            "Args",
+            "LineTerminatorName",
+            "Priority",
+            "ReadableBuffer",
+            "RetryIf",
+            "SignalName",
+            "StrPath",
+        ),
     ),
     Section(
         "Testing",

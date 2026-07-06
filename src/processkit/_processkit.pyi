@@ -12,10 +12,18 @@ from typing import Literal, final
 
 # `StrPath` (program/path arg: `str` or `os.PathLike[str]`), `Args` (an argv-like
 # list/tuple of them — deliberately not `Sequence[StrPath]`, see `_types.py`),
-# `SignalName`, `RetryIf`, `Priority`, and `ReadableBuffer` are the single
-# source in `_types`, re-exported from the package so callers can annotate
-# with them; imported here for the signatures below.
-from ._types import Args, Priority, ReadableBuffer, RetryIf, SignalName, StrPath
+# `SignalName`, `RetryIf`, `LineTerminatorName`, `Priority`, and `ReadableBuffer`
+# are the single source in `_types`, re-exported from the package so callers
+# can annotate with them; imported here for the signatures below.
+from ._types import (
+    Args,
+    LineTerminatorName,
+    Priority,
+    ReadableBuffer,
+    RetryIf,
+    SignalName,
+    StrPath,
+)
 
 @final
 class ProcessResult:
@@ -101,6 +109,7 @@ class Command:
     def timeout_grace(self, seconds: float) -> Command: ...
     def timeout_signal(self, name: SignalName | int) -> Command: ...
     def no_timeout(self) -> Command: ...
+    def timeout_opt(self, seconds: float | None) -> Command: ...
     def cancel_on(self, token: CancellationToken) -> Command: ...
     def success_codes(self, codes: Sequence[int]) -> Command: ...
     def retry(
@@ -113,11 +122,33 @@ class Command:
         max_backoff: float | None = ...,
         jitter: bool | None = ...,
     ) -> Command: ...
+    def retry_never(self) -> Command: ...
     def stdout(self, mode: Literal["pipe", "inherit", "null"]) -> Command: ...
     def stderr(self, mode: Literal["pipe", "inherit", "null"]) -> Command: ...
     def encoding(self, label: str) -> Command: ...
     def stdout_encoding(self, label: str) -> Command: ...
     def stderr_encoding(self, label: str) -> Command: ...
+    def line_terminator(self, mode: LineTerminatorName) -> Command:
+        """Choose where the line pump splits **both** streams into lines.
+        ``"newline"`` (the default) splits on ``\\n`` only; ``"carriage_return"``
+        also splits on a bare ``\\r`` (one not immediately followed by ``\\n``),
+        delivered live — for ``curl``/``pip``/``apt``-style ``\\r``-redrawn
+        progress output that would otherwise pile up into a single line until
+        EOF. A ``\\r\\n`` pair still counts as one terminator. Shared by
+        ``stdout_lines()``/``output_events()``, the per-line handlers,
+        ``stdout_tee``/``stderr_tee``, and ``output_string`` alike; set both
+        streams here or independently with ``stdout_line_terminator``/
+        ``stderr_line_terminator``. Unknown preset raises ``ValueError``."""
+
+    def stdout_line_terminator(self, mode: LineTerminatorName) -> Command:
+        """Choose where the line pump splits **stdout** into lines (see
+        ``line_terminator``); stderr framing is left untouched."""
+
+    def stderr_line_terminator(self, mode: LineTerminatorName) -> Command:
+        """Choose where the line pump splits **stderr** into lines (see
+        ``line_terminator``); stdout framing is left untouched. Handy when
+        progress output lands on stderr while stdout stays newline-structured."""
+
     def stdout_tee(self, path: StrPath, *, append: bool = ...) -> Command:
         """Tee every decoded stdout line (line + ``\\n``) to the file at ``path``
         as it is produced, while the run *also* keeps capturing the full output

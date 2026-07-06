@@ -159,6 +159,22 @@ impl PyCommand {
         }
     }
 
+    /// Like `timeout()`, but takes an `Optional[float]` — convenient when the
+    /// timeout comes from config as `seconds | None`. `seconds` (a `float`) is
+    /// equivalent to `timeout(seconds)` (validated the same way); `None` is
+    /// equivalent to `no_timeout()` — it clears a prior `timeout()`, it does not
+    /// leave the setting untouched. Last write wins against any earlier call
+    /// from this family (`timeout`/`timeout_grace`/`no_timeout`).
+    fn timeout_opt(&self, seconds: Option<f64>) -> PyResult<Self> {
+        let timeout = match seconds {
+            Some(seconds) => Some(positive_duration(seconds, "timeout_opt")?),
+            None => None,
+        };
+        Ok(Self {
+            inner: self.inner.clone().timeout_opt(timeout),
+        })
+    }
+
     /// Tear this run down (raising `Cancelled`) when `token` fires. A
     /// cancelled run is never retried — `retry()`/`Supervisor` both treat
     /// `Cancelled` as terminal, since another attempt could only fail the
@@ -239,6 +255,17 @@ impl PyCommand {
         Ok(Self {
             inner: self.inner.clone().retry_with(policy, classifier),
         })
+    }
+
+    /// Explicitly opt this one command out of retrying — even when it runs
+    /// through a `CliClient` configured with a `default_retry`. Use this when
+    /// a specific call must never be retried (e.g. it has side effects unsafe
+    /// to repeat) while the rest of the client's calls still get its default
+    /// retry policy. Last write wins against any earlier `retry()`/`retry_with()`.
+    fn retry_never(&self) -> Self {
+        Self {
+            inner: self.inner.clone().retry_never(),
+        }
     }
 
     /// Where the child's stdout goes: `"pipe"` (capture — the default), `"inherit"`

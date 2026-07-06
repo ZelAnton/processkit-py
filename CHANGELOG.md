@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+
+## [1.1.1] - 2026-07-06
+
+### Added
 - `Command.line_terminator(mode)` / `Command.stdout_line_terminator(mode)` /
   `Command.stderr_line_terminator(mode)` — choose where the line pump splits a
   stream into lines: `"newline"` (default, splits on `\n` only, unchanged
@@ -698,6 +709,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/ZelAnton/processkit-py/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ZelAnton/processkit-py/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ZelAnton/processkit-py/releases/tag/v1.0.0

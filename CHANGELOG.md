@@ -290,6 +290,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub repository, which is still linked separately as `Repository`.
 
 ### Fixed
+- Fixed the macOS x86_64 release wheel build: `delocate-wheel` was rejecting
+  the cross-compiled Intel wheel because the compiled extension's embedded
+  minimum macOS target (10.12, the current Rust default for
+  `x86_64-apple-darwin`) didn't match the wheel's `macosx_10_9` tag. The
+  x86_64 cibuildwheel build now sets `MACOSX_DEPLOYMENT_TARGET=10.12`
+  explicitly so the tag matches the binary.
 - `wait_for()`'s deadline handling no longer swallows the *caller's* own
   cancellation (turning it into a misleading `TimeoutError`) if that cancellation
   lands while the timed-out predicate is being cancelled and drained; it also no

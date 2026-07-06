@@ -217,6 +217,18 @@ test-command = "python {project}/scripts/smoke.py"
 # adds the `x86_64-apple-darwin` rustup target before this runs).
 archs = ["arm64", "x86_64"]
 
+[[tool.cibuildwheel.overrides]]
+# Without this, maturin tags the x86_64 wheel `macosx_10_9` (the old default),
+# but current Rust toolchains link `x86_64-apple-darwin` binaries with an
+# embedded minimum target of 10.12 — delocate then refuses to repair the
+# wheel ("Library dependencies do not satisfy target MacOS version 10.9").
+# Pinning the env var makes maturin tag the wheel to match what the linker
+# actually produced. Scoped to x86_64 only: the arm64 build's own minimum
+# (11.0, since Apple Silicon shipped no earlier macOS) already matches its
+# wheel tag without this override.
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
+
 [tool.cibuildwheel.linux]
 # The manylinux/musllinux build containers ship no Rust toolchain — install a
 # current stable (>= the crate's MSRV) before building. On Windows/macOS the

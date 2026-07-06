@@ -24,13 +24,18 @@ processkit._processkit.Supervisor.__init__
 processkit._processkit.Supervisor.__new__
 
 # --- type aliases -----------------------------------------------------------
-# SignalName and RetryIf are exported runtime aliases in `_types`, but stubtest
-# flags a module-level `Literal` type-alias ("is not a Union") instead of seeing
-# the runtime object — a known false positive. (StrPath, a plain union alias, is
-# not flagged, so no entry. Read-only Literals like `SupervisionOutcome.stopped`
-# are inlined at the return type, so they need no alias and no entry.)
+# Every module-level `Literal` type-alias exported from `_types` (SignalName,
+# RetryIf, LineTerminatorName, Priority, ...) hits the same stubtest false
+# positive: it flags the runtime `Literal` alias itself ("is not a Union")
+# instead of seeing it as the ordinary exported object it is. (StrPath, a plain
+# union alias, is not flagged, so no entry. Read-only Literals like
+# `SupervisionOutcome.stopped` are inlined at the return type, so they need no
+# alias and no entry.) Any new `Literal` alias added to `_types.py` needs the
+# same treatment here.
 processkit._types.SignalName
 processkit._types.RetryIf
+processkit._types.LineTerminatorName
+processkit._types.Priority
 
 # --- compiled-module __all__ ------------------------------------------------
 # PyO3 emits a module-level __all__ on the extension; the stub does not redeclare

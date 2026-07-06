@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   thread under the GIL; a raising or non-bool callback reads as "not permanent"
   (keep restarting) and is surfaced via the unraisable hook, never silently
   swallowed.
+- `Command.umask(mask)` — set the child's POSIX file-mode creation mask; on a
+  non-POSIX platform the run raises `Unsupported`, matching the existing
+  `uid`/`gid`/`groups`/`setsid` verbs.
 
 ### Changed
 -

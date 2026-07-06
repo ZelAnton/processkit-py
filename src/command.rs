@@ -391,6 +391,14 @@ impl PyCommand {
         }
     }
 
+    /// POSIX: set the child's file-mode creation mask (`umask`). On a
+    /// non-POSIX platform the run raises `Unsupported`.
+    fn umask(&self, mask: u32) -> Self {
+        Self {
+            inner: self.inner.clone().umask(mask),
+        }
+    }
+
     /// Cap how much captured output is retained. Pass at least one of
     /// `max_bytes` / `max_lines`. To bound the parent's *memory* against an
     /// untrusted child, use `max_bytes` — a `max_lines`-only cap does not, since

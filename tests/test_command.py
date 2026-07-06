@@ -473,6 +473,7 @@ def test_builder_knobs_chain_builds() -> None:
         .gid(0)
         .groups([0])
         .setsid()
+        .umask(0o022)
     )
     assert isinstance(cmd, Command)
     # The cross-platform lifetime knobs actually run.
@@ -510,6 +511,30 @@ def test_privilege_drop_unsupported_on_windows() -> None:
     with pytest.raises(Unsupported) as excinfo:
         Command(PY, ["-c", "print('x')"]).uid(0).run()
     # The structured `.operation` field names what wasn't supported.
+    assert excinfo.value.operation
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="umask is a POSIX file-mode creation mask")
+def test_umask_actually_applies_to_child(tmp_path: pathlib.Path) -> None:
+    # `.umask()` does not require privilege (unlike uid/gid/groups above) — it
+    # actually runs and is checked here, not just chain-built. A restrictive
+    # 0o077 mask should strip group/other bits off a file the child creates
+    # with an otherwise-permissive 0o666 open mode.
+    target = tmp_path / "umask_probe"
+    path_repr = repr(str(target))
+    code = f"import os; fd = os.open({path_repr}, os.O_CREAT | os.O_WRONLY, 0o666); os.close(fd)"
+    Command(PY, ["-c", code]).umask(0o077).run()
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o600, f"umask(0o077) should leave only owner rw bits, got {oct(mode)}"
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="umask is POSIX-only; Windows has no such file-mode mask"
+)
+def test_umask_unsupported_on_windows() -> None:
+    # Never silently skipped: on Windows the run raises `Unsupported`.
+    with pytest.raises(Unsupported) as excinfo:
+        Command(PY, ["-c", "print('x')"]).umask(0o022).run()
     assert excinfo.value.operation
 
 

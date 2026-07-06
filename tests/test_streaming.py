@@ -29,6 +29,11 @@ from .conftest import PY, spawn_grandchild_command
 # Prints N lines (flushed so they stream) then exits.
 _PRINT_LINES = "[print(f'line{i}', flush=True) for i in range(5)]"
 
+# A `\r`-redrawn progress bar: three frames with no `\n` until the very end —
+# `curl`/`pip`/`apt`-style. Under the default "newline" framing this is ONE
+# line; under "carriage_return" framing it is three.
+_PRINT_CR_PROGRESS = "import sys; sys.stdout.write('a\\rb\\rc\\n'); sys.stdout.flush()"
+
 # Echoes each stdin line uppercased until EOF.
 _ECHO_UPPER = (
     "import sys; [(sys.stdout.write(line.upper()), sys.stdout.flush()) for line in sys.stdin]"
@@ -70,6 +75,51 @@ def test_stdout_lines_streams_in_order() -> None:
     assert isinstance(finished.stderr, str)
     assert finished.code == 0
     assert finished.outcome.exited_zero
+
+
+def test_stdout_line_terminator_carriage_return_splits_progress_frames() -> None:
+    # `stdout_line_terminator("carriage_return")` treats a bare `\r` as a frame
+    # terminator too, so a redrawn-in-place progress bar streams live, one frame
+    # at a time, instead of piling up into a single line at EOF.
+    async def scenario() -> list[str]:
+        cmd = Command(PY, ["-c", _PRINT_CR_PROGRESS]).stdout_line_terminator("carriage_return")
+        proc = await cmd.astart()
+        lines = [line async for line in proc.stdout_lines()]
+        await proc.aoutcome()
+        return lines
+
+    assert asyncio.run(scenario()) == ["a", "b", "c"]
+
+
+def test_stdout_line_terminator_default_leaves_carriage_returns_as_content() -> None:
+    # Backward compatibility: without `line_terminator`/`stdout_line_terminator`,
+    # a bare `\r` is ordinary line content (not a terminator) — the same
+    # `\r`-progress output accumulates into a single line, as it did before this
+    # knob existed.
+    async def scenario() -> list[str]:
+        proc = await Command(PY, ["-c", _PRINT_CR_PROGRESS]).astart()
+        lines = [line async for line in proc.stdout_lines()]
+        await proc.aoutcome()
+        return lines
+
+    assert asyncio.run(scenario()) == ["a\rb\rc"]
+
+
+def test_line_terminator_sets_both_streams() -> None:
+    # `line_terminator` (unlike `stdout_line_terminator`/`stderr_line_terminator`)
+    # sets both streams at once; exercise it on stderr since the other test above
+    # already covers stdout.
+    code = "import sys; sys.stderr.write('a\\rb\\rc\\n'); sys.stderr.flush()"
+
+    async def scenario() -> list[tuple[str, str]]:
+        proc = await Command(PY, ["-c", code]).line_terminator("carriage_return").astart()
+        events = [(str(e.stream), e.text) async for e in proc.output_events()]
+        await proc.aoutcome()
+        return events
+
+    events = asyncio.run(scenario())
+    stderr_lines = [text for stream, text in events if stream == "stderr"]
+    assert stderr_lines == ["a", "b", "c"]
 
 
 def test_output_events_cover_both_streams() -> None:

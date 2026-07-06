@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Command.line_terminator(mode)` / `Command.stdout_line_terminator(mode)` /
+  `Command.stderr_line_terminator(mode)` — choose where the line pump splits a
+  stream into lines: `"newline"` (default, splits on `\n` only, unchanged
+  behavior) or `"carriage_return"` (also splits on a bare `\r`, delivering each
+  frame of a `curl`/`pip`/`apt`-style redrawn-in-place progress bar live instead
+  of piling it all up into one line at EOF). `line_terminator` sets both
+  streams at once; the `stdout_`/`stderr_` variants target one stream, leaving
+  the other's framing untouched. Binds `processkit` 2.1.0's
+  `Command::line_terminator`/`stdout_line_terminator`/`stderr_line_terminator`
+  (`LineTerminator`), exposed as the new `LineTerminatorName` string-preset
+  alias.
 - `testing.Reply.with_stderr(text)` — attach stderr to a scripted reply,
   including a successful (`Reply.ok(...)`) one, without resorting to
   `Reply.fail(0, ...)` as a workaround.

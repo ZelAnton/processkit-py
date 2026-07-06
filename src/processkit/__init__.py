@@ -64,7 +64,7 @@ from ._processkit import (
     output_all_bytes,
 )
 from ._protocols import ProcessRunner, StreamingRunner
-from ._types import Args, ReadableBuffer, RetryIf, SignalName, StrPath
+from ._types import Args, LineTerminatorName, ReadableBuffer, RetryIf, SignalName, StrPath
 
 
 def __getattr__(name: str) -> str:
@@ -91,6 +91,7 @@ __all__ = [
     "CliClient",
     "Command",
     "Finished",
+    "LineTerminatorName",
     "NonZeroExit",
     "Outcome",
     "OutputEvent",

@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
+use processkit::prelude::StreamExt;
 use processkit::OutputEvents as PkOutputEvents;
 use processkit::ProcessStdin as PkProcessStdin;
 use processkit::RunningProcess as PkRunningProcess;
 use processkit::StdoutLines as PkStdoutLines;
-use processkit::prelude::StreamExt;
 use pyo3::exceptions::{PyOSError, PyStopAsyncIteration};
 use pyo3::prelude::*;
 use tokio::sync::Mutex;

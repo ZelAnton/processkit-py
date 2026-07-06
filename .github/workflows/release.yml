@@ -168,6 +168,19 @@ jobs:
           # from the `processkit` registry dependency it wraps.
           python3 scripts/release/cargo_lock.py --new-version "$NEW"
 
+      # uv.lock records its own `version` for this editable package (`source =
+      # { editable = "." }`), independent of every other pinned dependency. The
+      # version bump above leaves that entry stale, and CI's `uv export --locked`
+      # (the pip-audit job) then refuses to run against a lockfile that disagrees
+      # with pyproject.toml. Re-lock now so the release commit carries a lockfile
+      # consistent with the version it just bumped; no dependency changed, so this
+      # only touches that one self-referential field.
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - name: Re-lock uv.lock against the bumped version
+        run: uv lock
+
       # The version-bumped manifests + the promoted changelog + the extracted notes,
       # carried to every downstream job as the single source of truth.
       - name: Promote Unreleased section in CHANGELOG.md
@@ -188,6 +201,7 @@ jobs:
             pyproject.toml
             Cargo.toml
             Cargo.lock
+            uv.lock
             CHANGELOG.md
             release-notes.md
           if-no-files-found: error

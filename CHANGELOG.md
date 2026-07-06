@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Command.umask(mask)` — set the child's POSIX file-mode creation mask; on a
   non-POSIX platform the run raises `Unsupported`, matching the existing
   `uid`/`gid`/`groups`/`setsid` verbs.
+- `Command.timeout_opt(seconds)` — like `timeout()`, but takes `float | None`,
+  convenient when a timeout arrives from config as `Optional[float]`: a value
+  behaves exactly like `timeout(seconds)`, `None` clears a prior `timeout()`
+  exactly like `no_timeout()`.
+- `Command.retry_never()` — explicitly opt one command out of retrying, even
+  when it runs through a `CliClient` configured with a `default_retry_if`.
 
 ### Changed
 -

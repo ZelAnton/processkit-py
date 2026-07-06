@@ -22,6 +22,7 @@ from processkit import (
     BytesResult,
     CancellationToken,
     Cancelled,
+    CliClient,
     Command,
     NonZeroExit,
     OutputTooLarge,
@@ -30,6 +31,7 @@ from processkit import (
     Timeout,
     Unsupported,
 )
+from processkit.testing import RecordingRunner, Reply, ScriptedRunner
 
 from .conftest import NO_SUCH_PROGRAM, PY
 
@@ -387,6 +389,41 @@ def test_retry_output_never_raises_so_never_retries(tmp_path: pathlib.Path) -> N
     assert counter.read_text() == "1"  # exactly one attempt, no retry
 
 
+def _client_always_timing_out() -> tuple[CliClient, RecordingRunner]:
+    # A ScriptedRunner that always times out, wrapped in a RecordingRunner so
+    # the test can count how many times the runner was actually invoked —
+    # verifying retry_never() without spawning a single real process.
+    scripted = ScriptedRunner()
+    scripted.fallback(Reply.timeout())
+    recorder = RecordingRunner.new(scripted)
+    client = CliClient(
+        "tool",
+        runner=recorder,
+        default_retry_if="transient_or_timeout",
+        default_max_retries=2,
+        default_initial_backoff=0.0,
+        default_jitter=False,
+    )
+    return client, recorder
+
+
+def test_retry_never_opts_out_of_a_configured_client_default_retry() -> None:
+    # Without retry_never(): the client's default_retry_if applies, so the
+    # runner is invoked once plus once per retry.
+    client, recorder = _client_always_timing_out()
+    with pytest.raises(Timeout):
+        client.run(["--flag"])
+    assert len(recorder.calls()) == 3  # 1 attempt + 2 retries
+
+    # With retry_never(): an explicit per-command opt-out from that same
+    # client-wide default — exactly one call reaches the runner.
+    client, recorder = _client_always_timing_out()
+    cmd = client.command(["--flag"]).retry_never()
+    with pytest.raises(Timeout):
+        client.run(cmd)
+    assert recorder.only_call().program == "tool"
+
+
 # --- encoding ---------------------------------------------------------------
 
 
@@ -609,6 +646,31 @@ def test_no_timeout_clears_a_prior_timeout() -> None:
     result = Command(PY, ["-c", "import time; time.sleep(0.3)"]).timeout(0.05).no_timeout().output()
     assert result.is_success
     assert not result.timed_out
+
+
+def test_timeout_opt_none_behaves_like_no_timeout() -> None:
+    # timeout_opt(None) must CLEAR a prior timeout(), same as no_timeout() —
+    # not merely "no call at all" (which would leave the earlier timeout()
+    # in effect).
+    result = (
+        Command(PY, ["-c", "import time; time.sleep(0.3)"]).timeout(0.05).timeout_opt(None).output()
+    )
+    assert result.is_success
+    assert not result.timed_out
+
+
+def test_timeout_opt_with_a_value_behaves_like_timeout() -> None:
+    result = Command(PY, ["-c", "import time; time.sleep(5)"]).timeout_opt(0.3).output()
+    assert result.timed_out
+    assert result.code is None
+    assert not result.is_success
+
+
+def test_timeout_opt_invalid_value_rejected() -> None:
+    # Some(seconds) is validated the same way as timeout()'s own argument.
+    for bad in (0.0, -1.0, float("inf"), float("nan"), 1e300):
+        with pytest.raises(ValueError):
+            Command(PY).timeout_opt(bad)
 
 
 def test_unchecked_in_pipe_is_a_noop_outside_a_pipeline() -> None:

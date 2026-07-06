@@ -540,6 +540,20 @@ impl PyReply {
 /// A runner that records real runs to a cassette file (`record`) and replays
 /// them deterministically without spawning (`replay`) — for tests that exercise
 /// real tools once, then run offline against the captured transcript.
+///
+/// Reviewed for processkit 2.1.0 (T-024): the crate's cassette now records a
+/// *failed* call too (e.g. a missing program), not just a successful one, and
+/// replays it as the same `Error` variant (`cassette.rs`'s `CassetteError` +
+/// `to_error`) rather than a misleading `Error::CassetteMiss`. This binding
+/// needed **no** change: `record`/`replay`/`save` below, and every verb
+/// (`output`/`run`/... via `runner_pymethods!`), already funnel every
+/// `Result<_, processkit::Error>` through `map_err`/`map_err_ref`
+/// (`errors.rs`), which is variant-generic and accessor-driven — it maps
+/// whatever `Error` variant it's handed (a replayed `NotFound` included) to
+/// the matching typed Python exception with the same structured fields
+/// (`.program`, ...), with no built-in assumption that a cassette only ever
+/// holds successes. See `tests/test_runner_seam.py`'s
+/// `test_cassette_records_and_replays_a_failed_call`.
 #[pyclass(name = "RecordReplayRunner", module = "processkit.testing")]
 pub(crate) struct PyRecordReplayRunner {
     inner: Arc<PkRecordReplayRunner<JobRunner>>,

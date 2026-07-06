@@ -493,6 +493,15 @@ impl PyReply {
         }
     }
 
+    /// Attach stderr to this reply — including a successful (`ok`) reply, so
+    /// a scripted success can still carry stderr output without resorting to
+    /// `fail(0, ...)` as a workaround.
+    fn with_stderr(&self, stderr: String) -> Self {
+        Self {
+            inner: self.inner.clone().with_stderr(stderr),
+        }
+    }
+
     /// On a scripted `start`, sleep `seconds` before each stdout line — so a
     /// hermetic streaming test can observe genuinely incremental delivery.
     /// The scripted run "exits" after the last line. Ignored by the bulk

@@ -203,6 +203,18 @@ def test_reply_with_stdout_on_failure() -> None:
     assert "err" in result.stderr
 
 
+def test_reply_with_stderr_on_success() -> None:
+    # with_stderr() attaches stderr to a reply — including a successful reply,
+    # so a scripted success can carry stderr without the `fail(0, ...)`
+    # workaround.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("all good").with_stderr("a warning"))
+    result = runner.output(Command("x"))
+    assert result.code == 0
+    assert result.stdout == "all good"
+    assert result.stderr == "a warning"
+
+
 def test_reply_pending_never_exits() -> None:
     # Reply.pending() models a run that never ends on its own — only cancellation
     # or a timeout stops it. The documented "prove your orchestration cancels a

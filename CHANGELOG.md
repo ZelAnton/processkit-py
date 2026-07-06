@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- `testing.Reply.with_stderr(text)` — attach stderr to a scripted reply,
+  including a successful (`Reply.ok(...)`) one, without resorting to
+  `Reply.fail(0, ...)` as a workaround.
 
 ### Changed
 -

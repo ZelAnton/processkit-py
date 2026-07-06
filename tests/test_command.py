@@ -628,8 +628,12 @@ def test_priority_actually_applies_priority_class_on_windows(preset: Priority) -
     # No privilege is needed for any Windows priority class (unlike Unix's
     # negative-nice presets) — real effect checked via `GetPriorityClass`
     # through `ctypes` (no extra dependency needed for a one-off syscall).
-    import ctypes
-
+    #
+    # The `ctypes.windll` calls are wrapped in a static `if sys.platform ==
+    # "win32":` block (mirroring tests/_liveness.py) so a type checker
+    # analyses only the branch for the platform it is run on — `windll` is
+    # invisible to mypy on Linux, hence the explicit `WinDLL(...)` construction
+    # instead of the pre-bound `ctypes.windll` module attribute.
     priority_class = {
         "idle": 0x0000_0040,  # IDLE_PRIORITY_CLASS
         "below_normal": 0x0000_4000,  # BELOW_NORMAL_PRIORITY_CLASS
@@ -640,14 +644,18 @@ def test_priority_actually_applies_priority_class_on_windows(preset: Priority) -
     proc = Command(PY, ["-c", "import time; time.sleep(30)"]).priority(preset).start()
     try:
         assert proc.pid is not None
-        # PROCESS_QUERY_LIMITED_INFORMATION — enough to read the priority class.
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, proc.pid)
-        assert handle, "OpenProcess failed"
-        try:
-            got = ctypes.windll.kernel32.GetPriorityClass(handle)
-            assert got == priority_class, f"expected {priority_class:#x}, got {got:#x}"
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
+        if sys.platform == "win32":
+            from ctypes import WinDLL
+
+            _kernel32 = WinDLL("kernel32", use_last_error=True)
+            # PROCESS_QUERY_LIMITED_INFORMATION — enough to read the priority class.
+            handle = _kernel32.OpenProcess(0x1000, False, proc.pid)
+            assert handle, "OpenProcess failed"
+            try:
+                got = _kernel32.GetPriorityClass(handle)
+                assert got == priority_class, f"expected {priority_class:#x}, got {got:#x}"
+            finally:
+                _kernel32.CloseHandle(handle)
     finally:
         proc.kill()
         proc.outcome()

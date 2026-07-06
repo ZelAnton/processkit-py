@@ -6,7 +6,9 @@ Tests drive asyncio with ``asyncio.run`` so no pytest-asyncio plugin is needed.
 from __future__ import annotations
 
 import asyncio
+import gc
 import pathlib
+import sys
 
 import pytest
 
@@ -23,7 +25,7 @@ from processkit import (
     Supervisor,
 )
 
-from ._liveness import is_alive, read_pid_when_ready, wait_dead
+from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
 from .conftest import PY, spawn_grandchild_command
 
 # Prints N lines (flushed so they stream) then exits.
@@ -352,6 +354,53 @@ def test_running_process_sync_twins_of_every_consuming_verb() -> None:
     assert not outcome.exited_zero  # terminated, not a clean exit
 
 
+def test_bare_finish_with_output_limit_ignores_the_overflow_cap() -> None:
+    # processkit 2.1.0: a bare finish() (no preceding stdout_lines()) no longer
+    # enforces the capture policy's overflow cap over output nobody asked to
+    # capture. A low max_lines cap with on_overflow="error" previously could
+    # spuriously raise OutputTooLarge even though the caller never captured
+    # stdout via stdout_lines() -- it now just discards the flood.
+    code = "[print(f'line{i}', flush=True) for i in range(2000)]"
+    proc = Command(PY, ["-c", code]).output_limit(max_lines=5, on_overflow="error").start()
+    finished = proc.finish()  # no stdout_lines() beforehand
+    assert finished.exited_zero
+    assert finished.code == 0
+
+
+def test_bare_afinish_with_output_limit_ignores_the_overflow_cap() -> None:
+    # The async twin of the test above.
+    async def scenario() -> Finished:
+        code = "[print(f'line{i}', flush=True) for i in range(2000)]"
+        cmd = Command(PY, ["-c", code]).output_limit(max_lines=5, on_overflow="error")
+        proc = await cmd.astart()
+        return await proc.afinish()  # no stdout_lines() beforehand
+
+    finished = asyncio.run(scenario())
+    assert finished.exited_zero
+    assert finished.code == 0
+
+
+def test_outcome_after_a_dropped_partial_stdout_lines_stream_ignores_the_cap() -> None:
+    # processkit 2.1.0: the adjacent half of the same fix. wait()/profile()
+    # (here, outcome()) called AFTER a stdout_lines() stream was started but
+    # dropped before EOF (partial consumption) must not fall back to reusing
+    # the caller's overflow-capped sink over the rest of the (unconsumed)
+    # output -- it also routes through the internal discard sink, uncapped.
+    async def scenario() -> Outcome:
+        code = "[print(f'line{i}', flush=True) for i in range(2000)]"
+        cmd = Command(PY, ["-c", code]).output_limit(max_lines=5, on_overflow="error")
+        proc = await cmd.astart()
+        seen = 0
+        async for _line in proc.stdout_lines():
+            seen += 1
+            if seen >= 2:
+                break  # drop the stream before EOF -- partial consumption
+        return await proc.aoutcome()
+
+    outcome = asyncio.run(scenario())
+    assert outcome.exited_zero
+
+
 def test_running_process_sync_verb_reentrant_call_leaves_handle_usable() -> None:
     # A sync consuming verb (e.g. `outcome()`) called reentrantly — here, from
     # inside a Supervisor's `stop_when` predicate running on the tokio runtime —
@@ -611,3 +660,54 @@ def test_shared_group_streaming_enforces_command_timeout() -> None:
     # Outer bound: if the deadline were not enforced (the pre-1.2.0 behavior) the
     # stream would hang; fail loudly at 30s instead of hanging the suite.
     assert asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM trapping is POSIX-specific")
+def test_shared_group_streaming_kills_a_signal_trapping_child_that_closes_stdout(
+    tmp_path: pathlib.Path,
+) -> None:
+    # processkit 2.1.0: the one race that fix closes. A child that traps the
+    # graceful signal and closes stdout (but does NOT exit) previously survived
+    # if the consumer dropped its `RunningProcess` handle mid-grace: the closed
+    # stream let the consumer's handle-drop abort the in-flight hard-kill
+    # watchdog before it fired, so the child lived on until the *shared group
+    # itself* was later dropped. The final SIGKILL is now a detached task no
+    # handle-drop can abort.
+    ready = tmp_path / "ready"
+    code = (
+        "import signal, sys, time\n"
+        "signal.signal(signal.SIGTERM, lambda *a: sys.stdout.close())\n"
+        f"open({str(ready)!r}, 'w').write('x')\n"
+        "time.sleep(30)\n"
+    )
+
+    async def scenario() -> int:
+        # `group` deliberately stays alive (in scope, un-dropped) for the whole
+        # scenario: the assertion below must be satisfied by the per-command
+        # watchdog's own hard kill, not by the group's own (best-effort)
+        # teardown, which would mask the exact race this test targets.
+        group = ProcessGroup(shutdown_grace=0.3)
+        cmd = Command(PY, ["-c", code]).timeout(0.5)
+        proc = await group.astart(cmd)
+        pid = proc.pid
+        assert pid is not None
+
+        # Wait for the child to install its SIGTERM handler before its own
+        # deadline trips, so the signal actually reaches a live trap.
+        await asyncio.to_thread(wait_until, ready.exists, 10.0)
+
+        async for _line in proc.stdout_lines():  # arms the deadline watchdog
+            pass  # ends at EOF, once the child closes stdout on SIGTERM
+
+        # The child is still alive here (it trapped the signal instead of
+        # exiting) -- drop the handle right away, without ever calling
+        # finish()/outcome() on it: the exact race the fix closes.
+        del proc
+        gc.collect()
+
+        assert wait_dead(pid, timeout=10.0), (
+            "the signal-trapping child survived its shared-group timeout + handle drop"
+        )
+        return pid
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))

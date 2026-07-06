@@ -6,11 +6,24 @@ masked by a clean final stage (unlike a shell `|`).
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import sys
+import time
 
 import pytest
 
-from processkit import BytesResult, CancellationToken, Cancelled, Command, NonZeroExit, Pipeline
+from processkit import (
+    BytesResult,
+    CancellationToken,
+    Cancelled,
+    Command,
+    NonZeroExit,
+    Pipeline,
+    ProcessResult,
+)
+
+from ._liveness import read_pid_when_ready, wait_dead
+from .conftest import spawn_grandchild_command
 
 PY = sys.executable
 
@@ -114,6 +127,60 @@ def test_pipeline_timeout_is_captured() -> None:
     result = pipe.timeout(0.3).output()
     assert result.timed_out
     assert not result.is_success
+
+
+def test_pipeline_stage_timeout_kills_its_whole_subtree(pid_file: pathlib.Path) -> None:
+    # processkit 2.1.0: each pipeline stage now spawns into its OWN kill-on-drop
+    # sub-group, instead of the whole chain sharing one group. A per-stage
+    # `Command.timeout()` (set BEFORE `|`/`.pipe()`) therefore tears down that
+    # stage's whole subtree, including a grandchild it forks off -- previously
+    # the stage's own kill reached only its direct child, so a forking stage's
+    # grandchild survived, kept the pipe open, and stalled the downstream stage.
+    spawner = spawn_grandchild_command(pid_file).timeout(0.3)
+    downstream = Command(PY, ["-c", "import sys; sys.stdin.read()"])
+    pipe = spawner | downstream
+
+    async def stream_pipe() -> ProcessResult:
+        return await pipe.aoutput()
+
+    async def driver() -> tuple[ProcessResult, int]:
+        task = asyncio.ensure_future(stream_pipe())
+        grandchild = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+        result = await task
+        return result, grandchild
+
+    result, grandchild = asyncio.run(asyncio.wait_for(driver(), timeout=20.0))
+    assert result.timed_out, "the first stage's own timeout must be reported by the pipeline"
+    assert not result.is_success
+    assert wait_dead(grandchild, timeout=10.0), (
+        "the grandchild of a timed-out stage must not outlive that stage's own kill"
+    )
+
+
+def test_pipeline_stage_failure_proactively_tears_down_a_quiet_upstream() -> None:
+    # processkit 2.1.0: a checked stage failure now tears the rest of the chain
+    # down PROACTIVELY instead of only passively through pipe EOF. Here the
+    # upstream stage never writes anything and sleeps far longer than the test
+    # timeout; only a proactive teardown (triggered by the downstream stage's
+    # own checked failure, exit(7)) lets the whole pipeline finish quickly --
+    # the old, passive behavior would keep the quiet upstream running until its
+    # own 30s sleep elapsed (or an outer bound fired), holding the pipeline open.
+    quiet_upstream = Command(PY, ["-c", "import time; time.sleep(30)"])
+    failing_downstream = Command(PY, ["-c", "import sys; sys.exit(7)"])
+    pipe = quiet_upstream | failing_downstream
+
+    async def scenario() -> ProcessResult:
+        return await pipe.aoutput()
+
+    started = time.monotonic()
+    result = asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+    elapsed = time.monotonic() - started
+    assert result.code == 7, "the actually-failed (last) stage keeps the blame"
+    assert not result.is_success
+    assert elapsed < 10.0, (
+        "a checked stage failure must tear the chain down proactively, "
+        f"not wait on the quiet upstream's own 30s sleep (took {elapsed:.1f}s)"
+    )
 
 
 def test_pipeline_cancel_on_tears_down_the_whole_chain() -> None:

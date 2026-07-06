@@ -225,7 +225,10 @@ def test_reply_with_stderr_on_success() -> None:
 def test_reply_pending_never_exits() -> None:
     # Reply.pending() models a run that never ends on its own — only cancellation
     # or a timeout stops it. The documented "prove your orchestration cancels a
-    # blocked call" pattern.
+    # blocked call" pattern. This case has NO Command.timeout attached — it must
+    # still park forever, stopped only by an external cancellation/wait_for; see
+    # the *_respects_command_timeout_* tests below for the (distinct) case where
+    # a Command.timeout IS attached.
     runner = ScriptedRunner()
     runner.fallback(Reply.pending())
 
@@ -235,6 +238,34 @@ def test_reply_pending_never_exits() -> None:
             await asyncio.wait_for(proc.aoutcome(), timeout=0.3)
 
     asyncio.run(scenario())
+
+
+def test_scripted_runner_bulk_verb_respects_command_timeout_on_a_pending_reply() -> None:
+    # processkit 2.1.0: ScriptedRunner's bulk verbs (output/run, not just
+    # start()) now honor Command.timeout on a Reply.pending() reply — it
+    # resolves timed-out at the deadline instead of parking forever, matching
+    # the live Runner and the scripted start() path. (test_reply_pending_never_exits
+    # above pins the still-supported case: pending with NO timeout parks forever.)
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    result = runner.output(Command("x").timeout(0.2))
+    assert result.timed_out
+
+    with pytest.raises(Timeout):
+        runner.run(Command("x").timeout(0.2))
+
+
+def test_scripted_runner_async_bulk_verb_respects_command_timeout_on_a_pending_reply() -> None:
+    # The async twin of the test above (aoutput, not output).
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    async def scenario() -> bool:
+        result = await runner.aoutput(Command("x").timeout(0.2))
+        return result.timed_out
+
+    assert asyncio.run(asyncio.wait_for(scenario(), timeout=10.0))
 
 
 # --- runner bytes -----------------------------------------------------------
@@ -316,6 +347,24 @@ def test_cassette_output_bytes_is_unsupported(tmp_path: pathlib.Path) -> None:
     rec = RecordReplayRunner.record(str(tmp_path / "c.json"))
     with pytest.raises(Unsupported):
         rec.output_bytes(Command(PY, ["-c", "print('x')"]))
+
+
+def test_recording_runner_output_bytes_proxies_to_the_inner_runner(tmp_path: pathlib.Path) -> None:
+    # processkit 2.1.0: RecordingRunner.output_bytes() no longer falls through
+    # to the trait's start-based default — it proxies straight to the INNER
+    # runner's own output_bytes. Wrap a RecordReplayRunner (whose output_bytes
+    # honestly raises Unsupported, per test_cassette_output_bytes_is_unsupported
+    # above) and confirm the SAME Unsupported comes through — not a successful,
+    # lossily re-encoded result via the start-based default — and that the call
+    # still lands in rec.calls() (recorded despite the inner runner's error).
+    inner = RecordReplayRunner.record(str(tmp_path / "c.json"))
+    rec = RecordingRunner.new(inner)
+
+    with pytest.raises(Unsupported):
+        rec.output_bytes(Command(PY, ["-c", "print('x')"]))
+
+    calls = rec.calls()
+    assert [c.program for c in calls] == [PY]
 
 
 def test_cassette_records_and_replays_a_failed_call(tmp_path: pathlib.Path) -> None:

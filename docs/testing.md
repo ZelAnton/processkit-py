@@ -7,16 +7,17 @@ seam. In **processkit-py** that seam is a plain object: a *runner*. Write your
 code against a `runner` parameter, call its verbs, and never name a concrete
 runner inside the logic. In production you pass `Runner()` — the real thing. In
 tests you pass a double — a `ScriptedRunner` with canned replies, a replaying
-`RecordReplayRunner`, or a `RecordingRunner` spy — and no subprocess is ever
-spawned. The objects that come
+`RecordReplayRunner`, a `RecordingRunner` spy, or a `DryRunRunner` that only
+renders each command — and no subprocess is ever spawned. The objects that come
 back are genuine `ProcessResult` / `RunningProcess` values, so the code under
 test can't tell the difference.
 
-> The doubles — `ScriptedRunner`, `RecordReplayRunner`, `RecordingRunner`, the
-> `Reply` builder, and the `Invocation` record — live in the **`processkit.testing`**
-> submodule (mirroring the crate's own `processkit::testing` split). `Runner` and
-> the `ProcessRunner` protocol stay on the top-level `processkit` — they are
-> production code, not test scaffolding.
+> The doubles — `ScriptedRunner`, `RecordReplayRunner`, `RecordingRunner`,
+> `DryRunRunner`, the `Reply` builder, and the `Invocation` record — live in the
+> **`processkit.testing`** submodule (mirroring the crate's own
+> `processkit::testing` split). `Runner` and the `ProcessRunner` protocol stay
+> on the top-level `processkit` — they are production code, not test
+> scaffolding.
 
 - [The runner seam](#the-runner-seam)
 - [The pytest plugin: ready-made fixtures](#the-pytest-plugin-ready-made-fixtures)
@@ -24,6 +25,7 @@ test can't tell the difference.
 - [Scripted streaming: a live handle, no child](#scripted-streaming-a-live-handle-no-child)
 - [Record/replay cassettes: RecordReplayRunner](#recordreplay-cassettes-recordreplayrunner)
 - [Asserting on calls: RecordingRunner](#asserting-on-calls-recordingrunner)
+- [Rendering commands without running: DryRunRunner](#rendering-commands-without-running-dryrunrunner)
 - [Wrapping a CLI tool: CliClient](#wrapping-a-cli-tool-cliclient)
 
 ## The runner seam
@@ -54,9 +56,9 @@ branch = current_branch(Runner())
 ```
 
 Annotate the injected runner as **`ProcessRunner`** — a `typing.Protocol` that
-describes the verb surface. `Runner`, `ScriptedRunner`, `RecordReplayRunner`, and
-`RecordingRunner` all satisfy it structurally, so the annotation type-checks
-(strict `mypy`) against any of them. A custom double can implement the capture/check verbs directly; the
+describes the verb surface. `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
+`RecordingRunner`, and `DryRunRunner` all satisfy it structurally, so the
+annotation type-checks (strict `mypy`) against any of them. A custom double can implement the capture/check verbs directly; the
 streaming `start`/`astart` verbs must return a `RunningProcess` (no public
 constructor), so reach for `ScriptedRunner` when you need a streaming double rather
 than building one from scratch. (`CliClient` is *not* a `ProcessRunner` — its verbs
@@ -382,6 +384,56 @@ Reach for `RecordingRunner` when the *call* is what matters (did my code push th
 tags?); for canned per-command replies use
 [`ScriptedRunner`](#scripting-replies-scriptedrunner), and to replay real output
 offline use [`RecordReplayRunner`](#recordreplay-cassettes-recordreplayrunner).
+
+## Rendering commands without running: DryRunRunner
+
+`DryRunRunner` is the double behind a tool's own `--dry-run`/`--echo` mode: it
+never spawns anything, renders each command to its display-quoted line, and
+returns a synthetic success. There is nothing to script — a dry run has no real
+output to fake, only a command line to show — so every call just succeeds
+(empty stdout; an exit code drawn from the command's own `success_codes`, so
+the checking verbs stay in agreement even for a command whose accepted set
+excludes `0`). It shares the `Runner` verb surface, so it drops into the same
+seam.
+
+```python
+from processkit import Command
+from processkit.testing import DryRunRunner
+
+def prune(runner) -> None:
+    runner.run(Command("rm", ["-rf", "build"]))
+    runner.run(Command("rm", ["-rf", "dist"]))
+
+def test_prune_targets_the_right_dirs() -> None:
+    runner = DryRunRunner()
+    prune(runner)                                    # nothing spawned
+    assert runner.commands() == ["rm -rf build", "rm -rf dist"]
+```
+
+- **`commands()`** — the rendered command line of every call so far, in order,
+  each produced by [`Command.command_line()`](commands.md) (the same display
+  quoting you'd reach for by hand).
+- **`only_command()`** — the single rendered line, or a `ProcessError` if there
+  wasn't exactly one call (like `RecordingRunner.only_call()`).
+- **`on_invocation(callback)`** — call `callback(line)` with each rendered line
+  *as the call happens* — e.g. to print the echo live for a real `--dry-run`
+  flag — **in addition to** the collected `commands()` snapshot. The callback is
+  a fire-and-forget side effect: a raising one is surfaced via
+  [`sys.unraisablehook`](https://docs.python.org/3/library/sys.html#sys.unraisablehook)
+  rather than derailing the run it was only observing.
+
+```python
+runner = DryRunRunner()
+runner.on_invocation(print)          # echo each command as it's "run"
+deploy_plan(runner)                  # prints: kubectl apply -f manifest.yaml, …
+```
+
+Reach for `DryRunRunner` when the rendered *command line* is what you want to
+assert on (or echo), with no reply to script and no output to replay — the
+`--dry-run` seam. When a call needs a specific canned outcome, use
+[`ScriptedRunner`](#scripting-replies-scriptedrunner); when you also need the
+structured call record (cwd/env/stdin), use
+[`RecordingRunner`](#asserting-on-calls-recordingrunner).
 
 ## Wrapping a CLI tool: CliClient
 

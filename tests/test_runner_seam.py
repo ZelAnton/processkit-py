@@ -1,7 +1,8 @@
 """The runner test seam: `Runner` (real), `ScriptedRunner` (test double), the
 `Reply` variants (ok/fail/timeout/signalled/pending/with_stdout/lines), the
 `RecordReplayRunner` record/replay cassette runner, the `RecordingRunner` spy
-(+ its `Invocation`), and `ProcessRunner` protocol conformance.
+(+ its `Invocation`), the `DryRunRunner` render-only double, and `ProcessRunner`
+protocol conformance.
 
 Code written against a runner can be exercised with scripted replies — no real
 process — while production passes a real `Runner`.
@@ -17,6 +18,7 @@ import pytest
 
 from processkit import (
     BytesResult,
+    CliClient,
     Command,
     NonZeroExit,
     ProcessError,
@@ -24,10 +26,13 @@ from processkit import (
     ProcessRunner,
     Runner,
     Signalled,
+    Supervisor,
     Timeout,
     Unsupported,
+    output_all,
 )
 from processkit.testing import (
+    DryRunRunner,
     Invocation,
     RecordingRunner,
     RecordReplayRunner,
@@ -574,3 +579,134 @@ def test_reply_with_line_delay_spaces_out_stdout_lines() -> None:
     # necessarily wait); a generous lower bound avoids flaking on scheduling
     # jitter while still proving the delay actually happened.
     assert elapsed >= 0.15
+
+
+# --- DryRunRunner: render-only double (T-022) --------------------------------
+
+
+def test_dry_run_runner_renders_without_spawning() -> None:
+    # Every verb renders the command to its display-quoted line and returns a
+    # synthetic success — no process is spawned. `only_command()` exposes the
+    # rendered text (like `Command.command_line()`), the whole point of the seam.
+    runner = DryRunRunner()
+    result = runner.output(Command("rm", ["-rf", "build"]))
+    assert result.is_success
+    assert result.code == 0
+    assert result.stdout == ""  # a dry run has no real output to fake
+    assert runner.only_command() == "rm -rf build"
+
+
+def test_dry_run_runner_success_code_follows_command_success_codes() -> None:
+    # The synthetic "success" exit is drawn from the command's own
+    # `success_codes` (not a hardcoded 0), so `is_success` and the checking
+    # verbs still agree for a command whose accepted set excludes 0.
+    runner = DryRunRunner()
+    result = runner.output(Command("tool").success_codes([2]))
+    assert result.code == 2
+    assert result.is_success
+
+
+def test_dry_run_runner_commands_collects_every_call_in_order() -> None:
+    runner = DryRunRunner()
+    runner.run(Command("git", ["status"]))
+    runner.exit_code(Command("ls", ["-la"]))
+    assert runner.commands() == ["git status", "ls -la"]
+
+
+def test_dry_run_runner_only_command_raises_unless_exactly_one() -> None:
+    runner = DryRunRunner()
+    with pytest.raises(ProcessError):
+        runner.only_command()  # zero calls
+    runner.run(Command("a"))
+    runner.run(Command("b"))
+    with pytest.raises(ProcessError):
+        runner.only_command()  # two calls
+
+
+def test_dry_run_runner_on_invocation_echoes_live_and_still_collects() -> None:
+    # `on_invocation(callback)` fires as each call happens (e.g. to print a
+    # `--dry-run` echo) IN ADDITION TO the collected `commands()` snapshot.
+    echoed: list[str] = []
+    runner = DryRunRunner()
+    runner.on_invocation(echoed.append)
+    runner.run(Command("git", ["push", "--tags"]))
+    runner.run(Command("kubectl", ["apply"]))
+    assert echoed == ["git push --tags", "kubectl apply"]
+    assert runner.commands() == echoed  # both surfaces agree
+
+
+def test_dry_run_runner_on_invocation_raising_callback_is_swallowed() -> None:
+    # The echo is a fire-and-forget side effect: a raising callback is surfaced
+    # via the unraisable hook (like `ScriptedRunner.when`'s predicate), never
+    # propagated to derail the run it was only observing.
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(_line: str) -> None:
+        raise ValueError("echo exploded")
+
+    runner = DryRunRunner()
+    runner.on_invocation(boom)
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        # The run still succeeds despite the broken echo.
+        assert runner.output(Command("deploy")).is_success
+    finally:
+        sys.unraisablehook = old_hook
+    assert captured
+    assert isinstance(captured[0], ValueError)
+    assert runner.only_command() == "deploy"  # still collected
+
+
+def test_dry_run_runner_async_verbs_render_without_spawning() -> None:
+    # The async verbs render and collect too (they route through the same seam).
+    runner = DryRunRunner()
+
+    async def scenario() -> None:
+        result = await runner.aoutput(Command("terraform", ["apply"]))
+        assert result.is_success
+        assert await runner.aexit_code(Command("helm", ["upgrade"])) == 0
+
+    asyncio.run(scenario())
+    assert runner.commands() == ["terraform apply", "helm upgrade"]
+
+
+def test_dry_run_runner_satisfies_process_runner() -> None:
+    runner = DryRunRunner()
+    _accepts_runner(runner)  # static (mypy) signature conformance, not just isinstance
+    assert isinstance(runner, ProcessRunner)
+
+
+# --- DryRunRunner injected at all three injection points (T-022) -------------
+
+
+def test_output_all_accepts_dry_run_runner() -> None:
+    # Driven through the dry-run double, `output_all` renders every command and
+    # spawns nothing — the rendered lines prove each command reached the runner.
+    runner = DryRunRunner()
+    results = output_all([Command("rm", ["-rf", "a"]), Command("rm", ["-rf", "b"])], runner=runner)
+    assert all(r.is_success for r in results if not isinstance(r, ProcessError))
+    assert runner.commands() == ["rm -rf a", "rm -rf b"]
+
+
+def test_supervisor_accepts_dry_run_runner() -> None:
+    runner = DryRunRunner()
+    outcome = Supervisor(Command("deploy", ["--now"]), restart="never", runner=runner).run()
+    assert outcome.final_result.is_success
+    assert runner.only_command() == "deploy --now"
+
+
+def test_cli_client_accepts_dry_run_runner() -> None:
+    # A `CliClient` wired to the dry-run double renders each built command
+    # (program + per-call args) and never spawns; `run()` returns the (empty)
+    # synthetic stdout.
+    runner = DryRunRunner()
+    client = CliClient("kubectl", runner=runner)
+    assert client.run(["apply", "-f", "manifest.yaml"]) == ""
+    assert runner.only_command() == "kubectl apply -f manifest.yaml"

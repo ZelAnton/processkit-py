@@ -158,6 +158,8 @@ Runner test doubles, in the `processkit.testing` submodule. Inject one in tests 
 
 ::: processkit.testing.RecordingRunner
 
+::: processkit.testing.DryRunRunner
+
 ::: processkit.testing.Reply
 
 ::: processkit.testing.Invocation

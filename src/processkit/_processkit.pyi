@@ -144,6 +144,7 @@ class Command:
     def gid(self, gid: int) -> Command: ...
     def groups(self, gids: Sequence[int]) -> Command: ...
     def setsid(self) -> Command: ...
+    def umask(self, mask: int) -> Command: ...
     def output_limit(
         self,
         *,
@@ -384,8 +385,8 @@ class ProcessGroupStats:
 class _RunnerVerbs:
     """Private, stub-only base: the run-verb surface every runner shares
     (`ProcessGroup`, `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
-    `RecordingRunner`) — de-duplicating what would otherwise be five
-    identical copies of the same 12 method declarations. Not a real runtime
+    `RecordingRunner`, `DryRunRunner`) — de-duplicating what would otherwise be
+    six identical copies of the same 12 method declarations. Not a real runtime
     base class (there is no such Python object at runtime — each concrete
     class implements this surface independently in Rust); purely a
     typing-time convenience, safe alongside `mypy.stubtest
@@ -471,7 +472,7 @@ class SupervisionOutcome:
     @property
     def stopped(
         self,
-    ) -> Literal["policy_satisfied", "predicate", "restarts_exhausted", "unknown"]: ...
+    ) -> Literal["policy_satisfied", "predicate", "restarts_exhausted", "gave_up", "unknown"]: ...
     @property
     def storm_pauses(self) -> int: ...
     def __repr__(self) -> str: ...
@@ -491,6 +492,18 @@ class Supervisor:
         max_backoff: float | None = ...,
         jitter: bool | None = ...,
         stop_when: Callable[[ProcessResult], bool] | None = ...,
+        # Classify a permanent failure so supervision gives up instead of
+        # restarting a crash forever. Consulted only for a crash the policy would
+        # otherwise restart, ahead of `max_restarts` and the storm guard. The
+        # callback receives one argument mirroring the crate's `GiveUpAttempt`
+        # sum type, dispatched with `isinstance`: a `ProcessResult` for a crashed
+        # run that produced a result (classify by e.g. `attempt.code`), or a
+        # `ProcessError` subclass for a launch that never produced one (classify
+        # by e.g. `isinstance(attempt, ProcessNotFound)` for a missing binary).
+        # A crash verdict stops with `SupervisionOutcome.stopped == "gave_up"`; a
+        # launch-failure verdict has no result to report and surfaces the
+        # classified error directly from `run()`/`arun()`.
+        give_up_when: Callable[[ProcessResult | ProcessError], bool] | None = ...,
         storm_pause: float | None = ...,
         failure_threshold: float | None = ...,
         failure_decay: float | None = ...,
@@ -503,12 +516,17 @@ class Supervisor:
         capture_max_lines: int | None = ...,
         capture_on_overflow: Literal["drop_oldest", "drop_newest", "error"] | None = ...,
         # Drives every incarnation through this runner instead of the real
-        # `Runner` — a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`
-        # for hermetic supervision tests. (Inline union, not a named alias:
-        # only three call sites in the whole surface use this shape.) Not a
-        # `ProcessGroup` — deliberately not an `extract_runner` target; see
-        # `runner.rs::extract_runner`'s doc comment.
-        runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
+        # `Runner` — a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`/
+        # `DryRunRunner` for hermetic supervision tests. (Inline union, not a
+        # named alias: only three call sites in the whole surface use this
+        # shape.) Not a `ProcessGroup` — deliberately not an `extract_runner`
+        # target; see `runner.rs::extract_runner`'s doc comment.
+        runner: Runner
+        | ScriptedRunner
+        | RecordReplayRunner
+        | RecordingRunner
+        | DryRunRunner
+        | None = ...,
     ) -> None: ...
     def run(self) -> SupervisionOutcome: ...
     async def arun(self) -> SupervisionOutcome: ...
@@ -585,6 +603,25 @@ class RecordingRunner(_RunnerVerbs):
     ) -> RecordingRunner: ...
     def calls(self) -> list[Invocation]: ...
     def only_call(self) -> Invocation: ...
+    def __repr__(self) -> str: ...
+
+@final
+class DryRunRunner(_RunnerVerbs):
+    """A dry-run test double: never spawns a process. Every verb renders the
+    command to its display-quoted line (like `Command.command_line()`) and
+    returns a synthetic successful result — the seam behind a tool's own
+    `--dry-run`/`--echo` mode. Shares the `Runner` run-verb surface; inspect the
+    rendered lines with `commands()` / `only_command()`, or stream them live
+    with `on_invocation()`."""
+
+    def __init__(self) -> None: ...
+    # Call `callback` with each rendered line as its call is dry-run "executed",
+    # in addition to the collected `commands()` snapshot. `callback` is
+    # infallible from the crate's perspective: a raising one is surfaced via the
+    # unraisable hook (see `runner.rs`), not propagated.
+    def on_invocation(self, callback: Callable[[str], None]) -> None: ...
+    def commands(self) -> list[str]: ...
+    def only_command(self) -> str: ...
     def __repr__(self) -> str: ...
 
 @final
@@ -667,9 +704,14 @@ class CliClient:
         # unless it already has its own explicit token.
         default_cancel_on: CancellationToken | None = ...,
         # Drives every verb through this runner instead of the real `Runner` —
-        # a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner` for testable
-        # client code with no real spawns.
-        runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
+        # a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`/`DryRunRunner`
+        # for testable client code with no real spawns.
+        runner: Runner
+        | ScriptedRunner
+        | RecordReplayRunner
+        | RecordingRunner
+        | DryRunRunner
+        | None = ...,
     ) -> None: ...
     def command(self, args: Args) -> Command:
         """A `Command` for `program <args>`, the client's defaults pre-applied
@@ -788,31 +830,51 @@ class Cancelled(ProcessError):
 # A command that failed (a spawn or I/O error) appears as a `ProcessError` in its
 # result slot (a non-zero exit is data on the `ProcessResult`). `runner=` drives
 # every command through the given runner instead of the real `Runner` — a
-# `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner` for a hermetic batch
-# test with no real spawns.
+# `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`/`DryRunRunner` for a
+# hermetic batch test with no real spawns.
 def output_all(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
+    runner: Runner
+    | ScriptedRunner
+    | RecordReplayRunner
+    | RecordingRunner
+    | DryRunRunner
+    | None = ...,
 ) -> list[ProcessResult | ProcessError]: ...
 async def aoutput_all(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
+    runner: Runner
+    | ScriptedRunner
+    | RecordReplayRunner
+    | RecordingRunner
+    | DryRunRunner
+    | None = ...,
 ) -> list[ProcessResult | ProcessError]: ...
 def output_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
+    runner: Runner
+    | ScriptedRunner
+    | RecordReplayRunner
+    | RecordingRunner
+    | DryRunRunner
+    | None = ...,
 ) -> list[BytesResult | ProcessError]: ...
 async def aoutput_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | None = ...,
+    runner: Runner
+    | ScriptedRunner
+    | RecordReplayRunner
+    | RecordingRunner
+    | DryRunRunner
+    | None = ...,
 ) -> list[BytesResult | ProcessError]: ...
 
 # Opt-in observability: install a process-global subscriber that forwards the

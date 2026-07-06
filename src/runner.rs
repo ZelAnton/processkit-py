@@ -1,13 +1,13 @@
 //! The runner seam: a real `Runner`, the `ScriptedRunner` / `RecordReplayRunner`
-//! / `RecordingRunner` test doubles, and the `Reply` builder, sharing one generic
-//! set of run verbs over `ProcessRunner`.
+//! / `RecordingRunner` / `DryRunRunner` test doubles, and the `Reply` builder,
+//! sharing one generic set of run verbs over `ProcessRunner`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use processkit::testing::{
-    Invocation, RecordReplayRunner as PkRecordReplayRunner, RecordingRunner as PkRecordingRunner,
-    Reply as PkReply, ScriptedRunner as PkScriptedRunner,
+    DryRunRunner as PkDryRunRunner, Invocation, RecordReplayRunner as PkRecordReplayRunner,
+    RecordingRunner as PkRecordingRunner, Reply as PkReply, ScriptedRunner as PkScriptedRunner,
 };
 use processkit::JobRunner;
 use processkit::ProcessRunner;
@@ -174,24 +174,39 @@ fn make_command_predicate(
     }
 }
 
+/// Wrap a Python callable `(str) -> None` as a `DryRunRunner.on_invocation`
+/// reaction. Mirrors `make_command_predicate`'s infallible-bridge convention: a
+/// dry-run echo is a fire-and-forget side effect, so a raising callback is
+/// surfaced via the unraisable hook (visible on stderr) rather than propagated
+/// — a broken echo must not derail the run it was only observing.
+fn make_invocation_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync + 'static {
+    move |line| {
+        Python::attach(|py| {
+            if let Err(err) = callback.call1(py, (line,)) {
+                err.write_unraisable(py, Some(callback.bind(py)));
+            }
+        })
+    }
+}
+
 /// Downcast a Python `runner=` argument to a type-erased, shareable
 /// `ProcessRunner` — the single extraction point `output_all`/`aoutput_all`/
 /// `output_all_bytes`/`aoutput_all_bytes` (`batch.rs`), `Supervisor.__new__`
 /// (`supervisor.rs`), and `CliClient.__new__` (`cli.rs`) use to accept an
 /// injected runner instead of hardcoding the real `JobRunner`. Accepts any of
-/// the four runner pyclasses (`Runner`, `ScriptedRunner`, `RecordingRunner`,
-/// `RecordReplayRunner`); each already wraps its concrete runner in an `Arc`,
-/// so `.clone()` unsize-coerces to the trait object at this function's
-/// declared return type — no extra allocation beyond the `Arc` bump.
+/// the five runner pyclasses (`Runner`, `ScriptedRunner`, `RecordingRunner`,
+/// `RecordReplayRunner`, `DryRunRunner`); each already wraps its concrete
+/// runner in an `Arc`, so `.clone()` unsize-coerces to the trait object at this
+/// function's declared return type — no extra allocation beyond the `Arc` bump.
 ///
 /// The crate's `ProcessGroup` also implements `ProcessRunner` (`group.rs`
 /// binds its verb surface directly, over the same generic `runner_*`
 /// helpers this module exposes), but it is deliberately NOT an
 /// `extract_runner` target: a `ProcessGroup` is a containment container a
 /// caller already holds and injects directly, not a `runner=` kwarg value —
-/// and unlike the four dedicated doubles/real-runner pyclasses, it carries
+/// and unlike the five dedicated doubles/real-runner pyclasses, it carries
 /// real OS resources (a Job Object / cgroup) that a generic "one of these
-/// four" injection point shouldn't paper over.
+/// five" injection point shouldn't paper over.
 pub(crate) fn extract_runner(
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<Arc<dyn ProcessRunner + Send + Sync>> {
@@ -207,8 +222,12 @@ pub(crate) fn extract_runner(
     if let Ok(r) = obj.cast::<PyRecordReplayRunner>() {
         return Ok(r.borrow().inner.clone());
     }
+    if let Ok(r) = obj.cast::<PyDryRunRunner>() {
+        return Ok(r.borrow().inner.clone());
+    }
     Err(pyo3::exceptions::PyTypeError::new_err(
-        "runner must be one of Runner, ScriptedRunner, RecordingRunner, RecordReplayRunner",
+        "runner must be one of Runner, ScriptedRunner, RecordingRunner, RecordReplayRunner, \
+         DryRunRunner",
     ))
 }
 
@@ -706,14 +725,102 @@ runner_pymethods!(PyRecordingRunner {
     }
 });
 
+/// A dry-run test double: never spawns a process. Every verb renders the
+/// command to its display-quoted line (the crate's own `Command::command_line`
+/// quoting — the same text `Command.command_line()` exposes, not a hand-rolled
+/// escaper) and returns a synthetic successful result — the seam behind a
+/// tool's own `--dry-run`/`--echo` mode. Unlike a `ScriptedRunner` there is
+/// nothing to script: a dry run has only a command line to show, so every call
+/// unconditionally "succeeds" (empty stdout, an exit code drawn from the
+/// command's own `success_codes` so the checking verbs agree). Inspect the
+/// rendered lines with `commands()` / `only_command()`, or stream them live as
+/// each call happens with `on_invocation()`.
+#[pyclass(name = "DryRunRunner", module = "processkit.testing")]
+pub(crate) struct PyDryRunRunner {
+    // `Arc` so the async run verbs can hold the runner across the await;
+    // `on_invocation` reconfigures it via `Arc::try_unwrap`, which requires no
+    // in-flight call — mirrors `PyScriptedRunner`.
+    inner: Arc<PkDryRunRunner>,
+}
+
+impl PyDryRunRunner {
+    /// Apply a consuming builder to the wrapped runner. Requires sole ownership
+    /// (no async call holding a clone); the rendered-commands log is carried
+    /// across, since the builder only sets the callback field.
+    fn reconfigure(
+        &mut self,
+        build: impl FnOnce(PkDryRunRunner) -> PkDryRunRunner,
+    ) -> PyResult<()> {
+        let placeholder = Arc::new(PkDryRunRunner::new());
+        match Arc::try_unwrap(std::mem::replace(&mut self.inner, placeholder)) {
+            Ok(runner) => {
+                self.inner = Arc::new(build(runner));
+                Ok(())
+            }
+            Err(original) => {
+                self.inner = original;
+                Err(ProcessError::new_err(
+                    "cannot reconfigure a DryRunRunner while a call is in flight",
+                ))
+            }
+        }
+    }
+}
+
+runner_pymethods!(PyDryRunRunner {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(PkDryRunRunner::new()),
+        }
+    }
+
+    /// Call `callback` with each command's rendered line as it is dry-run
+    /// "executed" — e.g. printing it for a tool's `--dry-run` echo — **in
+    /// addition to**, not instead of, the collected `commands()` snapshot.
+    /// `callback` is infallible from the crate's perspective: a raising one is
+    /// surfaced via the unraisable hook (like `ScriptedRunner.when`'s
+    /// predicate) rather than propagating across the FFI boundary.
+    fn on_invocation(&mut self, callback: Py<PyAny>) -> PyResult<()> {
+        self.reconfigure(move |runner| runner.on_invocation(make_invocation_callback(callback)))
+    }
+
+    /// The rendered command line for every call so far, in order — each
+    /// produced by `Command.command_line()`, the same display quoting you'd
+    /// reach for by hand.
+    fn commands(&self) -> Vec<String> {
+        self.inner.commands()
+    }
+
+    /// The single rendered command line; raises `ProcessError` unless exactly
+    /// one call was made. (Reimplemented over `commands()` rather than the
+    /// crate's own `only_command()`, which *panics* on the wrong count — a
+    /// Python-reachable call must raise, not abort across the FFI boundary.)
+    fn only_command(&self) -> PyResult<String> {
+        let commands = self.inner.commands();
+        match commands.len() {
+            1 => Ok(commands.into_iter().next().expect("length checked above")),
+            n => Err(ProcessError::new_err(format!(
+                "expected exactly one dry-run call, got {n}"
+            ))),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DryRunRunner(commands={})", self.inner.commands().len())
+    }
+});
+
 /// Register this module's pyclasses (`Runner`, `ScriptedRunner`, `Reply`,
-/// `RecordReplayRunner`, `RecordingRunner`, `Invocation`) on `_processkit`.
+/// `RecordReplayRunner`, `RecordingRunner`, `DryRunRunner`, `Invocation`) on
+/// `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunner>()?;
     m.add_class::<PyScriptedRunner>()?;
     m.add_class::<PyReply>()?;
     m.add_class::<PyRecordReplayRunner>()?;
     m.add_class::<PyRecordingRunner>()?;
+    m.add_class::<PyDryRunRunner>()?;
     m.add_class::<PyInvocation>()?;
     Ok(())
 }

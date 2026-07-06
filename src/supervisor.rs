@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use processkit::GiveUpAttempt;
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
@@ -15,7 +16,7 @@ use pyo3::prelude::*;
 
 use crate::command::PyCommand;
 use crate::convert::{build_output_buffer_policy, nonnegative_duration, positive_duration};
-use crate::errors::ProcessError;
+use crate::errors::{map_err_ref, ProcessError};
 use crate::result::PyProcessResult;
 use crate::runner::extract_runner;
 use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
@@ -40,6 +41,7 @@ fn stop_reason_str(reason: StopReason) -> &'static str {
         StopReason::PolicySatisfied => "policy_satisfied",
         StopReason::Predicate => "predicate",
         StopReason::RestartsExhausted => "restarts_exhausted",
+        StopReason::GaveUp => "gave_up",
         _ => "unknown",
     }
 }
@@ -71,6 +73,85 @@ fn make_stop_predicate(
                 .and_then(|value| value.extract::<bool>(py))
             {
                 Ok(stop) => stop,
+                Err(err) => {
+                    err.write_unraisable(py, Some(callback.bind(py)));
+                    false
+                }
+            }
+        })
+    }
+}
+
+/// Wrap a Python classifier as a `Supervisor.give_up_when` callback — the
+/// permanent-failure verdict that stops the supervisor giving up instead of
+/// restarting a crash forever.
+///
+/// Form decision (task T-021, Stage 1): a **Python callable**, not a string
+/// preset like `Command.retry`'s `retry_if`. The crate's `give_up_when` takes a
+/// boxed closure (`Fn(&GiveUpAttempt<'_>) -> bool`) — structurally the
+/// `stop_when` predicate (already a Python callable here via
+/// `make_stop_predicate`), not the `restart`/`retry_if` enum-like presets. A
+/// preset works for `retry_if` because it ranges over a tiny fixed vocabulary of
+/// universal `Error` accessors (`is_transient`/`is_timeout`); a *useful*
+/// `GiveUpAttempt` verdict is inherently per-run — the exit code of a crashed
+/// run, the specific kind of a spawn error — with no small universal preset
+/// vocabulary. And the required `stopped == "gave_up"` outcome arises *only* for
+/// a `Crashed` verdict, whose "permanent" test is result-specific and so not a
+/// fixed preset at all.
+///
+/// The callback receives ONE argument mirroring the `GiveUpAttempt` sum type,
+/// dispatched with `isinstance` (idiomatic Python for a sum type), reusing types
+/// already public — no new surface:
+///   - `Crashed(&ProcessResult)` -> the `ProcessResult` (the same object
+///     `stop_when` receives): classify a crash by its result, e.g.
+///     `attempt.code == 13`;
+///   - `Failed(&Error)` -> the mapped `ProcessError` subclass instance (built via
+///     `map_err_ref`, **passed, not raised**): classify a launch that never
+///     produced a result, e.g. `isinstance(attempt, ProcessNotFound)` for a
+///     missing binary.
+///
+/// GIL safety: the classifier runs on the tokio runtime thread, so it acquires
+/// the GIL via `Python::attach` before touching Python, exactly like
+/// `make_stop_predicate`. The crate's classifier is infallible (`-> bool`), so a
+/// raising or non-bool callback reads as "not permanent" — keep restarting, the
+/// safe default that matches an unset classifier — but the error is surfaced via
+/// the unraisable hook (stderr) rather than silently swallowed, so a buggy
+/// classifier is visible instead of looping invisibly.
+fn make_give_up_classifier(
+    callback: Py<PyAny>,
+) -> impl Fn(&GiveUpAttempt<'_>) -> bool + Send + Sync + 'static {
+    move |attempt| {
+        Python::attach(|py| {
+            // Build the Python-facing view of this attempt (see the doc above).
+            let arg: Py<PyAny> = match attempt {
+                GiveUpAttempt::Crashed(result) => {
+                    match Py::new(
+                        py,
+                        PyProcessResult {
+                            inner: (*result).clone(),
+                        },
+                    ) {
+                        Ok(result) => result.into_any(),
+                        Err(err) => {
+                            err.write_unraisable(py, None);
+                            return false;
+                        }
+                    }
+                }
+                // A launch that never produced a result: hand the callback the
+                // same typed exception the crate error maps to (built, not
+                // raised), so it can `isinstance`-classify the failure mode.
+                GiveUpAttempt::Failed(error) => map_err_ref(error).into_value(py).into_any(),
+                // `GiveUpAttempt` is `#[non_exhaustive]`: a future "never ran"
+                // kind we don't yet understand -> not permanent (keep
+                // restarting), the safe default rather than a guess.
+                _ => return false,
+            };
+            match callback
+                .call1(py, (arg,))
+                .and_then(|value| value.extract::<bool>(py))
+            {
+                Ok(give_up) => give_up,
                 Err(err) => {
                     err.write_unraisable(py, Some(callback.bind(py)));
                     false
@@ -114,8 +195,9 @@ impl PySupervisionOutcome {
         self.restarts
     }
 
-    /// Why supervision stopped: `"policy_satisfied"`, `"predicate"`, or
-    /// `"restarts_exhausted"`.
+    /// Why supervision stopped: `"policy_satisfied"`, `"predicate"`,
+    /// `"restarts_exhausted"`, or `"gave_up"` (a `give_up_when` classifier
+    /// recognized a crash as permanent).
     #[getter]
     fn stopped(&self) -> &'static str {
         self.stopped
@@ -163,6 +245,7 @@ impl PySupervisor {
         max_backoff=None,
         jitter=None,
         stop_when=None,
+        give_up_when=None,
         storm_pause=None,
         failure_threshold=None,
         failure_decay=None,
@@ -181,6 +264,7 @@ impl PySupervisor {
         max_backoff: Option<f64>,
         jitter: Option<bool>,
         stop_when: Option<Py<PyAny>>,
+        give_up_when: Option<Py<PyAny>>,
         storm_pause: Option<f64>,
         failure_threshold: Option<f64>,
         failure_decay: Option<f64>,
@@ -221,6 +305,14 @@ impl PySupervisor {
         }
         if let Some(callback) = stop_when {
             supervisor = supervisor.stop_when(make_stop_predicate(callback));
+        }
+        // Permanent-failure classifier (off unless set): consulted for a crash
+        // the policy would otherwise restart, ahead of `max_restarts` and the
+        // storm guard. A `Crashed` verdict stops with `stopped == "gave_up"`; a
+        // `Failed` (spawn) verdict has no result to report and surfaces the
+        // classified error directly from `run()`.
+        if let Some(callback) = give_up_when {
+            supervisor = supervisor.give_up_when(make_give_up_classifier(callback));
         }
         // Failure-storm guard (off unless `storm_pause` is set): once the decaying
         // failure score crosses `failure_threshold`, the supervisor takes one

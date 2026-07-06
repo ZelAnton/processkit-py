@@ -25,6 +25,7 @@ from processkit import _aio, _processkit, _protocols, _types
 # The runner test doubles live in the `processkit.testing` submodule, not the
 # top-level surface; both re-export from the same compiled `_processkit`.
 _TESTING_DOUBLES = {
+    "DryRunRunner",
     "Invocation",
     "RecordReplayRunner",
     "RecordingRunner",

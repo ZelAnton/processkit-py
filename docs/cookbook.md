@@ -139,9 +139,11 @@ except OutputTooLarge as e:
 ```
 
 `on_overflow` is `"drop_oldest"` (keep most recent, the default), `"drop_newest"`
-(keep earliest), or `"error"` (raise `OutputTooLarge`). The cap applies to
-line-captured output; raw `output_bytes()` stdout is never line-capped — bound a
-flooding child with a `timeout()` instead.
+(keep earliest), or `"error"` (raise `OutputTooLarge`). A `max_lines` cap bounds
+only line-captured output (raw bytes have no line count), but a `max_bytes` cap
+also bounds the raw stdout of `output_bytes()` / `aoutput_bytes()` (since processkit
+2.1.0): over the byte ceiling it either raises `OutputTooLarge` (`on_overflow="error"`)
+or keeps a bounded head/tail with `BytesResult.truncated` set.
 
 ## Stream output line by line (async)
 

@@ -209,9 +209,15 @@ except OutputTooLarge as e:
 `on_overflow` is `"drop_oldest"` (keep the newest, the default), `"drop_newest"`
 (freeze the head), or `"error"` (raise `OutputTooLarge`). To bound the parent's
 **memory** against an untrusted child, cap `max_bytes`: a `max_lines`-only cap
-does *not*, because one newline-free flood is a single, unbounded line. The cap
-applies to line-captured output; the raw stdout from `output_bytes()` is never
-line-capped — bound a flooding child there with a `timeout()` instead.
+does *not*, because one newline-free flood is a single, unbounded line. A
+`max_lines` cap applies to line-captured output only — raw bytes have no line
+count, so it never bounds the stdout of `output_bytes()`. A `max_bytes` cap
+applies to *both* that line-captured output **and** the raw stdout of
+`output_bytes()` / `aoutput_bytes()` (since processkit 2.1.0 — earlier the byte
+ceiling bounded only the line-pumped stderr and raw stdout was always unbounded).
+Over the byte cap an `output_bytes()` run either raises `OutputTooLarge` (with
+`max_lines=None`) under `on_overflow="error"`, or keeps a bounded head/tail with
+`BytesResult.truncated` set under a drop mode.
 
 ## Timeouts
 
@@ -325,8 +331,11 @@ r.combined          # stdout + stderr concatenated (property)
 
 `output_bytes()` returns a `BytesResult` with the same fields (minus `combined`,
 which can't join `bytes` stdout with `str` stderr), except `stdout` is raw `bytes`
-(stderr stays decoded `str`). On a `BytesResult`, `truncated` refers to **stderr**
-only — the raw bytes stdout is never line-capped.
+(stderr stays decoded `str`). On a `BytesResult`, `truncated` is set when an
+`output_limit` cap dropped output — the line-captured stderr under any cap, and
+(since processkit 2.1.0) the raw bytes stdout too when a `max_bytes` ceiling bounds
+it to a head/tail. A `max_lines` cap never truncates raw stdout (bytes have no line
+count); only a `max_bytes` cap does.
 
 ```python
 png = Command("convert", ["in.png", "png:-"]).output_bytes().stdout   # bytes

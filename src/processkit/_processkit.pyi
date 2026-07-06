@@ -81,8 +81,11 @@ class BytesResult:
     def duration_seconds(self) -> float: ...
     @property
     def truncated(self) -> bool:
-        """Whether captured *stderr* was truncated by an ``output_limit`` cap;
-        raw bytes stdout is never line-capped."""
+        """Whether captured output was truncated by an ``output_limit(...)`` cap
+        — the line-captured stderr under any cap, and (since processkit 2.1.0)
+        the raw stdout too when an ``output_limit(max_bytes=...)`` byte ceiling
+        bounds it to a head/tail. A ``max_lines`` cap never truncates raw stdout
+        (bytes have no line count); only a ``max_bytes`` cap does."""
 
     def ensure_success(self) -> BytesResult:
         """See ``ProcessResult.ensure_success()``."""

@@ -9,7 +9,14 @@ import sys
 
 import pytest
 
-from processkit import Command, ProcessError, SupervisionOutcome, Supervisor
+from processkit import (
+    Command,
+    ProcessError,
+    ProcessNotFound,
+    ProcessResult,
+    SupervisionOutcome,
+    Supervisor,
+)
 from processkit.testing import Reply, ScriptedRunner
 
 from .conftest import NO_SUCH_PROGRAM, PY
@@ -121,6 +128,135 @@ def test_reentrant_run_call_leaves_the_target_supervisor_usable() -> None:
     assert outcome.stopped == "predicate"
     # `target` must still be usable after the failed reentrant call.
     assert target.run().final_result.is_success
+
+
+# --- give_up_when (permanent-failure classifier) ----------------------------
+
+
+def test_supervisor_give_up_when_stops_a_permanent_crash() -> None:
+    # The headline behavior: a `give_up_when` classifier that recognizes a crash
+    # as permanent stops supervision after the FIRST such crash with
+    # `stopped == "gave_up"` (0 restarts), instead of an unbounded restart loop.
+    # Driven through a ScriptedRunner — no real spawn.
+    seen: list[object] = []
+
+    def give_up(attempt: object) -> bool:
+        seen.append(attempt)
+        # A crashed run that produced a result is handed the `ProcessResult`.
+        return isinstance(attempt, ProcessResult) and attempt.code == 13
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.fail(13, "boom"))
+    outcome = Supervisor(
+        Command(NO_SUCH_PROGRAM),
+        restart="always",
+        # Safety net: without give_up this stops here (not looping forever), so a
+        # broken binding fails the assertions below instead of hanging the suite.
+        max_restarts=5,
+        backoff_initial=0.001,
+        backoff_factor=1.0,
+        jitter=False,
+        give_up_when=give_up,
+        runner=runner,
+    ).run()
+
+    assert outcome.stopped == "gave_up"
+    assert outcome.restarts == 0  # gave up on the first crash — no restart loop
+    assert outcome.final_result.code == 13
+    # The classifier was consulted with the crashed run's `ProcessResult`.
+    assert seen and isinstance(seen[0], ProcessResult)
+
+
+def test_supervisor_give_up_when_ignores_an_unrecognized_crash() -> None:
+    # The verdict is consulted per crash and a False answer is respected: an
+    # unrecognized crash still restarts (here, to exhaustion) and never
+    # spuriously reports "gave_up".
+    def give_up(attempt: object) -> bool:
+        return isinstance(attempt, ProcessResult) and attempt.code == 13
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.fail(1, "different"))  # code 1, not the classified 13
+    outcome = Supervisor(
+        Command(NO_SUCH_PROGRAM),
+        restart="always",
+        max_restarts=2,
+        backoff_initial=0.001,
+        backoff_factor=1.0,
+        jitter=False,
+        give_up_when=give_up,
+        runner=runner,
+    ).run()
+
+    assert outcome.stopped == "restarts_exhausted"
+    assert outcome.restarts == 2
+
+
+def test_supervisor_give_up_when_classifies_a_failed_spawn() -> None:
+    # The `Failed` arm: a launch that never produced a result (a missing binary
+    # -> ENOENT) is handed the mapped `ProcessError` subclass, so
+    # `isinstance(attempt, ProcessNotFound)` recognizes the unrecoverable case.
+    # A launch-failure verdict has no result to report, so it surfaces the
+    # classified error directly from run() (not `stopped == "gave_up"`), but it
+    # still gives up on the first attempt instead of restarting forever.
+    seen: list[object] = []
+
+    def give_up(attempt: object) -> bool:
+        seen.append(attempt)
+        return isinstance(attempt, ProcessNotFound)
+
+    with pytest.raises(ProcessNotFound):
+        Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            max_restarts=3,  # safety net (see the crash test) — not reached here
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            give_up_when=give_up,
+        ).run()
+
+    # Consulted exactly once, with the mapped exception -> gave up at the first
+    # failure (no restart loop), not after climbing to `max_restarts`.
+    assert len(seen) == 1
+    assert isinstance(seen[0], ProcessNotFound)
+
+
+def test_supervisor_give_up_when_raising_classifier_surfaces_via_unraisable() -> None:
+    # A classifier that raises (or returns non-bool) must NOT silently give up,
+    # nor crash the run: it reads as "not permanent" (keep restarting) and the
+    # error reaches the unraisable hook, mirroring `stop_when`'s own contract.
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(_attempt: object) -> bool:
+        raise RuntimeError("classifier bug")
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.fail(7, "crash"))
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        outcome = Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            max_restarts=1,
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            give_up_when=boom,
+            runner=runner,
+        ).run()
+    finally:
+        sys.unraisablehook = old_hook
+
+    # Ran to exhaustion instead of giving up on the raising classifier.
+    assert outcome.stopped == "restarts_exhausted"
+    assert captured, "the classifier's error should reach the unraisable hook"
+    assert any(isinstance(e, RuntimeError) for e in captured)
 
 
 # --- backoff validation -----------------------------------------------------

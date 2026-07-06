@@ -17,6 +17,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runner injection point (`output_all` and friends, `Supervisor`, `CliClient`,
   `runner=`), like the other doubles. (Binds `processkit` 2.1.0's
   `testing::DryRunRunner`.)
+- `Supervisor(..., give_up_when=classifier)` — classify a permanent failure so
+  supervision gives up instead of restarting a crash forever, reporting the new
+  `SupervisionOutcome.stopped == "gave_up"`. Bound as a **Python callable**
+  (like `stop_when`, not a `retry_if`-style string preset — the crate's
+  classifier is a per-attempt closure, and a useful verdict is result-specific,
+  not a fixed vocabulary). The callback receives one argument mirroring the
+  crate's `GiveUpAttempt` sum type, dispatched with `isinstance`: a
+  `ProcessResult` for a crashed run that produced a result (classify by e.g.
+  `attempt.code`), or a `ProcessError` subclass for a launch that never produced
+  one (classify by e.g. `isinstance(attempt, ProcessNotFound)` for a missing
+  binary). Consulted only for a crash the policy would otherwise restart, ahead
+  of `max_restarts` and the failure-storm guard. A crash verdict stops with
+  `stopped == "gave_up"`; a launch-failure verdict has no result to report and
+  surfaces the classified error directly from `run()`/`arun()`. Off by default —
+  a permanent failure restarts as before. The classifier runs on the runtime
+  thread under the GIL; a raising or non-bool callback reads as "not permanent"
+  (keep restarting) and is surfaced via the unraisable hook, never silently
+  swallowed.
+- `Command.umask(mask)` — set the child's POSIX file-mode creation mask; on a
+  non-POSIX platform the run raises `Unsupported`, matching the existing
+  `uid`/`gid`/`groups`/`setsid` verbs.
 
 ### Changed
 -

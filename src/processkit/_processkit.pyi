@@ -144,6 +144,7 @@ class Command:
     def gid(self, gid: int) -> Command: ...
     def groups(self, gids: Sequence[int]) -> Command: ...
     def setsid(self) -> Command: ...
+    def umask(self, mask: int) -> Command: ...
     def output_limit(
         self,
         *,
@@ -471,7 +472,7 @@ class SupervisionOutcome:
     @property
     def stopped(
         self,
-    ) -> Literal["policy_satisfied", "predicate", "restarts_exhausted", "unknown"]: ...
+    ) -> Literal["policy_satisfied", "predicate", "restarts_exhausted", "gave_up", "unknown"]: ...
     @property
     def storm_pauses(self) -> int: ...
     def __repr__(self) -> str: ...
@@ -491,6 +492,18 @@ class Supervisor:
         max_backoff: float | None = ...,
         jitter: bool | None = ...,
         stop_when: Callable[[ProcessResult], bool] | None = ...,
+        # Classify a permanent failure so supervision gives up instead of
+        # restarting a crash forever. Consulted only for a crash the policy would
+        # otherwise restart, ahead of `max_restarts` and the storm guard. The
+        # callback receives one argument mirroring the crate's `GiveUpAttempt`
+        # sum type, dispatched with `isinstance`: a `ProcessResult` for a crashed
+        # run that produced a result (classify by e.g. `attempt.code`), or a
+        # `ProcessError` subclass for a launch that never produced one (classify
+        # by e.g. `isinstance(attempt, ProcessNotFound)` for a missing binary).
+        # A crash verdict stops with `SupervisionOutcome.stopped == "gave_up"`; a
+        # launch-failure verdict has no result to report and surfaces the
+        # classified error directly from `run()`/`arun()`.
+        give_up_when: Callable[[ProcessResult | ProcessError], bool] | None = ...,
         storm_pause: float | None = ...,
         failure_threshold: float | None = ...,
         failure_decay: float | None = ...,

@@ -164,6 +164,18 @@ fn cached<'py>(lock: &PyOnceLock<Py<PyType>>, py: Python<'py>) -> Bound<'py, PyT
 /// `OutputTooLarge`'s counters, `Unsupported.operation`) still need a direct
 /// match on the variant.
 pub(crate) fn map_err(error: processkit::Error) -> PyErr {
+    // The mapping never moves out of the error (every branch reads it through
+    // `&self` accessors or a by-ref `match`), so delegate to the borrowing twin:
+    // one implementation, two entry points (owned and borrowed).
+    map_err_ref(&error)
+}
+
+/// Borrowing twin of [`map_err`], for a caller that holds only a `&Error` and
+/// cannot hand over ownership — notably the supervisor's `give_up_when`
+/// classifier inspecting a `GiveUpAttempt::Failed`, whose `Error` is not `Clone`
+/// (it wraps a `std::io::Error`). `map_err` delegates here, so the owned and the
+/// borrowed path share one faithful mapping.
+pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
     use processkit::Error as E;
 
     Python::attach(|py| {
@@ -190,7 +202,7 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
             // classification would mislead a caller.
             PyErr::from_type(cached(&PERMISSION_DENIED, py), message)
         } else {
-            match &error {
+            match error {
                 E::Exit { .. } => NonZeroExit::new_err(message),
                 E::Signalled { .. } => Signalled::new_err(message),
                 E::ResourceLimit { .. } => ResourceLimit::new_err(message),
@@ -221,7 +233,7 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
         }
 
         // The handful of fields with no `Error` accessor still need a direct match.
-        match &error {
+        match error {
             E::Signalled { signal, .. } => {
                 // Unlike `program`/`stdout`/`stderr`/`code` (attached above via the
                 // accessor block, `if let Some(...)`), `signal` must be set

@@ -27,7 +27,7 @@ impl PyRunProfile {
     /// match every other result type — `ProcessResult`, `Outcome`, ….)
     #[getter]
     fn code(&self) -> Option<i32> {
-        self.inner.exit_code
+        self.inner.code()
     }
 
     /// Wall-clock time from start until the run finished, in seconds.
@@ -84,7 +84,7 @@ impl PyRunProfile {
     fn __repr__(&self) -> String {
         format!(
             "RunProfile(code={:?}, timed_out={}, duration_seconds={:.3}, peak_memory_bytes={:?}, samples={})",
-            self.inner.exit_code,
+            self.inner.code(),
             self.inner.timed_out(),
             self.inner.duration.as_secs_f64(),
             self.inner.peak_memory_bytes,

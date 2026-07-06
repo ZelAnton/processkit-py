@@ -255,16 +255,17 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
                 let _ = value.setattr("diagnostic", error.diagnostic());
             }
             E::OutputTooLarge {
-                line_limit,
-                byte_limit,
+                max_lines,
+                max_bytes,
                 total_lines,
                 total_bytes,
                 ..
             } => {
                 // Python attr names mirror the `output_limit(max_bytes=, max_lines=)`
-                // builder kwargs (the crate's struct fields are *_limit).
-                let _ = value.setattr("max_lines", *line_limit);
-                let _ = value.setattr("max_bytes", *byte_limit);
+                // builder kwargs (the crate's struct fields match since 2.1.0:
+                // `line_limit`/`byte_limit` were renamed to `max_lines`/`max_bytes`).
+                let _ = value.setattr("max_lines", *max_lines);
+                let _ = value.setattr("max_bytes", *max_bytes);
                 let _ = value.setattr("total_lines", *total_lines);
                 let _ = value.setattr("total_bytes", *total_bytes);
             }

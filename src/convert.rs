@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use processkit::Encoding;
+use processkit::prelude::Encoding;
 use processkit::Error as PkError;
 use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;

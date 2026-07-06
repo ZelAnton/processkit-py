@@ -129,8 +129,8 @@ impl PyProcessGroup {
         let mut options = ProcessGroupOptions::default();
         if let Some(bytes) = max_memory {
             // Python kwarg `max_memory` mirrors the `max_*` convention used across
-            // the surface; the crate builder method is `memory_max`.
-            options = options.memory_max(bytes);
+            // the surface; the crate builder method is `max_memory`.
+            options = options.max_memory(bytes);
         }
         if let Some(n) = max_processes {
             options = options.max_processes(n);

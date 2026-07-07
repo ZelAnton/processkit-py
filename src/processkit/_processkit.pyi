@@ -8,19 +8,24 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from types import TracebackType
-from typing import Literal, TypeAlias, final
+from typing import Literal, final
 
 # `StrPath` (program/path arg: `str` or `os.PathLike[str]`), `Args` (an argv-like
 # list/tuple of them — deliberately not `Sequence[StrPath]`, see `_types.py`),
-# `SignalName`, `RetryIf`, `LineTerminatorName`, `Priority`, and `ReadableBuffer`
-# are the single source in `_types`, re-exported from the package so callers
-# can annotate with them; imported here for the signatures below.
+# `SignalName`, `RetryIf`, `LineTerminatorName`, `Priority`, `ReadableBuffer`,
+# and `RunnerLike` are the single source in `_types`, re-exported from the
+# package so callers can annotate with them; imported here for the signatures
+# below. `RunnerLike` in particular must live in `_types.py` rather than be
+# defined directly in this stub: a name that exists only in a compiled
+# extension's `.pyi` (with no backing Python source) is never present at
+# runtime, which `mypy.stubtest` flags as an error.
 from ._types import (
     Args,
     LineTerminatorName,
     Priority,
     ReadableBuffer,
     RetryIf,
+    RunnerLike,
     SignalName,
     StrPath,
 )
@@ -649,17 +654,6 @@ class DryRunRunner(_RunnerVerbs):
     def commands(self) -> list[str]: ...
     def only_command(self) -> str: ...
     def __repr__(self) -> str: ...
-
-# Every runner accepted in place of the real `Runner` (mirrors
-# `runner.rs::extract_runner`'s accepted set) — named once so the six `runner=`
-# call sites below (`Supervisor.__init__`, `CliClient.__init__`, `output_all`,
-# `aoutput_all`, `output_all_bytes`, `aoutput_all_bytes`) don't each repeat the
-# same five-way union. `RecordingRunner.new`'s `inner` is mandatory, so it uses
-# this alias directly; the six `runner=` keywords are all optional and use
-# `RunnerLike | None` instead.
-RunnerLike: TypeAlias = (
-    Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | DryRunRunner
-)
 
 @final
 class Invocation:

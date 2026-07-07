@@ -54,7 +54,7 @@ def test_argv_env_round_trip_through_invocation(
         # `env()` override, breaking the 1:1 round-trip this property checks.
         assume(len({key.casefold() for key in env}) == len(env))
 
-    command = Command(program, args)  # type: ignore[arg-type]  # list[str] vs invariant list[StrPath]
+    command = Command(program, args)
     for key, value in env.items():
         command = command.env(key, value)
 
@@ -95,6 +95,6 @@ def test_command_program_and_arguments_accessors_match_the_build(
     # `Command.program` / `.arguments` are inspection accessors on the
     # builder itself, independent of any runner — pin them alongside the
     # `Invocation` round trip since both are meant to agree.
-    command = Command(program, args)  # type: ignore[arg-type]  # list[str] vs invariant list[StrPath]
+    command = Command(program, args)
     assert command.program == program
     assert command.arguments == args

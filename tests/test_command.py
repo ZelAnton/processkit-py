@@ -805,7 +805,7 @@ def test_ensure_success_returns_self_on_success() -> None:
     result = Command(PY, ["-c", "print('ok')"]).output()
     same = result.ensure_success()
     assert same.stdout.strip() == "ok"
-    assert same is not None
+    assert same is result
 
 
 def test_ensure_success_raises_on_failure() -> None:
@@ -813,6 +813,13 @@ def test_ensure_success_raises_on_failure() -> None:
     with pytest.raises(NonZeroExit) as excinfo:
         result.ensure_success()
     assert excinfo.value.code == 3
+
+
+def test_bytes_ensure_success_returns_self_on_success() -> None:
+    result = Command(PY, ["-c", "print('ok')"]).output_bytes()
+    same = result.ensure_success()
+    assert bytes(same.stdout).strip() == b"ok"
+    assert same is result
 
 
 def test_bytes_ensure_success_raises_on_failure() -> None:

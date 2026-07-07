@@ -223,6 +223,18 @@ def test_cli_client_default_env_fn_yields_to_an_explicit_env() -> None:
     assert client.run(cmd) == "explicit"
 
 
+def test_cli_client_default_env_fn_rejects_a_non_callable_value() -> None:
+    # A non-callable value (e.g. a string pasted in by mistake, in place of
+    # the intended zero-arg callback) must be rejected loudly and immediately
+    # at construction time, not silently accepted and only surfaced later as
+    # an always-empty env var via the unraisable-hook fallback.
+    with pytest.raises(TypeError, match="X"):
+        CliClient(PY, default_env_fn={"X": "not callable"})
+
+    # A genuinely callable value still constructs without error.
+    CliClient(PY, default_env_fn={"X": lambda: "ok"})
+
+
 # --- default_cancel_on (C7 batch B) ------------------------------------------
 
 

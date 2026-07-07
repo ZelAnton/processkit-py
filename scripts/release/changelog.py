@@ -120,7 +120,7 @@ def _fail(message: str) -> None:
 
 def _cmd_autofill(args: argparse.Namespace) -> None:
     path = pathlib.Path(args.changelog)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if unreleased_has_bullets(text):
         print("[Unreleased] already has manual entries; skipping auto-fill.")
         return
@@ -145,7 +145,7 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
     except ValueError as err:
         _fail(str(err))
         return  # unreachable (_fail raises); satisfies type-checkers
-    path.write_text(new_text)
+    path.write_bytes(new_text.encode("utf-8"))
     print("----- auto-generated [Unreleased] body -----")
     print(generated)
     print("--------------------------------------------")
@@ -154,11 +154,11 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
 def _cmd_extract_notes(args: argparse.Namespace) -> None:
     path = pathlib.Path(args.changelog)
     try:
-        result = extract_release_notes(path.read_text())
+        result = extract_release_notes(path.read_text(encoding="utf-8"))
     except ValueError as err:
         _fail(f"{err}. Add release notes before releasing.")
         return  # unreachable (_fail raises); satisfies type-checkers
-    pathlib.Path(args.out).write_text(result)
+    pathlib.Path(args.out).write_bytes(result.encode("utf-8"))
     print(f"----- {args.out} -----")
     print(result, end="")
     print("----------------------------")
@@ -168,7 +168,7 @@ def _cmd_promote(args: argparse.Namespace) -> None:
     path = pathlib.Path(args.changelog)
     try:
         new_text = promote_unreleased(
-            path.read_text(),
+            path.read_text(encoding="utf-8"),
             version=args.version,
             tag=args.tag,
             prev_tag=args.prev_tag,
@@ -178,7 +178,7 @@ def _cmd_promote(args: argparse.Namespace) -> None:
     except ValueError as err:
         _fail(str(err))
         return  # unreachable (_fail raises); satisfies type-checkers
-    path.write_text(new_text)
+    path.write_bytes(new_text.encode("utf-8"))
 
 
 def main(argv: list[str] | None = None) -> None:

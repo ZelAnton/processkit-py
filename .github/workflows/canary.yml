@@ -2,11 +2,13 @@ name: Canary (processkit crate)
 
 # Weekly, informational-only signal for API drift: builds and tests the binding
 # against the NEWEST published version of the `processkit` crate on crates.io,
-# in place of the exact pin in Cargo.toml (see that file's `processkit = "=1.2.0"`
-# comment for why the pin is exact and deliberate). The version bump below is
-# applied only to this runner's ephemeral checkout -- nothing is ever committed
-# or pushed back to the repo, so the real pin bump stays a deliberate, reviewed
-# change. This is deliberately a separate workflow from `ci.yml` (which it never
+# in case it has drifted outside the compatible-version requirement pinned in
+# Cargo.toml (see that file's `processkit = { version = "2.1", ... }` comment
+# for why the requirement is a range rather than an exact pin). The version
+# bump below is applied only to this runner's ephemeral checkout -- nothing is
+# ever committed or pushed back to the repo, so the real requirement bump stays
+# a deliberate, reviewed change. This is deliberately a separate workflow from
+# `ci.yml` (which it never
 # edits): a schedule-triggered failure here only reddens this workflow's own
 # status (and emails the actor who last touched this file, same as
 # nightly-hardening.yml) -- it can never redden a push/PR gate, since nothing in
@@ -45,31 +47,84 @@ jobs:
         id: discover
         run: |
           set -euo pipefail
-          current=$(grep -oP '^processkit = \{ version = "=\K[0-9.]+' Cargo.toml)
+          raw=$(grep -oP '^processkit = \{ version = "\K[^"]+' Cargo.toml)
           latest=$(curl -sSL --fail \
             --user-agent "processkit-py-canary (https://github.com/ZelAnton/processkit-py)" \
             https://crates.io/api/v1/crates/processkit | jq -r '.crate.max_stable_version')
-          echo "Pinned in Cargo.toml: $current"
+          echo "Pinned requirement in Cargo.toml: $raw"
           echo "Newest on crates.io: $latest"
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          python3 - "$raw" "$latest" <<'PY' >> "$GITHUB_OUTPUT"
+          import sys
 
-      # The bump + build/test steps only run when a newer version actually
-      # exists, so an already-current pin doesn't waste a rebuild every week.
+          # Cargo's default ("caret") requirement semantics: a bare "X.Y.Z"/"X.Y"/"X"
+          # requirement (no operator prefix) allows any version up to (but
+          # excluding) the next increment of the leftmost non-zero component that
+          # was actually written (e.g. "2.1" == ^2.1 == >=2.1.0, <3.0.0); an
+          # "=X.Y.Z" requirement demands an exact match instead. See:
+          # https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#caret-requirements
+          def parse(version):
+              parts = version.split(".")
+              parts += ["0"] * (3 - len(parts))
+              return tuple(int(part) for part in parts[:3])
+
+
+          def caret_upper_bound(written, req):
+              considered = req[:written]
+              idx = next((i for i, part in enumerate(considered) if part != 0), written - 1)
+              upper = list(req)
+              upper[idx] += 1
+              for j in range(idx + 1, 3):
+                  upper[j] = 0
+              return tuple(upper)
+
+
+          raw, latest = sys.argv[1], sys.argv[2]
+          exact = raw.startswith("=")
+          requirement = raw[1:] if exact else raw
+          written = len(requirement.split("."))
+          req_tuple = parse(requirement)
+          latest_tuple = parse(latest)
+
+          if exact:
+              covered = req_tuple == latest_tuple
+          else:
+              covered = req_tuple <= latest_tuple < caret_upper_bound(written, req_tuple)
+
+          print(f"current={raw}")
+          print(f"latest={latest}")
+          print(f"covered={'true' if covered else 'false'}")
+          PY
+
+      # The bump + build/test steps only run when the newest crate on crates.io
+      # actually falls outside the requirement pinned in Cargo.toml, so an
+      # already-covering range doesn't waste a rebuild every week.
       - name: Bump the pin in the working copy (never committed)
-        if: steps.discover.outputs.latest != steps.discover.outputs.current
+        if: steps.discover.outputs.covered != 'true'
         env:
           CURRENT: ${{ steps.discover.outputs.current }}
           LATEST: ${{ steps.discover.outputs.latest }}
         run: |
           set -euo pipefail
-          sed -i "s/processkit = { version = \"=${CURRENT}\"/processkit = { version = \"=${LATEST}\"/" Cargo.toml
+          new_req=$(python3 - "$CURRENT" "$LATEST" <<'PY'
+          import sys
+
+          # Preserve the pinned requirement's style: keep the "=" exact-pin
+          # prefix if present, and truncate LATEST to the same number of
+          # dot-separated components the current requirement was written with.
+          current, latest = sys.argv[1], sys.argv[2]
+          exact = current.startswith("=")
+          written = len((current[1:] if exact else current).split("."))
+          bumped = ".".join(latest.split(".")[:written])
+          print(("=" if exact else "") + bumped)
+          PY
+          )
+          sed -i -E "s/^(processkit = \{ version = \")[^\"]+\"/\1${new_req}\"/" Cargo.toml
           grep -n '^processkit = ' Cargo.toml
           cargo update -p processkit --precise "${LATEST}"
 
       - name: Build + test the binding against the newest crate
         id: build
-        if: steps.discover.outputs.latest != steps.discover.outputs.current
+        if: steps.discover.outputs.covered != 'true'
         # `uv run` provisions the interpreter and syncs the environment; an
         # explicit `maturin develop` first guarantees the extension is rebuilt
         # against the bumped Cargo.toml/Cargo.lock rather than relying on uv's
@@ -83,17 +138,18 @@ jobs:
         env:
           CURRENT: ${{ steps.discover.outputs.current }}
           LATEST: ${{ steps.discover.outputs.latest }}
+          COVERED: ${{ steps.discover.outputs.covered }}
           OUTCOME: ${{ steps.build.outcome }}
         run: |
           {
             echo "## Canary: processkit crate freshness"
             echo
-            if [ "$LATEST" = "$CURRENT" ]; then
-              echo "Pinned version \`$CURRENT\` is already the newest on crates.io -- nothing to build/test."
+            if [ "$COVERED" = "true" ]; then
+              echo "Newest on crates.io is **$LATEST** -- covered by the pinned requirement \`$CURRENT\` in Cargo.toml, nothing to build/test."
             elif [ "$OUTCOME" = "success" ]; then
-              echo "Fresh crate **$LATEST** (pinned: \`$CURRENT\`) -- build/tests: :white_check_mark: green."
+              echo "Newest on crates.io is **$LATEST** -- outside the pinned requirement \`$CURRENT\` in Cargo.toml. Build/tests against it: :white_check_mark: green."
             else
-              echo "Fresh crate **$LATEST** (pinned: \`$CURRENT\`) -- build/tests: :x: red."
+              echo "Newest on crates.io is **$LATEST** -- outside the pinned requirement \`$CURRENT\` in Cargo.toml. Build/tests against it: :x: red."
               echo "See the failed step above for details."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

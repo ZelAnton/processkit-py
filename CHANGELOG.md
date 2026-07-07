@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValueError`; `timeout=0` still checks the path at least once) and raises
   `WaitTimeout` (also a `TimeoutError`) on expiry, now carrying a `path` field
   (`WaitTimeout.__init__` gained a `path: StrPath | None = None` parameter).
+- `python -m processkit run -- <cmd> [args...]`: a CLI wrapper that runs a
+  command inside a kill-on-exit `ProcessGroup` with inherited stdio, for
+  shell scripts and CI steps with no Python to write. Supports `--timeout`,
+  `--timeout-grace`, `--max-memory`, `--max-processes`, and `--cpu-quota`;
+  the child's own exit code is passed through unchanged,
+  and a timeout / missing program / rejected resource limit is reported as a
+  one-line stderr message with a documented, GNU-`timeout`-style exit code
+  instead of a traceback. See `docs/cli.md`.
+- `Finished` gains `timed_out` and `signal` properties that delegate to the
+  nested `outcome`, so it now mirrors `Outcome` fully — matching `code` and
+  `exited_zero`, which were already exposed directly — instead of requiring
+  `finished.outcome.timed_out` / `finished.outcome.signal`.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

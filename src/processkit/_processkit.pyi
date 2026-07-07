@@ -279,7 +279,10 @@ class Outcome:
 class Finished:
     """A process's outcome plus captured stderr (stdout was streamed).
 
-    Like `Outcome`, it exposes `exited_zero` (literal "exit code 0"), not an
+    Mirrors `Outcome`'s `code`, `exited_zero`, `timed_out`, and `signal`
+    directly (in addition to the nested `outcome`), so callers don't need to
+    reach through `.outcome` for fields they already use on `Outcome`. Like
+    `Outcome`, it exposes `exited_zero` (literal "exit code 0"), not an
     `is_success` that would falsely imply `success_codes` were considered.
     """
 
@@ -291,6 +294,10 @@ class Finished:
     def code(self) -> int | None: ...
     @property
     def exited_zero(self) -> bool: ...
+    @property
+    def timed_out(self) -> bool: ...
+    @property
+    def signal(self) -> int | None: ...
     def __repr__(self) -> str: ...
 
 @final

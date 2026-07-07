@@ -77,6 +77,11 @@ def test_stdout_lines_streams_in_order() -> None:
     assert isinstance(finished.stderr, str)
     assert finished.code == 0
     assert finished.outcome.exited_zero
+    # Finished.timed_out/signal mirror .outcome for a normal exit.
+    assert finished.timed_out is finished.outcome.timed_out
+    assert finished.timed_out is False
+    assert finished.signal == finished.outcome.signal
+    assert finished.signal is None
 
 
 def test_stdout_line_terminator_carriage_return_splits_progress_frames() -> None:
@@ -655,6 +660,9 @@ def test_shared_group_streaming_enforces_command_timeout() -> None:
             async for _line in proc.stdout_lines():  # arms the deadline watchdog
                 pass
             finished = await proc.afinish()
+            # Finished.timed_out/signal mirror .outcome for a real timeout too.
+            assert finished.timed_out is finished.outcome.timed_out
+            assert finished.signal == finished.outcome.signal
             return finished.outcome.timed_out
 
     # Outer bound: if the deadline were not enforced (the pre-1.2.0 behavior) the

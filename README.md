@@ -153,6 +153,17 @@ async def main():
 asyncio.run(main())
 ```
 
+No Python to write? `python -m processkit run -- <cmd> [args...]` gives a
+shell script or CI step the same kill-on-exit containment and resource
+limits from the command line, no code required:
+
+```bash
+python -m processkit run --timeout 30 --max-memory 536870912 -- pytest -x
+```
+
+See [Command-line usage](docs/cli.md) for the full flag list and exit-code
+contract.
+
 ## Documentation
 
 This README is the quick tour. The **[`docs/` guide set](docs/README.md)** goes

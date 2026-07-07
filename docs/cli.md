@@ -50,7 +50,6 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--max-memory BYTES` | `ProcessGroup(max_memory=...)` | Whole-tree memory cap. |
 | `--max-processes N` | `ProcessGroup(max_processes=...)` | Fork-bomb ceiling for the tree. |
 | `--cpu-quota FLOAT` | `ProcessGroup(cpu_quota=...)` | Fraction of a **single** core (`0.5` = half, `2.0` = two cores). |
-| `--output-limit BYTES` | `Command.output_limit(max_bytes=...)` | Bounds retained captured-output memory. |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
@@ -102,7 +101,11 @@ directly for anything beyond it: piping several commands together
 ([Streaming & interactive I/O](streaming.md)), or running a batch of commands
 concurrently (`output_all` / `aoutput_all`). There is also no shorthand for
 env-var sandboxing (`env_clear()` / `inherit_env(...)`) or a `--dry-run` mode
-yet — both plausible follow-ups, not implemented today.
+yet — both plausible follow-ups, not implemented today. There is also no
+`--output-limit` flag: stdio here is always inherited straight through to
+your terminal, so there is no captured-output buffer for
+`Command.output_limit(...)` to bound in the first place — that method only
+matters when a caller captures output via the Python API instead.
 
 ---
 

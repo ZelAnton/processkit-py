@@ -152,14 +152,6 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
             "cores; needs a real container)."
         ),
     )
-    run_parser.add_argument(
-        "--output-limit",
-        dest="output_limit",
-        type=_positive_int,
-        default=None,
-        metavar="BYTES",
-        help="Bound retained captured-output memory, in bytes (drops the oldest first).",
-    )
     return parser, run_parser
 
 
@@ -190,8 +182,6 @@ def _run(
         command = command.timeout(args.timeout)
         if args.timeout_grace is not None:
             command = command.timeout_grace(args.timeout_grace)
-    if args.output_limit is not None:
-        command = command.output_limit(max_bytes=args.output_limit)
 
     limits_requested = (
         args.max_memory is not None or args.max_processes is not None or args.cpu_quota is not None

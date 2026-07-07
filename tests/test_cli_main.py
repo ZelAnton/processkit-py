@@ -107,9 +107,3 @@ def test_double_dash_inside_child_argv_is_passed_through_verbatim() -> None:
     )
     assert result.returncode == 0
     assert "['--', 'foo']" in result.stdout
-
-
-def test_output_limit_flag_does_not_break_a_normal_run() -> None:
-    result = _run_cli("run", "--output-limit", "1024", "--", PY, "-c", "print('capped')")
-    assert result.returncode == 0
-    assert "capped" in result.stdout

@@ -14,7 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Fixed
--
+- `Args` (`from processkit import Args`) no longer rejects the single most
+  common real call site — a variable annotated `list[str]` (or
+  `list[pathlib.Path]` / `list[os.PathLike[str]]`) passed straight through to
+  an argv-like parameter, e.g. `args: list[str] = [...]; cmd.args(args)`.
+  `list` is invariant, so the original `list[StrPath] | tuple[StrPath, ...]`
+  spelling only ever accepted a `list[StrPath]`-annotated variable or a
+  literal, not a `list[str]`/`list[Path]`/`list[os.PathLike[str]]`-annotated
+  one, even though the values are runtime-identical — a static-typing-only
+  false positive with no runtime effect. `Args` is now a union of the concrete
+  homogeneous list shapes (`list[str]`, `list[Path]`, `list[os.PathLike[str]]`)
+  instead of the single invariant `list[StrPath]`; a *mixed* `str`/
+  `os.PathLike[str]` argv is still accepted, now spelled as a `tuple` rather
+  than a `list` literal (e.g. `cmd.args((path, "literal"))`). A bare `str`
+  still does not type-check as `Args` (unchanged; see the `Args` docstring).
 
 ## [1.1.1] - 2026-07-06
 

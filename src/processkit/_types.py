@@ -43,14 +43,35 @@ every other object PyO3 extracts a byte buffer from via the buffer protocol
 (`bytearray`, `memoryview`), not just `bytes` itself. Kept here as the single
 runtime+stub source (the compiled module's `.pyi` imports them), so a caller
 can `from processkit import (Args, LineTerminatorName, Priority,
-ReadableBuffer, RetryIf, SignalName, StrPath)`.
+ReadableBuffer, RetryIf, SignalName, StrPath)`. `RunnerLike` lives here for a
+related but distinct reason: it's a plain (non-`Literal`) union alias over the
+five runner pyclasses (`Runner`, `ScriptedRunner`, `RecordReplayRunner`,
+`RecordingRunner`, `DryRunRunner`) used only internally by `_processkit.pyi`'s
+own signatures (not part of the public `processkit.__all__` surface), and
+`mypy.stubtest` requires every name a `.pyi`-only module exposes to also exist
+at runtime — a compiled extension's stub (`_processkit.pyi`) has no backing
+Python source, so a `TypeAlias` defined directly in it is never present in the
+runtime object stubtest introspects. Defining it here instead, importing the
+five runner classes from the actual compiled extension module, makes
+`RunnerLike` a real runtime name that `_processkit.pyi` imports (`from
+._types import RunnerLike`), the same mechanism `StrPath`/`Args` use above —
+just without the top-level package re-export, since `RunnerLike` isn't meant
+for callers to import directly.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
+
+from ._processkit import (
+    DryRunRunner,
+    RecordReplayRunner,
+    RecordingRunner,
+    Runner,
+    ScriptedRunner,
+)
 
 StrPath = str | os.PathLike[str]
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
@@ -59,6 +80,13 @@ RetryIf = Literal["transient", "transient_or_timeout"]
 LineTerminatorName = Literal["newline", "carriage_return"]
 Priority = Literal["idle", "below_normal", "normal", "above_normal", "high"]
 ReadableBuffer = bytes | bytearray | memoryview
+# Every runner accepted in place of the real `Runner` (mirrors
+# `runner.rs::extract_runner`'s accepted set) — named once so the `runner=`
+# call sites and `RecordingRunner.new` in `_processkit.pyi` don't each repeat
+# the same five-way union.
+RunnerLike: TypeAlias = (
+    Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | DryRunRunner
+)
 
 __all__ = [
     "Args",

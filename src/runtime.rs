@@ -64,14 +64,7 @@ where
     // the panic into a `PanicException`, which the predicate wrapper swallows,
     // producing a silent, confusing failure). This is a no-op on the normal sync
     // path, where the calling thread holds no runtime context.
-    if tokio::runtime::Handle::try_current().is_ok() {
-        return Err(ProcessError::new_err(
-            "cannot call a synchronous processkit verb from inside an async context \
-             or a callback that runs on the runtime (e.g. a Supervisor stop_when \
-             predicate); use the async (a-prefixed) API, or compute the value before \
-             the callback",
-        ));
-    }
+    reject_reentrant_runtime()?;
     let mut fut = std::pin::pin!(fut);
     loop {
         let step = py.detach(|| {

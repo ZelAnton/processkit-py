@@ -6,9 +6,15 @@ that do are exercised only by an actual release run.
 
 from __future__ import annotations
 
+import argparse
+import pathlib
+
 import pytest
 from scripts.release.cargo_lock import bump_local_crate_version
+from scripts.release.cargo_lock import main as cargo_lock_main
 from scripts.release.changelog import (
+    _cmd_extract_notes,
+    _cmd_promote,
     extract_release_notes,
     insert_unreleased_body,
     promote_unreleased,
@@ -195,3 +201,73 @@ def test_bump_local_crate_version_raises_when_multiple_entries() -> None:
     )
     with pytest.raises(ValueError, match="expected one"):
         bump_local_crate_version(lock, "1.1.0")
+
+
+# --- CLI wrappers: explicit UTF-8 read + LF-only write ----------------------
+#
+# These pin the regression the task fixes: reading a non-ASCII CHANGELOG.md
+# must not raise UnicodeDecodeError (default locale codec on Windows), and
+# writing must never introduce CRLF (Windows' `write_text()` default), which
+# would show as a whole-file diff under the repo's `eol=lf` normalization.
+
+
+def test_cmd_extract_notes_reads_non_ascii_utf8_and_writes_lf_only(
+    tmp_path: pathlib.Path,
+) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(
+        (
+            "## [Unreleased]\n\n### Added\n- a bugfix for “curly quotes” — café\n\n"
+            "## [1.0.0] - 2026-01-01\n"
+        ).encode("utf-8")
+    )
+    out = tmp_path / "release-notes.md"
+    args = argparse.Namespace(changelog=str(changelog), out=str(out))
+
+    _cmd_extract_notes(args)
+
+    written = out.read_bytes()
+    assert b"\r\n" not in written
+    assert "café".encode() in written
+
+
+def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.Path) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(
+        (
+            "## [Unreleased]\n\n### Added\n- a bugfix — café\n\n"
+            "[Unreleased]: https://example.com/compare/v0.9.0...HEAD\n"
+            "[0.9.0]: https://example.com/compare/v0.8.0...v0.9.0\n"
+        ).encode("utf-8")
+    )
+    args = argparse.Namespace(
+        changelog=str(changelog),
+        version="1.0.0",
+        tag="v1.0.0",
+        prev_tag="v0.9.0",
+        first_release="false",
+        repo="https://example.com",
+    )
+
+    _cmd_promote(args)
+
+    written = changelog.read_bytes()
+    assert b"\r\n" not in written
+    assert "café".encode() in written
+
+
+def test_cargo_lock_main_reads_utf8_and_writes_lf_only(tmp_path: pathlib.Path) -> None:
+    lock = tmp_path / "Cargo.lock"
+    lock.write_bytes(
+        (
+            '[[package]]\nname = "processkit-py"\nversion = "1.0.0"\n'
+            "# a comment with a non-ASCII character: café\n"
+        ).encode("utf-8")
+    )
+
+    cargo_lock_main(["--new-version", "1.1.0", "--lock-path", str(lock)])
+
+    written = lock.read_bytes()
+    assert b"\r\n" not in written
+    assert 'version = "1.1.0"'.encode() in written
+    assert "café".encode() in written

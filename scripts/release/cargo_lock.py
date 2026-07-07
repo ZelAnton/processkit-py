@@ -48,7 +48,10 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     path = pathlib.Path(args.lock_path)
-    path.write_text(bump_local_crate_version(path.read_text(), args.new_version, args.crate_name))
+    new_text = bump_local_crate_version(
+        path.read_text(encoding="utf-8"), args.new_version, args.crate_name
+    )
+    path.write_bytes(new_text.encode("utf-8"))
 
 
 if __name__ == "__main__":

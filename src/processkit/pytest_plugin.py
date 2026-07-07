@@ -185,6 +185,13 @@ def record_replay_runner(
         yield runner
         runner.save()
     else:
+        if not cassette.is_file():
+            pytest.fail(
+                f"record_replay_runner: no cassette found at {cassette}. "
+                "Record it first by running with one of: the --processkit-record "
+                f"CLI flag, the {_RECORD_ENV}=1 environment variable, or the "
+                f"{_RECORD_INI} ini option set to true."
+            )
         yield RecordReplayRunner.replay(str(cassette))
 
 

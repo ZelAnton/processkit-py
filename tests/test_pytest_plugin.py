@@ -179,6 +179,28 @@ def test_default_mode_is_replay_so_a_missing_cassette_errors(pytester: pytest.Py
     result.assert_outcomes(errors=1)
 
 
+def test_missing_cassette_error_names_path_and_record_switches(
+    pytester: pytest.Pytester,
+) -> None:
+    # The setup failure must be self-service: it names the exact expected
+    # cassette path and at least one way to switch into record mode.
+    pytester.makepyfile(
+        """
+        def test_needs_a_cassette(record_replay_runner):
+            pass
+        """
+    )
+    result = pytester.runpytest()
+    result.assert_outcomes(errors=1)
+    output = str(result.stdout)
+    assert "no cassette found at" in output
+    assert "test_needs_a_cassette" in output
+    assert ".json" in output
+    assert "--processkit-record" in output
+    assert "PROCESSKIT_RECORD" in output
+    assert "processkit_record" in output
+
+
 def test_cli_flag_selects_record_mode(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(_RECORDS_A_REAL_RUN)
     result = pytester.runpytest("--processkit-record")

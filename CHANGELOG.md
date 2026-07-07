@@ -11,7 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Changed
--
+- `CliClient(default_env_fn=...)` now validates that every value in the
+  mapping is callable **at construction time**, raising `TypeError` (naming
+  the offending key) immediately instead of silently accepting a non-callable
+  value and only discovering the mistake later — once per built command, as
+  an unraisable-hook warning plus an always-empty resolved env var. Valid
+  callables behave exactly as before.
 
 ### Fixed
 - `Args` (`from processkit import Args`) no longer rejects the single most

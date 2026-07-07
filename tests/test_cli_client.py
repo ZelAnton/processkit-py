@@ -229,7 +229,7 @@ def test_cli_client_default_env_fn_rejects_a_non_callable_value() -> None:
     # at construction time, not silently accepted and only surfaced later as
     # an always-empty env var via the unraisable-hook fallback.
     with pytest.raises(TypeError, match="X"):
-        CliClient(PY, default_env_fn={"X": "not callable"})
+        CliClient(PY, default_env_fn={"X": "not callable"})  # type: ignore[dict-item]  # deliberately wrong value to exercise the runtime rejection
 
     # A genuinely callable value still constructs without error.
     CliClient(PY, default_env_fn={"X": lambda: "ok"})

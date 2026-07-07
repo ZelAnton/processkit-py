@@ -67,8 +67,8 @@ from typing import Literal, TypeAlias
 
 from ._processkit import (
     DryRunRunner,
-    RecordReplayRunner,
     RecordingRunner,
+    RecordReplayRunner,
     Runner,
     ScriptedRunner,
 )

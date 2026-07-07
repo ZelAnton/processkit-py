@@ -161,8 +161,14 @@ filterwarnings = [
   # one narrow ignore, a dev environment with `bench` installed alongside
   # `dev` would turn that benign self-disabling notice into a hard
   # INTERNALERROR on every ordinary `pytest` run, via the blanket
-  # "error"-on-any-warning rule below.
-  "ignore::pytest_benchmark.logger.PytestBenchmarkWarning",
+  # "error"-on-any-warning rule below. Matched by message text (not by
+  # `category:module` — e.g. `pytest_benchmark.logger.PytestBenchmarkWarning`)
+  # so pytest never has to `importlib.import_module("pytest_benchmark.*")` to
+  # resolve the filter: in a `dev`-only environment (no `bench` group, e.g.
+  # the ordinary PR-gate `uv run pytest`) that import fails, and pytest turns
+  # the resulting `PytestConfigWarning: Failed to import filter module ...`
+  # into the exact `INTERNALERROR` this filter exists to prevent.
+  "ignore:Benchmarks are automatically disabled because xdist plugin is active",
 ]
 testpaths = ["tests"]
 # The repo root on sys.path so tests can `import scripts.release.*` (the

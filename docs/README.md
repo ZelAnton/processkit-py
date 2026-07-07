@@ -51,6 +51,7 @@ handy before you ship: it collects every per-OS caveat in one place.
 | [Timeouts & cancellation](timeouts-and-cancellation.md) | How a deadline is *captured* vs when it raises, interrupting a blocked sync call (Ctrl+C), and asyncio cancellation that reaps the whole tree |
 | [Supervision](supervision.md) | Keeping a child alive: restart policies, backoff & jitter, stop conditions, outcomes |
 | [Testing your code](testing.md) | The `ProcessRunner` seam — `ScriptedRunner` (incl. scripted streaming `start()`), record/replay cassettes, the `RecordingRunner` spy, the `CliClient` wrapper, and the autoloaded **pytest plugin** (ready-made fixtures + a no-real-spawn guard) |
+| [Command-line usage](cli.md) | `python -m processkit run -- ...`: containment and resource limits for a shell command with no Python to write, flags, exit codes |
 | [Async runtimes & event loops](event-loops.md) | Which event loops the asyncio-native surface runs on — asyncio and uvloop (yes), anyio-on-asyncio (yes), native trio / anyio-on-trio / curio (no) — and why |
 | [Platform support](platforms.md) | The containment mechanisms, every per-feature support matrix in one place, and the caveats worth knowing before you ship |
 

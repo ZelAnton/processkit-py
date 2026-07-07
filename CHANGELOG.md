@@ -8,7 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- `python -m processkit run -- <cmd> [args...]`: a CLI wrapper that runs a
+  command inside a kill-on-exit `ProcessGroup` with inherited stdio, for
+  shell scripts and CI steps with no Python to write. Supports `--timeout`,
+  `--timeout-grace`, `--max-memory`, `--max-processes`, `--cpu-quota`, and
+  `--output-limit`; the child's own exit code is passed through unchanged,
+  and a timeout / missing program / rejected resource limit is reported as a
+  one-line stderr message with a documented, GNU-`timeout`-style exit code
+  instead of a traceback. See `docs/cli.md`.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

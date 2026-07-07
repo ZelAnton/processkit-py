@@ -110,8 +110,9 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "Readiness helpers",
         "Asyncio helpers that wait for a condition — a matching output line, an "
-        "open TCP port, or any polled predicate — bounded by a deadline.",
-        ("wait_until", "wait_for_line", "wait_for_port", "WaitTimeout"),
+        "open TCP port, a filesystem path, or any polled predicate — bounded by "
+        "a deadline.",
+        ("wait_until", "wait_for_line", "wait_for_port", "wait_for_path", "WaitTimeout"),
     ),
     Section(
         "Observability",

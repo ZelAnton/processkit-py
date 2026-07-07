@@ -8,7 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- `wait_for_path(path, *, timeout, interval=0.05)` — a new async readiness
+  helper alongside `wait_until` / `wait_for_port` / `wait_for_line`, polling
+  until a filesystem path appears (a unix socket, a pid file, or any other
+  marker a daemon creates once ready). Same timeout/interval discipline as its
+  siblings (NaN/negative `timeout` and non-positive `interval` raise
+  `ValueError`; `timeout=0` still checks the path at least once) and raises
+  `WaitTimeout` (also a `TimeoutError`) on expiry, now carrying a `path` field
+  (`WaitTimeout.__init__` gained a `path: StrPath | None = None` parameter).
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

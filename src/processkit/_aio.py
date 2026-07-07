@@ -15,22 +15,31 @@ import asyncio
 import contextlib
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any, TypeVar, overload
 
 from ._processkit import ProcessError
+from ._types import StrPath
 
-__all__ = ["WaitTimeout", "wait_for_line", "wait_for_port", "wait_until"]
+__all__ = [
+    "WaitTimeout",
+    "wait_for_line",
+    "wait_for_path",
+    "wait_for_port",
+    "wait_until",
+]
 
 
 class WaitTimeout(ProcessError, TimeoutError):
-    """A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port`)
-    didn't succeed within its deadline.
+    """A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
+    `wait_for_path`) didn't succeed within its deadline.
 
     Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
     the same convention a run's own `.timeout()` uses (see `Timeout`). Always
     carries `timeout_seconds`; `wait_for_port` additionally sets `host` /
-    `port` (`None` for `wait_until` / `wait_for_line`, which have neither) and
-    chains the last connection attempt's exception as `__cause__`.
+    `port`, and `wait_for_path` sets `path` (all `None` for `wait_until` /
+    `wait_for_line`, which have none of these) and chains the last connection
+    attempt's exception as `__cause__` (`wait_for_port` only).
     """
 
     def __init__(
@@ -40,11 +49,13 @@ class WaitTimeout(ProcessError, TimeoutError):
         timeout_seconds: float,
         host: str | None = None,
         port: int | None = None,
+        path: StrPath | None = None,
     ) -> None:
         super().__init__(message)
         self.timeout_seconds = timeout_seconds
         self.host = host
         self.port = port
+        self.path = path
 
 
 def _check_timeout(timeout: float) -> None:
@@ -166,6 +177,49 @@ async def wait_until(
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise WaitTimeout(f"condition not met within {timeout}s", timeout_seconds=timeout)
+        await asyncio.sleep(min(interval, remaining))
+
+
+async def wait_for_path(
+    path: StrPath,
+    *,
+    timeout: float,
+    interval: float = 0.05,
+) -> None:
+    """Wait until ``path`` exists on the filesystem.
+
+    Polls every ``interval`` seconds until ``path.exists()`` returns true or
+    ``timeout`` seconds elapse, in which case `WaitTimeout` (also a
+    `TimeoutError`) is raised, carrying ``path``. A unix-socket, a pid file, or
+    any other marker file a daemon creates once ready are all typical uses —
+    for a TCP port or an arbitrary predicate, see `wait_for_port` /
+    `wait_until` instead (`wait_until(lambda: path.exists(), ...)` is exactly
+    what this helper does, named for readability and given the same
+    `WaitTimeout` discipline as its siblings).
+
+    ``timeout<=0`` contract (shared with `wait_until` / `wait_for_port` /
+    `wait_for_line`): at ``timeout=0``, ``path`` is still checked (at least
+    once) before any deadline check, so an already-existing path succeeds
+    instead of failing before it was ever checked. A **negative** ``timeout``
+    is rejected outright — raises `ValueError`, same as NaN — rather than
+    being treated as "expired" or silently accepted.
+    """
+    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
+        raise ValueError("interval must be a positive number of seconds")
+    _check_timeout(timeout)
+    target = Path(path)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        if target.exists():
+            return
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise WaitTimeout(
+                f"path {target} did not appear within {timeout}s",
+                timeout_seconds=timeout,
+                path=path,
+            )
         await asyncio.sleep(min(interval, remaining))
 
 

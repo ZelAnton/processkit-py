@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from types import TracebackType
-from typing import Literal, final
+from typing import Literal, TypeAlias, final
 
 # `StrPath` (program/path arg: `str` or `os.PathLike[str]`), `Args` (an argv-like
 # list/tuple of them — deliberately not `Sequence[StrPath]`, see `_types.py`),
@@ -551,17 +551,10 @@ class Supervisor:
         capture_max_lines: int | None = ...,
         capture_on_overflow: Literal["drop_oldest", "drop_newest", "error"] | None = ...,
         # Drives every incarnation through this runner instead of the real
-        # `Runner` — a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`/
-        # `DryRunRunner` for hermetic supervision tests. (Inline union, not a
-        # named alias: only three call sites in the whole surface use this
-        # shape.) Not a `ProcessGroup` — deliberately not an `extract_runner`
-        # target; see `runner.rs::extract_runner`'s doc comment.
-        runner: Runner
-        | ScriptedRunner
-        | RecordReplayRunner
-        | RecordingRunner
-        | DryRunRunner
-        | None = ...,
+        # `Runner` — any `RunnerLike` for hermetic supervision tests. Not a
+        # `ProcessGroup` — deliberately not an `extract_runner` target; see
+        # `runner.rs::extract_runner`'s doc comment.
+        runner: RunnerLike | None = ...,
     ) -> None: ...
     def run(self) -> SupervisionOutcome: ...
     async def arun(self) -> SupervisionOutcome: ...
@@ -630,12 +623,10 @@ class RecordingRunner(_RunnerVerbs):
 
     @staticmethod
     def replying(reply: Reply) -> RecordingRunner: ...
-    # Wrap `inner` — any of `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
-    # or another `RecordingRunner` — recording every call made through it.
+    # Wrap `inner` — any `RunnerLike` (including another `RecordingRunner`, or a
+    # `DryRunRunner`) — recording every call made through it.
     @staticmethod
-    def new(
-        inner: Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner,
-    ) -> RecordingRunner: ...
+    def new(inner: RunnerLike) -> RecordingRunner: ...
     def calls(self) -> list[Invocation]: ...
     def only_call(self) -> Invocation: ...
     def __repr__(self) -> str: ...
@@ -658,6 +649,17 @@ class DryRunRunner(_RunnerVerbs):
     def commands(self) -> list[str]: ...
     def only_command(self) -> str: ...
     def __repr__(self) -> str: ...
+
+# Every runner accepted in place of the real `Runner` (mirrors
+# `runner.rs::extract_runner`'s accepted set) — named once so the six `runner=`
+# call sites below (`Supervisor.__init__`, `CliClient.__init__`, `output_all`,
+# `aoutput_all`, `output_all_bytes`, `aoutput_all_bytes`) don't each repeat the
+# same five-way union. `RecordingRunner.new`'s `inner` is mandatory, so it uses
+# this alias directly; the six `runner=` keywords are all optional and use
+# `RunnerLike | None` instead.
+RunnerLike: TypeAlias = (
+    Runner | ScriptedRunner | RecordReplayRunner | RecordingRunner | DryRunRunner
+)
 
 @final
 class Invocation:
@@ -739,14 +741,8 @@ class CliClient:
         # unless it already has its own explicit token.
         default_cancel_on: CancellationToken | None = ...,
         # Drives every verb through this runner instead of the real `Runner` —
-        # a `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`/`DryRunRunner`
-        # for testable client code with no real spawns.
-        runner: Runner
-        | ScriptedRunner
-        | RecordReplayRunner
-        | RecordingRunner
-        | DryRunRunner
-        | None = ...,
+        # any `RunnerLike` for testable client code with no real spawns.
+        runner: RunnerLike | None = ...,
     ) -> None: ...
     def command(self, args: Args) -> Command:
         """A `Command` for `program <args>`, the client's defaults pre-applied
@@ -878,52 +874,31 @@ class Cancelled(ProcessError):
 # Batch execution: run many commands with bounded concurrency, in input order.
 # A command that failed (a spawn or I/O error) appears as a `ProcessError` in its
 # result slot (a non-zero exit is data on the `ProcessResult`). `runner=` drives
-# every command through the given runner instead of the real `Runner` — a
-# `ScriptedRunner`/`RecordingRunner`/`RecordReplayRunner`/`DryRunRunner` for a
-# hermetic batch test with no real spawns.
+# every command through the given runner (any `RunnerLike`) instead of the real
+# `Runner`, for a hermetic batch test with no real spawns.
 def output_all(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner
-    | ScriptedRunner
-    | RecordReplayRunner
-    | RecordingRunner
-    | DryRunRunner
-    | None = ...,
+    runner: RunnerLike | None = ...,
 ) -> list[ProcessResult | ProcessError]: ...
 async def aoutput_all(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner
-    | ScriptedRunner
-    | RecordReplayRunner
-    | RecordingRunner
-    | DryRunRunner
-    | None = ...,
+    runner: RunnerLike | None = ...,
 ) -> list[ProcessResult | ProcessError]: ...
 def output_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner
-    | ScriptedRunner
-    | RecordReplayRunner
-    | RecordingRunner
-    | DryRunRunner
-    | None = ...,
+    runner: RunnerLike | None = ...,
 ) -> list[BytesResult | ProcessError]: ...
 async def aoutput_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
-    runner: Runner
-    | ScriptedRunner
-    | RecordReplayRunner
-    | RecordingRunner
-    | DryRunRunner
-    | None = ...,
+    runner: RunnerLike | None = ...,
 ) -> list[BytesResult | ProcessError]: ...
 
 # Opt-in observability: install a process-global subscriber that forwards the

@@ -219,7 +219,7 @@ def test_cmd_extract_notes_reads_non_ascii_utf8_and_writes_lf_only(
         (
             "## [Unreleased]\n\n### Added\n- a bugfix for “curly quotes” — café\n\n"
             "## [1.0.0] - 2026-01-01\n"
-        ).encode("utf-8")
+        ).encode()
     )
     out = tmp_path / "release-notes.md"
     args = argparse.Namespace(changelog=str(changelog), out=str(out))
@@ -238,7 +238,7 @@ def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.P
             "## [Unreleased]\n\n### Added\n- a bugfix — café\n\n"
             "[Unreleased]: https://example.com/compare/v0.9.0...HEAD\n"
             "[0.9.0]: https://example.com/compare/v0.8.0...v0.9.0\n"
-        ).encode("utf-8")
+        ).encode()
     )
     args = argparse.Namespace(
         changelog=str(changelog),
@@ -262,12 +262,12 @@ def test_cargo_lock_main_reads_utf8_and_writes_lf_only(tmp_path: pathlib.Path) -
         (
             '[[package]]\nname = "processkit-py"\nversion = "1.0.0"\n'
             "# a comment with a non-ASCII character: café\n"
-        ).encode("utf-8")
+        ).encode()
     )
 
     cargo_lock_main(["--new-version", "1.1.0", "--lock-path", str(lock)])
 
     written = lock.read_bytes()
     assert b"\r\n" not in written
-    assert 'version = "1.1.0"'.encode() in written
+    assert b'version = "1.1.0"' in written
     assert "café".encode() in written

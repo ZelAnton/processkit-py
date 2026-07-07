@@ -128,7 +128,14 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
     print(f"[Unreleased] is empty; generating from git log since {args.prev_tag}...")
     try:
         result = subprocess.run(
-            ["git-cliff", "--config", args.cliff_config, "--strip", "all", f"{args.prev_tag}..HEAD"],
+            [
+                "git-cliff",
+                "--config",
+                args.cliff_config,
+                "--strip",
+                "all",
+                f"{args.prev_tag}..HEAD",
+            ],
             check=True,
             capture_output=True,
             text=True,

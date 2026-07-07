@@ -276,9 +276,11 @@ def test_cmd_autofill_surfaces_git_cliff_stderr_on_failure(
         stderr="error: invalid config file at cliffconfig.toml",
     )
 
-    with mock.patch("scripts.release.changelog.subprocess.run", side_effect=err):
-        with pytest.raises(SystemExit):
-            _cmd_autofill(args)
+    with (
+        mock.patch("scripts.release.changelog.subprocess.run", side_effect=err),
+        pytest.raises(SystemExit),
+    ):
+        _cmd_autofill(args)
 
     captured = capsys.readouterr()
     assert "invalid config file at cliffconfig.toml" in captured.err
@@ -297,9 +299,11 @@ def test_cmd_autofill_reports_empty_stderr_explicitly(
     )
     err = subprocess.CalledProcessError(returncode=1, cmd=["git-cliff"], output="", stderr="")
 
-    with mock.patch("scripts.release.changelog.subprocess.run", side_effect=err):
-        with pytest.raises(SystemExit):
-            _cmd_autofill(args)
+    with (
+        mock.patch("scripts.release.changelog.subprocess.run", side_effect=err),
+        pytest.raises(SystemExit),
+    ):
+        _cmd_autofill(args)
 
     captured = capsys.readouterr()
     assert "stderr is empty" in captured.err

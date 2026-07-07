@@ -84,13 +84,15 @@ Run many commands with bounded concurrency, returning each result — or a `Proc
 
 ## Readiness helpers
 
-Asyncio helpers that wait for a condition — a matching output line, an open TCP port, or any polled predicate — bounded by a deadline.
+Asyncio helpers that wait for a condition — a matching output line, an open TCP port, a filesystem path, or any polled predicate — bounded by a deadline.
 
 ::: processkit.wait_until
 
 ::: processkit.wait_for_line
 
 ::: processkit.wait_for_port
+
+::: processkit.wait_for_path
 
 ::: processkit.WaitTimeout
 

@@ -49,6 +49,7 @@ nav:
   - Timeouts & cancellation: timeouts-and-cancellation.md
   - Supervision: supervision.md
   - Testing your code: testing.md
+  - Command-line usage: cli.md
   - Async runtimes & event loops: event-loops.md
   - Platform support: platforms.md
   - API reference: api-reference.md

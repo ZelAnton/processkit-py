@@ -260,16 +260,39 @@ task.cancel()                        # the process tree is reaped; CancelledErro
 ## Wait for a server to be ready
 
 ```python
-from processkit import Command, ProcessGroup, wait_until, wait_for_port, wait_for_line
+from processkit import Command, ProcessGroup, wait_until, wait_for_path, wait_for_port, wait_for_line
 
 async with ProcessGroup() as group:
     proc = await group.astart(Command("my-server"))
     await wait_for_port("127.0.0.1", 8080, timeout=10)        # poll the port
     # or wait for a log line (a plain string is a substring-match shorthand):
     # await wait_for_line(proc.stdout_lines(), "listening", timeout=10)
+    # or wait for a unix socket / pid file to appear:
+    # await wait_for_path("/run/my-server.sock", timeout=10)
     # or poll any (sync or async) condition:
     # await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 ```
+
+## Wait for a unix socket or pid file to appear
+
+Some daemons (Docker, PostgreSQL, many others) announce readiness by creating
+a file — a unix-domain socket or a pid file — rather than accepting a TCP
+connection or logging a line:
+
+```python
+from pathlib import Path
+from processkit import Command, ProcessGroup, wait_for_path
+
+socket_path = Path("/run/my-daemon.sock")
+
+async with ProcessGroup() as group:
+    await group.astart(Command("my-daemon", ["--socket", str(socket_path)]))
+    await wait_for_path(socket_path, timeout=10, interval=0.05)
+    # socket_path now exists — connect to it
+```
+
+A `WaitTimeout` (also a `TimeoutError`) is raised if the path never appears
+within `timeout` seconds — it carries `.path` for diagnostics.
 
 ## Build a shell-free pipeline
 
@@ -429,8 +452,9 @@ the stdlib raises for the same condition, so familiar `except` clauses work:
 `Timeout` is also a `TimeoutError` (as `asyncio.TimeoutError` is),
 `ProcessNotFound` is also a `FileNotFoundError` (as `subprocess` raises), and
 `PermissionDenied` is also a `PermissionError`. The async readiness helpers
-(`wait_for_port` / `wait_for_line`) raise builtin `TimeoutError`, so
-`except TimeoutError` catches both run and readiness timeouts.
+(`wait_for_port` / `wait_for_line` / `wait_for_path` / `wait_until`) raise
+builtin `TimeoutError`, so `except TimeoutError` catches both run and
+readiness timeouts.
 
 ## Test code without spawning processes
 

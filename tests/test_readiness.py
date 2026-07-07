@@ -1,6 +1,7 @@
 """Readiness probes: `wait_until` (predicate polling), `wait_for_port` (TCP
-accept), and `wait_for_line` (match a streamed line). Includes the probe-socket
-cleanup wiring that a cancelled/refused `wait_for_port` must run.
+accept), `wait_for_line` (match a streamed line), and `wait_for_path`
+(filesystem path appears). Includes the probe-socket cleanup wiring that a
+cancelled/refused `wait_for_port` must run.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import contextlib
 import inspect
 import sys
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +21,7 @@ from processkit import (
     ProcessGroup,
     WaitTimeout,
     wait_for_line,
+    wait_for_path,
     wait_for_port,
     wait_until,
 )
@@ -90,9 +93,9 @@ def test_wait_until_returns_immediately_when_already_true() -> None:
 
 
 def test_readiness_timeout_is_keyword_only() -> None:
-    # `timeout` is keyword-only across ALL three readiness helpers — pin each
+    # `timeout` is keyword-only across ALL four readiness helpers — pin each
     # signature so dropping the `*` on any of them fails.
-    for fn in (wait_until, wait_for_port, wait_for_line):
+    for fn in (wait_until, wait_for_port, wait_for_line, wait_for_path):
         kind = inspect.signature(fn).parameters["timeout"].kind
         assert kind is inspect.Parameter.KEYWORD_ONLY, f"{fn.__name__}.timeout is {kind}"
 
@@ -624,3 +627,100 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
     with refused_port() as port:  # nothing listening -> the OSError path runs the cleanup
         asyncio.run(scenario(port))
     assert called, "wait_for_port should route cleanup through _close_pending_connection"
+
+
+# --- wait_for_path (filesystem path appears) ---------------------------------
+
+
+def test_wait_for_path_succeeds_when_path_appears(tmp_path: Path) -> None:
+    target = tmp_path / "ready.sock"
+
+    async def scenario() -> None:
+        async def create_soon() -> None:
+            await asyncio.sleep(0.1)
+            target.touch()
+
+        creator = asyncio.ensure_future(create_soon())
+        try:
+            await wait_for_path(target, timeout=5.0, interval=0.01)
+        finally:
+            await creator
+
+    asyncio.run(scenario())
+    assert target.exists()
+
+
+def test_wait_for_path_times_out_when_path_never_appears(tmp_path: Path) -> None:
+    missing = tmp_path / "never.sock"
+
+    async def scenario() -> None:
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_for_path(missing, timeout=0.2, interval=0.01)
+        assert excinfo.value.timeout_seconds == 0.2
+        assert excinfo.value.path == missing
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_path_is_also_a_timeout_error(tmp_path: Path) -> None:
+    missing = tmp_path / "never.sock"
+
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError):
+            await wait_for_path(missing, timeout=0.2, interval=0.01)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_path_ready_at_zero_timeout(tmp_path: Path) -> None:
+    # Symmetry with wait_until/wait_for_port/wait_for_line: an already-existing
+    # path must still succeed at timeout=0 (at least one check always happens),
+    # not fail before it was ever checked.
+    existing = tmp_path / "already-there"
+    existing.touch()
+
+    async def scenario() -> None:
+        await wait_for_path(existing, timeout=0.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_path_rejects_nan_timeout(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for_path(tmp_path / "x", timeout=float("nan"))
+        # A NaN `interval` fails the shared `interval > 0` guard (every NaN
+        # comparison is False), the same as a non-positive interval.
+        with pytest.raises(ValueError, match="positive"):
+            await wait_for_path(tmp_path / "x", timeout=1.0, interval=float("nan"))
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_path_rejects_negative_timeout(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="negative"):
+            await wait_for_path(tmp_path / "x", timeout=-1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_path_rejects_nonpositive_interval(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError):
+            await wait_for_path(tmp_path / "x", timeout=1.0, interval=0)
+        with pytest.raises(ValueError):
+            await wait_for_path(tmp_path / "x", timeout=1.0, interval=-1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_path_accepts_str_and_pathlike(tmp_path: Path) -> None:
+    existing = tmp_path / "already-there"
+    existing.touch()
+
+    async def scenario() -> None:
+        await wait_for_path(str(existing), timeout=0.0)  # plain str
+        await wait_for_path(existing, timeout=0.0)  # os.PathLike[str]
+
+    asyncio.run(scenario())

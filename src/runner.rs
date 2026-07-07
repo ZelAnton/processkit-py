@@ -238,7 +238,7 @@ pub(crate) fn extract_runner(
 /// impl — `$unique` captures the constructor / builders / `__repr__` as a token
 /// tree (attributes like `#[new]` / `#[staticmethod]` included) and is emitted in
 /// the same block as the shared verbs. This is the single source of truth for the
-/// run-verb surface across all four runners.
+/// run-verb surface across all five runners.
 macro_rules! runner_pymethods {
     ($ty:ty { $($unique:tt)* }) => {
         #[pymethods]
@@ -682,7 +682,7 @@ impl PyInvocation {
 #[pyclass(name = "RecordingRunner", module = "processkit.testing")]
 pub(crate) struct PyRecordingRunner {
     // Type-erased (not the crate's own `RecordingRunner<ScriptedRunner>`
-    // specialization), so `new()` can wrap ANY of the four runner pyclasses —
+    // specialization), so `new()` can wrap ANY of the five runner pyclasses —
     // not just a fresh `ScriptedRunner` the way `replying()` builds one.
     inner: Arc<PkRecordingRunner<Arc<dyn ProcessRunner + Send + Sync>>>,
 }
@@ -699,10 +699,11 @@ runner_pymethods!(PyRecordingRunner {
     }
 
     /// Wrap `inner` — any of `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
-    /// or another `RecordingRunner` — recording every call made through it.
-    /// The general form behind `replying()`, for combining recording with a
-    /// double you've already built (e.g. a `RecordReplayRunner` cassette) or
-    /// with the real `Runner`.
+    /// `DryRunRunner`, or another `RecordingRunner` — recording every call made
+    /// through it. The general form behind `replying()`, for combining
+    /// recording with a double you've already built (e.g. a
+    /// `RecordReplayRunner` cassette or a `DryRunRunner`) or with the real
+    /// `Runner`.
     #[staticmethod]
     fn new(inner: &Bound<'_, PyAny>) -> PyResult<Self> {
         let inner = extract_runner(inner)?;

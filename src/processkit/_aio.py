@@ -48,8 +48,15 @@ class WaitTimeout(ProcessError, TimeoutError):
 
 
 def _check_timeout(timeout: float) -> None:
+    """Shared ``timeout`` validation for `wait_until` / `wait_for_port` /
+    `wait_for_line`: NaN and negative values are both rejected outright rather
+    than silently accepted. ``timeout == 0`` is valid and means "evaluate
+    exactly once, right now" — see each helper's docstring.
+    """
     if math.isnan(timeout):
         raise ValueError("timeout must not be NaN")
+    if timeout < 0:
+        raise ValueError("timeout must not be negative")
 
 
 async def _quiesce(task: asyncio.Task[Any]) -> None:
@@ -98,7 +105,13 @@ async def wait_until(
     I/O. If ``predicate``'s awaitable is already a `asyncio.Future`/`asyncio.Task`
     you own, note it is never cancelled by this helper on timeout — only
     abandoned, so cancel or await it yourself afterwards if that matters.
-    Raises `ValueError` if ``timeout`` is NaN.
+
+    ``timeout<=0`` contract (shared with `wait_for_port` / `wait_for_line`):
+    at ``timeout=0``, ``predicate`` is still evaluated (at least once) before
+    any deadline check, so an already-true predicate succeeds instead of
+    failing before it was ever checked. A **negative** ``timeout`` is rejected
+    outright — raises `ValueError`, same as NaN — rather than being treated as
+    "expired" or silently accepted.
     """
     if not interval > 0:  # rejects NaN too (every NaN comparison is False)
         raise ValueError("interval must be a positive number of seconds")
@@ -188,8 +201,15 @@ async def wait_for_port(
     ``timeout`` seconds elapse, in which case `WaitTimeout` (also a
     `TimeoutError`) is raised — carrying ``host``/``port`` — chained from the
     last connection attempt's exception (e.g. a DNS failure survives as the
-    cause instead of being silently dropped). Raises `ValueError` if
-    ``timeout`` is NaN.
+    cause instead of being silently dropped).
+
+    ``timeout<=0`` contract (shared with `wait_until` / `wait_for_line`): at
+    ``timeout=0``, a connection attempt is still made (at least one), so an
+    already-ready port succeeds instead of failing before a connection was
+    ever tried — this first attempt is not cut short by the already-expired
+    deadline. A **negative** ``timeout`` is rejected outright — raises
+    `ValueError`, same as NaN — rather than being treated as "expired" or
+    silently accepted.
     """
     if not interval > 0:  # rejects NaN too (every NaN comparison is False)
         raise ValueError("interval must be a positive number of seconds")
@@ -197,21 +217,30 @@ async def wait_for_port(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     last_exc: BaseException | None = None
+    first_attempt = True
     while True:
         remaining = deadline - loop.time()
-        if remaining <= 0:
+        if not first_attempt and remaining <= 0:
             raise WaitTimeout(
                 f"port {host}:{port} not ready within {timeout}s",
                 timeout_seconds=timeout,
                 host=host,
                 port=port,
             ) from last_exc
+        first_attempt = False
         # Own the connect as a task: if a timeout or a cancellation races a
         # successful connect, `asyncio.wait_for` can drop the established transport
         # on the floor (a known leak). Owning the task lets us close it instead.
         conn = asyncio.ensure_future(asyncio.open_connection(host, port))
         try:
-            _reader, writer = await asyncio.wait_for(conn, timeout=remaining)
+            # `None` (no cap) only on this — the first — attempt, and only when
+            # the deadline has already passed (``remaining <= 0``, e.g. at
+            # ``timeout=0``): `asyncio.wait_for(fut, timeout<=0)` cancels ``fut``
+            # before it ever runs, which would reject an already-ready port
+            # before a connection was ever attempted. Every later attempt is
+            # still bounded by ``remaining``.
+            connect_timeout = None if remaining <= 0 else remaining
+            _reader, writer = await asyncio.wait_for(conn, timeout=connect_timeout)
         except (OSError, asyncio.TimeoutError) as exc:
             _close_pending_connection(conn)
             last_exc = exc
@@ -268,7 +297,14 @@ async def wait_for_line(
     `WaitTimeout`, exactly how far the iterator advanced past the last
     inspected item is unspecified (cancellation of the internal scan races the
     iterator's own advancement), so don't rely on its position after a
-    timeout. Raises `ValueError` if ``timeout`` is NaN.
+    timeout.
+
+    ``timeout<=0`` contract (shared with `wait_until` / `wait_for_port`): at
+    ``timeout=0``, the iterator is still scanned (at least one tick), so an
+    item that already matches (already sitting in the iterator) succeeds
+    instead of failing before it was ever inspected. A **negative** ``timeout``
+    is rejected outright — raises `ValueError`, same as NaN — rather than being
+    treated as "expired" or silently accepted.
     """
     _check_timeout(timeout)
     match: Callable[[Any], bool]

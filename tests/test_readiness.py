@@ -276,6 +276,16 @@ def test_wait_until_rejects_nan_timeout() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_until_rejects_negative_timeout() -> None:
+    # Unified `timeout<=0` contract: a negative timeout is rejected outright
+    # (like NaN), the same across all three readiness helpers.
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="negative"):
+            await wait_until(lambda: True, timeout=-1.0)
+
+    asyncio.run(scenario())
+
+
 def test_wait_until_outer_cancel_wins_over_completed_predicate_exception() -> None:
     # Race: if the predicate task finishes with its OWN exception at the same instant
     # the caller cancels wait_until, the cancellation must win (CancelledError) — not the
@@ -325,6 +335,29 @@ def test_wait_for_port_rejects_nan_timeout() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_for_port_rejects_negative_timeout() -> None:
+    # Unified `timeout<=0` contract: a negative timeout is rejected outright
+    # (like NaN), the same across all three readiness helpers.
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="negative"):
+            await wait_for_port("127.0.0.1", 1, timeout=-1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_port_ready_at_zero_timeout() -> None:
+    # Symmetry with wait_until/wait_for_line: an already-ready port must still
+    # succeed at timeout=0 (at least one connection attempt always happens),
+    # not fail before a connection was ever attempted.
+    async def scenario() -> None:
+        port = free_port()
+        server = await asyncio.start_server(lambda _r, w: w.close(), "127.0.0.1", port)
+        async with server:
+            await wait_for_port("127.0.0.1", port, timeout=0.0)
+
+    asyncio.run(scenario())
+
+
 def test_wait_for_port_chains_last_connection_error() -> None:
     # A typo'd/unresolvable hostname must not have its evidence (the DNS
     # failure) silently discarded — it survives as the TimeoutError's cause.
@@ -367,6 +400,20 @@ def test_wait_for_line_rejects_nan_timeout() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="NaN"):
             await wait_for_line(empty_lines(), lambda _line: True, timeout=float("nan"))
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_line_rejects_negative_timeout() -> None:
+    # Unified `timeout<=0` contract: a negative timeout is rejected outright
+    # (like NaN), the same across all three readiness helpers.
+    async def empty_lines() -> AsyncIterator[str]:
+        return
+        yield  # pragma: no cover -- never reached; makes this an async generator
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="negative"):
+            await wait_for_line(empty_lines(), lambda _line: True, timeout=-1.0)
 
     asyncio.run(scenario())
 

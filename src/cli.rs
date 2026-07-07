@@ -105,6 +105,7 @@ impl PyCliClient {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         program: PathBuf,
         default_timeout: Option<f64>,
         default_env: Option<HashMap<String, String>>,
@@ -119,6 +120,28 @@ impl PyCliClient {
         default_cancel_on: Option<&PyCancellationToken>,
         runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        // Reject a non-callable `default_env_fn` value up front, before any
+        // other constructor side effect (runner creation, `PkCliClient`
+        // construction): a typo'd `default_env_fn={"X": "not a callback"}`
+        // would otherwise only surface as a silently-empty env var, once per
+        // command build, via `make_env_resolver`'s unraisable-hook fallback
+        // (that fallback stays for genuine runtime failures of a valid
+        // callable — this is strictly an earlier, louder rejection of an
+        // invalid one).
+        if let Some(resolvers) = &default_env_fn {
+            for (key, callback) in resolvers {
+                let bound = callback.bind(py);
+                if !bound.is_callable() {
+                    let described = bound
+                        .repr()
+                        .map(|repr| repr.to_string())
+                        .unwrap_or_else(|_| "<unrepr-able value>".to_string());
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "default_env_fn[{key:?}] is not callable: {described}"
+                    )));
+                }
+            }
+        }
         // `CliClient::new` only exists for `CliClient<JobRunner>`; since this
         // binding's field is always the type-erased `Arc<dyn ProcessRunner +
         // Send + Sync>`, build the runner value first (real by default) and

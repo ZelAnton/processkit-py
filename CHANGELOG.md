@@ -8,7 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- A `benchmarks/` suite (`pytest-benchmark`, new `bench` dependency-group)
+  measuring spawn+capture overhead against `subprocess`/`asyncio.subprocess`,
+  `ProcessGroup` start/exit, line-streaming throughput, and `output_all`
+  concurrency scaling — dev tooling only, no public API change. Runs nightly
+  via the `bench` job in `nightly-hardening.yml`, never in the PR gate; see
+  `benchmarks/README.md`.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

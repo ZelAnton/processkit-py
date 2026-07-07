@@ -69,3 +69,59 @@ jobs:
             uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
             echo "::endgroup::"
           done
+
+  bench:
+    # `benchmarks/` (pytest-benchmark: overhead vs subprocess/asyncio.subprocess,
+    # ProcessGroup start/exit, line-streaming throughput, output_all at varying
+    # concurrency — see benchmarks/README.md). One (ubuntu, default interpreter)
+    # runner, not the full stress matrix: this is a performance trend to watch
+    # across nights, not a correctness check that needs every OS/interpreter
+    # combination, and a single consistent runner keeps night-to-night numbers
+    # comparable (a matrix would split the trend across differently-noisy
+    # hosts). Never gates a PR — same `schedule`/`workflow_dispatch`-only
+    # triggers as `stress` above.
+    name: bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --group bench
+      # `-p no:xdist -o addopts=""` drops the repo's default `-n auto`:
+      # pytest-benchmark needs to run un-distributed (single worker) to
+      # produce real timings — under xdist it silently skips measuring
+      # instead (see benchmarks/README.md).
+      - name: Run benchmarks
+        run: >
+          uv run pytest benchmarks/ --benchmark-only -p no:xdist -o addopts=""
+          --benchmark-json=benchmark.json
+      - name: Publish results to the job summary
+        shell: bash
+        run: |
+          uv run python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+
+          with open("benchmark.json") as f:
+              data = json.load(f)
+
+          print("# Benchmark results\n")
+          print("| Benchmark | Mean | Min | Max | Rounds |")
+          print("| --- | --- | --- | --- | --- |")
+          for bench in data["benchmarks"]:
+              stats = bench["stats"]
+
+              def fmt(seconds: float) -> str:
+                  return f"{seconds * 1000:.3f} ms"
+
+              print(
+                  f"| `{bench['fullname'].removeprefix('benchmarks/')}` "
+                  f"| {fmt(stats['mean'])} | {fmt(stats['min'])} | {fmt(stats['max'])} "
+                  f"| {stats['rounds']} |"
+              )
+          EOF

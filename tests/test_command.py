@@ -717,12 +717,14 @@ def test_timeout_grace_delivers_signal_before_kill(tmp_path: pathlib.Path) -> No
 def test_arg_args_accept_path_like() -> None:
     p = pathlib.Path("sub/file")
     # arg()/args() and the constructor accept os.PathLike without a manual str().
-    cmd = Command("tool").arg(p).args([p, "literal"])
+    # A mixed str/Path argv is spelled as a tuple, not a list, since `Args`
+    # names concrete homogeneous list element types (see `_types.py`).
+    cmd = Command("tool").arg(p).args((p, "literal"))
     assert isinstance(cmd, Command)
-    Command("tool", [p, "x"])
+    Command("tool", (p, "x"))
     # The path value is actually passed through to the child as an argument.
     echo = "import sys; print(sys.argv[1])"
-    echoed = Command(PY, ["-c", echo, pathlib.Path("xyz") / "abc"]).output()
+    echoed = Command(PY, ("-c", echo, pathlib.Path("xyz") / "abc")).output()
     assert "abc" in echoed.stdout
 
 
@@ -805,7 +807,7 @@ def test_ensure_success_returns_self_on_success() -> None:
     result = Command(PY, ["-c", "print('ok')"]).output()
     same = result.ensure_success()
     assert same.stdout.strip() == "ok"
-    assert same is not None
+    assert same is result
 
 
 def test_ensure_success_raises_on_failure() -> None:
@@ -813,6 +815,13 @@ def test_ensure_success_raises_on_failure() -> None:
     with pytest.raises(NonZeroExit) as excinfo:
         result.ensure_success()
     assert excinfo.value.code == 3
+
+
+def test_bytes_ensure_success_returns_self_on_success() -> None:
+    result = Command(PY, ["-c", "print('ok')"]).output_bytes()
+    same = result.ensure_success()
+    assert bytes(same.stdout).strip() == b"ok"
+    assert same is result
 
 
 def test_bytes_ensure_success_raises_on_failure() -> None:

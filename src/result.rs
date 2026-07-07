@@ -165,20 +165,21 @@ impl PyProcessResult {
     /// would if this result's exit isn't in `success_codes` — for turning an
     /// already-captured `output()`/`output_bytes()` result into an error after
     /// the fact (some code paths need the data either way, others should fail
-    /// loud only sometimes). Returns `self` unchanged on success, so it
-    /// composes into a call chain: `cmd.output().ensure_success().stdout`.
-    fn ensure_success(&self, py: Python<'_>) -> PyResult<Py<Self>> {
-        let _ = self
-            .inner
-            .clone()
-            .ensure_success()
-            .map_err(crate::errors::map_err)?;
-        Py::new(
-            py,
-            Self {
-                inner: self.inner.clone(),
-            },
-        )
+    /// loud only sometimes). Returns `self` unchanged on success (the very
+    /// same object, not a copy), so it composes into a call chain:
+    /// `cmd.output().ensure_success().stdout`.
+    fn ensure_success(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        if slf.borrow(py).inner.is_success() {
+            return Ok(slf);
+        }
+        // Only the (rare) failure path needs an owned `inner` — the crate's
+        // `ensure_success()` consumes `self` to build the error, and this
+        // clone is never reached on success.
+        let inner = slf.borrow(py).inner.clone();
+        match inner.ensure_success() {
+            Ok(_) => Ok(slf),
+            Err(err) => Err(crate::errors::map_err(err)),
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -260,19 +261,19 @@ impl PyBytesResult {
 
     /// Raise the same exception a checking verb would if this result's exit
     /// isn't in `success_codes` — see `ProcessResult.ensure_success()`. Returns
-    /// `self` unchanged on success.
-    fn ensure_success(&self, py: Python<'_>) -> PyResult<Py<Self>> {
-        let _ = self
-            .inner
-            .clone()
-            .ensure_success()
-            .map_err(crate::errors::map_err)?;
-        Py::new(
-            py,
-            Self {
-                inner: self.inner.clone(),
-            },
-        )
+    /// `self` unchanged on success (the very same object, not a copy).
+    fn ensure_success(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        if slf.borrow(py).inner.is_success() {
+            return Ok(slf);
+        }
+        // Only the (rare) failure path needs an owned `inner` — the crate's
+        // `ensure_success()` consumes `self` to build the error, and this
+        // clone is never reached on success.
+        let inner = slf.borrow(py).inner.clone();
+        match inner.ensure_success() {
+            Ok(_) => Ok(slf),
+            Err(err) => Err(crate::errors::map_err(err)),
+        }
     }
 
     fn __repr__(&self) -> String {

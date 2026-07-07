@@ -57,9 +57,13 @@ def main(argv: list[str]) -> int:
         if testcase is None:
             problems.append(f"{node_id} did not run at all (not collected?)")
             continue
-        # A passing <testcase> has no child elements at all; <skipped>,
-        # <failure>, and <error> are all outcomes we must reject here.
-        outcome_tags = [child.tag for child in testcase]
+        # A passing <testcase> has no <skipped>/<failure>/<error> child;
+        # other children such as <system-out>, <system-err>, or <properties>
+        # (from -o junit_logging=... or record_property) are not outcomes
+        # and must not be mistaken for a non-PASS result.
+        outcome_tags = [
+            child.tag for child in testcase if child.tag in ("skipped", "failure", "error")
+        ]
         if outcome_tags:
             problems.append(
                 f"{node_id} did not PASS (found {outcome_tags!r} -- likely skipped or "

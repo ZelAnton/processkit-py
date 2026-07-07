@@ -184,6 +184,14 @@ if TYPE_CHECKING:
         assert_type(rp.avg_cpu_cores, float | None)
         assert_type(rp.samples, int)
 
+    def _finished_property_types(fin: Finished) -> None:
+        assert_type(fin.outcome, Outcome)
+        assert_type(fin.stderr, str)
+        assert_type(fin.code, int | None)
+        assert_type(fin.exited_zero, bool)
+        assert_type(fin.timed_out, bool)
+        assert_type(fin.signal, int | None)
+
     def _exception_attr_types(
         nz: NonZeroExit,
         to: Timeout,

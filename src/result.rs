@@ -437,6 +437,16 @@ impl PyFinished {
         self.outcome.code() == Some(0)
     }
 
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.outcome.timed_out()
+    }
+
+    #[getter]
+    fn signal(&self) -> Option<i32> {
+        self.outcome.signal()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Finished(code={:?}, timed_out={})",

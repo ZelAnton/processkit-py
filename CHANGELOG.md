@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a timeout / missing program / rejected resource limit is reported as a
   one-line stderr message with a documented, GNU-`timeout`-style exit code
   instead of a traceback. See `docs/cli.md`.
+- `Finished` gains `timed_out` and `signal` properties that delegate to the
+  nested `outcome`, so it now mirrors `Outcome` fully — matching `code` and
+  `exited_zero`, which were already exposed directly — instead of requiring
+  `finished.outcome.timed_out` / `finished.outcome.signal`.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

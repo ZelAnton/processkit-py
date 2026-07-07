@@ -188,8 +188,10 @@ def test_cli_client_args_accept_path_like_elements() -> None:
     # (Vec<String>), unlike Command's Vec<PathBuf>.
     p = pathlib.Path("-c")
     client = CliClient(PY)
-    assert client.run([p, "print('path-like arg')"]) == "path-like arg"
-    cmd = client.command([p, "print('via command()')"])
+    # A mixed str/Path argv is spelled as a tuple, not a list, since `Args`
+    # names concrete homogeneous list element types (see `_types.py`).
+    assert client.run((p, "print('path-like arg')")) == "path-like arg"
+    cmd = client.command((p, "print('via command()')"))
     assert client.run(cmd) == "via command()"
 
 

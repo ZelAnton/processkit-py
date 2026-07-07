@@ -18,9 +18,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import os
+    import pathlib
     from typing import assert_type
 
     from processkit import (
+        Args,
         BytesResult,
         CliClient,
         Command,
@@ -60,6 +63,58 @@ if TYPE_CHECKING:
     # The exported aliases are usable as annotations (importable from processkit).
     def _public_aliases(program: StrPath, signal: SignalName) -> None:
         assert_type(Command(program).timeout_signal(signal), Command)
+
+    # `Args` itself is usable as an annotation on a caller's own wrapper
+    # (the module docstring's stated purpose for exporting it).
+    def _args_alias_usable_as_annotation(program: str, args: Args) -> None:
+        assert_type(Command(program, args), Command)
+        assert_type(Command(program).args(args), Command)
+
+    # `Args` accepts a variable annotated `list[str]` (the single most common
+    # real call site) passed straight through to both the `Command.__init__`
+    # and `.args()` sites — `list` is invariant, so this only works because
+    # `Args` includes `list[str]` itself rather than relying on
+    # `list[StrPath]` to cover it (see `_types.py`'s docstring).
+    def _args_alias_accepts_list_str(program: str, str_args: list[str]) -> None:
+        assert_type(Command(program, str_args), Command)
+        assert_type(Command(program).args(str_args), Command)
+
+    # Same, for a variable annotated `list[os.PathLike[str]]` — the other
+    # homogeneous list shape `Args` names explicitly rather than accepting
+    # only through `list[StrPath]`'s (non-)invariance.
+    def _args_alias_accepts_list_pathlike(
+        program: str, pathlike_args: list[os.PathLike[str]]
+    ) -> None:
+        assert_type(Command(program, pathlike_args), Command)
+        assert_type(Command(program).args(pathlike_args), Command)
+
+    # A `tuple[StrPath, ...]` — heterogeneous mixes of `str`/`os.PathLike[str]`
+    # allowed, unlike the homogeneous list variants — is still accepted.
+    def _args_alias_accepts_mixed_tuple(
+        program: str, tuple_args: tuple[str | pathlib.Path, ...]
+    ) -> None:
+        assert_type(Command(program, tuple_args), Command)
+        assert_type(Command(program).args(tuple_args), Command)
+
+    # A bare `str` must still *not* type-check as `Args` — `Args` is
+    # deliberately not `Sequence[StrPath]` (a `str` is structurally a
+    # `Sequence[str]`), so this must stay flagged by mypy; `warn_unused_ignores`
+    # (part of `strict = true`) turns "the ignore below is unnecessary" into a
+    # hard mypy failure, so this pin fails loudly if the invariant regresses.
+    def _args_alias_rejects_bare_string(program: str, bare: str) -> None:
+        Command(program, bare)  # type: ignore[arg-type]
+        Command(program).args(bare)  # type: ignore[arg-type]
+
+    # A heterogeneous `list[str | pathlib.Path]` variable (mixed element
+    # types, as opposed to a `tuple`) is still rejected — `Args` names
+    # concrete homogeneous list element types (`str`, `Path`,
+    # `os.PathLike[str]`) rather than the `StrPath` union itself, since a
+    # `list[StrPath]` parameter would (by invariance) reject the common
+    # `list[str]`/`list[Path]` cases this fix exists for.
+    def _args_alias_rejects_heterogeneous_list(
+        program: str, mixed_list: list[str | pathlib.Path]
+    ) -> None:
+        Command(program, mixed_list)  # type: ignore[arg-type]
 
     # tee-to-file builders return a Command (chainable) and take a StrPath sink
     # plus the keyword-only `append` flag.

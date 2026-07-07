@@ -717,12 +717,14 @@ def test_timeout_grace_delivers_signal_before_kill(tmp_path: pathlib.Path) -> No
 def test_arg_args_accept_path_like() -> None:
     p = pathlib.Path("sub/file")
     # arg()/args() and the constructor accept os.PathLike without a manual str().
-    cmd = Command("tool").arg(p).args([p, "literal"])
+    # A mixed str/Path argv is spelled as a tuple, not a list, since `Args`
+    # names concrete homogeneous list element types (see `_types.py`).
+    cmd = Command("tool").arg(p).args((p, "literal"))
     assert isinstance(cmd, Command)
-    Command("tool", [p, "x"])
+    Command("tool", (p, "x"))
     # The path value is actually passed through to the child as an argument.
     echo = "import sys; print(sys.argv[1])"
-    echoed = Command(PY, ["-c", echo, pathlib.Path("xyz") / "abc"]).output()
+    echoed = Command(PY, ("-c", echo, pathlib.Path("xyz") / "abc")).output()
     assert "abc" in echoed.stdout
 
 

@@ -126,12 +126,24 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
         return
 
     print(f"[Unreleased] is empty; generating from git log since {args.prev_tag}...")
-    result = subprocess.run(
-        ["git-cliff", "--config", args.cliff_config, "--strip", "all", f"{args.prev_tag}..HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git-cliff", "--config", args.cliff_config, "--strip", "all", f"{args.prev_tag}..HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as err:
+        stderr = (err.stderr or "").strip()
+        stdout = (err.stdout or "").strip()
+        message = (
+            f"git-cliff failed (exit code {err.returncode}). stderr:\n"
+            f"{stderr if stderr else '(stderr is empty)'}"
+        )
+        if stdout:
+            message += f"\nstdout:\n{stdout}"
+        _fail(message)
+        return  # unreachable (_fail raises); satisfies type-checkers
     generated = result.stdout.strip()
     if not generated:
         _fail(

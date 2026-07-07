@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import subprocess
+from unittest import mock
 
 import pytest
 from scripts.release.cargo_lock import bump_local_crate_version
 from scripts.release.cargo_lock import main as cargo_lock_main
 from scripts.release.changelog import (
+    _cmd_autofill,
     _cmd_extract_notes,
     _cmd_promote,
     extract_release_notes,
@@ -254,6 +257,52 @@ def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.P
     written = changelog.read_bytes()
     assert b"\r\n" not in written
     assert "café".encode() in written
+
+
+def test_cmd_autofill_surfaces_git_cliff_stderr_on_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n\n## [1.0.0] - 2026-01-01\n")
+    args = argparse.Namespace(
+        changelog=str(changelog),
+        cliff_config="cliffconfig.toml",
+        prev_tag="v0.9.0",
+    )
+    err = subprocess.CalledProcessError(
+        returncode=2,
+        cmd=["git-cliff"],
+        output="",
+        stderr="error: invalid config file at cliffconfig.toml",
+    )
+
+    with mock.patch("scripts.release.changelog.subprocess.run", side_effect=err):
+        with pytest.raises(SystemExit):
+            _cmd_autofill(args)
+
+    captured = capsys.readouterr()
+    assert "invalid config file at cliffconfig.toml" in captured.err
+    assert "exit code 2" in captured.err
+
+
+def test_cmd_autofill_reports_empty_stderr_explicitly(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n\n## [1.0.0] - 2026-01-01\n")
+    args = argparse.Namespace(
+        changelog=str(changelog),
+        cliff_config="cliffconfig.toml",
+        prev_tag="v0.9.0",
+    )
+    err = subprocess.CalledProcessError(returncode=1, cmd=["git-cliff"], output="", stderr="")
+
+    with mock.patch("scripts.release.changelog.subprocess.run", side_effect=err):
+        with pytest.raises(SystemExit):
+            _cmd_autofill(args)
+
+    captured = capsys.readouterr()
+    assert "stderr is empty" in captured.err
 
 
 def test_cargo_lock_main_reads_utf8_and_writes_lf_only(tmp_path: pathlib.Path) -> None:

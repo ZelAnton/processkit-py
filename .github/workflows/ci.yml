@@ -359,11 +359,12 @@ jobs:
         with:
           persist-credentials: false
       # Scan the dependency tree for security advisories, banned/duplicate
-      # crates, and licenses outside the permissive allow-list (deny.toml).
-      # Adapted from the sibling ProcessKit-rs repository's own cargo-deny gate.
+      # crates, licenses outside the permissive allow-list, and disallowed
+      # sources (deny.toml). Adapted from the sibling ProcessKit-rs
+      # repository's own cargo-deny gate.
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
         with:
-          command: check advisories bans licenses
+          command: check advisories bans licenses sources
 
   audit:
     name: pip-audit

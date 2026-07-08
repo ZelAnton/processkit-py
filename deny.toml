@@ -1,6 +1,7 @@
-# cargo-deny configuration. CI runs `cargo deny check advisories bans licenses`
-# (see .github/workflows/ci.yml, `rust-audit` job). Sources are not gated for
-# now. Kept in the PR gate (not nightly-hardening.yml) for the same reason
+# cargo-deny configuration. CI runs
+# `cargo deny check advisories bans licenses sources`
+# (see .github/workflows/ci.yml, `rust-audit` job). Kept in the PR gate (not
+# nightly-hardening.yml) for the same reason
 # pip-audit is: the crate is compiled into every wheel users install, so a
 # newly-disclosed RustSec advisory or license violation should block the next
 # merge, not wait for the nightly schedule. Adapted from the sibling
@@ -34,3 +35,10 @@ allow = [
 multiple-versions = "warn"
 # Wildcard version requirements hide breakage; flag them.
 wildcards = "deny"
+
+[sources]
+# Only allow dependencies from the official crates.io registry -- no git
+# dependencies or unknown/private registries sneaking into the tree that
+# gets compiled into every wheel.
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -234,7 +234,7 @@ jobs:
     needs: [prepare, build_dists]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the release commit + tag, create the Release, and deploy versioned docs
+      contents: write # push the release commit + tag, create the Release
       id-token: write # PyPI Trusted Publishing (OIDC); also enables the token fallback path
     # (Trusted-publishing best practice is a dedicated, minimal `id-token: write`
     # job. It is kept inline here because the pivot ordering — publish, THEN push the
@@ -383,85 +383,6 @@ jobs:
           echo "::error::Failed to create/update the GitHub Release after 3 attempts. The package is ALREADY on PyPI and the tag is ALREADY on main. Do NOT re-run this workflow (a re-run computes the NEXT version and orphans this release). Finish by hand: if the Release does not exist yet, 'gh release create $TAG --title $TAG --notes-file release-notes.md ./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS'; if it already exists, 'gh release edit $TAG --notes-file release-notes.md && gh release upload $TAG ./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS --clobber'."
           exit 1
 
-      # Publish this release's versioned docs (mike, see mkdocs.yml's `extra.
-      # version.provider: mike` and RELEASING.md) and advance the `latest`
-      # alias to it. Deliberately last, and best-effort (does not fail the
-      # job): by this point PyPI + the tag + the GitHub Release are already
-      # done, so a docs-only hiccup must never look like a failed release (and
-      # must never tempt a re-run of the whole workflow, which would compute
-      # the NEXT version). Deployed under MAJOR.MINOR — mike's own recommended
-      # scheme, excluding the patch number — so a patch release re-deploys
-      # into the SAME slot (mike overwrites that version's content and bumps
-      # its displayed title to the full patch version) while a minor/major
-      # release creates a new slot; `--update-aliases` moves `latest` here even
-      # if it previously pointed elsewhere. `--alias-type redirect`: docs.yml's
-      # `publish-pages` job republishes the `gh-pages` tree as a Pages
-      # *artifact* (actions/upload-pages-artifact), where mike's default
-      # symlink aliases are not guaranteed to survive.
-      - name: Deploy versioned docs (mike)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          uv sync --only-group docs --no-install-project
-          git fetch origin gh-pages --depth=1 || true
-          IFS='.' read -r MAJOR MINOR _ <<< "$VERSION"
-          SLOT="$MAJOR.$MINOR"
-          ok=false
-          for attempt in 1 2 3; do
-            if uv run --no-sync mike deploy --push --update-aliases --alias-type redirect \
-                --title "$VERSION" "$SLOT" latest \
-              && uv run --no-sync mike set-default --push --allow-undefined latest; then
-              echo "Deployed docs for $VERSION to gh-pages slot $SLOT (attempt $attempt)."
-              ok=true
-              break
-            fi
-            echo "::warning::mike deploy attempt $attempt failed; retrying after backoff..."
-            sleep $((attempt * 10))
-          done
-          if [[ "$ok" != true ]]; then
-            echo "::warning::Failed to deploy versioned docs via mike after 3 attempts. The package is ALREADY on PyPI, the tag is ALREADY on main, and the GitHub Release is ALREADY created — this does NOT need a re-run. Finish by hand: 'mike deploy --push --update-aliases --alias-type redirect --title \"$VERSION\" \"$SLOT\" latest && mike set-default --push --allow-undefined latest'."
-          fi
-
-  # ---------------------------------------------------------------------------
-  # Republish the gh-pages tree (now including this release's version and the
-  # moved `latest` alias, from the mike deploy above) as a GitHub Pages
-  # artifact. Pages is on "Source: GitHub Actions" (see docs.yml): the live
-  # site at https://zelanton.github.io/processkit-py/ serves whatever artifact
-  # `deploy-pages` last uploaded, NOT the `gh-pages` branch content directly —
-  # `mike deploy --push` above only updates the `gh-pages` branch, it does not
-  # by itself change what the live site shows. Without this job, a release
-  # would sit in `gh-pages` invisibly until an unrelated docs-affecting push to
-  # `main` happened to run docs.yml's own `publish-pages` job. Mirrors that job
-  # exactly (same checkout/upload/deploy steps) and shares its `pages`
-  # concurrency group so the two never race uploading/deploying the Pages
-  # artifact; scoped to this job only (not the whole workflow) so it doesn't
-  # also serialize the PyPI pivot above behind a running docs.yml deploy.
-  # Depends on `publish` succeeding (a failed release must not touch Pages);
-  # best-effort within that: if the mike deploy step above could not push the
-  # new version (see its own warning), this job simply republishes whatever
-  # is already on `gh-pages` — a harmless no-op re-deploy, not a failure.
-  # ---------------------------------------------------------------------------
-  publish-pages:
-    needs: publish
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write # deploy to GitHub Pages
-      id-token: write # OIDC for the Pages deployment
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: gh-pages
-          persist-credentials: false
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: .
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+      # This repo does not publish docs (GitHub Pages or otherwise) — a
+      # separate project owns that. Do not re-add a mike/gh-pages deploy step
+      # here; see RELEASING.md's "Docs site" note.

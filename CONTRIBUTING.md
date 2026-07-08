@@ -80,6 +80,11 @@ native `uv run pytest`, which is faster for day-to-day work.
   warning-free `pytest`, plus `cargo fmt` / `clippy` on the Rust side — all
   configured in [`pyproject.toml`](pyproject.toml); run the
   [gates above](#build-and-test) locally before opening a pull request.
+- **Docs are built here, not published here.** `docs.yml` runs `mkdocs build
+  --strict` as a link/anchor check only; this repo does not deploy to GitHub
+  Pages or anywhere else (a separate project owns docs publishing). Do not
+  add a Pages/`mike`/`gh-pages` deploy step back — see RELEASING.md's "Docs
+  site" note.
 
 ## Changelog
 

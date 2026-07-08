@@ -38,21 +38,6 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
 
-# Versioned docs (published via `mike deploy`, see RELEASING.md): this is the
-# only piece mkdocs-material needs to render the version selector in the site
-# header. `mike` itself is not listed under `plugins:` here — it injects its
-# own mkdocs plugin only for the duration of `mike deploy`/`mike serve`, so an
-# ordinary `mkdocs build`/`mkdocs serve` (no `gh-pages` branch, no `versions.json`)
-# stays unaffected: the selector's `versions.json` fetch just 404s locally and
-# mkdocs-material hides the selector, so `mkdocs build --strict` (the CI gate)
-# never depends on a `gh-pages` branch existing. To see the real selector
-# locally, deploy at least one version to a local `gh-pages` branch (e.g. `uv
-# run --group docs mike deploy --update-aliases 0.0 dev`) and run `uv run
-# --group docs mike serve`.
-extra:
-  version:
-    provider: mike
-
 nav:
   - Home: README.md
   - Cookbook: cookbook.md

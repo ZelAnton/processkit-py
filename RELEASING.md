@@ -68,57 +68,13 @@ GitHub Release (wheels + sdist + `SHA256SUMS`).
 ## Docs site
 
 The guides in `docs/` render as a [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/)
-site, versioned with [mike](https://github.com/jimporter/mike) so a reader
-pinned to an old release can still read *that release's* docs instead of
-whatever is newest on `main`. The build (`mkdocs build --strict`) runs on every
-docs change as a link/anchor check; **deployment is opt-in** so there are no
-red runs before Pages is set up. To publish the site:
+site. `docs.yml` builds it (`mkdocs build --strict`) on every docs change as a
+link/anchor check only — this repo does **not** publish the site (no GitHub
+Pages, no `gh-pages` branch, no `mike`, no `DOCS_DEPLOY`). A separate project
+owns docs publishing. **Do not re-add a Pages/mike deploy job here** — if a
+future dependency bump or template sync tries to reintroduce one, undo it.
 
-1. Repo **Settings → Pages → Source: GitHub Actions**. (Pages is *not* switched
-   to "Deploy from a branch" — `mike deploy` uses the `gh-pages` branch only as
-   its own storage for the built versions; a GitHub Actions job then
-   republishes that whole tree as a Pages *artifact*, same as before mike.)
-2. Repo **Settings → Secrets and variables → Actions → Variables**: add
-   `DOCS_DEPLOY` = `true`.
-
-From then on:
-
-- **Every push to `main`** that touches `docs/` or `mkdocs.yml`
-  (`.github/workflows/docs.yml`) deploys the rolling, unreleased build to the
-  `dev` slot (`mike deploy dev`), then republishes the full `gh-pages` tree
-  (every slot below, plus `dev`) to
-  `https://zelanton.github.io/processkit-py/`. `dev` is its own slot — it is
-  never aliased to a released version and never touches `latest`.
-- **Every published release** (the `release.yml` `publish` job, right after
-  the GitHub Release is created) deploys that release's docs under a
-  `MAJOR.MINOR` slot (mike's own recommended scheme — the patch number is
-  deliberately dropped) and moves the `latest` alias to point at it:
-  `mike deploy --update-aliases MAJOR.MINOR latest`. A **patch** release of an
-  already-published minor version (e.g. `1.2.3` after `1.2.2`) therefore
-  re-deploys into the *same* `1.2` slot — mike overwrites that slot's content
-  and bumps its displayed title to the new patch version — while a **minor**
-  or **major** release creates a brand-new slot and moves `latest` to it. This
-  docs-deploy step is best-effort and runs only here, once per actual
-  `workflow_dispatch` release run (this workflow has no draft-then-publish
-  loop to guard against — it already only executes at the point of a real,
-  manually-dispatched release): if it fails, PyPI/the tag/the GitHub Release
-  are already done, so the step warns instead of failing the job, and prints
-  the exact `mike deploy`/`mike set-default` commands to finish by hand — do
-  **not** treat a docs-deploy failure as a reason to re-run the whole release
-  workflow (a re-run computes the *next* version). Right after that, a
-  separate `publish-pages` job (needs the `publish` job, so it only runs if
-  the release succeeded) republishes the whole `gh-pages` tree as a Pages
-  artifact — the same step docs.yml's own `publish-pages` job performs after
-  an ordinary push — so the live site actually shows the new version and the
-  moved `latest` immediately, instead of waiting for some unrelated future
-  push to `main` that happens to touch `docs/` and trigger docs.yml.
-
-Preview the plain (unversioned) docs locally with `uv run --group docs mkdocs
-serve`. To see the real version selector as readers will, deploy at least one
-version to a local `gh-pages` branch and serve that instead:
-`uv run --group docs mike deploy --update-aliases 0.0 dev && uv run --group
-docs mike serve` (never pass `--push` for a local check — that would push to
-the real `origin/gh-pages`).
+Preview the docs locally with `uv run --group docs mkdocs serve`.
 
 ## If a release fails
 

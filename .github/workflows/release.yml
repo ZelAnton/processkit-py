@@ -175,7 +175,7 @@ jobs:
       # with pyproject.toml. Re-lock now so the release commit carries a lockfile
       # consistent with the version it just bumped; no dependency changed, so this
       # only touches that one self-referential field.
-      - uses: astral-sh/setup-uv@f98e06938123ccabd21905ea5d0069192241f9f1 # v8.3.1
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - name: Re-lock uv.lock against the bumped version
@@ -321,7 +321,7 @@ jobs:
       # `uvx twine check` below resolves. (The publish action does its own
       # metadata check, but this strict pre-pivot gate catches a render/metadata
       # break BEFORE the irreversible step — free here, un-yankable once on PyPI.)
-      - uses: astral-sh/setup-uv@f98e06938123ccabd21905ea5d0069192241f9f1 # v8.3.1
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - name: Check distribution metadata

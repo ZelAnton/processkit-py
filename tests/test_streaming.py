@@ -767,7 +767,7 @@ def test_stdout_tee_propagates_non_attribute_error_from_write_lookup() -> None:
             raise RuntimeError("write is not ready yet")
 
     with pytest.raises(RuntimeError, match="write is not ready yet"):
-        Command(PY, ["-c", _PRINT_LINES]).stdout_tee(BrokenWriter())
+        Command(PY, ["-c", _PRINT_LINES]).stdout_tee(BrokenWriter())  # type: ignore[arg-type]
 
 
 def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:

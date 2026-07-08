@@ -93,6 +93,15 @@ out = Command("tr", ["a-z", "A-Z"]).stdin_text("hello\n").run()   # "HELLO"
 Command("sha256sum").stdin_bytes(b"\x00\x01\x02").run()
 ```
 
+## Feed a large file to stdin without loading it into memory
+
+```python
+# Streams straight from disk to the child — no full read into Python bytes,
+# so this works just as well for a multi-gigabyte dump/archive/log.
+Command("psql", ["mydb"]).stdin_file("dump.sql").run()
+Command("tar", ["-xf", "-"]).stdin_file("archive.tar").cwd("/tmp/extract").run()
+```
+
 ## Set the working directory and environment
 
 ```python

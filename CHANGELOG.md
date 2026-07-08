@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nested `outcome`, so it now mirrors `Outcome` fully — matching `code` and
   `exited_zero`, which were already exposed directly — instead of requiring
   `finished.outcome.timed_out` / `finished.outcome.signal`.
+- `Command.stdin_file(path)` — feed the child's stdin from a file, streamed in
+  chunks by the crate rather than read whole into a Python `bytes` object, for
+  large inputs (a `psql` dump, a `tar` archive, a multi-gigabyte log). Like
+  most other builder methods (`stdout_tee`/`stderr_tee` are the deliberate
+  exception), it does not touch the filesystem at build time — the path is
+  opened lazily at spawn, so a missing/unreadable file surfaces as the generic
+  `ProcessError` from the run/output verb, not `FileNotFoundError`. Reusable
+  across retries/re-runs, like `stdin_bytes`/`stdin_text`; the usual "last
+  stdin method wins" rule applies alongside `stdin_bytes()`/`stdin_text()`/
+  `keep_stdin_open()`.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

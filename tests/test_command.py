@@ -1023,6 +1023,95 @@ def test_stdout_tee_is_inert_under_output_bytes(tmp_path: pathlib.Path) -> None:
     assert sink.read_bytes() == b""
 
 
+# --- stdin_file — streaming file-backed stdin (T-039) ------------------------
+
+# Echoes each stdin line uppercased until EOF (same helper as test_streaming.py).
+_ECHO_UPPER = (
+    "import sys; [(sys.stdout.write(line.upper()), sys.stdout.flush()) for line in sys.stdin]"
+)
+
+
+def test_stdin_file_feeds_input(tmp_path: pathlib.Path) -> None:
+    src = tmp_path / "in.txt"
+    src.write_text("abc\n", encoding="utf-8")
+    assert Command(PY, ["-c", _ECHO_UPPER]).stdin_file(src).run() == "ABC"
+
+
+def test_stdin_file_accepts_pathlike(tmp_path: pathlib.Path) -> None:
+    # Same StrPath contract as arg()/cwd(): a pathlib.Path works, not just str.
+    src = tmp_path / "in.txt"
+    src.write_text("xyz\n", encoding="utf-8")
+    assert Command(PY, ["-c", _ECHO_UPPER]).stdin_file(src).run() == "XYZ"
+
+
+def test_stdin_file_does_not_touch_filesystem_at_build_time(tmp_path: pathlib.Path) -> None:
+    # Unlike stdout_tee()/stderr_tee(), stdin_file() does not open (or even stat)
+    # the path when called — a not-yet-existing path is accepted here; matches
+    # the rest of the builder, which never touches the filesystem at build time.
+    missing = tmp_path / "does-not-exist-yet.txt"
+    cmd = Command(PY, ["-c", "pass"]).stdin_file(missing)
+    assert isinstance(cmd, Command)
+
+
+def test_stdin_file_missing_path_fails_at_run_not_build(tmp_path: pathlib.Path) -> None:
+    # The error is deferred to spawn time (when the crate actually opens the
+    # file) — surfaced as the generic ProcessError, not FileNotFoundError: a
+    # stdin-write failure is not classified as a launch condition, since the
+    # child process has already spawned successfully by then.
+    missing = tmp_path / "does-not-exist.txt"
+    cmd = Command(PY, ["-c", _ECHO_UPPER]).stdin_file(missing)  # no raise here
+    with pytest.raises(ProcessError):
+        cmd.run()
+
+
+def test_stdin_file_does_not_buffer_whole_file_in_python(tmp_path: pathlib.Path) -> None:
+    # The point of stdin_file() over stdin_bytes()/stdin_text() is that a large
+    # input streams straight from disk to the child, never fully materialized as
+    # a Python object. Feed a file bigger than any reasonable line/record and
+    # confirm the child receives it all — a full-read-into-Python approach would
+    # still pass this, so the real guarantee is architectural (see stdin_file()'s
+    # docstring), but this at least pins that large inputs survive intact.
+    src = tmp_path / "big.bin"
+    payload = b"a" * (8 * 1024 * 1024)  # 8 MiB
+    src.write_bytes(payload)
+    code = (
+        "import sys; data = sys.stdin.buffer.read(); "
+        "print(len(data)); print(data == b'a' * (8 * 1024 * 1024))"
+    )
+    result = Command(PY, ["-c", code]).stdin_file(src).output()
+    lines = result.stdout.splitlines()
+    assert lines[0] == str(8 * 1024 * 1024)
+    assert lines[1] == "True"
+
+
+def test_stdin_file_overrides_earlier_stdin_bytes(tmp_path: pathlib.Path) -> None:
+    # Last stdin-configuring call wins — same convention already in force for
+    # stdin_bytes()/stdin_text()/keep_stdin_open().
+    src = tmp_path / "in.txt"
+    src.write_text("from-file\n", encoding="utf-8")
+    result = (
+        Command(PY, ["-c", _ECHO_UPPER])
+        .stdin_bytes(b"from-bytes\n")
+        .stdin_file(src)
+        .run()
+    )
+    assert result == "FROM-FILE"
+
+
+def test_stdin_bytes_overrides_earlier_stdin_file(tmp_path: pathlib.Path) -> None:
+    # The reverse order also wins for the later call, confirming stdin_file()
+    # participates in the same "last stdin method wins" chain as the others.
+    src = tmp_path / "in.txt"
+    src.write_text("from-file\n", encoding="utf-8")
+    result = (
+        Command(PY, ["-c", _ECHO_UPPER])
+        .stdin_file(src)
+        .stdin_bytes(b"from-bytes\n")
+        .run()
+    )
+    assert result == "FROM-BYTES"
+
+
 def test_stdout_tee_is_inert_under_stdout_null(tmp_path: pathlib.Path) -> None:
     # stdout("null") runs no capture pump — the tee is inert (empty file). null is
     # non-capturing, so the run goes through start() + outcome() (the capture verbs

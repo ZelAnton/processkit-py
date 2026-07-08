@@ -144,6 +144,24 @@ Command("sha256sum").stdin_bytes(b"\x00\x01\x02").run()
 The payload is written on a background task, so a large input can't deadlock
 against the child's own output; the pipe is closed afterward to signal EOF.
 
+For a large input already sitting in a file — a database dump piped into `psql`,
+an archive fed to `tar`, a multi-gigabyte log run through a filter — use
+`stdin_file(path)` instead of reading the file into Python `bytes` yourself. The
+file streams straight to the child's stdin in chunks, so it never has to fit in
+Python memory:
+
+```python
+Command("psql", ["mydb"]).stdin_file("dump.sql").run()
+Command("tar", ["-xf", "-"]).stdin_file("archive.tar").cwd("/tmp/extract").run()
+```
+
+`stdin_file()` doesn't touch the filesystem when you call it — the path is
+opened lazily when the command actually spawns, so a not-yet-existing path is
+not an error there. If the file turns out to be missing or unreadable once the
+command runs, that surfaces as a generic `ProcessError` from the run/output
+verb (not `FileNotFoundError`), since the child process has, by then, already
+spawned successfully.
+
 For a conversational, request/response exchange — write a line, read the answer,
 repeat — call `keep_stdin_open()` and drive the process through the streaming API
 instead. *Deeper: [Streaming & interactive I/O](streaming.md).*

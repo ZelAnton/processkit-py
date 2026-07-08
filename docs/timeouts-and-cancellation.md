@@ -248,11 +248,13 @@ reaped a tree.
 
 ## Keeping a flaky thing alive
 
-A timeout stops a single run; it does not restart anything, and the Python
-binding has **no per-command retry**. If you want a run replayed on transient
-failure, or a *service* kept alive across crashes, that is
-[Supervision](supervision.md) — `Supervisor(...)` with a restart policy and
-backoff.
+A timeout stops a single run; it does not restart anything by itself. For a
+single command replayed on transient failure (including a timeout expiry),
+see [`Command.retry(retry_if, ...)`](commands.md#retrying-a-run) (default is
+`retry_never()` — no retries unless opted in). For a *service* kept alive
+across crashes — a different, non-exclusive concern from per-command retry —
+that is [Supervision](supervision.md) — `Supervisor(...)` with a restart
+policy and backoff.
 
 ---
 

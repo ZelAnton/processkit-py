@@ -194,10 +194,12 @@ existing log. Separate files for each stream:
 Command("noisy-tool").stdout_tee("out.log").stderr_tee("err.log").run()
 ```
 
-The sink is a **file path**, not an arbitrary Python writer (teeing to a Python
-object is a deferred feature) — if you need the lines *in Python*, loop over
-`stdout_lines()` instead. See [Streaming](streaming.md#tee-output-to-a-file) for
-backpressure, the no-op conditions, and write-error isolation.
+The sink can be a **file path** (as above) or a **Python writer** — any object
+with a `write()` method (`io.StringIO`, `sys.stderr`, a text-mode file, a
+logger wrapper) — to mirror the child's output straight into your own
+console, buffer, or logger while still capturing it. See
+[Streaming](streaming.md#tee-output-to-a-file) for backpressure, the no-op
+conditions, and write-error isolation.
 
 ## Get live progress from a synchronous run
 

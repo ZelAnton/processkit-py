@@ -476,6 +476,45 @@ def test_running_process_live_getters() -> None:
     asyncio.run(scenario())
 
 
+def test_running_process_live_counters_track_streamed_output_and_elapsed_time() -> None:
+    # `test_running_process_live_getters` above only ever asserts the counters'
+    # starting `(0, None)` state -- a regression where `stdout_line_count` /
+    # `stderr_line_count` got stuck there instead of tracking real output would
+    # pass unnoticed. Here the child emits a known, fixed number of lines on
+    # each stream, then sleeps briefly before exiting. Draining stdout via
+    # `stdout_lines()` blocks until the child's stdout pipe closes -- i.e. until
+    # the child has exited -- by which point stderr (drained in the background
+    # the whole time, per docs/streaming.md) is fully captured too, so both
+    # counters can be asserted against their known totals right after the loop
+    # ends, while the handle is still live (`finish()`/`aoutcome()` blanks the
+    # getters -- "None once consumed", see `stdout_line_count` in running.rs).
+    stdout_n = 7
+    stderr_n = 4
+    code = (
+        "import sys, time\n"
+        f"for i in range({stdout_n}): print(f'out{{i}}', flush=True)\n"
+        f"for i in range({stderr_n}): print(f'err{{i}}', file=sys.stderr, flush=True)\n"
+        "time.sleep(0.2)\n"
+    )
+
+    async def scenario() -> tuple[int | None, int | None, float, float]:
+        proc = await Command(PY, ["-c", code]).astart()
+        elapsed_before = proc.elapsed_seconds or 0.0
+        async for _line in proc.stdout_lines():
+            pass  # drain until the child's stdout closes (i.e. the child exits)
+        stdout_count = proc.stdout_line_count
+        stderr_count = proc.stderr_line_count
+        elapsed_after = proc.elapsed_seconds or 0.0
+        await proc.afinish()  # reap
+        return stdout_count, stderr_count, elapsed_before, elapsed_after
+
+    stdout_count, stderr_count, elapsed_before, elapsed_after = asyncio.run(scenario())
+    assert stdout_count == stdout_n
+    assert stderr_count == stderr_n
+    # The child slept 0.2s before exiting -- elapsed time must have grown.
+    assert elapsed_after > elapsed_before
+
+
 def test_profile_returns_runprofile() -> None:
     async def scenario() -> RunProfile:
         proc = await Command(PY, ["-c", "import time; time.sleep(0.1)"]).astart()

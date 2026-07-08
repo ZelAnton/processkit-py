@@ -1,6 +1,6 @@
 //! The `ProcessGroup` containment container and its `ProcessGroupStats`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use processkit::Mechanism;
@@ -90,19 +90,48 @@ async fn shutdown_if_open(group: Option<Arc<PkProcessGroup>>) -> processkit::Res
 /// the same verb surface `Runner`/`ScriptedRunner`/… expose, for code
 /// written against that seam that should route every spawn through one
 /// shared group instead of a per-call private tree.
-#[pyclass(name = "ProcessGroup", module = "processkit")]
+// `frozen` so every method takes `&self`: under free-threading a `&mut self`
+// method would take an exclusive PyO3 borrow that a concurrent `&self` call
+// from another thread rejects with a raw `RuntimeError("Already borrowed")`
+// instead of a typed `ProcessError` — and worse, an `__exit__` that extracts
+// its `&mut self` borrow *before* its body would fail there and skip the
+// graceful teardown entirely. The interior `Mutex<Option<...>>` serializes the
+// concurrent access instead, and a taken-out (closed) group reads back cleanly
+// as `None`. The guard is always dropped *before* any `block_on`/await (the
+// helpers below return owned values), so holding it never serializes the
+// teardown window or risks a re-entrant deadlock.
+#[pyclass(name = "ProcessGroup", module = "processkit", frozen)]
 pub(crate) struct PyProcessGroup {
     // `None` after the group is shut down — every method then errors cleanly.
-    // `Arc` so the async `astart` can hold the group across the await without
-    // borrowing the pyclass.
-    inner: Option<Arc<PkProcessGroup>>,
+    // `Arc` so the async `astart` (and a concurrent teardown) can each hold the
+    // group across their awaits without holding the lock.
+    inner: Mutex<Option<Arc<PkProcessGroup>>>,
 }
 
 impl PyProcessGroup {
-    fn group(&self) -> PyResult<&Arc<PkProcessGroup>> {
-        self.inner
+    /// Lock the inner slot, recovering from a (never-expected) poisoned mutex
+    /// rather than panicking across the FFI boundary — the guarded critical
+    /// sections below only clone/take an `Arc` and never panic, so poisoning
+    /// cannot actually happen, but `unwrap()`ing a `PoisonError` would itself be
+    /// a panic point PyO3 would surface as a `PanicException`.
+    fn lock(&self) -> MutexGuard<'_, Option<Arc<PkProcessGroup>>> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Clone the live group `Arc` out from under the lock, or error if closed.
+    /// The lock is released before this returns, so callers hold an owned `Arc`
+    /// — never the lock — across any subsequent `block_on`/await.
+    fn group(&self) -> PyResult<Arc<PkProcessGroup>> {
+        self.lock()
             .as_ref()
+            .cloned()
             .ok_or_else(|| ProcessError::new_err("ProcessGroup is already closed"))
+    }
+
+    /// Take the group out for teardown, returning `None` if already closed.
+    /// Idempotent: a second call after a shutdown sees `None`.
+    fn take(&self) -> Option<Arc<PkProcessGroup>> {
+        self.lock().take()
     }
 }
 
@@ -149,7 +178,7 @@ impl PyProcessGroup {
         }
         let group = PkProcessGroup::with_options(options).map_err(map_err)?;
         Ok(Self {
-            inner: Some(Arc::new(group)),
+            inner: Mutex::new(Some(Arc::new(group))),
         })
     }
 
@@ -159,7 +188,7 @@ impl PyProcessGroup {
 
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__<'py>(
-        &mut self,
+        &self,
         py: Python<'py>,
         _exc_type: Option<Bound<'py, PyAny>>,
         _exc_value: Option<Bound<'py, PyAny>>,
@@ -176,7 +205,7 @@ impl PyProcessGroup {
 
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __aexit__<'py>(
-        &mut self,
+        &self,
         py: Python<'py>,
         _exc_type: Option<Bound<'py, PyAny>>,
         _exc_value: Option<Bound<'py, PyAny>>,
@@ -185,7 +214,7 @@ impl PyProcessGroup {
         // Checked before taking: see the comment on `require_event_loop` in
         // running.rs for why the order matters (consume-then-fail).
         require_event_loop(py)?;
-        let group = self.inner.take();
+        let group = self.take();
         drive_async(py, async move {
             shutdown_if_open(group).await?;
             Ok::<bool, processkit::Error>(false)
@@ -195,13 +224,13 @@ impl PyProcessGroup {
     /// Start a command inside the group and return a handle (sync). The process
     /// runs concurrently; this does not wait for it to finish.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-        let group = self.group()?.clone();
+        let group = self.group()?;
         block_on(py, group.start(&command.inner)).map(PyRunningProcess::from)
     }
 
     /// Async counterpart of `start()`.
     fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        let group = self.group()?.clone();
+        let group = self.group()?;
         let cmd = command.inner.clone();
         drive_async(py, async move {
             group.start(&cmd).await.map(PyRunningProcess::from)
@@ -250,7 +279,7 @@ impl PyProcessGroup {
 
     /// Async counterpart of `output()`.
     fn aoutput<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput(py, self.group()?.clone(), command)
+        runner_aoutput(py, self.group()?, command)
     }
 
     /// Async counterpart of `output_bytes()`.
@@ -259,22 +288,22 @@ impl PyProcessGroup {
         py: Python<'py>,
         command: &PyCommand,
     ) -> PyResult<Bound<'py, PyAny>> {
-        runner_aoutput_bytes(py, self.group()?.clone(), command)
+        runner_aoutput_bytes(py, self.group()?, command)
     }
 
     /// Async counterpart of `run()`.
     fn arun<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_arun(py, self.group()?.clone(), command)
+        runner_arun(py, self.group()?, command)
     }
 
     /// Async counterpart of `exit_code()`.
     fn aexit_code<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aexit_code(py, self.group()?.clone(), command)
+        runner_aexit_code(py, self.group()?, command)
     }
 
     /// Async counterpart of `probe()`.
     fn aprobe<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
-        runner_aprobe(py, self.group()?.clone(), command)
+        runner_aprobe(py, self.group()?, command)
     }
 
     /// The containment mechanism in use: `"job_object"` (Windows),
@@ -334,25 +363,28 @@ impl PyProcessGroup {
 
     /// Tear down the whole tree gracefully (sync). Idempotent — a second call is
     /// a no-op.
-    fn shutdown(&mut self, py: Python<'_>) -> PyResult<()> {
+    fn shutdown(&self, py: Python<'_>) -> PyResult<()> {
         // Checked before taking: see the comment on `require_event_loop` in
-        // running.rs for why the order matters (consume-then-fail).
+        // running.rs for why the order matters (consume-then-fail). `take()`
+        // releases the lock before `block_on`, so the whole graceful-teardown
+        // window runs unlocked — a concurrent `start()`/`stats()`/… on another
+        // thread sees `None` and returns a clean `ProcessError`, never blocks.
         reject_reentrant_runtime()?;
-        if let Some(group) = self.inner.take() {
+        if let Some(group) = self.take() {
             block_on(py, shutdown_group(group))?;
         }
         Ok(())
     }
 
     /// Async counterpart of `shutdown()`. Idempotent.
-    fn ashutdown<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn ashutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
-        let group = self.inner.take();
+        let group = self.take();
         drive_async(py, shutdown_if_open(group))
     }
 
     fn __repr__(&self) -> String {
-        match &self.inner {
+        match self.lock().as_ref() {
             Some(_) => "ProcessGroup(open)".to_string(),
             None => "ProcessGroup(closed)".to_string(),
         }

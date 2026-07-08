@@ -105,7 +105,13 @@ From then on:
   are already done, so the step warns instead of failing the job, and prints
   the exact `mike deploy`/`mike set-default` commands to finish by hand — do
   **not** treat a docs-deploy failure as a reason to re-run the whole release
-  workflow (a re-run computes the *next* version).
+  workflow (a re-run computes the *next* version). Right after that, a
+  separate `publish-pages` job (needs the `publish` job, so it only runs if
+  the release succeeded) republishes the whole `gh-pages` tree as a Pages
+  artifact — the same step docs.yml's own `publish-pages` job performs after
+  an ordinary push — so the live site actually shows the new version and the
+  moved `latest` immediately, instead of waiting for some unrelated future
+  push to `main` that happens to touch `docs/` and trigger docs.yml.
 
 Preview the plain (unversioned) docs locally with `uv run --group docs mkdocs
 serve`. To see the real version selector as readers will, deploy at least one

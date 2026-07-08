@@ -97,7 +97,17 @@ Three gates are checked, in order, after every completed run:
    ```
 
 2. **The policy** — `"on_crash"` stops on a clean exit; `"never"` stops after one run.
-3. **`max_restarts=n`** — at most *n* restarts (= *n + 1* total runs); an exhausted
+3. **`give_up_when=`** — a callable consulted only for a crash the policy would
+   otherwise restart, ahead of `max_restarts=` and the storm guard. It classifies a
+   *permanent* failure so supervision gives up instead of restarting forever. It
+   receives one argument mirroring the crate's `GiveUpAttempt` sum type, dispatched
+   with `isinstance`: a `ProcessResult` for a crashed run that produced a result
+   (classify by e.g. `attempt.code`), or a `ProcessError` subclass for a launch that
+   never produced one (classify by e.g. `isinstance(attempt, ProcessNotFound)` for a
+   missing binary). Returning `True` for a crash verdict stops with
+   `outcome.stopped == "gave_up"`; a launch-failure verdict has no result to report
+   and surfaces the classified error directly from `run()`/`arun()`.
+4. **`max_restarts=n`** — at most *n* restarts (= *n + 1* total runs); an exhausted
    budget reports the last result (`stopped == "restarts_exhausted"`).
    `max_restarts=0` means exactly one run.
 
@@ -125,6 +135,8 @@ Two honest caveats about `stop_when=`:
 outcome.final_result   # ProcessResult of the LAST run
 outcome.restarts       # restarts performed (run #1 is not a restart)
 outcome.stopped        # "policy_satisfied" | "predicate" | "restarts_exhausted"
+                        # | "gave_up" | "unknown" (forward-compat fallback, not
+                        # emitted by the pinned crate version)
 outcome.storm_pauses   # how many failure-storm pauses were taken (see below)
 ```
 

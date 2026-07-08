@@ -467,7 +467,7 @@ assert git.run(["rev-parse", "HEAD"]) == "deadbeef"   # no real git spawned
 
 `output_all`/`aoutput_all` (and their `_bytes` twins) and `Supervisor` accept
 the same `runner=` keyword, for the same reason — a batch or a supervised
-command can be driven through a double in a test, with the real `JobRunner`
+command can be driven through a double in a test, with the real `Runner`
 the default when `runner=` is omitted.
 
 *Deeper: per-client defaults and the full verb set — [the Cookbook](cookbook.md) → "Wrap a CLI tool".*

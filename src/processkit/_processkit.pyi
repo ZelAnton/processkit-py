@@ -55,6 +55,18 @@ class ProcessResult:
     def truncated(self) -> bool: ...
     @property
     def combined(self) -> str: ...
+    @property
+    def diagnostic(self) -> str | None:
+        """The best human-facing message: stderr if it carries text, otherwise
+        stdout, otherwise ``None`` if both are blank — the same preference
+        order as ``NonZeroExit``/``Timeout``/``Signalled.diagnostic``."""
+
+    @property
+    def outcome(self) -> Outcome:
+        """The full run outcome (``code`` / ``signal`` / ``timed_out``), the
+        same value ``RunProfile.outcome`` and the checking-verb exceptions
+        expose."""
+
     def ensure_success(self) -> ProcessResult:
         """Raise the same exception a checking verb would if this result's
         exit isn't in ``success_codes``; returns ``self`` unchanged otherwise,
@@ -92,6 +104,15 @@ class BytesResult:
         bounds it to a head/tail. A ``max_lines`` cap never truncates raw stdout
         (bytes have no line count); only a ``max_bytes`` cap does."""
 
+    @property
+    def diagnostic(self) -> str | None:
+        """See ``ProcessResult.diagnostic``. Raw stdout is lossily decoded to
+        text for this message when stderr is blank."""
+
+    @property
+    def outcome(self) -> Outcome:
+        """See ``ProcessResult.outcome``."""
+
     def ensure_success(self) -> BytesResult:
         """See ``ProcessResult.ensure_success()``."""
 
@@ -112,6 +133,7 @@ class Command:
     def inherit_env(self, names: Sequence[str]) -> Command: ...
     def stdin_bytes(self, data: ReadableBuffer) -> Command: ...
     def stdin_text(self, text: str) -> Command: ...
+    def stdin_file(self, path: StrPath) -> Command: ...
     def keep_stdin_open(self) -> Command: ...
     def timeout(self, seconds: float) -> Command: ...
     def timeout_grace(self, seconds: float) -> Command: ...
@@ -143,10 +165,11 @@ class Command:
         delivered live — for ``curl``/``pip``/``apt``-style ``\\r``-redrawn
         progress output that would otherwise pile up into a single line until
         EOF. A ``\\r\\n`` pair still counts as one terminator. Shared by
-        ``stdout_lines()``/``output_events()``, the per-line handlers,
-        ``stdout_tee``/``stderr_tee``, and ``output_string`` alike; set both
-        streams here or independently with ``stdout_line_terminator``/
-        ``stderr_line_terminator``. Unknown preset raises ``ValueError``."""
+        ``stdout_lines()``/``output_events()``, the per-line handlers
+        (``on_stdout_line``/``on_stderr_line``), ``stdout_tee``/``stderr_tee``,
+        and ``output_string`` alike; set both streams here or independently
+        with ``stdout_line_terminator``/``stderr_line_terminator``. Unknown
+        preset raises ``ValueError``."""
 
     def stdout_line_terminator(self, mode: LineTerminatorName) -> Command:
         """Choose where the line pump splits **stdout** into lines (see
@@ -176,6 +199,39 @@ class Command:
         as ``stdout_tee`` — a file-path sink, opened at build time (truncate by
         default or ``append``), coexisting with capture, inert unless stderr is
         piped through the line pump."""
+
+    def on_stdout_line(self, callback: Callable[[str], None]) -> Command:
+        """Call ``callback`` with every decoded stdout line as it is produced —
+        the way to give the **synchronous** surface (``.output()``/``.run()``)
+        live progress observation during an otherwise-blocking call, without
+        losing the full capture: ``callback`` observes the same decoded lines
+        that land in ``ProcessResult.stdout``, it does not replace them. Also
+        fires on the async verbs and on a streamed run (``start()``/
+        ``astart()`` + ``stdout_lines()``/``output_events()``) — one callback,
+        every path.
+
+        ``callback`` is infallible: an exception raised inside it is reported
+        via ``sys.unraisablehook`` rather than propagated — it never derails
+        the run or alters the captured result. At most one handler per stream
+        — a repeat call replaces the previous one (builder semantics, like
+        ``timeout()``); compose inside one callable to fan out.
+
+        Inert under ``stdout("inherit")``/``stdout("null")`` (no pump runs)
+        and under ``output_bytes()`` (stdout is captured raw there, bypassing
+        the line pump)."""
+
+    def on_stderr_line(self, callback: Callable[[str], None]) -> Command:
+        """Call ``callback`` with every decoded stderr line as it is produced.
+        Same contract as ``on_stdout_line`` — full capture unaffected, fires on
+        sync/async/streamed paths alike, infallible (a raising callback goes to
+        ``sys.unraisablehook``, never propagates), at most one handler per
+        stream.
+
+        Inert under ``stderr("inherit")``/``stderr("null")``. Unlike
+        ``on_stdout_line``, **not** silenced by ``output_bytes()``: that verb
+        only bypasses the *stdout* line pump for its raw-bytes capture —
+        stderr still decodes through the line pump exactly as under
+        ``output()``, so this callback still fires."""
 
     def kill_on_parent_death(self) -> Command: ...
     def create_no_window(self) -> Command: ...

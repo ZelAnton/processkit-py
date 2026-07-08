@@ -26,6 +26,22 @@ pub(crate) struct PyCommand {
     pub(crate) inner: PkCommand,
 }
 
+/// Wrap a Python callable `(str) -> None` as an `on_stdout_line`/
+/// `on_stderr_line` handler. Mirrors `runner::make_invocation_callback`'s
+/// infallible-bridge convention: the handler observes output as a
+/// fire-and-forget side effect, so a raising callback is surfaced via the
+/// unraisable hook (visible on stderr) rather than propagated across the FFI
+/// boundary — a broken observer must not derail the run it was only watching.
+fn make_line_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync + 'static {
+    move |line| {
+        Python::attach(|py| {
+            if let Err(err) = callback.call1(py, (line,)) {
+                err.write_unraisable(py, Some(callback.bind(py)));
+            }
+        })
+    }
+}
+
 #[pymethods]
 impl PyCommand {
     #[new]
@@ -107,6 +123,34 @@ impl PyCommand {
     fn stdin_text(&self, text: String) -> Self {
         Self {
             inner: self.inner.clone().stdin(PkStdin::from_string(text)),
+        }
+    }
+
+    /// Stream the file at `path` to the child's stdin, then close it (EOF).
+    /// Unlike `stdin_bytes()`, the file is never read into a Python `bytes`
+    /// object or buffered whole in memory — the crate forwards it to the
+    /// child in chunks on a background task, so a multi-gigabyte input (a
+    /// `psql` dump, a `tar` archive, a large log fed through a filter) costs
+    /// O(chunk), not O(file size).
+    ///
+    /// **File lifecycle — deferred, at spawn time (unlike `stdout_tee()`).**
+    /// This method does not touch the filesystem: it stores `path` and opens
+    /// it lazily when the command actually runs, matching the rest of the
+    /// builder (`stdout_tee()`/`stderr_tee()` are the deliberate exception,
+    /// since they must fail fast on an unopenable sink before any output can
+    /// be lost). A `path` that doesn't exist (yet) when `stdin_file()` is
+    /// called is therefore not an error. If the file is still missing or
+    /// unreadable once the command spawns, the run does **not** raise
+    /// `FileNotFoundError`/`PermissionError`: the crate's own error
+    /// classifiers deliberately don't treat a stdin-write failure as a launch
+    /// condition (the child process already spawned successfully by then), so
+    /// it surfaces as the generic `ProcessError` from the run/output verb
+    /// instead, with the underlying OS error folded into its message. Like
+    /// `stdin_bytes()`/`stdin_text()`, the source is reusable — a `path` that
+    /// exists at retry/re-run time is read again from the start each time.
+    fn stdin_file(&self, path: PathBuf) -> Self {
+        Self {
+            inner: self.inner.clone().stdin(PkStdin::from_file(path)),
         }
     }
 
@@ -415,6 +459,59 @@ impl PyCommand {
         Ok(Self {
             inner: self.inner.clone().stderr_tee(sink),
         })
+    }
+
+    /// Call `callback` with every decoded stdout line as it is produced — the
+    /// one way to give the **synchronous** surface (`.output()`/`.run()`) live
+    /// progress observation during an otherwise-blocking call, without giving
+    /// up the full capture: `callback` observes the same decoded lines that
+    /// land in `ProcessResult.stdout`, it does not replace or consume them.
+    /// Also fires on the async verbs (`.aoutput()`/`.arun()`) and on streamed
+    /// runs (`start()`/`astart()` + `stdout_lines()`/`output_events()`) — one
+    /// callback, every path; it does not turn the sync surface async-only.
+    ///
+    /// `callback` is infallible from this binding's perspective: an exception
+    /// raised inside it is surfaced via the unraisable hook
+    /// (`sys.unraisablehook`) rather than propagated — a broken observer must
+    /// not derail the run it only watches, and the captured result is
+    /// unaffected either way.
+    ///
+    /// At most one handler per stream: a repeat call **replaces** the previous
+    /// one (builder semantics, like `timeout()`) — compose inside a single
+    /// Python callable to fan out to more than one observer.
+    ///
+    /// **No-op conditions (inherited from the crate, same family as
+    /// `stdout_tee`).** Fires from the line-capture pump, so it is inert under
+    /// `stdout("inherit")` / `stdout("null")` (no pump runs) and under
+    /// `output_bytes()` (stdout is captured raw there, bypassing the line
+    /// pump entirely).
+    fn on_stdout_line(&self, callback: Py<PyAny>) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .on_stdout_line(make_line_callback(callback)),
+        }
+    }
+
+    /// Call `callback` with every decoded stderr line as it is produced. Same
+    /// contract as `on_stdout_line` — full capture unaffected, fires on sync,
+    /// async, and streamed paths alike, infallible (a raising callback goes to
+    /// the unraisable hook, never propagates or aborts the run), and at most
+    /// one handler per stream (a repeat call replaces the previous one).
+    ///
+    /// Inert under `stderr("inherit")` / `stderr("null")` (no pump runs for
+    /// that stream). Unlike `on_stdout_line`, this one is **not** silenced by
+    /// `output_bytes()`: that verb only bypasses the *stdout* line pump for
+    /// its raw-bytes capture — stderr keeps decoding through the line pump
+    /// exactly as it does under `output()`, so this callback still fires.
+    fn on_stderr_line(&self, callback: Py<PyAny>) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .on_stderr_line(make_line_callback(callback)),
+        }
     }
 
     /// Tie the child's lifetime to this process: if the parent dies, the OS kills

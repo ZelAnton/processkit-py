@@ -14,6 +14,7 @@ the tree down deterministically.
 - [Lifecycle](#lifecycle)
 - [Streaming stdout](#streaming-stdout)
 - [Tee output to a file](#tee-output-to-a-file)
+- [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
 - [Interactive stdin](#interactive-stdin)
 - [Readiness probes](#readiness-probes)
@@ -173,6 +174,50 @@ Things to know:
   `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs
   — `output()` / `aoutput()`, `run()`, or `start()` + `stdout_lines()` /
   `output_events()`.
+
+## Live per-line callbacks
+
+`stdout_lines()` / `output_events()` are async-only — they hand back an async
+iterator, so they need an event loop to drive. `on_stdout_line(callback)` /
+`on_stderr_line(callback)` give the **synchronous** surface the same live
+observation: `callback` runs on every decoded line *as it is produced*, even
+while `.output()` / `.run()` is still blocking:
+
+```python
+from processkit import Command
+
+def log_line(line: str) -> None:
+    print("build:", line)
+
+result = Command("cargo", ["build", "--release"]).on_stdout_line(log_line).output()
+# "build: ..." printed live, one call per line, while output() was still blocking.
+print(result.stdout)   # capture is untouched — the callback observes, it doesn't consume.
+```
+
+They work identically on the async verbs and on a streamed run (`start()`/
+`astart()` + `stdout_lines()` / `output_events()`) — one callback, every path;
+adding them does not turn the sync surface async-only, and does not replace the
+streaming iterators (which stay the only way to *consume* lines one at a time
+from Python — a callback only *observes*).
+
+Things to know:
+
+- **At most one handler per stream.** A repeat call **replaces** the previous
+  one (builder semantics, like `timeout()`); compose inside a single Python
+  callable to fan out to more than one observer.
+- **A raising callback never derails the run.** An exception raised inside
+  `callback` is reported via `sys.unraisablehook` (visible on stderr, or
+  catchable in a test via a custom `sys.unraisablehook`) instead of
+  propagating — the run and its captured result are unaffected either way.
+- **No-op unless that stream's line pump runs**, same family as
+  `stdout_tee`/`stderr_tee`: `on_stdout_line` is inert under
+  `stdout("inherit")` / `stdout("null")` and under `output_bytes()` (stdout is
+  captured raw there, bypassing the line pump). `on_stderr_line` is inert under
+  `stderr("inherit")` / `stderr("null")` — but **not** under `output_bytes()`:
+  that verb only bypasses the *stdout* line pump, stderr keeps decoding through
+  it exactly as under `output()`.
+- **Runs independently of `stdout_tee`/`stderr_tee`.** Set both and both fire
+  per line — a callback and a file tee are not mutually exclusive.
 
 ## Interleaved stdout and stderr
 

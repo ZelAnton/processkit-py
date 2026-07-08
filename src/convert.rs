@@ -174,7 +174,14 @@ impl PyWriterSink {
 /// reported via the unraisable hook here (we hold the GIL) and its message
 /// returned so the caller can build a matching `io::Error`.
 fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>) -> Result<(), String> {
-    Python::attach(|py| {
+    // `try_attach`, not `attach`: this runs on a tokio blocking-pool worker that
+    // is not joined at `Py_Finalize` (the runtime is an immortal singleton).
+    // Once the interpreter is finalizing `try_attach` returns `None`; we reject
+    // the write with an error (below), which drives the crate's own tee-error
+    // isolation — the tee is disabled for the rest of the run — instead of the
+    // panic/crash a plain `attach` would cause at shutdown. Same finalization
+    // guard as `logging.rs`'s bridge.
+    Python::try_attach(|py| {
         let bound = writer.bind(py);
         // The crate emits a whole decoded line, then `b"\n"`, so `data` is
         // always valid UTF-8; `from_utf8_lossy` is a panic-proof guard, not an
@@ -189,6 +196,7 @@ fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>) -> Result<(), String> {
             }
         }
     })
+    .unwrap_or_else(|| Err("tee write skipped: Python interpreter is finalizing".to_string()))
 }
 
 /// Call `writer.flush()` under the GIL if the object exposes a callable `flush`
@@ -196,7 +204,12 @@ fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>) -> Result<(), String> {
 /// like the crate's end-of-stream file flush; a raising flush goes to the
 /// unraisable hook.
 fn call_py_flush(writer: &Arc<Py<PyAny>>) -> Result<(), String> {
-    Python::attach(|py| {
+    // `try_attach`, not `attach`: like `call_py_write`, this runs on a tokio
+    // blocking-pool worker not joined at `Py_Finalize`. A finalizing interpreter
+    // yields `None` -> reject with an error, which drives the crate's tee-error
+    // isolation (the tee is disabled), instead of the panic/crash a plain
+    // `attach` would cause at shutdown. Same finalization guard as `logging.rs`.
+    Python::try_attach(|py| {
         let bound = writer.bind(py);
         match bound.getattr("flush") {
             Ok(flush) if flush.is_callable() => match flush.call0() {
@@ -211,6 +224,7 @@ fn call_py_flush(writer: &Arc<Py<PyAny>>) -> Result<(), String> {
             _ => Ok(()),
         }
     })
+    .unwrap_or_else(|| Err("tee flush skipped: Python interpreter is finalizing".to_string()))
 }
 
 /// Map a finished blocking-write `JoinHandle` result to what `poll_write`

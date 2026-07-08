@@ -60,7 +60,14 @@ impl ClientCall {
 /// command-build path.
 fn make_env_resolver(callback: Py<PyAny>) -> impl Fn() -> String + Send + Sync + 'static {
     move || {
-        Python::attach(|py| {
+        // `try_attach`, not `attach`: the crate materializes a command's env on
+        // its run path, which can execute on a tokio worker not joined at
+        // `Py_Finalize` (the runtime is an immortal singleton). A finalizing
+        // interpreter yields `None` -> fall back to an empty string (the same
+        // safe default as a raising/non-str callback), instead of the panic/crash
+        // a plain `attach` would cause at shutdown. Same finalization guard as
+        // `logging.rs`'s bridge.
+        Python::try_attach(|py| {
             match callback
                 .call0(py)
                 .and_then(|value| value.extract::<String>(py))
@@ -72,6 +79,7 @@ fn make_env_resolver(callback: Py<PyAny>) -> impl Fn() -> String + Send + Sync +
                 }
             }
         })
+        .unwrap_or_default()
     }
 }
 

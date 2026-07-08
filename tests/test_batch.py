@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+import threading
 import time
+from collections.abc import Callable
 
 import pytest
 
@@ -32,12 +34,46 @@ PY = sys.executable
 
 
 def test_output_all_returns_results_in_order() -> None:
-    results = output_all(
-        [Command(PY, ["-c", "print(1)"]), Command(PY, ["-c", "print(2)"])],
-        concurrency=2,
-    )
+    # The first command sleeps far longer than the second, so it *finishes*
+    # last -- an implementation that (bug) returned results in completion
+    # order rather than input order would put "2" first here. The previous
+    # version of this test raced two instantaneous commands, which a
+    # completion-order implementation would also have passed by coincidence
+    # (nothing forced their completion order to differ from input order).
+    slow = Command(PY, ["-c", "import time; time.sleep(0.5); print(1)"])
+    fast = Command(PY, ["-c", "print(2)"])
+    results = output_all([slow, fast], concurrency=2)
     assert all(isinstance(r, ProcessResult) for r in results)
     assert [r.stdout.strip() for r in results if isinstance(r, ProcessResult)] == ["1", "2"]
+
+
+def test_aoutput_all_returns_results_in_order() -> None:
+    # Async twin of test_output_all_returns_results_in_order: same inverted
+    # completion order (first command sleeps longest, finishes last), same
+    # input-order guarantee on the returned list.
+    async def scenario() -> list[ProcessResult | ProcessError]:
+        slow = Command(PY, ["-c", "import time; time.sleep(0.5); print(1)"])
+        fast = Command(PY, ["-c", "print(2)"])
+        return await aoutput_all([slow, fast], concurrency=2)
+
+    results = asyncio.run(scenario())
+    assert all(isinstance(r, ProcessResult) for r in results)
+    assert [r.stdout.strip() for r in results if isinstance(r, ProcessResult)] == ["1", "2"]
+
+
+def test_output_all_bytes_returns_results_in_order() -> None:
+    # Bytes twin, on the separate bytes result-conversion path
+    # (`bytes_results_to_pylist`) -- same inverted-completion-order guarantee.
+    # `aoutput_all_bytes` is not given its own copy: the async bridge is
+    # already exercised by `test_aoutput_all_returns_results_in_order` and the
+    # bytes conversion path by this test, and the ordering logic itself is
+    # shared by all four entry points, not reimplemented per variant.
+    slow_code = "import sys, time; time.sleep(0.5); sys.stdout.buffer.write(b'\\x01')"
+    slow = Command(PY, ["-c", slow_code])
+    fast = Command(PY, ["-c", "import sys; sys.stdout.buffer.write(b'\\x02')"])
+    results = output_all_bytes([slow, fast], concurrency=2)
+    assert all(isinstance(r, BytesResult) for r in results)
+    assert [r.stdout for r in results if isinstance(r, BytesResult)] == [b"\x01", b"\x02"]
 
 
 def test_output_all_rejects_zero_concurrency() -> None:
@@ -218,4 +254,109 @@ def test_output_all_slot_timeout_lands_in_its_own_slot_without_stalling_the_batc
     assert elapsed < 10.0, (
         f"batch took {elapsed:.1f}s -- the timed-out slot must not stall its siblings "
         "or the whole batch behind the slow command's own 30s sleep"
+    )
+
+
+# --- concurrency actually bounds live children (T-058) -----------------------
+
+
+def _mark_lifecycle_command(marks_dir: pathlib.Path, duration: float) -> Command:
+    """A `Command` that drops a marker file named after its own PID into
+    `marks_dir` on start, sleeps `duration` seconds, then removes the marker
+    before exiting -- the probe `_measure_peak_concurrency` polls to compute
+    how many of these children were alive (between marker-create and
+    marker-remove) at the same time. Naming the marker after the PID needs no
+    extra coordination between children: a PID is unique among the processes
+    currently alive on the system, and both the create and the remove happen
+    while this process (and thus its PID) is still alive.
+    """
+    code = (
+        "import pathlib, sys, time, os\n"
+        "marker = pathlib.Path(sys.argv[1]) / str(os.getpid())\n"
+        "marker.write_text('1')\n"
+        "time.sleep(float(sys.argv[2]))\n"
+        "marker.unlink()\n"
+    )
+    return Command(PY, ["-c", code, str(marks_dir), str(duration)])
+
+
+def _measure_peak_concurrency(marks_dir: pathlib.Path, run: Callable[[], object]) -> int:
+    """Run `run()` -- expected to drive one or more `_mark_lifecycle_command`
+    children through `marks_dir` to completion -- while a background thread
+    polls `marks_dir`'s contents every 10ms, returning the largest marker
+    count ever observed: the empirically measured peak parallelism, computed
+    from file-presence facts rather than guessed from timing.
+    """
+    peak = 0
+    stop = threading.Event()
+
+    def poll() -> None:
+        nonlocal peak
+        while not stop.is_set():
+            peak = max(peak, sum(1 for _ in marks_dir.iterdir()))
+            time.sleep(0.01)
+
+    poller = threading.Thread(target=poll)
+    poller.start()
+    try:
+        run()
+    finally:
+        stop.set()
+        poller.join()
+    return peak
+
+
+_CONCURRENCY_CASES = [
+    # N > 1 with more than N commands queued behind it: peak must never
+    # exceed N.
+    pytest.param(2, 5, id="concurrency=2-of-5"),
+    # N == 1: full serialization -- peak must never exceed 1.
+    pytest.param(1, 3, id="concurrency=1-fully-serialized"),
+]
+
+
+@pytest.mark.parametrize(("concurrency", "child_count"), _CONCURRENCY_CASES)
+def test_output_all_bounds_live_children_to_concurrency(
+    tmp_path: pathlib.Path, concurrency: int, child_count: int
+) -> None:
+    marks_dir = tmp_path / "marks"
+    marks_dir.mkdir()
+    commands = [_mark_lifecycle_command(marks_dir, 0.35) for _ in range(child_count)]
+
+    peak = _measure_peak_concurrency(
+        marks_dir, lambda: output_all(commands, concurrency=concurrency)
+    )
+
+    # Not a strict `==`: on a CPU-starved runner, child-process startup can be
+    # staggered enough that the poller never catches all N slots occupied at
+    # once, which would be a false failure unrelated to whether `output_all`
+    # itself enforces the limit. `peak >= 1` alone rules out a silently broken
+    # probe (e.g. an empty/never-created marks_dir); `peak <= concurrency` is
+    # the actual property under test -- and needs no timing margin to be
+    # trustworthy, since the poller can only ever *undercount* a fleeting
+    # overlap, never observe more live children than were truly alive at once.
+    assert 1 <= peak <= concurrency, (
+        f"observed peak of {peak} live children, expected 1..{concurrency} "
+        f"({child_count} commands queued behind a concurrency={concurrency} limit)"
+    )
+
+
+@pytest.mark.parametrize(("concurrency", "child_count"), _CONCURRENCY_CASES)
+def test_aoutput_all_bounds_live_children_to_concurrency(
+    tmp_path: pathlib.Path, concurrency: int, child_count: int
+) -> None:
+    marks_dir = tmp_path / "marks"
+    marks_dir.mkdir()
+    commands = [_mark_lifecycle_command(marks_dir, 0.35) for _ in range(child_count)]
+
+    async def scenario() -> None:
+        await aoutput_all(commands, concurrency=concurrency)
+
+    peak = _measure_peak_concurrency(marks_dir, lambda: asyncio.run(scenario()))
+
+    # See the sibling sync test for why this is `1 <= peak <= concurrency`
+    # rather than a strict `==`.
+    assert 1 <= peak <= concurrency, (
+        f"observed peak of {peak} live children, expected 1..{concurrency} "
+        f"({child_count} commands queued behind a concurrency={concurrency} limit)"
     )

@@ -188,6 +188,30 @@ object is a deferred feature) — if you need the lines *in Python*, loop over
 `stdout_lines()` instead. See [Streaming](streaming.md#tee-output-to-a-file) for
 backpressure, the no-op conditions, and write-error isolation.
 
+## Get live progress from a synchronous run
+
+`stdout_lines()` / `output_events()` need an event loop; `on_stdout_line(callback)`
+/ `on_stderr_line(callback)` give the plain, **blocking** `.output()` / `.run()`
+call the same live view — `callback` fires on every decoded line as it streams
+in, not just once the run finishes:
+
+```python
+from processkit import Command
+
+result = (
+    Command("cargo", ["build", "--release"])
+    .on_stdout_line(lambda line: print("build:", line))
+    .output()
+)
+# capture is untouched — result.stdout still has the whole output.
+```
+
+Works the same on the async verbs and on a streamed run — one callback, every
+path. A raising callback never derails the run (it goes to
+`sys.unraisablehook` instead). See
+[Streaming](streaming.md#live-per-line-callbacks) for the no-op conditions and
+the one-handler-per-stream rule.
+
 ## Tear a standalone process down deterministically
 
 A `RunningProcess` is a context manager. Exiting the block kills the process —

@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Command.on_stdout_line(callback)` / `Command.on_stderr_line(callback)`: a
+  `Callable[[str], None]` invoked with every decoded line as it is produced —
+  the way to give the **synchronous** surface (`.output()`/`.run()`) live
+  progress observation during an otherwise-blocking call, without losing the
+  full capture. Also fires on the async verbs and on a streamed run
+  (`start()`/`astart()` + `stdout_lines()`/`output_events()`); at most one
+  handler per stream (a repeat call replaces the previous one); a raising
+  callback is reported via `sys.unraisablehook` rather than propagated or
+  breaking the run. Inert under `stdout("inherit")`/`stdout("null")` (resp.
+  `stderr(...)`) and, for `on_stdout_line` only, under `output_bytes()` (which
+  captures stdout raw, bypassing the line pump — stderr still goes through it,
+  so `on_stderr_line` still fires there). See
+  `docs/streaming.md#live-per-line-callbacks`.
 - A `benchmarks/` suite (`pytest-benchmark`, new `bench` dependency-group)
   measuring spawn+capture overhead against `subprocess`/`asyncio.subprocess`,
   `ProcessGroup` start/exit, line-streaming throughput, and `output_all`

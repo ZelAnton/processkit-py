@@ -82,7 +82,7 @@ rides along with `backoff_initial` — set the base to opt into a custom schedul
 
 ## Stopping: the predicate
 
-Three gates are checked, in order, after every completed run:
+Four gates are checked, in order, after every completed run:
 
 1. **`stop_when=`** — a callable handed each run's [`ProcessResult`](commands.md);
    returning `True` ends supervision *regardless of policy* (`stopped ==

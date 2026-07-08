@@ -75,7 +75,7 @@ dev = [
 # griffe reading `_processkit.pyi` (and the pure-Python shim modules) instead.
 docs = [
   "mkdocs-material>=9,<10",
-  "mkdocstrings[python]>=0.27,<1",
+  "mkdocstrings[python]>=0.27,<2",
   # mkdocstrings renders each callable's signature in a formatted code block
   # (`separate_signature: true`); it uses Ruff to format it when present. Ruff
   # is already a `dev` gate here — pinning it into `docs` too keeps the

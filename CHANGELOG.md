@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Command.stdout_tee` / `Command.stderr_tee` now accept a **Python writer**
+  object (anything with a callable `write()` — `io.StringIO`, `sys.stderr`, a
+  text-mode file, a logger wrapper) in addition to a file path, mirroring the
+  child's output straight into your own console/buffer/logger while still
+  capturing it. Each decoded line (plus a `"\n"`) is passed to `write()` as a
+  `str` via an async-write bridge: every write is dispatched to the runtime's
+  blocking pool (re-acquiring the GIL there) and awaited on the capture pump, so
+  a slow — even sleeping — `write()` applies backpressure without blocking the
+  event loop or deadlocking the runtime. The object is discriminated from a path
+  by exposing `write` (neither `str` nor `pathlib.Path` does) and is never closed
+  for you; `append=True` is meaningful only for a file path and raises
+  `ValueError` if combined with a writer. A `write()` exception disables the tee
+  for the rest of the run (a `tracing` warning under `enable_logging()`, the same
+  isolation as the file tee) and is additionally reported via `sys.unraisablehook`
+  — the run and its captured result are unaffected. The previous "a file path
+  only, an arbitrary Python writer is deliberately not supported" restriction is
+  lifted. See `docs/streaming.md#tee-output-to-a-file`.
 - `Command.on_stdout_line(callback)` / `Command.on_stderr_line(callback)`: a
   `Callable[[str], None]` invoked with every decoded line as it is produced —
   the way to give the **synchronous** surface (`.output()`/`.run()`) live

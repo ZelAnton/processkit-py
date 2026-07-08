@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import io
     import os
     import pathlib
     from collections.abc import Callable
@@ -117,11 +118,14 @@ if TYPE_CHECKING:
     ) -> None:
         Command(program, mixed_list)  # type: ignore[arg-type]
 
-    # tee-to-file builders return a Command (chainable) and take a StrPath sink
-    # plus the keyword-only `append` flag.
-    def _tee_builder_return_types(cmd: Command, path: StrPath) -> None:
+    # tee builders return a Command (chainable) and take EITHER a StrPath sink
+    # (plus the keyword-only `append` flag) OR a Python writer object with a
+    # callable `write(str)` — e.g. `io.StringIO`, structurally a `SupportsWrite`.
+    def _tee_builder_return_types(cmd: Command, path: StrPath, writer: io.StringIO) -> None:
         assert_type(cmd.stdout_tee(path), Command)
         assert_type(cmd.stderr_tee(path, append=True), Command)
+        assert_type(cmd.stdout_tee(writer), Command)
+        assert_type(cmd.stderr_tee(writer), Command)
 
     # per-line handler builders return a Command (chainable) and take a
     # `Callable[[str], None]` callback.

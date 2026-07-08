@@ -1,6 +1,11 @@
 //! Small converters from Python-facing strings / numbers to crate types.
 
+use std::future::Future;
+use std::io;
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use processkit::prelude::Encoding;
@@ -14,6 +19,8 @@ use processkit::Signal as PkSignal;
 use processkit::StdioMode;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use tokio::io::AsyncWrite;
+use tokio::task::{JoinError, JoinHandle};
 
 /// Validate and convert a positive number of seconds into a `Duration`.
 pub(crate) fn positive_duration(seconds: f64, what: &str) -> PyResult<Duration> {
@@ -67,6 +74,248 @@ pub(crate) fn open_tee_sink(path: &Path, append: bool) -> PyResult<tokio::fs::Fi
         .append(append)
         .open(path)?;
     Ok(tokio::fs::File::from_std(std_file))
+}
+
+/// Decide whether a `stdout_tee`/`stderr_tee` argument is a **Python writer**
+/// object (dispatch it to [`PyWriterSink`]) or a **file path** (fall through to
+/// [`open_tee_sink`]). A writer is anything exposing a callable `write`
+/// attribute — an open file, `io.StringIO`, `sys.stderr`, a logger wrapper. The
+/// discriminator is safe because neither of the path forms carries one: `str`
+/// has no `write`, and `pathlib.Path` names its writers `write_text`/
+/// `write_bytes`, never a bare `write`. Anything that is neither a writer nor a
+/// path-like (e.g. an `int`) falls to the `open_tee_sink` branch, where the
+/// `PathBuf` extraction raises the usual `TypeError`.
+pub(crate) fn is_python_writer(sink: &Bound<'_, PyAny>) -> PyResult<bool> {
+    match sink.getattr("write") {
+        Ok(write) => Ok(write.is_callable()),
+        // No `write` attribute at all → treat as a path.
+        Err(_) => Ok(false),
+    }
+}
+
+/// A `tokio::io::AsyncWrite` sink that mirrors the decoded line stream of
+/// `stdout_tee`/`stderr_tee` into a caller-supplied Python object's `write()`
+/// method — an `io.StringIO`, `sys.stderr`, an open text file, a logger wrapper.
+///
+/// **Why a bridge is needed.** The crate's `Command::stdout_tee<W: AsyncWrite +
+/// Send + Unpin>` awaits each write **on the capture pump** (that await is the
+/// backpressure point: a slow sink slows the pump, fills the OS pipe, and makes
+/// the child block on its next write, rather than stalling the runtime). A
+/// Python `write()` needs the GIL and may block arbitrarily long (a real file, a
+/// socket, a logging handler), so calling it *inline on the pump task* would
+/// pin a runtime worker for the duration and re-couple the async loop to the
+/// writer's latency. Instead every write is dispatched to the runtime's
+/// **blocking pool** (`spawn_blocking`), which re-acquires the GIL there; the
+/// pump task only holds the returned `JoinHandle` and yields `Poll::Pending`
+/// until it resolves — so backpressure is preserved without blocking the event
+/// loop, and a slow (even sleeping) `write()` cannot deadlock the runtime.
+///
+/// **What `write()` receives.** The crate feeds this sink the *decoded* line
+/// text (already run through the configured encoding) re-encoded as UTF-8: each
+/// line's bytes, then `b"\n"`, per line. Each chunk is decoded back to `str` and
+/// passed to `write()`, so this is a **text** sink — pass a text-mode writer
+/// (`io.StringIO`, `sys.stderr`, a file opened in text mode, a logger wrapper),
+/// not a binary one (`io.BytesIO`, a `"wb"` file), whose `write(str)` would
+/// raise `TypeError`.
+///
+/// **Errors.** A `write()` (or `flush()`) exception is reported via
+/// `sys.unraisablehook` (so it is never silent, even without `enable_logging()`)
+/// and surfaced as an `io::Error`, which drives the crate's own tee-error
+/// isolation: the tee is disabled for the rest of the run (a `tracing` warn
+/// under `enable_logging()`) while the run and its captured result continue
+/// unaffected — the same contract as the file-path tee, plus the Python
+/// traceback via the unraisable hook.
+///
+/// We do **not** own the Python object (the caller keeps writing to their
+/// `sys.stderr` / open file after the run), so this never closes it: shutdown
+/// flushes but does not close.
+pub(crate) struct PyWriterSink {
+    /// The Python writer, refcounted so a `spawn_blocking` closure can hold its
+    /// own clone without needing the GIL to bump the Python refcount (the `Arc`
+    /// clone is GIL-free; the inner `Py` decref is deferred to a GIL point on
+    /// drop, which PyO3 handles).
+    writer: Arc<Py<PyAny>>,
+    /// The single in-flight blocking op, if any. The crate drives one write (or
+    /// the end-of-stream flush) to completion before starting the next, so a
+    /// single slot suffices; it is polled to completion before a new op starts.
+    pending: Option<Pending>,
+}
+
+/// The in-flight `spawn_blocking` op held across `Poll::Pending`. A `write`
+/// remembers how many buffer bytes it consumed (reported back to the pump on
+/// success); a `flush` has nothing to report.
+enum Pending {
+    Write { handle: BlockingOp, len: usize },
+    Flush { handle: BlockingOp },
+}
+
+/// A dispatched blocking Python call: `Ok(())` on success, `Err(message)` when
+/// `write()`/`flush()` raised (the exception was already sent to the unraisable
+/// hook; the message rides along only to enrich the `io::Error`).
+type BlockingOp = JoinHandle<Result<(), String>>;
+
+impl PyWriterSink {
+    pub(crate) fn new(writer: &Bound<'_, PyAny>) -> Self {
+        Self {
+            writer: Arc::new(writer.clone().unbind()),
+            pending: None,
+        }
+    }
+}
+
+/// Call `writer.write(text)` under the GIL, decoding the crate's UTF-8 line
+/// bytes back to `str`. Runs on a blocking-pool thread. A raising `write()` is
+/// reported via the unraisable hook here (we hold the GIL) and its message
+/// returned so the caller can build a matching `io::Error`.
+fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>) -> Result<(), String> {
+    Python::attach(|py| {
+        let bound = writer.bind(py);
+        // The crate emits a whole decoded line, then `b"\n"`, so `data` is
+        // always valid UTF-8; `from_utf8_lossy` is a panic-proof guard, not an
+        // expected lossy path.
+        let text = String::from_utf8_lossy(&data);
+        match bound.call_method1("write", (text.as_ref(),)) {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                let message = err.to_string();
+                err.write_unraisable(py, Some(bound));
+                Err(message)
+            }
+        }
+    })
+}
+
+/// Call `writer.flush()` under the GIL if the object exposes a callable `flush`
+/// (a bare write-only object — some logger wrappers — may not). Best-effort,
+/// like the crate's end-of-stream file flush; a raising flush goes to the
+/// unraisable hook.
+fn call_py_flush(writer: &Arc<Py<PyAny>>) -> Result<(), String> {
+    Python::attach(|py| {
+        let bound = writer.bind(py);
+        match bound.getattr("flush") {
+            Ok(flush) if flush.is_callable() => match flush.call0() {
+                Ok(_) => Ok(()),
+                Err(err) => {
+                    let message = err.to_string();
+                    err.write_unraisable(py, Some(bound));
+                    Err(message)
+                }
+            },
+            // No callable `flush` — nothing to do, not an error.
+            _ => Ok(()),
+        }
+    })
+}
+
+/// Map a finished blocking-write `JoinHandle` result to what `poll_write`
+/// returns: the consumed byte count on success, an `io::Error` on a `write()`
+/// exception or a task panic.
+fn finish_write(joined: Result<Result<(), String>, JoinError>, len: usize) -> io::Result<usize> {
+    match joined {
+        Ok(Ok(())) => Ok(len),
+        Ok(Err(message)) => Err(io::Error::other(message)),
+        Err(join_err) => Err(io::Error::other(format!(
+            "tee writer task failed: {join_err}"
+        ))),
+    }
+}
+
+/// Map a finished blocking-flush `JoinHandle` result to `poll_flush`'s return.
+fn finish_flush(joined: Result<Result<(), String>, JoinError>) -> io::Result<()> {
+    match joined {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(io::Error::other(message)),
+        Err(join_err) => Err(io::Error::other(format!(
+            "tee flush task failed: {join_err}"
+        ))),
+    }
+}
+
+impl AsyncWrite for PyWriterSink {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        // `PyWriterSink` is `Unpin` (all fields are), so `get_mut` is sound and
+        // lets the state machine mutate `pending` freely.
+        let this = self.get_mut();
+        loop {
+            match this.pending.take() {
+                Some(Pending::Write { mut handle, len }) => match Pin::new(&mut handle).poll(cx) {
+                    Poll::Pending => {
+                        this.pending = Some(Pending::Write { handle, len });
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(joined) => return Poll::Ready(finish_write(joined, len)),
+                },
+                // A flush is in flight (the crate never interleaves this before a
+                // write, but the `AsyncWrite` contract allows it): drain it, then
+                // loop round to start the write.
+                Some(Pending::Flush { mut handle }) => match Pin::new(&mut handle).poll(cx) {
+                    Poll::Pending => {
+                        this.pending = Some(Pending::Flush { handle });
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(_) => {}
+                },
+                None => {
+                    // Never report `Ok(0)` for a non-empty buffer — that signals
+                    // "wrote nothing" and `write_all` turns it into `WriteZero`.
+                    if buf.is_empty() {
+                        return Poll::Ready(Ok(0));
+                    }
+                    let writer = Arc::clone(&this.writer);
+                    let data = buf.to_vec();
+                    let handle = tokio::task::spawn_blocking(move || call_py_write(&writer, data));
+                    this.pending = Some(Pending::Write {
+                        handle,
+                        len: buf.len(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        loop {
+            match this.pending.take() {
+                // Drain any in-flight write first; a write error propagates out
+                // of flush too (the crate disables the tee either way).
+                Some(Pending::Write { mut handle, len }) => match Pin::new(&mut handle).poll(cx) {
+                    Poll::Pending => {
+                        this.pending = Some(Pending::Write { handle, len });
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(joined) => {
+                        if let Err(err) = finish_write(joined, len) {
+                            return Poll::Ready(Err(err));
+                        }
+                    }
+                },
+                Some(Pending::Flush { mut handle }) => match Pin::new(&mut handle).poll(cx) {
+                    Poll::Pending => {
+                        this.pending = Some(Pending::Flush { handle });
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(joined) => return Poll::Ready(finish_flush(joined)),
+                },
+                None => {
+                    let writer = Arc::clone(&this.writer);
+                    let handle = tokio::task::spawn_blocking(move || call_py_flush(&writer));
+                    this.pending = Some(Pending::Flush { handle });
+                }
+            }
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // We don't own the Python object — flush what's pending, never close it.
+        // (The crate's pump never calls this; implemented for contract
+        // completeness.)
+        self.poll_flush(cx)
+    }
 }
 
 /// Map a Python stdio-mode label to the crate `StdioMode`.

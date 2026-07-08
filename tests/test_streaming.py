@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import io
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -735,3 +737,63 @@ def test_shared_group_streaming_kills_a_signal_trapping_child_that_closes_stdout
         return pid
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+
+
+# --- stdout_tee / stderr_tee — Python writer sink, async paths (T-038) -------
+
+
+def test_stdout_tee_to_writer_fires_on_the_async_path() -> None:
+    # The writer-object tee works on the async verbs too — one bridge, both
+    # paths, exactly like the file tee and the per-line callbacks.
+    buf = io.StringIO()
+
+    async def scenario() -> ProcessResult:
+        return await Command(PY, ["-c", _PRINT_LINES]).stdout_tee(buf).aoutput()
+
+    result = asyncio.run(scenario())
+    assert result.is_success
+    assert buf.getvalue() == "line0\nline1\nline2\nline3\nline4\n"
+
+
+def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:
+    # A blocking (sleeping) write() must not stall the asyncio loop: each write is
+    # dispatched to the runtime's blocking pool, so a concurrent asyncio task keeps
+    # ticking while the tee absorbs the slow writer's backpressure — and every line
+    # still arrives (no deadlock).
+    class SlowWriter:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, data: str) -> int:
+            time.sleep(0.02)  # blocks ~20ms per write (time.sleep releases the GIL)
+            self.chunks.append(data)
+            return len(data)
+
+    async def scenario() -> tuple[ProcessResult, SlowWriter, int]:
+        writer = SlowWriter()
+        stop = asyncio.Event()
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not stop.is_set():
+                ticks += 1
+                await asyncio.sleep(0.005)
+
+        tick_task = asyncio.create_task(ticker())
+        # 8 lines, each a line-write + a "\n"-write of ~20ms => >300ms of blocking
+        # writes on the pool; the loop stays free to tick throughout.
+        code = "[print(f'line{i}', flush=True) for i in range(8)]"
+        result = await Command(PY, ["-c", code]).stdout_tee(writer).aoutput()
+        stop.set()
+        await tick_task
+        return result, writer, ticks
+
+    result, writer, ticks = asyncio.run(scenario())
+    assert result.is_success
+    # No deadlock and correct mirroring: every line reached the slow writer.
+    expected = "".join(f"line{i}\n" for i in range(8))
+    assert "".join(writer.chunks) == expected
+    # The event loop kept running during the blocking writes — had write() run on
+    # the loop thread, the ticker could not have advanced. Generous margin.
+    assert ticks > 3

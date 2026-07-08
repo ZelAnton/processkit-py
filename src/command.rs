@@ -26,6 +26,22 @@ pub(crate) struct PyCommand {
     pub(crate) inner: PkCommand,
 }
 
+/// Wrap a Python callable `(str) -> None` as an `on_stdout_line`/
+/// `on_stderr_line` handler. Mirrors `runner::make_invocation_callback`'s
+/// infallible-bridge convention: the handler observes output as a
+/// fire-and-forget side effect, so a raising callback is surfaced via the
+/// unraisable hook (visible on stderr) rather than propagated across the FFI
+/// boundary — a broken observer must not derail the run it was only watching.
+fn make_line_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync + 'static {
+    move |line| {
+        Python::attach(|py| {
+            if let Err(err) = callback.call1(py, (line,)) {
+                err.write_unraisable(py, Some(callback.bind(py)));
+            }
+        })
+    }
+}
+
 #[pymethods]
 impl PyCommand {
     #[new]
@@ -415,6 +431,59 @@ impl PyCommand {
         Ok(Self {
             inner: self.inner.clone().stderr_tee(sink),
         })
+    }
+
+    /// Call `callback` with every decoded stdout line as it is produced — the
+    /// one way to give the **synchronous** surface (`.output()`/`.run()`) live
+    /// progress observation during an otherwise-blocking call, without giving
+    /// up the full capture: `callback` observes the same decoded lines that
+    /// land in `ProcessResult.stdout`, it does not replace or consume them.
+    /// Also fires on the async verbs (`.aoutput()`/`.arun()`) and on streamed
+    /// runs (`start()`/`astart()` + `stdout_lines()`/`output_events()`) — one
+    /// callback, every path; it does not turn the sync surface async-only.
+    ///
+    /// `callback` is infallible from this binding's perspective: an exception
+    /// raised inside it is surfaced via the unraisable hook
+    /// (`sys.unraisablehook`) rather than propagated — a broken observer must
+    /// not derail the run it only watches, and the captured result is
+    /// unaffected either way.
+    ///
+    /// At most one handler per stream: a repeat call **replaces** the previous
+    /// one (builder semantics, like `timeout()`) — compose inside a single
+    /// Python callable to fan out to more than one observer.
+    ///
+    /// **No-op conditions (inherited from the crate, same family as
+    /// `stdout_tee`).** Fires from the line-capture pump, so it is inert under
+    /// `stdout("inherit")` / `stdout("null")` (no pump runs) and under
+    /// `output_bytes()` (stdout is captured raw there, bypassing the line
+    /// pump entirely).
+    fn on_stdout_line(&self, callback: Py<PyAny>) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .on_stdout_line(make_line_callback(callback)),
+        }
+    }
+
+    /// Call `callback` with every decoded stderr line as it is produced. Same
+    /// contract as `on_stdout_line` — full capture unaffected, fires on sync,
+    /// async, and streamed paths alike, infallible (a raising callback goes to
+    /// the unraisable hook, never propagates or aborts the run), and at most
+    /// one handler per stream (a repeat call replaces the previous one).
+    ///
+    /// Inert under `stderr("inherit")` / `stderr("null")` (no pump runs for
+    /// that stream). Unlike `on_stdout_line`, this one is **not** silenced by
+    /// `output_bytes()`: that verb only bypasses the *stdout* line pump for
+    /// its raw-bytes capture — stderr keeps decoding through the line pump
+    /// exactly as it does under `output()`, so this callback still fires.
+    fn on_stderr_line(&self, callback: Py<PyAny>) -> Self {
+        Self {
+            inner: self
+                .inner
+                .clone()
+                .on_stderr_line(make_line_callback(callback)),
+        }
     }
 
     /// Tie the child's lifetime to this process: if the parent dies, the OS kills

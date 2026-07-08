@@ -584,6 +584,22 @@ def test_stdout_tee_streams_with_start_and_stdout_lines(tmp_path: pathlib.Path) 
     assert sink.read_bytes() == b"".join(f"line{i}\n".encode() for i in range(5))
 
 
+def test_on_stdout_line_fires_with_start_and_stdout_lines() -> None:
+    # The per-line handler (T-037) also fires on a streamed run, not just the
+    # whole-run capture verbs — same lines the iterator yields.
+    seen: list[str] = []
+
+    async def scenario() -> list[str]:
+        proc = await Command(PY, ["-c", _PRINT_LINES]).on_stdout_line(seen.append).astart()
+        lines = [line.rstrip() async for line in proc.stdout_lines()]
+        await proc.afinish()
+        return lines
+
+    lines = asyncio.run(scenario())
+    assert lines == [f"line{i}" for i in range(5)]
+    assert seen == [f"line{i}" for i in range(5)]
+
+
 # --- context-manager teardown (standalone start() owns a private tree) -------
 
 

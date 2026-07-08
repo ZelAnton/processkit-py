@@ -30,6 +30,7 @@ from processkit import (
     Priority,
     ProcessError,
     ProcessNotFound,
+    ProcessResult,
     Timeout,
     Unsupported,
 )
@@ -1057,6 +1058,167 @@ def test_tee_write_error_is_isolated_from_the_run(tmp_path: pathlib.Path) -> Non
     result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee("/dev/full").output()
     assert result.is_success
     assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+# --- on_stdout_line / on_stderr_line — live per-line callbacks (T-037) -------
+
+
+def test_on_stdout_line_called_in_order_and_keeps_capture() -> None:
+    seen: list[str] = []
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(seen.append).output()
+    assert result.is_success
+    assert seen == ["alpha", "beta"]
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+def test_on_stderr_line_called_in_order_and_keeps_capture() -> None:
+    seen: list[str] = []
+    code = (
+        "import sys; "
+        "print('e1', file=sys.stderr, flush=True); "
+        "print('e2', file=sys.stderr, flush=True); "
+        "print('to-out', flush=True)"
+    )
+    result = Command(PY, ["-c", code]).on_stderr_line(seen.append).output()
+    assert result.stdout.strip() == "to-out"
+    assert seen == ["e1", "e2"]
+    assert result.stderr.splitlines() == ["e1", "e2"]
+
+
+def test_on_stdout_and_on_stderr_line_both_fire_independently() -> None:
+    out_seen: list[str] = []
+    err_seen: list[str] = []
+    code = (
+        "import sys; "
+        "print('o1', flush=True); "
+        "print('e1', file=sys.stderr, flush=True); "
+        "print('o2', flush=True)"
+    )
+    result = (
+        Command(PY, ["-c", code])
+        .on_stdout_line(out_seen.append)
+        .on_stderr_line(err_seen.append)
+        .output()
+    )
+    assert out_seen == ["o1", "o2"]
+    assert err_seen == ["e1"]
+    assert result.stdout.splitlines() == ["o1", "o2"]
+
+
+def test_aoutput_on_stdout_line_fires_on_the_async_path() -> None:
+    # Same callback, driven through the async verb — one bridge, both paths.
+    seen: list[str] = []
+
+    async def scenario() -> ProcessResult:
+        return await Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(seen.append).aoutput()
+
+    result = asyncio.run(scenario())
+    assert result.is_success
+    assert seen == ["alpha", "beta"]
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+def test_on_stdout_line_raising_callback_is_swallowed_and_capture_is_intact() -> None:
+    # Infallible from the binding's perspective: an exception inside the
+    # callback is surfaced via the unraisable hook (like
+    # DryRunRunner.on_invocation / ScriptedRunner.when), never propagated to
+    # the caller and never corrupting the captured result.
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(_line: str) -> None:
+        raise ValueError("callback exploded")
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        result = Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(boom).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert captured
+    assert isinstance(captured[0], ValueError)
+
+
+def test_on_stderr_line_raising_callback_is_swallowed_and_capture_is_intact() -> None:
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(_line: str) -> None:
+        raise ValueError("stderr callback exploded")
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        code = "import sys; print('e1', file=sys.stderr, flush=True)"
+        result = Command(PY, ["-c", code]).on_stderr_line(boom).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stderr.splitlines() == ["e1"]
+    assert captured
+    assert isinstance(captured[0], ValueError)
+
+
+def test_on_stdout_line_is_inert_under_stdout_null() -> None:
+    seen: list[str] = []
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("null").on_stdout_line(seen.append)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert seen == []
+
+
+def test_on_stdout_line_is_inert_under_stdout_inherit() -> None:
+    seen: list[str] = []
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("inherit").on_stdout_line(seen.append)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert seen == []
+
+
+def test_on_stdout_line_is_inert_under_output_bytes() -> None:
+    # output_bytes() captures stdout raw (no line pump) — same no-op family as
+    # stdout_tee under output_bytes().
+    seen: list[str] = []
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(seen.append).output_bytes()
+    assert result.stdout.split() == [b"alpha", b"beta"]
+    assert seen == []
+
+
+def test_on_stderr_line_still_fires_under_output_bytes() -> None:
+    # Unlike on_stdout_line, output_bytes() does NOT silence on_stderr_line:
+    # only the stdout capture goes raw there — stderr still decodes through
+    # the line pump exactly as it does under output().
+    seen: list[str] = []
+    code = "import sys; print('e1', file=sys.stderr, flush=True)"
+    result = Command(PY, ["-c", code]).on_stderr_line(seen.append).output_bytes()
+    assert seen == ["e1"]
+    assert result.stderr.splitlines() == ["e1"]
+
+
+def test_on_stdout_line_repeat_call_replaces_the_previous_handler() -> None:
+    first_seen: list[str] = []
+    second_seen: list[str] = []
+    result = (
+        Command(PY, ["-c", _TEE_TWO_LINES])
+        .on_stdout_line(first_seen.append)
+        .on_stdout_line(second_seen.append)
+        .output()
+    )
+    assert result.is_success
+    assert first_seen == []
+    assert second_seen == ["alpha", "beta"]
 
 
 def test_cancel_on_replaces_a_prior_token() -> None:

@@ -1,0 +1,98 @@
+name: Canary (CPython next)
+
+# Weekly, informational-only signal for forward compatibility: builds the abi3
+# extension and runs the full test suite against the NEXT (not-yet-released)
+# CPython pre-release, so a C-API/abi3-breaking change or a new
+# DeprecationWarning (the suite runs with `filterwarnings = error`, from
+# pyproject.toml) surfaces months before that CPython actually ships -- while
+# upstream can still act on it. This is deliberately a separate workflow from
+# `ci.yml` (which it never edits) and from `canary.yml` (crate-freshness, a
+# different axis entirely): a schedule-triggered failure here only reddens
+# this workflow's own status (and emails the actor who last touched this
+# file, same as `canary.yml` / `nightly-hardening.yml`) -- it can never redden
+# a push/PR gate, since nothing in ci.yml or branch protection depends on it.
+#
+# `actions/setup-python`'s `allow-prereleases: true` + a `-dev` version spec
+# resolves to the newest available pre-release build for that minor (alpha,
+# beta, or rc, whichever is current) via its published manifest -- no
+# deadsnakes fallback is needed at the time this workflow was authored.
+on:
+  schedule:
+    # 07:52 UTC every Wednesday -- off-the-hour and distinct from canary.yml's
+    # Tuesday 06:41 UTC, codeql.yml's Monday 05:32 UTC, and
+    # nightly-hardening.yml's daily 03:17 UTC slots, so scheduled workflows
+    # don't contend for runner capacity at the same instant.
+    - cron: '52 7 * * 3'
+  workflow_dispatch:
+
+concurrency:
+  group: canary-next
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  canary-next:
+    name: canary (CPython 3.15-dev)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up CPython 3.15-dev
+        id: setup-python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.15-dev'
+          allow-prereleases: true
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+
+      # Point `uv` at the pre-release interpreter that setup-python just
+      # provisioned (instead of the repo's pinned `.python-version` / uv's own
+      # managed pythons, which don't know about a not-yet-released CPython)
+      # for every `uv run` in this job.
+      - name: Build + test against CPython 3.15-dev
+        id: build
+        env:
+          UV_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        # `uv run` syncs a venv against the pinned interpreter (building the
+        # extension via `maturin develop` implicitly on sync would use the
+        # cached abi3 build, so `maturin develop` is called explicitly first
+        # to force a rebuild against 3.15-dev's headers) then runs the suite.
+        run: |
+          uv run maturin develop
+          uv run pytest
+
+      # TODO(free-threaded 3.15t): add a second matrix leg once BOTH of the
+      # following are confirmed available (unlike stable 3.14t, a
+      # free-threaded pre-release build for the *next* CPython is not
+      # guaranteed to exist this early in its release cycle):
+      #   * actions/setup-python's manifest publishes a `3.15t-dev` (or
+      #     equivalent) free-threaded pre-release build; and
+      #   * cibuildwheel (see pyproject.toml's `[tool.cibuildwheel] build`)
+      #     ships a matching `cp315t-*` identifier, so the eventual stable
+      #     free-threaded wheel this canary would be validating ahead of time
+      #     actually gets built at release.
+      # Until then, this job intentionally covers the abi3 (GIL) build only.
+
+      - name: Job summary
+        if: always()
+        env:
+          OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          {
+            echo "## Canary: CPython 3.15-dev (next release)"
+            echo
+            if [ "$OUTCOME" = "success" ]; then
+              echo "Build + test suite against CPython 3.15-dev: :white_check_mark: green."
+            else
+              echo "Build + test suite against CPython 3.15-dev: :x: red."
+              echo "See the failed step above for details."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

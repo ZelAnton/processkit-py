@@ -3,6 +3,18 @@
 The underlying crate emits a per-run debug event (tagged target `"processkit"`);
 `enable_logging()` installs a global subscriber that forwards each to a
 `logging.getLogger("processkit")` record. Off until called; idempotent.
+
+Process-global and irreversible, on purpose (there is no `disable_logging()` --
+a `tracing` subscriber, once installed, cannot be uninstalled): calling it here
+permanently switches the bridge on for the rest of whatever OS process runs
+these tests, i.e. for the rest of the pytest-xdist *worker* process this module
+happens to land in, not just for this module's own tests. That is deliberately
+harmless for the suite as a whole -- nothing elsewhere asserts the bridge is
+*off* (the crate emits its debug event either way; only whether Python
+`logging` mirrors it changes) -- but it is a real, latent order-dependency: do
+not add a test anywhere in this suite that depends on the bridge being
+uninstalled, since whether it already got flipped on by these tests running
+earlier in the same worker is not something a test can control or reset.
 """
 
 from __future__ import annotations
@@ -19,12 +31,19 @@ PY = sys.executable
 
 def test_enable_logging_is_idempotent() -> None:
     # First call installs the process-global subscriber; later calls are no-ops.
-    # Returns True while the bridge is active.
+    # Returns True while the bridge is active. See the module docstring: this
+    # global install is irreversible for the rest of the worker process, so
+    # this call also permanently arms `enable_logging()` for every other test
+    # that happens to share this xdist worker.
     assert enable_logging() is True
     assert enable_logging() is True
 
 
 def test_enable_logging_forwards_runs_to_python_logging(caplog: pytest.LogCaptureFixture) -> None:
+    # Irreversible + idempotent (see module docstring): may already be active
+    # from an earlier test in this worker -- this call is then a no-op, not a
+    # fresh install, and that's fine, since the assertions below only need the
+    # bridge active, not that *this* call was the one that armed it.
     enable_logging()
     # Pass a sentinel as argv: the events log program/pid/mechanism but never argv
     # or env (they routinely carry secrets), so the sentinel must NOT appear.

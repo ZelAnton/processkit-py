@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import os
     import pathlib
+    from collections.abc import Callable
     from typing import assert_type
 
     from processkit import (
@@ -121,6 +122,12 @@ if TYPE_CHECKING:
     def _tee_builder_return_types(cmd: Command, path: StrPath) -> None:
         assert_type(cmd.stdout_tee(path), Command)
         assert_type(cmd.stderr_tee(path, append=True), Command)
+
+    # per-line handler builders return a Command (chainable) and take a
+    # `Callable[[str], None]` callback.
+    def _line_handler_builder_return_types(cmd: Command, on_line: Callable[[str], None]) -> None:
+        assert_type(cmd.on_stdout_line(on_line), Command)
+        assert_type(cmd.on_stderr_line(on_line), Command)
 
     async def _command_async_verb_return_types(cmd: Command) -> None:
         assert_type(await cmd.aoutput(), ProcessResult)

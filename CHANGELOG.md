@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `outcome: Outcome` (the same value `RunProfile.outcome` and the checking-verb
   exceptions expose). A result held as data (`output()`/`output_bytes()`
   without `ensure_success()`) no longer requires re-deriving these by hand.
+  (An `output_contains_any` convenience was considered alongside these and
+  rejected: the underlying `processkit` crate has no such method, so it
+  wouldn't be parity with the crate or the exceptions like `diagnostic`/
+  `outcome` are — and it's a one-liner callers can already write themselves
+  via `combined`, e.g. `any(s in result.combined for s in needles)`.)
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

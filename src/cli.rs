@@ -41,7 +41,10 @@ enum ClientCall {
 impl ClientCall {
     fn from_py(call: &Bound<'_, PyAny>) -> PyResult<Self> {
         if let Ok(cmd) = call.cast::<PyCommand>() {
-            return Ok(Self::Cmd(Box::new(cmd.borrow().inner.clone())));
+            // `try_borrow`, not the panicking `borrow`: a concurrent access to
+            // this `Command` handle from another thread surfaces as a clean
+            // `PyErr`, not a `PanicException` across the FFI boundary.
+            return Ok(Self::Cmd(Box::new(cmd.try_borrow()?.inner.clone())));
         }
         Ok(Self::Args(call.extract()?))
     }

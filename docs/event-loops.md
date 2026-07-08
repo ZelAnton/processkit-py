@@ -127,10 +127,10 @@ loop-agnostic), then evaluate a loop-agnostic compiled bridge once
 ## The readiness helpers
 
 The readiness helpers ([`wait_for_port`](streaming.md#readiness-probes),
-`wait_for_line`, `wait_until`) are pure Python but built on asyncio primitives,
-so they follow the same rule as the rest of the surface: they need a running
-asyncio loop (asyncio, uvloop, or anyio-on-asyncio). In particular
-`wait_for_line` consumes a `RunningProcess` stream, which is itself
+`wait_for_line`, `wait_for_path`, `wait_until`) are pure Python but built on
+asyncio primitives, so they follow the same rule as the rest of the surface:
+they need a running asyncio loop (asyncio, uvloop, or anyio-on-asyncio). In
+particular `wait_for_line` consumes a `RunningProcess` stream, which is itself
 asyncio-bridged — so there is no configuration in which the streaming surface is
 asyncio-only while the helpers are not.
 

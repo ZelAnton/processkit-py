@@ -1,5 +1,6 @@
 //! The `Supervisor` (restart/backoff) and its `SupervisionOutcome`.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -214,6 +215,119 @@ impl PySupervisionOutcome {
             "SupervisionOutcome(restarts={}, stopped={:?}, storm_pauses={})",
             self.restarts, self.stopped, self.storm_pauses,
         )
+    }
+
+    /// Value equality over every field (`final_result` via the crate's own
+    /// `ProcessResult` `PartialEq`, plus `restarts`/`stopped`/`storm_pauses`) —
+    /// not `object`'s identity comparison.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.final_result == other.final_result
+            && self.restarts == other.restarts
+            && self.stopped == other.stopped
+            && self.storm_pauses == other.storm_pauses
+    }
+
+    /// Consistent with `__eq__`; see `ProcessResult.__hash__` for why
+    /// `final_result`'s hash uses a subset of its compared fields.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.final_result.program().hash(&mut hasher);
+        self.final_result.stdout().hash(&mut hasher);
+        self.final_result.stderr().hash(&mut hasher);
+        self.final_result.code().hash(&mut hasher);
+        self.final_result.signal().hash(&mut hasher);
+        self.final_result.timed_out().hash(&mut hasher);
+        self.restarts.hash(&mut hasher);
+        self.stopped.hash(&mut hasher);
+        self.storm_pauses.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Pickle support: `final_result` is reconstructed via
+    /// `result::scripted_process_result` (see that module's doc); `restarts`/
+    /// `stopped`/`storm_pauses` are plain carried-through values.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(
+        Py<PyAny>,
+        (
+            String,
+            String,
+            String,
+            Option<i32>,
+            Option<i32>,
+            bool,
+            bool,
+            u32,
+            String,
+            u32,
+        ),
+    )> {
+        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
+        Ok((
+            factory,
+            (
+                self.final_result.program().to_string(),
+                self.final_result.stdout().to_string(),
+                self.final_result.stderr().to_string(),
+                self.final_result.code(),
+                self.final_result.signal(),
+                self.final_result.timed_out(),
+                self.final_result.is_success(),
+                self.restarts,
+                self.stopped.to_string(),
+                self.storm_pauses,
+            ),
+        ))
+    }
+
+    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod
+    /// rather than a module-level function, so it rides along with the class
+    /// in the stub/API-surface checks — see `result::PyProcessResult::_unpickle`.
+    /// `final_result` is reconstructed via `result::scripted_process_result`
+    /// (see that module's doc); `restarts`/`stopped`/`storm_pauses` are plain
+    /// carried-through values.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _unpickle(
+        py: Python<'_>,
+        program: String,
+        stdout: String,
+        stderr: String,
+        code: Option<i32>,
+        signal: Option<i32>,
+        timed_out: bool,
+        is_success: bool,
+        restarts: u32,
+        stopped: String,
+        storm_pauses: u32,
+    ) -> PyResult<Self> {
+        let final_result = crate::result::scripted_process_result(
+            py, program, stdout, stderr, code, signal, timed_out, is_success,
+        )?;
+        Ok(Self {
+            final_result,
+            restarts,
+            stopped: static_stopped(&stopped),
+            storm_pauses,
+        })
+    }
+}
+
+/// Map a `SupervisionOutcome.stopped` string back to the module's `&'static
+/// str` vocabulary — the unpickling counterpart of `stop_reason_str`. An
+/// unrecognized value (should not happen for a value pickled by this same
+/// binding version) degrades to `"unknown"`, the same forward-compat fallback
+/// `stop_reason_str` itself uses for a future crate `StopReason` variant.
+fn static_stopped(value: &str) -> &'static str {
+    match value {
+        "policy_satisfied" => "policy_satisfied",
+        "predicate" => "predicate",
+        "restarts_exhausted" => "restarts_exhausted",
+        "gave_up" => "gave_up",
+        _ => "unknown",
     }
 }
 

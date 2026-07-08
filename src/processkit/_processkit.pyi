@@ -33,7 +33,12 @@ from ._types import (
 @final
 class ProcessResult:
     """The captured result of a finished run. A non-zero exit, a timeout, and a
-    signal-kill are all reported as data here — never raised by `output()`."""
+    signal-kill are all reported as data here — never raised by `output()`.
+
+    Value semantics: `==`/`hash()` compare every field (program/stdout/stderr/
+    outcome/success codes — not the incidental `duration_seconds`/`truncated`),
+    and instances are picklable (e.g. to return one from a
+    `concurrent.futures.ProcessPoolExecutor` worker)."""
 
     @property
     def stdout(self) -> str: ...
@@ -73,12 +78,32 @@ class ProcessResult:
         so it composes: ``cmd.output().ensure_success().stdout``."""
 
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    # `__reduce__`'s factory (see the class docstring on pickling); private,
+    # not for direct use — declared only so stubtest sees the real member.
+    @staticmethod
+    def _unpickle(
+        program: str,
+        stdout: str,
+        stderr: str,
+        code: int | None,
+        signal: int | None,
+        timed_out: bool,
+        is_success: bool,
+    ) -> ProcessResult: ...
 
 @final
 class BytesResult:
     """The captured result of a run with raw-bytes stdout (`Command.output_bytes()`);
     stderr stays decoded text. A non-zero exit, a timeout, and a signal-kill are
-    all data here, never raised."""
+    all data here, never raised.
+
+    Value semantics: `==`/`hash()` compare every field, same as `ProcessResult`.
+    **Not** picklable — raw stdout may not be valid UTF-8 and processkit has no
+    way to reconstruct one from arbitrary bytes outside a real run; pickling
+    raises `TypeError`. Pickle a `ProcessResult` (`Command.output()`) instead,
+    or persist the fields you need yourself."""
 
     @property
     def stdout(self) -> bytes: ...
@@ -117,6 +142,8 @@ class BytesResult:
         """See ``ProcessResult.ensure_success()``."""
 
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class Command:
@@ -319,6 +346,9 @@ class Outcome:
     `success_codes` context, so it cannot give the command's own success verdict
     the way `ProcessResult.is_success` does. Use `exited_zero` for the literal
     "exit code 0" test, or compare `code` against your accepted set.
+
+    Value semantics: `==`/`hash()` compare `code`/`signal`/`timed_out`
+    (equivalently, which variant this is and its payload); picklable.
     """
 
     @property
@@ -330,6 +360,11 @@ class Outcome:
     @property
     def exited_zero(self) -> bool: ...
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    # `__reduce__`'s factory — see `ProcessResult._unpickle`.
+    @staticmethod
+    def _unpickle(code: int | None, signal: int | None, timed_out: bool) -> Outcome: ...
 
 @final
 class Finished:
@@ -340,6 +375,8 @@ class Finished:
     reach through `.outcome` for fields they already use on `Outcome`. Like
     `Outcome`, it exposes `exited_zero` (literal "exit code 0"), not an
     `is_success` that would falsely imply `success_codes` were considered.
+
+    Value semantics: `==`/`hash()` compare `outcome`/`stderr`; picklable.
     """
 
     @property
@@ -355,6 +392,13 @@ class Finished:
     @property
     def signal(self) -> int | None: ...
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    # `__reduce__`'s factory — see `ProcessResult._unpickle`.
+    @staticmethod
+    def _unpickle(
+        stderr: str, code: int | None, signal: int | None, timed_out: bool
+    ) -> Finished: ...
 
 @final
 class OutputEvent:
@@ -563,7 +607,11 @@ class ProcessGroup(_RunnerVerbs):
 
 @final
 class SupervisionOutcome:
-    """The result of a `Supervisor.run()`."""
+    """The result of a `Supervisor.run()`.
+
+    Value semantics: `==`/`hash()` compare every field (`final_result` via
+    `ProcessResult`'s own comparison, plus `restarts`/`stopped`/`storm_pauses`);
+    picklable."""
 
     @property
     def final_result(self) -> ProcessResult: ...
@@ -579,6 +627,22 @@ class SupervisionOutcome:
     @property
     def storm_pauses(self) -> int: ...
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    # `__reduce__`'s factory — see `ProcessResult._unpickle`.
+    @staticmethod
+    def _unpickle(
+        program: str,
+        stdout: str,
+        stderr: str,
+        code: int | None,
+        signal: int | None,
+        timed_out: bool,
+        is_success: bool,
+        restarts: int,
+        stopped: str,
+        storm_pauses: int,
+    ) -> SupervisionOutcome: ...
 
 @final
 class Supervisor:
@@ -743,7 +807,14 @@ class Invocation:
 @final
 class RunProfile:
     """A resource-usage profile sampled across a run (`RunningProcess.profile`),
-    plus the run's `outcome` — `profile()` is a superset of `wait()`."""
+    plus the run's `outcome` — `profile()` is a superset of `wait()`.
+
+    Value semantics: `==`/`hash()` compare every field (`outcome`/
+    `duration_seconds`/`cpu_time_seconds`/`peak_memory_bytes`/`samples`; all
+    exact underneath, though two are exposed here as `float`). **Not**
+    picklable — it reports live OS resource-sampling telemetry that processkit
+    has no way to reconstruct outside an actual monitored run; pickling raises
+    `TypeError`."""
 
     @property
     def code(self) -> int | None: ...
@@ -764,6 +835,8 @@ class RunProfile:
     @property
     def avg_cpu_cores(self) -> float | None: ...
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class CliClient:

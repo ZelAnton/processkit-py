@@ -68,6 +68,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wouldn't be parity with the crate or the exceptions like `diagnostic`/
   `outcome` are — and it's a one-liner callers can already write themselves
   via `combined`, e.g. `any(s in result.combined for s in needles)`.)
+- Value semantics for the result types: `ProcessResult`, `BytesResult`,
+  `Outcome`, `Finished`, `RunProfile`, and `SupervisionOutcome` now define
+  `__eq__` (comparing every field the underlying `processkit` crate's own
+  `PartialEq` compares — not `object`'s previous identity comparison) and a
+  consistent `__hash__` (none of their fields are stored floats, so hashing is
+  sound), so two results can now be compared with `==` and used in a `set` or
+  as a `dict` key without a manual field-by-field comparison.
+  `ProcessResult`/`Outcome`/`Finished`/`SupervisionOutcome` are also picklable
+  — e.g. to return a `ProcessResult` from a
+  `concurrent.futures.ProcessPoolExecutor` worker. The underlying crate has no
+  public constructor for any of these types, so unpickling reconstructs one via
+  `processkit.testing.ScriptedRunner` (an in-memory, no-subprocess replay) —
+  faithful for every field the Python binding exposes, but a command that
+  customized `success_codes()`/`timeout()` is not guaranteed to compare `==`
+  its original after a round trip (those two fields have no Python accessor to
+  reconstruct exactly). `BytesResult` (raw stdout may not be valid UTF-8, and
+  the only reconstruction channel available is text-only) and `RunProfile`
+  (reports live OS resource-sampling telemetry with no synthesis path outside
+  an actual monitored run) explicitly do **not** support pickling and raise a
+  clear `TypeError` rather than failing silently or fabricating the missing
+  data.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

@@ -5,6 +5,7 @@ backoff validation, and the failure-storm guard.
 from __future__ import annotations
 
 import asyncio
+import pickle
 import sys
 
 import pytest
@@ -385,3 +386,32 @@ def test_supervisor_accepts_injected_runner() -> None:
 def test_supervisor_rejects_unsupported_runner_object() -> None:
     with pytest.raises(TypeError):
         Supervisor(Command(PY, ["-c", "pass"]), runner=object())  # type: ignore[arg-type]
+
+
+# --- value semantics: __eq__/__hash__/pickle (T-041) -------------------------
+
+
+def test_supervision_outcome_eq_and_hash_compare_by_value() -> None:
+    a = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    b = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    assert a is not b
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_supervision_outcome_not_equal_when_a_field_differs() -> None:
+    clean = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    crashed = Supervisor(Command(PY, ["-c", "import sys; sys.exit(1)"]), restart="never").run()
+    assert clean != crashed
+    assert clean != 5
+
+
+def test_supervision_outcome_pickle_round_trip_preserves_equality() -> None:
+    original = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    restored = pickle.loads(pickle.dumps(original))
+    assert restored == original
+    assert restored.restarts == original.restarts
+    assert restored.stopped == original.stopped
+    assert restored.storm_pauses == original.storm_pauses
+    assert restored.final_result == original.final_result
+    assert restored.final_result.is_success

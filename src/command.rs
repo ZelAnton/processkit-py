@@ -621,9 +621,11 @@ impl PyCommand {
     /// priority class, alongside `create_no_window`.
     ///
     /// Unlike the privilege/POSIX-only knobs above, `priority` is supported on
-    /// **both** platform families and never raises `Unsupported`. The one
-    /// caveat is `"high"` on Unix: lowering `nice` below its inherited value
-    /// needs `CAP_SYS_NICE` (Linux) or an equivalent privilege elsewhere;
+    /// **both** platform families and never raises `Unsupported`. On Unix,
+    /// `"high"`, `"above_normal"`, and `"normal"` under a positive-niced parent
+    /// raise priority relative to the inherited value. Lowering `nice` below
+    /// its inherited value needs `CAP_SYS_NICE` (Linux), root, or an equivalent
+    /// privilege elsewhere;
     /// without it the OS refuses the change and the run raises
     /// `PermissionDenied` (never a silent downgrade to a lower priority) —
     /// Windows needs no special privilege for its `HIGH_PRIORITY_CLASS`.

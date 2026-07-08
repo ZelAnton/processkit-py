@@ -82,6 +82,11 @@ docs = [
   # published API-reference signatures readable (multi-line for the wide
   # `Supervisor(...)` / `CliClient(...)` constructors) instead of one long line.
   "ruff>=0.15.20",
+  # Deploys versioned docs to the `gh-pages` branch (`mike deploy`, driven by
+  # docs.yml on every push to main and by release.yml on each published
+  # release) and drives mkdocs-material's version selector (`extra.version.
+  # provider: mike` in mkdocs.yml). See RELEASING.md.
+  "mike>=2,<3",
 ]
 # The `benchmarks/` suite (overhead vs `subprocess`/`asyncio.subprocess`,
 # `ProcessGroup` start/exit, line-streaming throughput, `output_all` at

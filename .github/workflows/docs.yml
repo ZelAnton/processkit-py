@@ -7,6 +7,24 @@ name: Docs
 # "Source: GitHub Actions" (repo Settings -> Pages), then set the DOCS_DEPLOY
 # repository variable to `true` (Settings -> Secrets and variables -> Actions ->
 # Variables). See RELEASING.md.
+#
+# Versioned via mike (docs/../mkdocs.yml sets `extra.version.provider: mike`):
+# `mike deploy` builds the site and commits it to the `gh-pages` branch under a
+# version slot (plus any aliases), so `gh-pages` accumulates every published
+# version side by side instead of a single overwritten "latest" build. Pages
+# itself is NOT switched to "Deploy from a branch" — Settings -> Pages stays on
+# "Source: GitHub Actions" (this repo's existing/intended setup): the `publish`
+# job below simply checks out the whole `gh-pages` tree (all versions) and
+# republishes it as a Pages *artifact*, the same way the old single-slice build
+# did. Release versions (e.g. `1.2`, alias `latest`) are deployed by
+# release.yml, only at actual publish time; this workflow only ever deploys the
+# rolling `dev` slot for ordinary pushes to main.
+#
+# `--alias-type redirect` (used here and in release.yml) is deliberate: mike
+# defaults to symlink aliases, but the `publish` job below tars/uploads the
+# `gh-pages` checkout as a Pages artifact rather than serving the branch
+# checkout directly, and symlinks are not guaranteed to survive that path —
+# redirects are plain HTML and always safe.
 
 on:
   push:
@@ -26,6 +44,8 @@ permissions:
 
 jobs:
   build:
+    # Strict link/anchor gate only (no gh-pages / mike involvement): runs on
+    # every PR, push, and manual dispatch, regardless of DOCS_DEPLOY.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -43,14 +63,46 @@ jobs:
       - run: uv sync --only-group docs --no-install-project
       - name: Build site (strict)
         run: uv run --no-sync mkdocs build --strict
-      # Upload only when we will actually deploy (push to main, opt-in via DOCS_DEPLOY).
-      - if: github.event_name == 'push' && vars.DOCS_DEPLOY == 'true'
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: site
 
-  deploy:
+  # Deploy the rolling `dev` slot to the `gh-pages` branch on every push to main
+  # (opt-in via DOCS_DEPLOY, same gate as the old single-slice deploy). This is
+  # the replacement for repeatedly overwriting a single "latest" build: `dev`
+  # is its own slot in `gh-pages` (see docs.yml comment above), left alongside
+  # whatever release versions release.yml has deployed there.
+  deploy-dev:
     needs: build
+    if: github.event_name == 'push' && vars.DOCS_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # mike commits + pushes the `dev` build to gh-pages
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true # mike needs push access to gh-pages
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --only-group docs --no-install-project
+      - name: Configure git identity for the mike commit
+        run: |
+          git config user.name "Anton Zhelezniakou"
+          git config user.email "github@zelanton.net"
+      # mike commits onto the local gh-pages branch, merging with whatever is
+      # already there; without this the (shallow, main-only) checkout above has
+      # no local gh-pages history to merge into, and mike would clobber the
+      # branch on push. `|| true`: gh-pages may not exist yet (first-ever deploy).
+      - name: Fetch existing gh-pages branch
+        run: git fetch origin gh-pages --depth=1 || true
+      - name: Deploy dev docs (mike)
+        run: |
+          set -euo pipefail
+          uv run --no-sync mike deploy --push --title "dev (main, unreleased)" dev
+
+  # Republish the full versioned gh-pages tree (dev + every released version)
+  # as a GitHub Pages *artifact* — Pages stays on "Source: GitHub Actions", it
+  # is never switched to "Deploy from a branch".
+  publish-pages:
+    needs: deploy-dev
     if: github.event_name == 'push' && vars.DOCS_DEPLOY == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -60,6 +112,13 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: gh-pages
+          persist-credentials: false
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: .
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

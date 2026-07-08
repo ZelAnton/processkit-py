@@ -184,6 +184,32 @@ outcome = Supervisor(Command("my-server"), max_restarts=3).run()
 outcome = await Supervisor(Command("my-server"), max_restarts=3).arun()
 ```
 
+**Always `await` `arun()` — a dropped awaitable does not stop supervision.**
+`arun()` spawns the supervision loop onto the shared tokio runtime the moment
+you call it, not lazily when you `await` it. If you drop the returned
+awaitable without awaiting it (e.g. `asyncio.ensure_future(sv.arun())` and
+never following up, or closing the event loop first), the spawned task keeps
+running detached from any Python owner — it is *not* cancelled by the drop.
+For a bounded supervisor (`max_restarts=`/`stop_when=` set) that task simply
+finishes unobserved and its result is discarded. For an **unbounded**
+`restart="always"` supervisor with neither set, the task never finishes: it
+restarts the child forever with no way to reclaim it, and it permanently pins
+every `stop_when=`/`give_up_when=` callback (and whatever they close over) for
+the life of the interpreter. Either await the coroutine, or give
+`restart="always"` a `max_restarts=`/`stop_when=` so it has a defined end:
+
+```python
+# Unbounded and unawaited — leaks a task that restarts forever:
+asyncio.ensure_future(Supervisor(Command("flaky-worker"), restart="always").arun())
+
+# Fixed: bound it...
+outcome = await Supervisor(Command("flaky-worker"), restart="always", max_restarts=5).arun()
+
+# ...or always await what arun() returns.
+task = asyncio.ensure_future(Supervisor(Command("flaky-worker"), restart="always").arun())
+outcome = await task
+```
+
 A `Supervisor` keeps *one* command alive across restarts; to contain a whole *tree*
 of processes under kill-on-exit semantics, reach for a
 [process group](process-groups.md) instead. To exercise restart/stop logic without

@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "processkit-py"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "processkit",
  "pyo3",

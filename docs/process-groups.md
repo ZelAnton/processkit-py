@@ -144,6 +144,21 @@ path, which a hard kill skips. There is **no** Python destructor guarantee:
 them. Lean on the context manager. Full matrix in
 [Platform support](platforms.md).
 
+**The `process_group` backend's `setsid()`/`setpgid()` escape.** On
+macOS/BSD, and on Linux whenever the group falls back from `cgroup_v2` to
+`process_group` (no cgroup-v2 delegation — see
+[the mechanism](#creating-a-group-and-the-mechanism)), every teardown path
+above — the graceful `with`-exit *and* `kill_all()` — reaches the tree via
+`killpg` against the POSIX process group. A child that calls `setsid()` or
+`setpgid()` to leave that group before teardown runs is no longer a member,
+so `killpg` does not reach it: it survives even a normal, non-crashing
+`with`-exit, not just a hard kill of the parent. This is the standard trick
+hostile code uses to outlive a sandbox; an ordinary double-fork that never
+calls `setsid()`/`setpgid()` stays in the group and is reaped normally. The
+Windows Job Object and the Linux cgroup-v2 backend have no such escape —
+membership there is kernel-tracked, not session-based, so a descendant
+cannot opt itself out.
+
 *Deeper: keeping a service alive across crashes is [Supervision](supervision.md).*
 
 ## Signalling the whole tree

@@ -17,8 +17,10 @@ python examples/01_no_orphan_guarantee.py
 | [`01_no_orphan_guarantee.py`](01_no_orphan_guarantee.py) | A `ProcessGroup` reaps a whole child→grandchild tree on block exit | The core guarantee |
 | [`02_wait_for_server.py`](02_wait_for_server.py) | Start a server, `await wait_for_port(...)`, make a request, tear the tree down (async) | CI orchestration / integration tests |
 | [`03_supervise_until_healthy.py`](03_supervise_until_healthy.py) | `Supervisor` with restart + backoff + a `stop_when` predicate | Agents / long-lived services |
-| [`04_sandbox_resource_limits.py`](04_sandbox_resource_limits.py) | Memory / process / CPU caps on a locked-down untrusted child | Sandboxing untrusted tools |
+| [`04_sandbox_resource_limits.py`](04_sandbox_resource_limits.py) | Memory / process / CPU caps, per-call output limits, timeouts, and teardown across a locked-down agent's tool calls | Sandboxing untrusted tools |
 
 For task-sized snippets rather than whole programs, see the
 [cookbook](../docs/cookbook.md); for the full treatment of any area, the
-[guide set](../docs/README.md).
+[guide set](../docs/README.md). The [Sandboxing untrusted tools](../docs/sandboxing.md)
+guide walks through the recipe behind `04_sandbox_resource_limits.py` in full,
+plus a checklist and an honest threat model.

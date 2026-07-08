@@ -28,6 +28,7 @@ from ._types import (
     RunnerLike,
     SignalName,
     StrPath,
+    SupportsWrite,
 )
 
 @final
@@ -180,25 +181,47 @@ class Command:
         ``line_terminator``); stdout framing is left untouched. Handy when
         progress output lands on stderr while stdout stays newline-structured."""
 
-    def stdout_tee(self, path: StrPath, *, append: bool = ...) -> Command:
-        """Tee every decoded stdout line (line + ``\\n``) to the file at ``path``
-        as it is produced, while the run *also* keeps capturing the full output
-        (the sink does not steal from ``ProcessResult.stdout``).
+    def stdout_tee(
+        self, sink: StrPath | SupportsWrite, *, append: bool = ...
+    ) -> Command:
+        """Tee every decoded stdout line (line + ``\\n``) to ``sink`` as it is
+        produced, while the run *also* keeps capturing the full output (the sink
+        does not steal from ``ProcessResult.stdout``).
 
-        The sink is a **file path only** (``str`` / ``os.PathLike[str]``) — an
-        arbitrary Python writer is deliberately not supported here (a separate,
-        deferred feature). The file is opened **at build time** (not at run):
-        created if absent and truncated, or opened in append mode when
-        ``append=True``; an unopenable path raises the matching ``OSError``
-        subclass right here. Inert unless stdout is piped through the line pump
-        — a no-op under ``stdout("inherit")`` / ``stdout("null")`` and under
-        ``output_bytes()`` (raw capture)."""
+        ``sink`` is either a **file path** (``str`` / ``os.PathLike[str]``) or a
+        **Python writer** — any object with a callable ``write()`` (an
+        ``io.StringIO``, ``sys.stderr``, a text-mode file, a logger wrapper),
+        picked apart by whether it exposes ``write`` (neither ``str`` nor
+        ``pathlib.Path`` does).
 
-    def stderr_tee(self, path: StrPath, *, append: bool = ...) -> Command:
-        """Tee every decoded stderr line to the file at ``path``. Same contract
-        as ``stdout_tee`` — a file-path sink, opened at build time (truncate by
-        default or ``append``), coexisting with capture, inert unless stderr is
-        piped through the line pump."""
+        - *File path:* teed as raw UTF-8 bytes, opened **at build time** (not at
+          run) — created if absent and truncated, or append mode when
+          ``append=True``; an unopenable path raises the matching ``OSError``
+          subclass right here.
+        - *Writer:* each decoded line (then ``"\\n"``) is passed to ``write()``
+          as a ``str`` (a text sink — a binary writer whose ``write(str)`` raises
+          ``TypeError`` is the wrong object here). Every write is dispatched to a
+          blocking thread and awaited on the pump, so a slow ``write()`` applies
+          backpressure without blocking the event loop; the object is **not**
+          closed for you. ``append`` is meaningless for a writer — passing
+          ``append=True`` with one raises ``ValueError``.
+
+        A write error disables the tee for the rest of the run (a ``tracing``
+        warning under ``enable_logging()``) while the run and its captured result
+        continue unaffected; a writer's ``write()`` exception is additionally
+        reported via ``sys.unraisablehook``. Inert unless stdout is piped through
+        the line pump — a no-op under ``stdout("inherit")`` / ``stdout("null")``
+        and under ``output_bytes()`` (raw capture)."""
+
+    def stderr_tee(
+        self, sink: StrPath | SupportsWrite, *, append: bool = ...
+    ) -> Command:
+        """Tee every decoded stderr line to ``sink``. Same contract as
+        ``stdout_tee`` — a file path (opened at build time, truncate by default
+        or ``append``) or a Python writer object with a callable ``write()`` (fed
+        each decoded line as a ``str`` via the same blocking-pool async-write
+        bridge, never closed for you), coexisting with capture, inert unless
+        stderr is piped through the line pump."""
 
     def on_stdout_line(self, callback: Callable[[str], None]) -> Command:
         """Call ``callback`` with every decoded stdout line as it is produced —

@@ -11,6 +11,7 @@ without assuming any system binary is present.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import pathlib
@@ -1206,6 +1207,134 @@ def test_tee_write_error_is_isolated_from_the_run(tmp_path: pathlib.Path) -> Non
     result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee("/dev/full").output()
     assert result.is_success
     assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+# --- stdout_tee / stderr_tee — Python writer sink (T-038) --------------------
+
+
+def test_stdout_tee_to_stringio_mirrors_lines_and_keeps_capture() -> None:
+    # A Python writer (here io.StringIO) receives every decoded line + "\n" as it
+    # lands — the text-object twin of the file-path tee — while capture stays
+    # whole (the tee does not steal output from ProcessResult.stdout).
+    buf = io.StringIO()
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(buf).output()
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert buf.getvalue() == "alpha\nbeta\n"
+
+
+def test_stderr_tee_to_stringio_mirrors_lines_and_keeps_capture() -> None:
+    buf = io.StringIO()
+    code = "import sys; print('to-err', file=sys.stderr, flush=True); print('to-out', flush=True)"
+    result = Command(PY, ["-c", code]).stderr_tee(buf).output()
+    assert result.stdout.strip() == "to-out"
+    assert "to-err" in result.stderr
+    assert buf.getvalue() == "to-err\n"
+
+
+def test_stdout_tee_to_custom_writer_object() -> None:
+    # Any object with a callable write(str) qualifies — not just io.StringIO.
+    class Collector:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, data: str) -> int:
+            self.chunks.append(data)
+            return len(data)
+
+    sink = Collector()
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(sink).output()
+    assert result.is_success
+    assert "".join(sink.chunks) == "alpha\nbeta\n"
+
+
+def test_tee_writer_receives_str_not_bytes() -> None:
+    # The sink is a TEXT sink: the decoded line is passed to write() as `str`,
+    # not `bytes` (so io.StringIO / sys.stderr fit; a binary sink would not).
+    seen_types: set[type] = set()
+
+    class TypeProbe:
+        def write(self, data: object) -> None:
+            seen_types.add(type(data))
+
+    Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(TypeProbe()).output()
+    assert seen_types == {str}
+
+
+def test_tee_writer_raising_write_is_isolated_and_disables_the_tee() -> None:
+    # A write() that raises does not derail the run: the exception is surfaced via
+    # sys.unraisablehook (never propagated to the caller), the tee is disabled
+    # after the first failure (a permanently-broken writer is not re-invoked once
+    # per line), and the captured result stays intact.
+    captured: list[BaseException] = []
+    calls: list[str] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    class Boom:
+        def write(self, data: str) -> None:
+            calls.append(data)
+            raise ValueError("writer exploded")
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(Boom()).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert captured
+    assert isinstance(captured[0], ValueError)
+    # Disabled after the first error: only the first line's write was attempted.
+    assert calls == ["alpha"]
+
+
+def test_stdout_tee_file_and_stderr_tee_object_coexist(tmp_path: pathlib.Path) -> None:
+    # Both sink forms active at once on one command: a file path on stdout and a
+    # Python writer on stderr, each receiving only its own stream.
+    out = tmp_path / "out.log"
+    err_buf = io.StringIO()
+    code = (
+        "import sys; print('o1', flush=True); "
+        "print('e1', file=sys.stderr, flush=True); print('o2', flush=True)"
+    )
+    result = Command(PY, ["-c", code]).stdout_tee(out).stderr_tee(err_buf).output()
+    assert result.stdout.splitlines() == ["o1", "o2"]
+    assert out.read_bytes() == b"o1\no2\n"
+    assert err_buf.getvalue() == "e1\n"
+
+
+def test_tee_writer_rejects_append_true() -> None:
+    # append tunes how a FILE is opened; it is meaningless for a writer object, so
+    # passing it is a loud ValueError rather than a silent no-op.
+    with pytest.raises(ValueError, match="append"):
+        Command(PY, ["-c", "pass"]).stdout_tee(io.StringIO(), append=True)
+    with pytest.raises(ValueError, match="append"):
+        Command(PY, ["-c", "pass"]).stderr_tee(io.StringIO(), append=True)
+
+
+def test_tee_writer_is_not_closed_after_the_run() -> None:
+    # The tee does not own the object (you passed your own sys.stderr / open
+    # file), so it must stay open and usable once the run is done.
+    buf = io.StringIO()
+    Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(buf).output()
+    assert not buf.closed
+    buf.write("still-usable")  # would raise on a closed StringIO
+    assert buf.getvalue() == "alpha\nbeta\nstill-usable"
+
+
+def test_tee_writer_is_inert_under_output_bytes() -> None:
+    # Same no-op family as the file tee: output_bytes() captures stdout raw (no
+    # line pump), so the stdout writer tee never fires.
+    buf = io.StringIO()
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(buf).output_bytes()
+    assert result.stdout.split() == [b"alpha", b"beta"]
+    assert buf.getvalue() == ""
 
 
 # --- on_stdout_line / on_stderr_line — live per-line callbacks (T-037) -------

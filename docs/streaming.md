@@ -116,9 +116,9 @@ to know:
 
 ## Tee output to a file
 
-Sometimes you want *both*: a live log written to a file **and** the captured
+Sometimes you want *both*: a live log written somewhere **and** the captured
 result in hand — a build whose output tails into `build.log` while you still get
-the final `ProcessResult` to inspect. `stdout_tee(path)` / `stderr_tee(path)` do
+the final `ProcessResult` to inspect. `stdout_tee(sink)` / `stderr_tee(sink)` do
 that in one line, with no manual loop over `stdout_lines()`:
 
 ```python
@@ -132,43 +132,72 @@ assert open("build.log").read().startswith("   Compiling")
 print(result.stdout)          # the full captured stdout, same as without the tee
 ```
 
-Each decoded line is written to the file as it lands, followed by a `\n` (a CRLF
+Each decoded line is written to the sink as it lands, followed by a `\n` (a CRLF
 terminator is normalized to `\n`). The tee runs *independently* of capture, so
 `result.stdout` still holds the whole output. It also works with the streaming
 verbs — `start()` + `stdout_lines()` / `output_events()` — not just the one-shot
-capture verbs; the same lines flow to the iterator and the file.
+capture verbs; the same lines flow to the iterator and the sink.
+
+The sink can also be a **Python writer** — any object with a `write()` method
+(`io.StringIO`, `sys.stderr`, a text-mode file, a logger wrapper) — to mirror
+the child's output straight into your own console, buffer, or logger while still
+capturing it:
+
+```python
+import io
+from processkit import Command
+
+buf = io.StringIO()
+result = Command("cargo", ["build", "--release"]).stdout_tee(buf).output()
+
+# Each decoded line (plus a "\n") was passed to buf.write() as a str, live …
+assert buf.getvalue().startswith("   Compiling")
+# … and capture is still whole — the object is only mirrored to, never drained.
+print(result.stdout)
+```
 
 Things to know:
 
-- **A file path, not an arbitrary writer.** The sink is a filesystem path (`str`
-  or `os.PathLike[str]`). Teeing to a *Python* object as a live async writer (a
-  `io.StringIO`, a socket, your own class) is **not supported yet** — a bridge
-  that dispatches each line to a thread, re-acquires the GIL, and honors
-  backpressure across the FFI boundary is a separate, deferred feature. For now,
-  tee to a file; if you need the lines in Python, loop over `stdout_lines()`
-  yourself.
-- **The file is opened now, at build time.** `stdout_tee(path)` opens the file
+- **A file path or a Python writer.** The sink is either a filesystem path (`str`
+  or `os.PathLike[str]`) or an object with a callable `write()` — the two are
+  told apart by whether the argument exposes `write` (neither `str` nor
+  `pathlib.Path` does). A writer is a **text** sink: each decoded line is passed
+  to `write()` as a `str`, so pass a text-mode object (`io.StringIO`,
+  `sys.stderr`, a file opened in text mode, a logger wrapper), not a binary one
+  (`io.BytesIO`, a `"wb"` file) whose `write(str)` would raise `TypeError`. The
+  writer is **not** owned — it is never closed for you, so you keep using your
+  `sys.stderr` / open file after the run. `append` tunes only how a *file path*
+  is opened (see below); passing `append=True` with a writer raises `ValueError`
+  rather than being silently ignored.
+- **A file is opened now, at build time.** `stdout_tee(path)` opens the file
   the moment you call it (the crate takes a concrete sink, not a lazy factory),
   **not** when the command runs. So an unopenable path — a missing parent
   directory, a directory, a permission denial — raises the matching `OSError`
   (`FileNotFoundError`, `IsADirectoryError`, `PermissionError`, …) right at the
-  builder call, before any run verb.
-- **Truncate by default, or append.** The file is created if absent and
-  truncated; pass `append=True` to open it in append mode instead (to grow an
-  existing log). Because the open handle is shared across re-runs of the *same*
-  built `Command` (retries, a reused command, `Supervisor` incarnations), those
-  sequential runs **append** to the one file with no delimiter, and concurrent
-  clones (pipeline stages) **interleave**. For per-run separation, build a fresh
-  `Command` (a fresh path) per run.
+  builder call, before any run verb. (A writer object is used as-is, so nothing
+  is opened — this timing applies only to the path form.)
+- **Truncate by default, or append (file paths).** A file sink is created if
+  absent and truncated; pass `append=True` to open it in append mode instead (to
+  grow an existing log). Because the open handle is shared across re-runs of the
+  *same* built `Command` (retries, a reused command, `Supervisor` incarnations),
+  those sequential runs **append** to the one file with no delimiter, and
+  concurrent clones (pipeline stages) **interleave**. For per-run separation,
+  build a fresh `Command` (a fresh path) per run.
 - **A slow sink applies backpressure, it does not block the runtime.** The tee
   write is awaited on the capture pump, so a slow disk slows the pump, fills the
   OS pipe, and makes the child block on its next write — rather than stalling the
-  event loop. A sink that blocks *forever* (not merely slow) parks the pump until
-  teardown; a plain file never does this.
-- **A tee write error is isolated.** If a write to the file fails mid-run, the
+  event loop. A Python writer gets the same treatment: each `write()` is
+  dispatched to the runtime's blocking pool (re-acquiring the GIL there), so even
+  a `write()` that *sleeps* applies backpressure without blocking the async event
+  loop or deadlocking the runtime. A sink that blocks *forever* (not merely slow)
+  parks the pump until teardown; a plain file or a prompt writer never does this.
+- **A tee write error is isolated.** If a write to the sink fails mid-run, the
   tee is disabled for the rest of the run and a warning is emitted (under
   [`enable_logging()`](cookbook.md#see-what-processkit-runs-logging)) — the run
-  itself and its captured result are unaffected, never broken by the sink.
+  itself and its captured result are unaffected, never broken by the sink. For a
+  Python writer, a `write()` (or `flush()`) exception is additionally reported
+  via `sys.unraisablehook`, so it is visible even without `enable_logging()`
+  (and catchable in a test via a custom hook).
 - **No-op unless the line pump runs.** The tee fires from the line-capture pump,
   so it is inert under `stdout("inherit")` / `stdout("null")` (no pump) and under
   `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs

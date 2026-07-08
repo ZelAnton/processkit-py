@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 from ._processkit import (
     DryRunRunner,
@@ -74,6 +74,22 @@ from ._processkit import (
 )
 
 StrPath = str | os.PathLike[str]
+
+
+class SupportsWrite(Protocol):
+    """A minimal text sink accepted by `Command.stdout_tee` / `stderr_tee`
+    alongside a file path: any object with a callable `write(str)` — an
+    `io.StringIO`, `sys.stderr`, a text-mode file, a logger wrapper. The tee
+    passes each decoded line (and the trailing `"\\n"`) to `write` as a `str`,
+    so a *binary* writer (`io.BytesIO`, a `"wb"` file) is the wrong sink here.
+    The return value is ignored (`io.StringIO.write` returns an `int`, a bare
+    logger wrapper may return `None`), hence `object`. Lives here — not inline
+    in `_processkit.pyi` — because `mypy.stubtest` requires every name the
+    compiled module's stub references to exist at runtime, and a compiled
+    extension's `.pyi` has no backing runtime source (the same reason
+    `RunnerLike` lives here)."""
+
+    def write(self, data: str, /) -> object: ...
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
 SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
 RetryIf = Literal["transient", "transient_or_timeout"]

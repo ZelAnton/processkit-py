@@ -11,9 +11,9 @@ use pyo3::prelude::*;
 
 use crate::cancellation::PyCancellationToken;
 use crate::convert::{
-    build_output_buffer_policy, build_retry_policy, nonnegative_duration, open_tee_sink,
-    parse_encoding, parse_line_terminator, parse_priority, parse_retry_if, parse_signal,
-    parse_stdio_mode, positive_duration,
+    build_output_buffer_policy, build_retry_policy, is_python_writer, nonnegative_duration,
+    open_tee_sink, parse_encoding, parse_line_terminator, parse_priority, parse_retry_if,
+    parse_signal, parse_stdio_mode, positive_duration, PyWriterSink,
 };
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
@@ -40,6 +40,19 @@ fn make_line_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync + 'sta
             }
         })
     }
+}
+
+/// Reject `append=True` on a `stdout_tee`/`stderr_tee` call whose sink is a
+/// Python writer object: `append` only tunes how a *file path* is opened
+/// (truncate vs append), so it is meaningless for a writer. Rejecting it (rather
+/// than silently ignoring it) keeps the option from being a confusing no-op.
+fn reject_append_for_writer(append: bool) -> PyResult<()> {
+    if append {
+        return Err(PyValueError::new_err(
+            "append=True is only meaningful for a file-path tee sink, not a Python writer object",
+        ));
+    }
+    Ok(())
 }
 
 #[pymethods]
@@ -404,61 +417,83 @@ impl PyCommand {
         })
     }
 
-    /// Tee every decoded stdout line to the file at `path` as it is produced —
-    /// the line **plus** a trailing `\n` — while the run *also* keeps capturing
-    /// the full output: the sink does not steal output from `ProcessResult.stdout`.
-    /// The one-line way to "stream a log to a file and still get the captured
+    /// Tee every decoded stdout line to `sink` as it is produced — the line
+    /// **plus** a trailing `\n` — while the run *also* keeps capturing the full
+    /// output: the sink does not steal output from `ProcessResult.stdout`. The
+    /// one-line way to "stream a log somewhere and still get the captured
     /// result", without a manual loop over `stdout_lines()`.
     ///
-    /// **Sink form — a file path only.** This binding accepts a filesystem path
-    /// (`str` or `os.PathLike[str]`), not an arbitrary Python writer: teeing to a
-    /// caller-supplied Python object as an async writer (dispatching each line to a
-    /// thread pool, re-acquiring the GIL, honoring backpressure) is a separate,
-    /// deliberately-deferred feature, not silently supported here. Pass a path.
+    /// **Two sink forms, chosen by the argument type.**
     ///
-    /// **File lifecycle — opened now, at build time.** The crate takes a concrete
-    /// async sink on `stdout_tee()`, not a lazy factory, so the file is opened the
-    /// moment you call this builder method (not when the command runs). It is
-    /// created if absent and, by default, **truncated**; pass ``append=True`` to
-    /// open in append mode instead. A path that can't be opened for writing raises
-    /// immediately — the matching `OSError` subclass (`FileNotFoundError` for a
-    /// missing parent directory, `PermissionError`, `IsADirectoryError`, …).
+    /// - A **file path** (`str` or `os.PathLike[str]`) — teed as raw UTF-8 bytes
+    ///   to that file. **Opened now, at build time** (the crate takes a concrete
+    ///   async sink, not a lazy factory): created if absent and, by default,
+    ///   **truncated**; pass ``append=True`` to open in append mode instead. A
+    ///   path that can't be opened for writing raises immediately — the matching
+    ///   `OSError` subclass (`FileNotFoundError` for a missing parent directory,
+    ///   `PermissionError`, `IsADirectoryError`, …). Because the open handle is
+    ///   shared across clones and re-runs (the crate holds it in an
+    ///   `Arc<Mutex<…>>`), sequential re-runs of the same built command —
+    ///   retries, a reused `Command`, `Supervisor` incarnations — **append** to
+    ///   the one file with no delimiter; concurrent clones (pipeline stages)
+    ///   **interleave**. For per-run separation, build a fresh `Command` per run.
     ///
-    /// Because the open handle is shared across clones and re-runs (the crate holds
-    /// the sink in an `Arc<Mutex<…>>`), sequential re-runs of the same built
-    /// command — retries, a reused `Command`, `Supervisor` incarnations — **append**
-    /// to the one file with no delimiter; concurrent clones (pipeline stages)
-    /// **interleave**. For per-run separation, build a fresh `Command` (a fresh
-    /// path) per run.
+    /// - A **Python writer** — any object with a callable `write()`
+    ///   (`io.StringIO`, `sys.stderr`, a text-mode file, a logger wrapper). Each
+    ///   decoded line (then `"\n"`) is passed to `write()` as a **`str`**, so this
+    ///   is a text sink — a binary writer (`io.BytesIO`, a `"wb"` file) whose
+    ///   `write(str)` raises `TypeError` is the wrong sink here (open it in text
+    ///   mode / wrap it in `io.TextIOWrapper`). The object is discriminated by
+    ///   having a callable `write` (neither `str` nor `pathlib.Path` does), and it
+    ///   is **not** owned — it is never closed for you, so you keep writing to
+    ///   your `sys.stderr` / open file after the run. `append` is meaningless for
+    ///   a writer; passing ``append=True`` with one raises `ValueError` rather
+    ///   than being silently ignored.
+    ///
+    /// **Async-write bridge.** Each write to a Python writer is dispatched to the
+    /// runtime's blocking pool (re-acquiring the GIL there) and awaited on the
+    /// capture pump — so a slow (even sleeping) `write()` applies backpressure
+    /// (the pump slows, the OS pipe fills, the child blocks on its next write)
+    /// without blocking the async event loop or deadlocking the runtime, exactly
+    /// like the file sink.
     ///
     /// **No-op conditions (inherited from the crate).** The tee fires from the
     /// line-capture pump, so it is inert under ``stdout("inherit")`` /
     /// ``stdout("null")`` (no pump runs) and under `output_bytes()` (raw capture,
     /// no line pump). Use it with the line verbs — `output()` / `aoutput()`,
-    /// `run()`, or `start()` + `stdout_lines()` / `output_events()`. A slow sink
-    /// applies backpressure (the pump slows, the OS pipe fills, the child blocks on
-    /// its next write) rather than blocking the runtime; a write error disables the
-    /// tee for the rest of the run — the run and its captured result are
-    /// unaffected — surfaced as a `tracing` warning under `enable_logging()`.
-    #[pyo3(signature = (path, *, append = false))]
-    fn stdout_tee(&self, path: PathBuf, append: bool) -> PyResult<Self> {
-        let sink = open_tee_sink(&path, append)?;
-        Ok(Self {
-            inner: self.inner.clone().stdout_tee(sink),
-        })
+    /// `run()`, or `start()` + `stdout_lines()` / `output_events()`. A write error
+    /// disables the tee for the rest of the run — the run and its captured result
+    /// are unaffected — surfaced as a `tracing` warning under `enable_logging()`;
+    /// a Python writer's `write()` exception is additionally reported via
+    /// `sys.unraisablehook` (visible even without `enable_logging()`).
+    #[pyo3(signature = (sink, *, append = false))]
+    fn stdout_tee(&self, sink: &Bound<'_, PyAny>, append: bool) -> PyResult<Self> {
+        let inner = if is_python_writer(sink)? {
+            reject_append_for_writer(append)?;
+            self.inner.clone().stdout_tee(PyWriterSink::new(sink))
+        } else {
+            let path: PathBuf = sink.extract()?;
+            self.inner.clone().stdout_tee(open_tee_sink(&path, append)?)
+        };
+        Ok(Self { inner })
     }
 
-    /// Tee every decoded stderr line to the file at `path` as it is produced.
-    /// Same contract as `stdout_tee` — a file-path sink (not an arbitrary Python
-    /// writer), opened at build time (created, truncated by default or ``append``),
-    /// coexisting with capture, and inert unless stderr is piped through the line
-    /// pump.
-    #[pyo3(signature = (path, *, append = false))]
-    fn stderr_tee(&self, path: PathBuf, append: bool) -> PyResult<Self> {
-        let sink = open_tee_sink(&path, append)?;
-        Ok(Self {
-            inner: self.inner.clone().stderr_tee(sink),
-        })
+    /// Tee every decoded stderr line to `sink` as it is produced. Same contract
+    /// as `stdout_tee` — a file path (opened at build time, truncated by default
+    /// or ``append``) **or** a Python writer object with a callable `write()`
+    /// (fed each decoded line as a `str`, via the same blocking-pool async-write
+    /// bridge, never closed for you), coexisting with capture, and inert unless
+    /// stderr is piped through the line pump.
+    #[pyo3(signature = (sink, *, append = false))]
+    fn stderr_tee(&self, sink: &Bound<'_, PyAny>, append: bool) -> PyResult<Self> {
+        let inner = if is_python_writer(sink)? {
+            reject_append_for_writer(append)?;
+            self.inner.clone().stderr_tee(PyWriterSink::new(sink))
+        } else {
+            let path: PathBuf = sink.extract()?;
+            self.inner.clone().stderr_tee(open_tee_sink(&path, append)?)
+        };
+        Ok(Self { inner })
     }
 
     /// Call `callback` with every decoded stdout line as it is produced — the

@@ -154,9 +154,13 @@ def wait_dead(pid: int, timeout: float) -> bool:
     means the PID's current occupant is not the process this call started
     watching, i.e. the original is provably gone -- reported as dead right
     away instead of spinning to the full timeout. When the start-time key is
-    unavailable (`None` on both reads, e.g. the platform helper failed), the
+    unavailable (`None` on either read, e.g. the platform helper failed), the
     comparison degrades to always-equal, i.e. the original raw-PID-only
-    behavior -- no regression, just no added correlation for that call.
+    behavior -- no regression, just no added correlation for that poll. The
+    baseline key is only captured once a poll observes a real (non-`None`)
+    key, so a transient `None` on the first live poll doesn't get "frozen" as
+    the permanent baseline -- correlation kicks in as soon as a real key
+    becomes available, rather than being disabled for the rest of the wait.
     """
     captured_key: list[object] = []
 
@@ -165,9 +169,16 @@ def wait_dead(pid: int, timeout: float) -> bool:
             return True
         key = _process_start_key(pid)
         if not captured_key:
-            captured_key.append(key)
+            if key is not None:
+                captured_key.append(key)
             return False
-        return key != captured_key[0]
+        prior = captured_key[0]
+        if key is None or prior is None:
+            # A read failed on this poll -- treat the comparison as
+            # unavailable rather than as a mismatch, so a transient `ps`
+            # hiccup/TOCTOU can't be misread as "PID recycled".
+            return False
+        return key != prior
 
     return wait_until(_gone, timeout)
 

@@ -126,6 +126,34 @@ impl PyCommand {
         }
     }
 
+    /// Stream the file at `path` to the child's stdin, then close it (EOF).
+    /// Unlike `stdin_bytes()`, the file is never read into a Python `bytes`
+    /// object or buffered whole in memory — the crate forwards it to the
+    /// child in chunks on a background task, so a multi-gigabyte input (a
+    /// `psql` dump, a `tar` archive, a large log fed through a filter) costs
+    /// O(chunk), not O(file size).
+    ///
+    /// **File lifecycle — deferred, at spawn time (unlike `stdout_tee()`).**
+    /// This method does not touch the filesystem: it stores `path` and opens
+    /// it lazily when the command actually runs, matching the rest of the
+    /// builder (`stdout_tee()`/`stderr_tee()` are the deliberate exception,
+    /// since they must fail fast on an unopenable sink before any output can
+    /// be lost). A `path` that doesn't exist (yet) when `stdin_file()` is
+    /// called is therefore not an error. If the file is still missing or
+    /// unreadable once the command spawns, the run does **not** raise
+    /// `FileNotFoundError`/`PermissionError`: the crate's own error
+    /// classifiers deliberately don't treat a stdin-write failure as a launch
+    /// condition (the child process already spawned successfully by then), so
+    /// it surfaces as the generic `ProcessError` from the run/output verb
+    /// instead, with the underlying OS error folded into its message. Like
+    /// `stdin_bytes()`/`stdin_text()`, the source is reusable — a `path` that
+    /// exists at retry/re-run time is read again from the start each time.
+    fn stdin_file(&self, path: PathBuf) -> Self {
+        Self {
+            inner: self.inner.clone().stdin(PkStdin::from_file(path)),
+        }
+    }
+
     /// Keep stdin piped and open for interactive writing after the process
     /// starts, via `RunningProcess.take_stdin()`.
     fn keep_stdin_open(&self) -> Self {

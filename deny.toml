@@ -1,0 +1,44 @@
+# cargo-deny configuration. CI runs
+# `cargo deny check advisories bans licenses sources`
+# (see .github/workflows/ci.yml, `rust-audit` job). Kept in the PR gate (not
+# nightly-hardening.yml) for the same reason
+# pip-audit is: the crate is compiled into every wheel users install, so a
+# newly-disclosed RustSec advisory or license violation should block the next
+# merge, not wait for the nightly schedule. Adapted from the sibling
+# ProcessKit-rs repository's `deny.toml` (same categories), scoped to this
+# binding's own Cargo tree (pyo3, pyo3-async-runtimes, tokio, tracing, ...).
+[advisories]
+# Fail on crates with a RustSec security advisory or that have been yanked.
+version = 2
+yanked = "deny"
+
+[licenses]
+# This crate is MIT and is compiled into the distributed wheels; the
+# dependency tree must stay on permissive licenses a downstream MIT/Apache
+# consumer can absorb. A new transitive dependency with anything outside this
+# list (copyleft, source-available, unknown) fails CI loudly instead of
+# slipping into a release.
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # target-lexicon (a pyo3-build-config build-dependency) uses this LLVM
+    # linking exception on top of Apache-2.0 -- still permissive, no
+    # copyleft/attribution burden beyond plain Apache-2.0.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+
+[bans]
+# Duplicate versions of the same crate are a warning, not a hard failure.
+multiple-versions = "warn"
+# Wildcard version requirements hide breakage; flag them.
+wildcards = "deny"
+
+[sources]
+# Only allow dependencies from the official crates.io registry -- no git
+# dependencies or unknown/private registries sneaking into the tree that
+# gets compiled into every wheel.
+unknown-registry = "deny"
+unknown-git = "deny"

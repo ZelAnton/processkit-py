@@ -69,7 +69,7 @@ The first column is the differentiator: a child's *descendants* are contained an
 reaped as a unit (Job Object / cgroup v2 / process group), not just the direct
 child.
 
-> **Status: 1.0 — API frozen.** The public API follows
+> **Stable API.** The public API has been stable since 1.0 and follows
 > [Semantic Versioning](https://semver.org/): breaking changes land only in a new
 > major version, so `1.x` upgrades are backward-compatible. See
 > [CHANGELOG.md](CHANGELOG.md), and [ROADMAP.md](ROADMAP.md) for how it was built.

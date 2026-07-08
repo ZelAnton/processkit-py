@@ -6,7 +6,9 @@ twins run many commands with bounded concurrency, returning each result — or a
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import sys
+import time
 
 import pytest
 
@@ -23,7 +25,8 @@ from processkit import (
 )
 from processkit.testing import Reply, ScriptedRunner
 
-from .conftest import NO_SUCH_PROGRAM
+from ._liveness import is_alive, read_pid_when_ready, wait_dead
+from .conftest import NO_SUCH_PROGRAM, spawn_grandchild_command
 
 PY = sys.executable
 
@@ -162,3 +165,57 @@ def test_aoutput_all_bytes_accepts_injected_runner() -> None:
 def test_output_all_rejects_unsupported_runner_object() -> None:
     with pytest.raises(TypeError):
         output_all([Command(PY, ["-c", "pass"])], runner=object())  # type: ignore[arg-type]
+
+
+# --- no-orphan teardown + in-flight cancellation -----------------------------
+
+
+def test_aoutput_all_cancel_mid_flight_kills_the_tree(pid_file: pathlib.Path) -> None:
+    # No-orphan teardown, for the batch surface: cancelling the *awaiting task*
+    # while `aoutput_all` is mid-flight must tear down the whole tree spawned by
+    # its (single, still-running) slot -- not just leave a grandchild orphaned.
+    # Mirrors `test_cancel_mid_stream_kills_tree` (test_streaming.py), which
+    # pins the same guarantee for a standalone `astart()`. Every other
+    # spawn-surface (astart, ProcessGroup, pipelines, cancel_on) already has
+    # this exact "cancel -> grandchild `wait_dead`" coverage; the batch entry
+    # points spawn N trees with none.
+    async def driver() -> int:
+        task = asyncio.ensure_future(
+            aoutput_all([spawn_grandchild_command(pid_file)], concurrency=1)
+        )
+        grandchild_pid = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+        assert is_alive(grandchild_pid)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return grandchild_pid
+
+    grandchild_pid = asyncio.run(driver())
+    assert wait_dead(grandchild_pid, timeout=10.0), (
+        f"grandchild {grandchild_pid} survived cancellation of an in-flight aoutput_all"
+    )
+
+
+def test_output_all_slot_timeout_lands_in_its_own_slot_without_stalling_the_batch() -> None:
+    # A `Command.timeout()` firing inside ONE slot of a batch must land as a
+    # timed-out `ProcessResult` -- not a `ProcessError`, not a raised exception
+    # -- in that slot alone, and (the actual point of this test) must not
+    # subject the rest of the batch to it: the fast sibling slot finishes on
+    # its own schedule instead of waiting behind the slow one.
+    slow = Command(PY, ["-c", "import time; time.sleep(30)"]).timeout(0.3)
+    fast = Command(PY, ["-c", "print('fast')"])
+
+    start = time.monotonic()
+    results = output_all([slow, fast], concurrency=2)
+    elapsed = time.monotonic() - start
+
+    timed_out, ok = results[0], results[1]
+    assert isinstance(timed_out, ProcessResult)
+    assert timed_out.timed_out
+    assert not timed_out.is_success
+    assert isinstance(ok, ProcessResult)
+    assert ok.stdout.strip() == "fast"
+    assert elapsed < 10.0, (
+        f"batch took {elapsed:.1f}s -- the timed-out slot must not stall its siblings "
+        "or the whole batch behind the slow command's own 30s sleep"
+    )

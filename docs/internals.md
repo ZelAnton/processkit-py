@@ -65,7 +65,7 @@ mod supervisor;
 | Module | Owns |
 |---|---|
 | `command.rs` | The `Command` builder and shell-free `Pipeline`. |
-| `runner.rs` | The runner seam: `Runner`, the `ScriptedRunner`/`RecordReplayRunner`/`RecordingRunner` test doubles, the `Reply` builder, and the `runner_pymethods!` macro (below). |
+| `runner.rs` | The runner seam: `Runner`, the `ScriptedRunner`/`RecordReplayRunner`/`RecordingRunner`/`DryRunRunner` test doubles, the `Reply` builder, and the `runner_pymethods!` macro (below). |
 | `running.rs` | The async streaming/interactive handles: `RunningProcess`, `ProcessStdin`, `StdoutLines`, `OutputEvents`. |
 | `group.rs` | The `ProcessGroup` containment container and its `ProcessGroupStats`. |
 | `supervisor.rs` | The `Supervisor` (restart/backoff) and its `SupervisionOutcome`. |
@@ -86,9 +86,12 @@ free-threaded build, importing it does not force the GIL back on). This is
 sound only because the binding holds no unsynchronized shared state — see
 `lib.rs`'s own comment for the itemized reasons (the tokio runtime is a
 managed singleton, exception caches use `PyOnceLock`, stream handles are
-`Arc<Mutex<…>>`, every pyclass is guarded by PyO3's own per-object borrow
-checking). Keep that invariant in mind before adding any new shared mutable
-state to a pyclass.
+`Arc<Mutex<…>>`, the stateful pyclasses that carry consumable/reconfigurable
+state — `ProcessGroup`, `RunningProcess`, `ScriptedRunner`, `DryRunRunner` —
+are `#[pyclass(frozen)]` with an interior `std::sync::Mutex` that serializes
+cross-thread access, and the remaining immutable pyclasses lean on PyO3's own
+per-object borrow checking). Keep that invariant in mind before adding any new
+shared mutable state to a pyclass.
 
 ## The call flow: Python → crate → typed exception
 
@@ -150,15 +153,15 @@ Two invariants worth internalizing when adding a new verb:
   individual class or function itself. Adding a pyclass or function means
   adding it to its module's `register`, nothing in `lib.rs`.
 - **`runner_pymethods!` (`runner.rs`).** PyO3's `multiple-pymethods` feature is
-  off, so a pyclass may have only one `#[pymethods]` impl. Four runner
+  off, so a pyclass may have only one `#[pymethods]` impl. Five runner
   pyclasses (`Runner`, `ScriptedRunner`, `RecordReplayRunner`,
-  `RecordingRunner`) each need the identical twelve-verb surface
-  (`output`/`output_bytes`/`run`/`exit_code`/`probe`/`start`, times their
-  `a`-prefixed async twins) forwarding to the generic `runner_*` helper
+  `RecordingRunner`, `DryRunRunner`) each need the identical twelve-verb
+  surface (`output`/`output_bytes`/`run`/`exit_code`/`probe`/`start`, times
+  their `a`-prefixed async twins) forwarding to the generic `runner_*` helper
   functions over `ProcessRunner`. The macro splices that shared block together
   with each type's own unique members (constructor, builders, `__repr__`)
   passed in as a token tree, so the run-verb surface has a single source of
-  truth instead of four hand-copied blocks that could drift.
+  truth instead of five hand-copied blocks that could drift.
 - **Config struct → kwargs, not a mirror pyclass.** When the crate exposes a
   builder/options struct (e.g. `ProcessGroupOptions`), the binding does *not*
   create a matching Python class for it. Instead the pyclass constructor takes
@@ -184,25 +187,28 @@ Alongside the compiled `_processkit` extension, a small amount of hand-written
 Python composes on top of it rather than adding more Rust surface:
 
 - **`_aio.py`** — asyncio readiness helpers (`wait_until`, `wait_for_line`,
-  `wait_for_port`) and `WaitTimeout`. These compose on the already-compiled
-  async surface (a `StdoutLines` iterator, a plain TCP connect) instead of
-  bridging the crate's own probing methods, which keeps them simpler and
-  usable against *any* server, not only one this package started.
+  `wait_for_port`, `wait_for_path`) and `WaitTimeout`. These compose on the
+  already-compiled async surface (a `StdoutLines` iterator, a plain TCP
+  connect) instead of bridging the crate's own probing methods, which keeps
+  them simpler and usable against *any* server, not only one this package
+  started.
 - **`_protocols.py`** — the `ProcessRunner` / `StreamingRunner` `Protocol`
   classes: the typed dependency-injection seam that lets code written against
   "a runner" accept the real `Runner`, any of the test doubles, or a
   hand-rolled double, all checked structurally by the type checker.
 - **`_types.py`** — the public type aliases (`StrPath`, `Args`, `SignalName`,
-  `RetryIf`, `ReadableBuffer`) exported so callers can annotate their own
-  wrappers with the same vocabulary the API uses.
+  `RetryIf`, `ReadableBuffer`, `LineTerminatorName`, `Priority`) exported so
+  callers can annotate their own wrappers with the same vocabulary the API
+  uses.
 - **`__init__.py`** — the facade. It re-exports the compiled classes/functions
   from `_processkit` together with the pure-Python helpers above, and its
   `__all__` list **is** the public surface: anything not listed there is not
   public, regardless of what's importable by digging into a submodule. The
   test-double runners (`ScriptedRunner`, `RecordReplayRunner`,
-  `RecordingRunner`, `Reply`, `Invocation`) are deliberately excluded from the
-  top-level `__all__` and re-exported instead from `processkit.testing`, so
-  the production surface and the testing surface stay visibly separate.
+  `RecordingRunner`, `DryRunRunner`, `Reply`, `Invocation`) are deliberately
+  excluded from the top-level `__all__` and re-exported instead from
+  `processkit.testing`, so the production surface and the testing surface
+  stay visibly separate.
 
 ## Guarding against drift: the stub/runtime/surface triangle
 

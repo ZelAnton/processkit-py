@@ -826,7 +826,7 @@ class Invocation:
 @final
 class RunProfile:
     """A resource-usage profile sampled across a run (`RunningProcess.profile`),
-    plus the run's `outcome` — `profile()` is a superset of `wait()`.
+    plus the run's `outcome` — `profile()` is a superset of `outcome()`.
 
     Value semantics: `==`/`hash()` compare every field (`outcome`/
     `duration_seconds`/`cpu_time_seconds`/`peak_memory_bytes`/`samples`; all

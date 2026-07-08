@@ -157,16 +157,36 @@ def test_pipeline_stage_timeout_kills_its_whole_subtree(pid_file: pathlib.Path) 
     )
 
 
-def test_pipeline_stage_failure_proactively_tears_down_a_quiet_upstream() -> None:
+def test_pipeline_stage_failure_proactively_tears_down_a_quiet_upstream(
+    tmp_path: pathlib.Path,
+) -> None:
     # processkit 2.1.0: a checked stage failure now tears the rest of the chain
     # down PROACTIVELY instead of only passively through pipe EOF. Here the
-    # upstream stage never writes anything and sleeps far longer than the test
-    # timeout; only a proactive teardown (triggered by the downstream stage's
-    # own checked failure, exit(7)) lets the whole pipeline finish quickly --
-    # the old, passive behavior would keep the quiet upstream running until its
-    # own 30s sleep elapsed (or an outer bound fired), holding the pipeline open.
-    quiet_upstream = Command(PY, ["-c", "import time; time.sleep(30)"])
-    failing_downstream = Command(PY, ["-c", "import sys; sys.exit(7)"])
+    # upstream stage never writes anything downstream reads and sleeps far
+    # longer than the test timeout; only a proactive teardown (triggered by the
+    # downstream stage's own checked failure, exit(7)) lets the whole pipeline
+    # finish quickly -- the old, passive behavior would keep the quiet upstream
+    # running until its own 30s sleep elapsed (or an outer bound fired), holding
+    # the pipeline open.
+    upstream_pid_file = tmp_path / "upstream.pid"
+    quiet_upstream = Command(
+        PY,
+        [
+            "-c",
+            "import os, sys, time;"
+            "f = open(sys.argv[1], 'w');"
+            "f.write(str(os.getpid()));"
+            "f.flush();"
+            "f.close();"
+            "time.sleep(30)",
+            str(upstream_pid_file),
+        ],
+    )
+    # A small head start lets the upstream's pid-file write above land before
+    # this exits and triggers proactive teardown -- deterministic, not a race:
+    # 0.3s dwarfs interpreter-startup + a single write() but stays far below
+    # the 10s bound asserted below.
+    failing_downstream = Command(PY, ["-c", "import sys, time; time.sleep(0.3); sys.exit(7)"])
     pipe = quiet_upstream | failing_downstream
 
     async def scenario() -> ProcessResult:
@@ -177,6 +197,15 @@ def test_pipeline_stage_failure_proactively_tears_down_a_quiet_upstream() -> Non
     elapsed = time.monotonic() - started
     assert result.code == 7, "the actually-failed (last) stage keeps the blame"
     assert not result.is_success
+    # Structural check: the real invariant under test is that the quiet
+    # upstream is actually torn down, not merely that the call *returned*
+    # quickly -- a bug could abandon the wait without truly killing it, and a
+    # fast host could mask that on timing alone. The wall-clock bound below
+    # stays as a secondary, coarser signal.
+    upstream_pid = read_pid_when_ready(upstream_pid_file, timeout=10.0)
+    assert wait_dead(upstream_pid, timeout=5.0), (
+        "the quiet upstream must be dead/reaped once the pipeline returns, not merely abandoned"
+    )
     assert elapsed < 10.0, (
         "a checked stage failure must tear the chain down proactively, "
         f"not wait on the quiet upstream's own 30s sleep (took {elapsed:.1f}s)"

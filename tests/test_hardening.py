@@ -79,6 +79,14 @@ def test_no_silly_per_call_overhead() -> None:
     # enough to hide a real regression. The bound scales with the spawn count
     # (PROCESSKIT_STRESS_SCALE) so a scaled-up scheduled run stays a real
     # per-call-overhead check rather than a wall-clock race.
+    #
+    # Deliberately timing-only, unlike the other wall-clock-bounded tests in
+    # this module: it exists specifically to catch per-call *overhead*, so
+    # there is no independent, non-timing invariant to cross-check it against
+    # (an orphan/teardown check would prove something else entirely). The
+    # `is_success` assertion below is still the structural correctness check
+    # -- it just isn't a substitute for the timing bound, which is the point
+    # of this test.
     start = time.monotonic()
     for _ in range(3 * _SCALE):
         assert Command(PY, ["-c", "pass"]).output().is_success

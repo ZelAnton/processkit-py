@@ -15,7 +15,9 @@ import io
 import json
 import os
 import pathlib
+import pickle
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 import pytest
 
@@ -25,13 +27,16 @@ from processkit import (
     Cancelled,
     CliClient,
     Command,
+    Finished,
     NonZeroExit,
+    Outcome,
     OutputTooLarge,
     PermissionDenied,
     Priority,
     ProcessError,
     ProcessNotFound,
     ProcessResult,
+    RunProfile,
     Timeout,
     Unsupported,
 )
@@ -1530,3 +1535,159 @@ def test_cancelled_is_never_retried() -> None:
             await task
 
     asyncio.run(scenario())
+
+
+# --- value semantics: __eq__/__hash__/pickle (T-041) -------------------------
+#
+# Scope decision (documented here + in CHANGELOG.md): `ProcessResult`,
+# `BytesResult`, `Outcome`, `Finished`, and `RunProfile` all get `__eq__`
+# (the crate's own `PartialEq`, not `object`'s identity comparison) and, since
+# none of their fields are stored floats, a consistent `__hash__`.
+#
+# Pickle is narrower. `ProcessResult`/`Outcome`/`Finished` (and
+# `SupervisionOutcome`, tested in test_supervisor.py) support it: the crate has
+# no public constructor for any of these, so unpickling reconstructs one via
+# `testing.ScriptedRunner` (an in-memory, no-subprocess "run") — faithful for
+# every Python-visible field, but a command that customized `success_codes()`/
+# `timeout()` isn't guaranteed `== `after a round trip (those two fields have
+# no Python accessor to reconstruct exactly; see the plain-config case below,
+# which round-trips exactly). `BytesResult` (raw bytes may not be valid UTF-8,
+# and the reconstruction channel is text-only) and `RunProfile` (live OS
+# resource-sampling telemetry has no synthesis path outside a real monitored
+# run) explicitly do not support pickling — both raise `TypeError`.
+
+
+def test_process_result_eq_and_hash_compare_by_value() -> None:
+    a = Command(PY, ["-c", "print('same')"]).output()
+    b = Command(PY, ["-c", "print('same')"]).output()
+    assert a is not b
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_process_result_not_equal_when_a_field_differs() -> None:
+    a = Command(PY, ["-c", "print('one')"]).output()
+    b = Command(PY, ["-c", "print('two')"]).output()
+    assert a != b
+
+
+def test_process_result_eq_against_an_unrelated_type_is_false() -> None:
+    # Comparing against a non-`ProcessResult` must return `False` (via the
+    # `NotImplemented` protocol), not raise `TypeError`.
+    result = Command(PY, ["-c", "print('x')"]).output()
+    assert result != 5
+    assert (result == "not a result") is False
+
+
+def test_process_result_is_hashable_in_a_set_and_as_a_dict_key() -> None:
+    a = Command(PY, ["-c", "print('same')"]).output()
+    b = Command(PY, ["-c", "print('same')"]).output()
+    assert {a, b} == {a}
+    cache = {a: "cached"}
+    assert cache[b] == "cached"
+
+
+def test_process_result_pickle_round_trip_preserves_equality() -> None:
+    original = Command(PY, ["-c", "print('roundtrip')"]).output()
+    restored = pickle.loads(pickle.dumps(original))
+    assert restored == original
+    assert restored.stdout == original.stdout
+    assert restored.stderr == original.stderr
+    assert restored.code == original.code
+    assert restored.is_success == original.is_success
+    assert restored.timed_out == original.timed_out
+    assert restored.signal == original.signal
+
+
+def _run_in_worker_process() -> ProcessResult:
+    # Runs *inside* the `ProcessPoolExecutor` worker — the scenario this task
+    # (T-041) exists for: capture a result in one process, hand it back across
+    # a real process boundary (pickled on the way out, unpickled by the pool),
+    # not just `pickle.dumps`/`loads` round-tripped in a single process.
+    return Command(PY, ["-c", "print('from worker')"]).output()
+
+
+def test_process_result_round_trips_through_a_real_process_pool_executor() -> None:
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(_run_in_worker_process).result(timeout=30)
+    assert isinstance(result, ProcessResult)
+    assert result.stdout.strip() == "from worker"
+    assert result.code == 0
+    assert result.is_success
+
+
+def test_bytes_result_eq_and_hash_compare_by_value() -> None:
+    code = "import sys; sys.stdout.buffer.write(b'same')"
+    a = Command(PY, ["-c", code]).output_bytes()
+    b = Command(PY, ["-c", code]).output_bytes()
+    assert a == b
+    assert hash(a) == hash(b)
+    other_code = "import sys; sys.stdout.buffer.write(b'different')"
+    c = Command(PY, ["-c", other_code]).output_bytes()
+    assert a != c
+    assert a != 5
+
+
+def test_bytes_result_pickle_raises_type_error() -> None:
+    # Raw stdout may not be valid UTF-8 and the only crate-sanctioned
+    # reconstruction channel (`testing.Reply`) is text-only — an explicit,
+    # documented refusal rather than a lossy/silent round trip.
+    result = Command(PY, ["-c", "import sys; sys.stdout.buffer.write(b'x')"]).output_bytes()
+    with pytest.raises(TypeError, match="BytesResult cannot be pickled"):
+        pickle.dumps(result)
+
+
+def test_outcome_eq_hash_and_pickle_round_trip() -> None:
+    a = Command(PY, ["-c", "import sys; sys.exit(3)"]).output().outcome
+    b = Command(PY, ["-c", "import sys; sys.exit(3)"]).output().outcome
+    assert isinstance(a, Outcome)
+    assert a == b
+    assert hash(a) == hash(b)
+    assert a != 5
+
+    restored = pickle.loads(pickle.dumps(a))
+    assert restored == a
+    assert restored.code == 3
+    assert not restored.timed_out
+    assert restored.signal is None
+
+
+def test_finished_eq_hash_and_pickle_round_trip() -> None:
+    async def scenario() -> Finished:
+        code = "import sys; print('out'); print('e1', file=sys.stderr)"
+        proc = await Command(PY, ["-c", code]).astart()
+        async for _line in proc.stdout_lines():
+            pass
+        return await proc.afinish()
+
+    a = asyncio.run(scenario())
+    b = asyncio.run(scenario())
+    assert isinstance(a, Finished)
+    assert a == b
+    assert hash(a) == hash(b)
+    assert a != 5
+
+    restored = pickle.loads(pickle.dumps(a))
+    assert restored == a
+    assert restored.code == 0
+    assert restored.stderr == a.stderr == "e1"
+
+
+def test_run_profile_eq_is_value_based_not_identity() -> None:
+    quick = Command(PY, ["-c", "pass"]).start().profile(1.0)
+    slow = Command(PY, ["-c", "import time; time.sleep(0.2)"]).start().profile(0.02)
+    assert isinstance(quick, RunProfile)
+    assert quick != slow
+    assert quick == quick  # pins reflexive value equality
+    assert hash(quick) == hash(quick)
+    assert quick != 5
+
+
+def test_run_profile_pickle_raises_type_error() -> None:
+    # Live OS resource-sampling telemetry (cpu_time/peak_memory/samples) has no
+    # synthesis path outside an actual monitored run — an explicit, documented
+    # refusal rather than fabricating/discarding the numbers.
+    proc = Command(PY, ["-c", "import time; time.sleep(0.1)"]).start()
+    profile = proc.profile(0.02)
+    with pytest.raises(TypeError, match="RunProfile cannot be pickled"):
+        pickle.dumps(profile)

@@ -1,13 +1,124 @@
 //! The captured-result value types: `ProcessResult`, `BytesResult`, `Outcome`,
 //! `OutputEvent`, `Finished`, and `RunProfile`.
+//!
+//! ## Value semantics: `__eq__`/`__hash__`/pickle (task T-041)
+//!
+//! Every type here (bar `OutputEvent`, out of this task's scope) gets `__eq__`
+//! delegating to the crate's own `PartialEq` (so equality tracks the crate's
+//! notion of identity, not Python's default `object` identity-`__eq__`), plus a
+//! `__hash__` consistent with it — all of their fields are exact (integers,
+//! `Duration`, `bool`, text/bytes; no floats are *stored*, only derived as
+//! `f64` getters), so hashing is semantically sound.
+//!
+//! Pickle is a harder call. `processkit::ProcessResult`/`Outcome`/`Finished`/
+//! `RunProfile`/`SupervisionOutcome` are all `#[non_exhaustive]` (or, for
+//! `ProcessResult`, plain-field-private) with **no public constructor** —
+//! `ProcessResult::new` is `pub(crate)`, and none of the others expose a
+//! builder either. So this binding cannot fabricate one from arbitrary
+//! unpickled data by calling into the crate directly; the *only*
+//! crate-sanctioned way to synthesize one outside a real run is to drive its
+//! `testing::ScriptedRunner` double (the same mechanism the crate's own
+//! cassette replay uses) through one in-memory, no-subprocess "run" — see
+//! `scripted_process_result` below. `ProcessResult`/`Outcome`/`Finished`/
+//! `SupervisionOutcome` (in `supervisor.rs`) use it and support pickle.
+//! `BytesResult` and `RunProfile` explicitly do not (see their `__reduce__`):
+//! `BytesResult`'s raw stdout may not be valid UTF-8 and `Reply` is a text-only
+//! channel; `RunProfile` reports genuine OS resource-sampling telemetry
+//! (`cpu_time_seconds`/`peak_memory_bytes`/`samples`) that has no synthesis
+//! path outside an actually-monitored run. Both raise a clear `TypeError`
+//! rather than failing silently/confusingly.
 
+use std::hash::{Hash, Hasher};
+
+use processkit::testing::{Reply as PkReply, ScriptedRunner as PkScriptedRunner};
+use processkit::Command as PkCommand;
 use processkit::Finished as PkFinished;
 use processkit::Outcome as PkOutcome;
 use processkit::OutputEvent as PkOutputEvent;
 use processkit::ProcessResult as PkProcessResult;
+use processkit::ProcessRunner as _;
 use processkit::RunProfile as PkRunProfile;
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+
+use crate::runtime::block_on;
+
+/// Reconstruct a genuine `processkit::ProcessResult<String>` for unpickling —
+/// see the module doc above for *why* this goes through `ScriptedRunner`
+/// rather than a direct constructor.
+///
+/// `is_success` picks a matching synthetic `ok_codes`: the crate exposes no
+/// accessor for the *original* `ok_codes`/`timeout`, so those two
+/// Python-invisible fields are approximated (reproducing `is_success`
+/// faithfully) rather than reproduced exactly. Consequence: unpickling a
+/// `ProcessResult` whose command used a customized `ok_codes()`/`timeout()`
+/// yields a value equal in every *observable* way, but the crate's own
+/// `PartialEq` also compares the (here-approximated) `ok_codes`/`timeout`
+/// fields directly, so `unpickled == original` is only guaranteed for the
+/// common default-`ok_codes`, no-configured-`timeout` case.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scripted_process_result(
+    py: Python<'_>,
+    program: String,
+    stdout: String,
+    stderr: String,
+    code: Option<i32>,
+    signal: Option<i32>,
+    timed_out: bool,
+    is_success: bool,
+) -> PyResult<PkProcessResult<String>> {
+    let reply = if timed_out {
+        PkReply::timeout()
+    } else if let Some(code) = code {
+        PkReply::fail(code, String::new())
+    } else {
+        PkReply::signalled(signal)
+    }
+    .with_stdout(stdout)
+    .with_stderr(stderr);
+
+    let mut command = PkCommand::new(&program);
+    command = if is_success {
+        // `is_success` can only be true for an `Exited` outcome, so `code` is
+        // `Some` here.
+        command.ok_codes(vec![code.unwrap_or(0)])
+    } else if code == Some(0) {
+        // Force a mismatch: the crate default `ok_codes` is `[0]`, which would
+        // otherwise wrongly recompute `is_success = true` for an original
+        // result that failed on exit code 0 via a custom, 0-excluding
+        // `ok_codes()`.
+        command.ok_codes(vec![i32::MIN])
+    } else {
+        command
+    };
+
+    let runner = PkScriptedRunner::new().fallback(reply);
+    block_on(py, async move { runner.output_string(&command).await })
+}
+
+/// Reconstruct a genuine `processkit::Outcome` for unpickling `Outcome`/
+/// `Finished` — see `scripted_process_result`; only the outcome half of a
+/// scripted result is needed here; program/stdout/stderr/`ok_codes` are
+/// irrelevant so a synthetic (unobserved) `is_success` is fine.
+fn scripted_outcome(
+    py: Python<'_>,
+    code: Option<i32>,
+    signal: Option<i32>,
+    timed_out: bool,
+) -> PyResult<PkOutcome> {
+    let result = scripted_process_result(
+        py,
+        String::new(),
+        String::new(),
+        String::new(),
+        code,
+        signal,
+        timed_out,
+        false,
+    )?;
+    Ok(result.outcome())
+}
 
 /// A resource-usage profile sampled across a run (from `RunningProcess.profile`).
 #[pyclass(name = "RunProfile", frozen, module = "processkit")]
@@ -90,6 +201,42 @@ impl PyRunProfile {
             self.inner.peak_memory_bytes,
             self.inner.samples,
         )
+    }
+
+    /// Value equality over every field the crate's own `PartialEq` compares —
+    /// not `object`'s identity comparison.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
+    /// Consistent with `__eq__`: hashes exactly the fields compared there. No
+    /// field is a stored float (`duration_seconds`/`cpu_time_seconds` are `f64`
+    /// *getters* over an exact `Duration`), so hashing is sound.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.code().hash(&mut hasher);
+        self.inner.signal().hash(&mut hasher);
+        self.inner.timed_out().hash(&mut hasher);
+        self.inner.duration.hash(&mut hasher);
+        self.inner.cpu_time.hash(&mut hasher);
+        self.inner.peak_memory_bytes.hash(&mut hasher);
+        self.inner.samples.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// `RunProfile` reports genuine OS resource-sampling telemetry
+    /// (`cpu_time_seconds`/`peak_memory_bytes`/`samples`) captured across a
+    /// live, monitored run; `processkit` provides no way to synthesize that
+    /// telemetry outside such a run (unlike `ProcessResult`/`Outcome`, there is
+    /// no `ScriptedRunner`-equivalent double for it), so pickling is not
+    /// supported — fail loud rather than silently drop/fabricate the numbers.
+    fn __reduce__(&self) -> PyResult<()> {
+        Err(PyTypeError::new_err(
+            "RunProfile cannot be pickled: it reports live OS resource-sampling telemetry \
+             (cpu_time_seconds/peak_memory_bytes/samples) that processkit has no way to \
+             reconstruct outside an actual monitored run; read the fields you need before \
+             crossing a process boundary instead",
+        ))
     }
 }
 
@@ -211,6 +358,79 @@ impl PyProcessResult {
             self.inner.code(),
             self.inner.is_success(),
         )
+    }
+
+    /// Value equality over the crate's own `PartialEq` for `ProcessResult`
+    /// (program/stdout/stderr/outcome/timeout/ok_codes — deliberately *not*
+    /// `duration`/`truncated`/the overflow totals, which the crate excludes as
+    /// incidental telemetry) — not `object`'s identity comparison.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
+    /// Consistent with `__eq__`: hashes a subset of the fields compared there
+    /// (program/stdout/stderr/code/signal/timed_out — `timeout`/`ok_codes` have
+    /// no accessor on this binding to hash, but omitting them from the hash
+    /// while `__eq__` still compares them is safe: equal objects necessarily
+    /// agree on this subset too, just with more hash collisions than a hash
+    /// over every compared field would have). No stored float.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.program().hash(&mut hasher);
+        self.inner.stdout().hash(&mut hasher);
+        self.inner.stderr().hash(&mut hasher);
+        self.inner.code().hash(&mut hasher);
+        self.inner.signal().hash(&mut hasher);
+        self.inner.timed_out().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Pickle support: see the module doc for why this goes through
+    /// `scripted_process_result` rather than a direct constructor, and the
+    /// `ok_codes`/`timeout` approximation caveat that follows from it.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(
+        Py<PyAny>,
+        (String, String, String, Option<i32>, Option<i32>, bool, bool),
+    )> {
+        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
+        Ok((
+            factory,
+            (
+                self.inner.program().to_string(),
+                self.inner.stdout().to_string(),
+                self.inner.stderr().to_string(),
+                self.inner.code(),
+                self.inner.signal(),
+                self.inner.timed_out(),
+                self.inner.is_success(),
+            ),
+        ))
+    }
+
+    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod
+    /// rather than a module-level function, so it rides along with the class
+    /// in the stub/API-surface checks instead of needing its own module-level
+    /// stub entry (see the module doc for what it reconstructs and why).
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _unpickle(
+        py: Python<'_>,
+        program: String,
+        stdout: String,
+        stderr: String,
+        code: Option<i32>,
+        signal: Option<i32>,
+        timed_out: bool,
+        is_success: bool,
+    ) -> PyResult<Self> {
+        let inner = scripted_process_result(
+            py, program, stdout, stderr, code, signal, timed_out, is_success,
+        )?;
+        Ok(Self { inner })
     }
 }
 
@@ -335,6 +555,37 @@ impl PyBytesResult {
             self.inner.stdout().len(),
         )
     }
+
+    /// See `ProcessResult.__eq__` — same crate `PartialEq`, raw-bytes stdout.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
+    /// See `ProcessResult.__hash__`.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.program().hash(&mut hasher);
+        self.inner.stdout().hash(&mut hasher);
+        self.inner.stderr().hash(&mut hasher);
+        self.inner.code().hash(&mut hasher);
+        self.inner.signal().hash(&mut hasher);
+        self.inner.timed_out().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Unlike `ProcessResult`, `BytesResult` is not picklable: its raw stdout
+    /// may not be valid UTF-8 (that is the entire point of `output_bytes()`),
+    /// while the only crate-sanctioned reconstruction channel
+    /// (`testing::Reply`) is text-only, so a faithful round trip is not always
+    /// possible — fail loud rather than lossily reencode/mangle binary output.
+    fn __reduce__(&self) -> PyResult<()> {
+        Err(PyTypeError::new_err(
+            "BytesResult cannot be pickled: its raw stdout may not be valid UTF-8, and \
+             processkit has no public way to reconstruct a ProcessResult<bytes> from arbitrary \
+             bytes outside a real run; pickle a text ProcessResult (Command.output()) instead, \
+             or persist result.stdout/.stderr/.code yourself",
+        ))
+    }
 }
 
 /// How a process ended: a clean exit code, a signal-kill, or a timeout.
@@ -384,6 +635,54 @@ impl PyOutcome {
             self.inner.signal(),
             self.inner.timed_out(),
         )
+    }
+
+    /// Value equality over the crate's derived `PartialEq` for `Outcome` — not
+    /// `object`'s identity comparison.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
+    /// Consistent with `__eq__`: `(code, signal, timed_out)` fully determines
+    /// which of the three variants an `Outcome` is and its payload.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.code().hash(&mut hasher);
+        self.inner.signal().hash(&mut hasher);
+        self.inner.timed_out().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Pickle support: see the module doc — reconstructed via
+    /// `scripted_outcome` (a scripted, no-subprocess run), since
+    /// `processkit::Outcome` has no public constructor.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyAny>, (Option<i32>, Option<i32>, bool))> {
+        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
+        Ok((
+            factory,
+            (
+                self.inner.code(),
+                self.inner.signal(),
+                self.inner.timed_out(),
+            ),
+        ))
+    }
+
+    /// `__reduce__`'s factory — see `ProcessResult._unpickle`'s doc.
+    #[staticmethod]
+    fn _unpickle(
+        py: Python<'_>,
+        code: Option<i32>,
+        signal: Option<i32>,
+        timed_out: bool,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: scripted_outcome(py, code, signal, timed_out)?,
+        })
     }
 }
 
@@ -503,6 +802,55 @@ impl PyFinished {
             self.outcome.code(),
             self.outcome.timed_out(),
         )
+    }
+
+    /// Value equality — the same fields (`outcome`, `stderr`) the crate's own
+    /// derived `PartialEq` for `Finished` compares — not `object`'s identity
+    /// comparison.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.outcome == other.outcome && self.stderr == other.stderr
+    }
+
+    /// Consistent with `__eq__`.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.outcome.code().hash(&mut hasher);
+        self.outcome.signal().hash(&mut hasher);
+        self.outcome.timed_out().hash(&mut hasher);
+        self.stderr.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Pickle support: see the module doc — the `outcome` half is
+    /// reconstructed via `scripted_outcome`, `stderr` carried through as-is.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyAny>, (String, Option<i32>, Option<i32>, bool))> {
+        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
+        Ok((
+            factory,
+            (
+                self.stderr.clone(),
+                self.outcome.code(),
+                self.outcome.signal(),
+                self.outcome.timed_out(),
+            ),
+        ))
+    }
+
+    /// `__reduce__`'s factory — see `ProcessResult._unpickle`'s doc.
+    #[staticmethod]
+    fn _unpickle(
+        py: Python<'_>,
+        stderr: String,
+        code: Option<i32>,
+        signal: Option<i32>,
+        timed_out: bool,
+    ) -> PyResult<Self> {
+        let outcome = scripted_outcome(py, code, signal, timed_out)?;
+        Ok(Self { outcome, stderr })
     }
 }
 

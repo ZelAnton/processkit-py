@@ -5,8 +5,8 @@ and it accepts the real `Runner`, a `ScriptedRunner`, a replaying
 `RecordReplayRunner`, a recording `RecordingRunner`, or any custom double with
 the matching verbs — all checked by the type checker.
 
-`ProcessRunner` is the capture/check verb surface (`output`/`run`/`exit_code`/
-`probe`, plus their `a`-prefixed async twins) — annotate with it when your code
+`ProcessRunner` is the capture/check verb surface (`output`/`output_bytes`/
+`run`/`exit_code`/`probe`, plus their `a`-prefixed async twins) — annotate with it when your code
 only ever materializes a result and never streams. `StreamingRunner` extends it
 with `start`/`astart`, for code that also needs a live `RunningProcess` handle.
 Every built-in runner satisfies `StreamingRunner` (the narrower `ProcessRunner`
@@ -27,12 +27,12 @@ __all__ = ["ProcessRunner", "StreamingRunner"]
 
 @runtime_checkable
 class ProcessRunner(Protocol):
-    """The capture/check run verbs as a structural type: `output`/`run`/
-    `exit_code`/`probe` and their `a`-prefixed async twins — no streaming.
+    """The capture/check run verbs as a structural type: `output`/`output_bytes`/
+    `run`/`exit_code`/`probe` and their `a`-prefixed async twins — no streaming.
 
     Every built-in runner satisfies this (and the wider `StreamingRunner`).
     Prefer this narrower protocol when your own code only calls these verbs —
-    a hand-rolled double then only needs to implement four verbs (times two
+    a hand-rolled double then only needs to implement five verbs (times two
     for the async twins), not the full runner surface.
     (`CliClient` is *not* a `ProcessRunner` — its verbs take per-call args, not
     a `Command`.)

@@ -233,6 +233,45 @@ jobs:
           tests/test_process_group.py::test_group_cpu_quota_kwarg_accepted
           tests/test_process_group.py::test_group_reports_a_mechanism
 
+  event-loops:
+    # Dedicated job for tests/test_event_loops.py: turns docs/event-loops.md's
+    # "uvloop and anyio-on-asyncio are fully supported / works today" claim
+    # into a checked contract by rerunning a representative async subset
+    # (aoutput, astart + streaming, cancellation, aoutput_all, the readiness
+    # helpers) under the real uvloop and anyio-on-asyncio runtimes -- not a
+    # mocked event loop. Kept separate from `test` above (not folded into its
+    # matrix): the ordinary PR-gate `test` job must not require uvloop/anyio
+    # as dependencies, so only this job installs the optional `event-loops`
+    # dependency group (`uv sync --group event-loops`); `test` never does.
+    #
+    # uvloop ships no Windows wheels, so its `pyproject.toml` dependency-group
+    # entry is marked `sys_platform != 'win32'` -- on windows-latest, `uv sync`
+    # here installs anyio only, and the uvloop-parametrized tests in
+    # test_event_loops.py self-skip with an explicit `skipif` reason (visible
+    # in the job's test summary), rather than silently vanishing. On the other
+    # two OSes, uvloop is a hard member of the group: if it ever failed to
+    # install there, the `uv sync` step below would fail loudly, so this run
+    # can't pass vacuously with uvloop silently missing.
+    name: event-loops (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --group event-loops
+      - name: Run the event-loop compatibility matrix
+        run: uv run pytest tests/test_event_loops.py
+
   build:
     name: build (${{ matrix.os }})
     strategy:

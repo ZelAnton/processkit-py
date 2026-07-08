@@ -91,6 +91,19 @@ docs = [
 bench = [
   "pytest-benchmark>=5,<6",
 ]
+# Event-loop compatibility matrix for `tests/test_event_loops.py` — turns
+# docs/event-loops.md's "uvloop and anyio-on-asyncio are fully supported"
+# claim into a checked contract. Split out of `dev` so the ordinary PR-gate
+# `test` job (and every plain `uv run pytest`) never needs these installed;
+# only the dedicated `event-loops` CI job (`--group event-loops`) does.
+# uvloop ships no Windows wheels (and has none planned), so it is marked
+# Windows-incompatible here via an environment marker — `uv sync --group
+# event-loops` on Windows installs anyio only, and the uvloop-parametrized
+# tests skip themselves (see tests/test_event_loops.py).
+event-loops = [
+  "uvloop>=0.21.0,<1; sys_platform != 'win32'",
+  "anyio>=4.0,<5",
+]
 
 [tool.maturin]
 # Build abi3 wheels (cp310+) to keep the wheel matrix flat across Python versions.

@@ -147,7 +147,13 @@ fn make_command_predicate(
     callback: Py<PyAny>,
 ) -> impl Fn(&processkit::Command) -> bool + Send + Sync + 'static {
     move |command| {
-        Python::attach(|py| {
+        // `try_attach`, not `attach`: a scripted-runner predicate can run on a
+        // tokio worker not joined at `Py_Finalize` (the runtime is an immortal
+        // singleton). A finalizing interpreter yields `None` -> the safe "does
+        // not match" default (same verdict as a raising/non-bool predicate),
+        // instead of the panic/crash a plain `attach` would cause at shutdown.
+        // Same finalization guard as `logging.rs`'s bridge.
+        Python::try_attach(|py| {
             let py_command = match Py::new(
                 py,
                 PyCommand {
@@ -171,6 +177,7 @@ fn make_command_predicate(
                 }
             }
         })
+        .unwrap_or(false)
     }
 }
 
@@ -181,11 +188,15 @@ fn make_command_predicate(
 /// — a broken echo must not derail the run it was only observing.
 fn make_invocation_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync + 'static {
     move |line| {
-        Python::attach(|py| {
+        // `try_attach`, not `attach`: a dry-run echo can fire from a tokio worker
+        // not joined at `Py_Finalize`. A finalizing interpreter yields `None`, so
+        // the echo is dropped as a no-op — a plain `attach` would panic/crash at
+        // shutdown. Same finalization guard as `logging.rs`'s bridge.
+        let _ = Python::try_attach(|py| {
             if let Err(err) = callback.call1(py, (line,)) {
                 err.write_unraisable(py, Some(callback.bind(py)));
             }
-        })
+        });
     }
 }
 

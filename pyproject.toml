@@ -254,6 +254,16 @@ test-command = "python {project}/scripts/smoke.py"
 # retired the free `macos-13` Intel runner, but Rust cross-compiles
 # darwin-x86_64 from an arm64 host trivially (the `_build-dists.yml` workflow
 # adds the `x86_64-apple-darwin` rustup target before this runs).
+#
+# Known, accepted gap: `test-command` (scripts/smoke.py) needs Rosetta 2 to
+# execute the x86_64 interpreter on the arm64 (macos-14) runner, and this repo
+# does not install Rosetta before the build. There is no free GitHub-hosted
+# Intel macOS runner left to run a native x86_64 smoke test either. So the
+# x86_64 wheel is built and shipped without a post-build import/exec smoke
+# check — it relies on the arm64 build's smoke test (same source, same
+# `[extension-module]` build) plus the CodeQL/pip-audit/rust-audit gates for
+# confidence. If a free arm64 GitHub runner with Rosetta preinstalled becomes
+# available, or a native Intel macOS runner returns, revisit this.
 archs = ["arm64", "x86_64"]
 
 [[tool.cibuildwheel.overrides]]

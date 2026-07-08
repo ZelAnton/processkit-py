@@ -45,3 +45,14 @@ updates:
         update-types:
           - minor
           - patch
+
+  # docker/Dockerfile (dev-only local test environment, excluded from the
+  # sdist — see docker/Dockerfile's header) pins `rust:1-bookworm`. Keep that
+  # base image current for the same reason as the other ecosystems: a stale
+  # base can carry known CVEs even though it never ships to users.
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: CI

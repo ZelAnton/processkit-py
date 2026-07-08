@@ -34,11 +34,18 @@ pub(crate) struct PyCommand {
 /// boundary — a broken observer must not derail the run it was only watching.
 fn make_line_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync + 'static {
     move |line| {
-        Python::attach(|py| {
+        // `try_attach`, not `attach`: this fires from the tokio capture-pump
+        // worker, which outlives the driving verb and is NOT joined at
+        // `Py_Finalize` (the runtime is an immortal singleton). Once the
+        // interpreter is finalizing `try_attach` returns `None`, so the line is
+        // dropped as a no-op — a plain `attach` would panic/crash observing a
+        // shutdown-time line. Same finalization guard as `logging.rs`'s bridge
+        // (see its `try_attach` comment).
+        let _ = Python::try_attach(|py| {
             if let Err(err) = callback.call1(py, (line,)) {
                 err.write_unraisable(py, Some(callback.bind(py)));
             }
-        })
+        });
     }
 }
 

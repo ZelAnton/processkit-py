@@ -755,6 +755,21 @@ def test_stdout_tee_to_writer_fires_on_the_async_path() -> None:
     assert buf.getvalue() == "line0\nline1\nline2\nline3\nline4\n"
 
 
+def test_stdout_tee_propagates_non_attribute_error_from_write_lookup() -> None:
+    # `is_python_writer` probes `sink.write`; only `AttributeError` means "no
+    # such attribute, treat as a path". A sink whose `write` is a property (or
+    # `__getattr__`) that raises something else must see that original
+    # exception surface, not get reinterpreted as "this is a path" and fail
+    # with a confusing "expected str/PathLike" TypeError instead.
+    class BrokenWriter:
+        @property
+        def write(self) -> object:
+            raise RuntimeError("write is not ready yet")
+
+    with pytest.raises(RuntimeError, match="write is not ready yet"):
+        Command(PY, ["-c", _PRINT_LINES]).stdout_tee(BrokenWriter())
+
+
 def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:
     # A blocking (sleeping) write() must not stall the asyncio loop: each write is
     # dispatched to the runtime's blocking pool, so a concurrent asyncio task keeps

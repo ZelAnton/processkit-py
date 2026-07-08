@@ -93,6 +93,35 @@ def test_missing_command_after_run_is_a_usage_error() -> None:
     assert "missing command" in result.stderr
 
 
+def test_fallback_process_group_failure_is_reported_not_raised() -> None:
+    # Simulates the "should not happen on any supported platform" case: even
+    # the plain, uncapped `ProcessGroup()` fallback (after a rejected
+    # resource-limit request) raises `Unsupported`. This must still surface
+    # as `_fail(...)` + exit 125, never an unhandled traceback — the same
+    # contract the sibling `not limits_requested` branch already has.
+    script = (
+        "import sys\n"
+        "import processkit\n"
+        "import processkit.__main__ as m\n"
+        "class _AlwaysUnsupported:\n"
+        "    def __init__(self, *a, **k):\n"
+        "        raise processkit.Unsupported('containment is unavailable')\n"
+        "m.ProcessGroup = _AlwaysUnsupported\n"
+        "sys.exit(m.main(['run', '--max-memory', '1', '--', 'irrelevant']))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 125
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "containment is unavailable" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
 def test_double_dash_inside_child_argv_is_passed_through_verbatim() -> None:
     # Only the *first* "--" is this wrapper's separator; a further one belongs
     # to the child's own argv, untouched.

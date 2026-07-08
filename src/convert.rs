@@ -88,8 +88,14 @@ pub(crate) fn open_tee_sink(path: &Path, append: bool) -> PyResult<tokio::fs::Fi
 pub(crate) fn is_python_writer(sink: &Bound<'_, PyAny>) -> PyResult<bool> {
     match sink.getattr("write") {
         Ok(write) => Ok(write.is_callable()),
-        // No `write` attribute at all → treat as a path.
-        Err(_) => Ok(false),
+        // No `write` attribute at all → treat as a path. Only `AttributeError`
+        // means "no such attribute"; anything else (a raising property,
+        // `__getattr__` misbehaving, …) is a real error and must propagate
+        // instead of being silently reinterpreted as "this is a path".
+        Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(sink.py()) => {
+            Ok(false)
+        }
+        Err(err) => Err(err),
     }
 }
 

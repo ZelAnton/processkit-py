@@ -17,13 +17,15 @@ names) and an **asyncio** one (the same names with an `a` prefix). Use whichever
 fits your code; they share the same types and the same no-orphan guarantee.
 
 `ProcessStdin`'s write methods and the `stdout_lines()` / `output_events()`
-iterators are **async-only**. A `RunningProcess`'s *consuming* methods
-(`wait`/`finish`/`output`/`output_bytes`/`profile`/`shutdown`) are coroutines with
-no `a` prefix — they exist for streaming/interactive use, so there is no
-synchronous twin to disambiguate from. Its `stdout_lines()` / `output_events()` /
-`take_stdin()` / `kill()` are *synchronous* setup calls (it's the
-iterator/handle they return that you await). A `RunningProcess` is still usable as
-a **sync or async context manager** for deterministic teardown.
+iterators are **async-only**. A `RunningProcess`'s *consuming* methods —
+`outcome`/`aoutcome`, `finish`/`afinish`, `output`/`aoutput`,
+`output_bytes`/`aoutput_bytes`, `profile`/`aprofile`, `shutdown`/`ashutdown` —
+each come in a sync/async pair like everywhere else in the library: the plain
+name blocks the calling thread, the `a`-prefixed twin is a coroutine (see
+[Streaming](streaming.md#lifecycle) for the full table). Its `stdout_lines()` /
+`output_events()` / `take_stdin()` / `kill()` are *synchronous* setup calls
+(it's the iterator/handle they return that you await). A `RunningProcess` is
+still usable as a **sync or async context manager** for deterministic teardown.
 
 ---
 

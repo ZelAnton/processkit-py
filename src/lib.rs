@@ -30,8 +30,14 @@ mod supervisor;
 // managed singleton, the exception caches use `PyOnceLock`, stream handles are
 // `Arc<Mutex<…>>`, the opt-in `tracing` subscriber is a stateless ZST layer over
 // `tracing`'s internally-synchronized global dispatch (installed once via an
-// `OnceLock`, forwarding to thread-safe `logging`), and every pyclass is guarded
-// by PyO3's own per-object borrow checking. A no-op on the standard (GIL) build.
+// `OnceLock`, forwarding to thread-safe `logging`), and the stateful pyclasses
+// that carry consumable/reconfigurable state (`ProcessGroup`, `RunningProcess`,
+// `ScriptedRunner`, `DryRunRunner`) are `#[pyclass(frozen)]` with an interior
+// `std::sync::Mutex` that serializes cross-thread access — the guard always
+// dropped before any `block_on`/await, so a concurrent call gets a typed
+// `ProcessError`, never a raw `RuntimeError`/`PanicException` from PyO3's borrow
+// flag; the remaining, immutable pyclasses lean on that same PyO3 per-object
+// borrow checking. A no-op on the standard (GIL) build.
 //
 // Registration is delegated to each module's own `register(m)` fn (classes,
 // functions, and — for `errors` — the exception hierarchy), so adding a new

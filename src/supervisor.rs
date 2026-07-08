@@ -56,7 +56,13 @@ fn make_stop_predicate(
     callback: Py<PyAny>,
 ) -> impl Fn(&PkProcessResult<String>) -> bool + Send + Sync + 'static {
     move |result| {
-        Python::attach(|py| {
+        // `try_attach`, not `attach`: `stop_when` runs on a tokio supervision
+        // worker not joined at `Py_Finalize` (the runtime is an immortal
+        // singleton). A finalizing interpreter yields `None` -> "do not stop"
+        // (the same default as a raising/non-bool predicate), instead of the
+        // panic/crash a plain `attach` would cause at shutdown. Same finalization
+        // guard as `logging.rs`'s bridge.
+        Python::try_attach(|py| {
             let py_result = match Py::new(
                 py,
                 PyProcessResult {
@@ -80,6 +86,7 @@ fn make_stop_predicate(
                 }
             }
         })
+        .unwrap_or(false)
     }
 }
 
@@ -112,17 +119,27 @@ fn make_stop_predicate(
 ///     missing binary.
 ///
 /// GIL safety: the classifier runs on the tokio runtime thread, so it acquires
-/// the GIL via `Python::attach` before touching Python, exactly like
-/// `make_stop_predicate`. The crate's classifier is infallible (`-> bool`), so a
-/// raising or non-bool callback reads as "not permanent" — keep restarting, the
-/// safe default that matches an unset classifier — but the error is surfaced via
-/// the unraisable hook (stderr) rather than silently swallowed, so a buggy
-/// classifier is visible instead of looping invisibly.
+/// the GIL via `Python::try_attach` before touching Python, exactly like
+/// `make_stop_predicate`. `try_attach` (not `attach`) returns `None` once the
+/// interpreter is finalizing — that worker thread is not joined at `Py_Finalize`
+/// — and the classifier then reads as "not permanent" (keep restarting) without
+/// touching Python, rather than panicking/crashing at shutdown. The crate's
+/// classifier is infallible (`-> bool`), so a raising or non-bool callback also
+/// reads as "not permanent" — keep restarting, the safe default that matches an
+/// unset classifier — but the error is surfaced via the unraisable hook (stderr)
+/// rather than silently swallowed, so a buggy classifier is visible instead of
+/// looping invisibly.
 fn make_give_up_classifier(
     callback: Py<PyAny>,
 ) -> impl Fn(&GiveUpAttempt<'_>) -> bool + Send + Sync + 'static {
     move |attempt| {
-        Python::attach(|py| {
+        // `try_attach`, not `attach`: the classifier runs on a tokio supervision
+        // worker not joined at `Py_Finalize` (the runtime is an immortal
+        // singleton). A finalizing interpreter yields `None` -> "not permanent" /
+        // keep restarting (the same default as a raising/non-bool classifier and
+        // as an unset classifier), instead of the panic/crash a plain `attach`
+        // would cause at shutdown. Same finalization guard as `logging.rs`.
+        Python::try_attach(|py| {
             // Build the Python-facing view of this attempt (see the doc above).
             let arg: Py<PyAny> = match attempt {
                 GiveUpAttempt::Crashed(result) => {
@@ -159,6 +176,7 @@ fn make_give_up_classifier(
                 }
             }
         })
+        .unwrap_or(false)
     }
 }
 

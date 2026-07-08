@@ -55,6 +55,18 @@ class ProcessResult:
     def truncated(self) -> bool: ...
     @property
     def combined(self) -> str: ...
+    @property
+    def diagnostic(self) -> str | None:
+        """The best human-facing message: stderr if it carries text, otherwise
+        stdout, otherwise ``None`` if both are blank — the same preference
+        order as ``NonZeroExit``/``Timeout``/``Signalled.diagnostic``."""
+
+    @property
+    def outcome(self) -> Outcome:
+        """The full run outcome (``code`` / ``signal`` / ``timed_out``), the
+        same value ``RunProfile.outcome`` and the checking-verb exceptions
+        expose."""
+
     def ensure_success(self) -> ProcessResult:
         """Raise the same exception a checking verb would if this result's
         exit isn't in ``success_codes``; returns ``self`` unchanged otherwise,
@@ -91,6 +103,15 @@ class BytesResult:
         the raw stdout too when an ``output_limit(max_bytes=...)`` byte ceiling
         bounds it to a head/tail. A ``max_lines`` cap never truncates raw stdout
         (bytes have no line count); only a ``max_bytes`` cap does."""
+
+    @property
+    def diagnostic(self) -> str | None:
+        """See ``ProcessResult.diagnostic``. Raw stdout is lossily decoded to
+        text for this message when stderr is blank."""
+
+    @property
+    def outcome(self) -> Outcome:
+        """See ``ProcessResult.outcome``."""
 
     def ensure_success(self) -> BytesResult:
         """See ``ProcessResult.ensure_success()``."""

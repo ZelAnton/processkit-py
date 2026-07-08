@@ -171,8 +171,12 @@ if TYPE_CHECKING:
         assert_type(r.is_success, bool)
         assert_type(r.signal, int | None)
         assert_type(r.combined, str)
+        assert_type(r.diagnostic, str | None)
+        assert_type(r.outcome, Outcome)
         assert_type(b.stdout, bytes)
         assert_type(b.stderr, str)
+        assert_type(b.diagnostic, str | None)
+        assert_type(b.outcome, Outcome)
         assert_type(o.code, int | None)
         assert_type(o.exited_zero, bool)
 

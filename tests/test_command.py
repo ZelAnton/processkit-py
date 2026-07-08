@@ -864,6 +864,75 @@ def test_timeout_diagnostic_reflects_partial_output() -> None:
     assert excinfo.value.diagnostic == "partial"
 
 
+# --- ProcessResult/BytesResult.diagnostic and .outcome (T-040) ---------------
+
+
+def test_process_result_diagnostic_prefers_stderr() -> None:
+    code = "import sys; print('out'); sys.stderr.write('err'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output()
+    assert result.diagnostic == "err"
+
+
+def test_process_result_diagnostic_falls_back_to_stdout() -> None:
+    code = "import sys; print('only stdout'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output()
+    assert result.diagnostic == "only stdout"
+
+
+def test_process_result_diagnostic_is_none_when_both_streams_blank() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(1)"]).output()
+    assert result.diagnostic is None
+
+
+def test_bytes_result_diagnostic_prefers_stderr() -> None:
+    code = "import sys; print('out'); sys.stderr.write('err'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output_bytes()
+    assert result.diagnostic == "err"
+
+
+def test_bytes_result_diagnostic_falls_back_to_stdout() -> None:
+    code = "import sys; print('only stdout'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output_bytes()
+    assert result.diagnostic == "only stdout"
+
+
+def test_bytes_result_diagnostic_is_none_when_both_streams_blank() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(1)"]).output_bytes()
+    assert result.diagnostic is None
+
+
+def test_process_result_outcome_matches_run_profile_outcome_on_success() -> None:
+    cmd = Command(PY, ["-c", "import sys; sys.exit(0)"])
+    result = cmd.output()
+    with cmd.start() as proc:
+        profile = proc.profile(every_seconds=0.05)
+    assert result.outcome.code == profile.outcome.code == 0
+    assert result.outcome.timed_out == profile.outcome.timed_out is False
+    assert result.outcome.signal == profile.outcome.signal is None
+
+
+def test_process_result_outcome_matches_on_nonzero_exit() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output()
+    assert result.outcome.code == 3
+    assert not result.outcome.timed_out
+    assert result.outcome.signal is None
+    assert not result.outcome.exited_zero
+
+
+def test_process_result_outcome_matches_on_timeout() -> None:
+    code = "import time; time.sleep(30)"
+    result = Command(PY, ["-c", code]).timeout(3.0).output()
+    assert result.outcome.timed_out
+    assert result.outcome.code is None
+
+
+def test_bytes_result_outcome_matches_on_nonzero_exit() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output_bytes()
+    assert result.outcome.code == 3
+    assert not result.outcome.timed_out
+    assert not result.outcome.exited_zero
+
+
 # --- signal as a raw int (C7 batch A) ----------------------------------------
 
 

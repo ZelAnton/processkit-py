@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nested `outcome`, so it now mirrors `Outcome` fully — matching `code` and
   `exited_zero`, which were already exposed directly — instead of requiring
   `finished.outcome.timed_out` / `finished.outcome.signal`.
+- `ProcessResult` and `BytesResult` gain `diagnostic: str | None` (stderr if it
+  carries text, otherwise stdout, otherwise `None` — the same preference order
+  as `NonZeroExit`/`Timeout`/`Signalled.diagnostic` on the exceptions) and
+  `outcome: Outcome` (the same value `RunProfile.outcome` and the checking-verb
+  exceptions expose). A result held as data (`output()`/`output_bytes()`
+  without `ensure_success()`) no longer requires re-deriving these by hand.
 
 ### Changed
 - `CliClient(default_env_fn=...)` now validates that every value in the

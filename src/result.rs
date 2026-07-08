@@ -161,6 +161,28 @@ impl PyProcessResult {
         self.inner.combined()
     }
 
+    /// The best human-facing message from this result: stderr if it carries
+    /// text, otherwise stdout, otherwise `None` if both are blank — the same
+    /// preference order as `NonZeroExit`/`Timeout`/`Signalled.diagnostic` on
+    /// the exceptions (`error.diagnostic()` in `src/errors.rs`), so a result
+    /// held as data (rather than raised) can build the same message.
+    #[getter]
+    fn diagnostic(&self) -> Option<&str> {
+        let text = self.inner.diagnostic();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+
+    /// The full run outcome (`code` / `signal` / `timed_out`), the same value
+    /// `RunProfile.outcome` and the checking-verb exceptions expose.
+    #[getter]
+    fn outcome(&self) -> PyOutcome {
+        PyOutcome::from(self.inner.outcome())
+    }
+
     /// Raise the same exception a checking verb (`run`/`exit_code`/`probe`)
     /// would if this result's exit isn't in `success_codes` — for turning an
     /// already-captured `output()`/`output_bytes()` result into an error after
@@ -257,6 +279,34 @@ impl PyBytesResult {
     #[getter]
     fn truncated(&self) -> bool {
         self.inner.truncated()
+    }
+
+    /// The best human-facing message from this result: stderr if it carries
+    /// text, otherwise stdout (lossily decoded, since raw stdout may not be
+    /// valid UTF-8), otherwise `None` if both are blank — see
+    /// `ProcessResult.diagnostic`. The crate's own `ProcessResult::diagnostic`
+    /// is only implemented for `ProcessResult<String>`, so this mirrors its
+    /// stderr-then-stdout preference by hand for the `Vec<u8>` stdout here.
+    #[getter]
+    fn diagnostic(&self) -> Option<String> {
+        let stderr = self.inner.stderr().trim();
+        if !stderr.is_empty() {
+            return Some(stderr.to_string());
+        }
+        let stdout = String::from_utf8_lossy(self.inner.stdout().as_slice());
+        let stdout = stdout.trim();
+        if stdout.is_empty() {
+            None
+        } else {
+            Some(stdout.to_string())
+        }
+    }
+
+    /// The full run outcome (`code` / `signal` / `timed_out`) — see
+    /// `ProcessResult.outcome`.
+    #[getter]
+    fn outcome(&self) -> PyOutcome {
+        PyOutcome::from(self.inner.outcome())
     }
 
     /// Raise the same exception a checking verb would if this result's exit

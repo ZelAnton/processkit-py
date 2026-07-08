@@ -90,6 +90,8 @@ class SupportsWrite(Protocol):
     `RunnerLike` lives here)."""
 
     def write(self, data: str, /) -> object: ...
+
+
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
 SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
 RetryIf = Literal["transient", "transient_or_timeout"]

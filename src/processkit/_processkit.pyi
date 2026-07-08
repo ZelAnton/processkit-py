@@ -208,9 +208,7 @@ class Command:
         ``line_terminator``); stdout framing is left untouched. Handy when
         progress output lands on stderr while stdout stays newline-structured."""
 
-    def stdout_tee(
-        self, sink: StrPath | SupportsWrite, *, append: bool = ...
-    ) -> Command:
+    def stdout_tee(self, sink: StrPath | SupportsWrite, *, append: bool = ...) -> Command:
         """Tee every decoded stdout line (line + ``\\n``) to ``sink`` as it is
         produced, while the run *also* keeps capturing the full output (the sink
         does not steal from ``ProcessResult.stdout``).
@@ -240,9 +238,7 @@ class Command:
         the line pump — a no-op under ``stdout("inherit")`` / ``stdout("null")``
         and under ``output_bytes()`` (raw capture)."""
 
-    def stderr_tee(
-        self, sink: StrPath | SupportsWrite, *, append: bool = ...
-    ) -> Command:
+    def stderr_tee(self, sink: StrPath | SupportsWrite, *, append: bool = ...) -> Command:
         """Tee every decoded stderr line to ``sink``. Same contract as
         ``stdout_tee`` — a file path (opened at build time, truncate by default
         or ``append``) or a Python writer object with a callable ``write()`` (fed

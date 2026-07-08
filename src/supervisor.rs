@@ -499,6 +499,20 @@ impl PySupervisor {
     }
 
     /// Async counterpart of `run()`. Consumes the supervisor.
+    ///
+    /// Warning — unbounded `restart="always"` is not reclaimable if dropped:
+    /// this bridges the supervision future onto the shared tokio runtime via
+    /// `future_into_py`, which spawns the task immediately, not lazily on
+    /// `await`. If the returned awaitable is dropped without being awaited
+    /// (or the event loop closes before it resolves), that spawned task is
+    /// NOT cancelled — it keeps running detached from any Python owner,
+    /// forever pinning every `Py<PyAny>` callback it captured
+    /// (`stop_when`/`give_up_when`, and anything they close over) for the
+    /// life of the interpreter. Pair this with `restart="always"` and no
+    /// `max_restarts`/`stop_when`, and the task also never finishes on its
+    /// own: it restarts the child process forever with no way to reclaim it.
+    /// Always `await` what `arun()` returns, and give `restart="always"` a
+    /// `max_restarts=` or `stop_when=` so supervision has a defined end.
     fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let supervisor = self.take_supervisor()?;

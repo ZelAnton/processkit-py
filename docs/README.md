@@ -64,10 +64,11 @@ record/replay, and opt-in logging are all present in every published wheel.
 There is nothing to opt into at install time:
 
 ```bash
-pip install processkit-py   # supported path once the first PyPI release lands (import name: processkit)
+pip install processkit-py   # import name: processkit
 ```
 
-Until then, build from source (`uv run maturin develop`) — see the
+On a platform without a prebuilt wheel, build from source (`uv run maturin
+develop`) — see the
 [README](https://github.com/ZelAnton/processkit-py#building-from-source).
 
 Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on

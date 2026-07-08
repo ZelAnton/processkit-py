@@ -341,6 +341,30 @@ jobs:
           CIBW_BUILD: "cp310-musllinux_x86_64 cp314t-musllinux_x86_64"
         run: uvx 'cibuildwheel>=4,<5' --platform linux --output-dir wheelhouse
 
+  rust-audit:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    # Supply-chain gate for the Rust dependency tree (pyo3, tokio, processkit,
+    # ...) that gets compiled into every wheel -- the pip-audit job below only
+    # covers the Python-side (dev/build) dependencies. Kept in this PR-gating
+    # workflow (not nightly-hardening.yml): the compiled extension ships to
+    # every user as-is, so a newly-disclosed RustSec advisory or a license/ban
+    # violation should block the next merge rather than wait for the nightly
+    # schedule -- the same reasoning already applied to pip-audit here. No
+    # network access beyond what pip-audit already needs (fetching the
+    # rust-secure-code/advisory-db + crates.io index, both cached by the
+    # action between runs).
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Scan the dependency tree for security advisories, banned/duplicate
+      # crates, and licenses outside the permissive allow-list (deny.toml).
+      # Adapted from the sibling ProcessKit-rs repository's own cargo-deny gate.
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+        with:
+          command: check advisories bans licenses
+
   audit:
     name: pip-audit
     runs-on: ubuntu-latest

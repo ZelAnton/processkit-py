@@ -30,6 +30,7 @@ from processkit import (
     Priority,
     ProcessError,
     ProcessNotFound,
+    ProcessResult,
     Timeout,
     Unsupported,
 )
@@ -864,6 +865,75 @@ def test_timeout_diagnostic_reflects_partial_output() -> None:
     assert excinfo.value.diagnostic == "partial"
 
 
+# --- ProcessResult/BytesResult.diagnostic and .outcome (T-040) ---------------
+
+
+def test_process_result_diagnostic_prefers_stderr() -> None:
+    code = "import sys; print('out'); sys.stderr.write('err'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output()
+    assert result.diagnostic == "err"
+
+
+def test_process_result_diagnostic_falls_back_to_stdout() -> None:
+    code = "import sys; print('only stdout'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output()
+    assert result.diagnostic == "only stdout"
+
+
+def test_process_result_diagnostic_is_none_when_both_streams_blank() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(1)"]).output()
+    assert result.diagnostic is None
+
+
+def test_bytes_result_diagnostic_prefers_stderr() -> None:
+    code = "import sys; print('out'); sys.stderr.write('err'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output_bytes()
+    assert result.diagnostic == "err"
+
+
+def test_bytes_result_diagnostic_falls_back_to_stdout() -> None:
+    code = "import sys; print('only stdout'); sys.exit(1)"
+    result = Command(PY, ["-c", code]).output_bytes()
+    assert result.diagnostic == "only stdout"
+
+
+def test_bytes_result_diagnostic_is_none_when_both_streams_blank() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(1)"]).output_bytes()
+    assert result.diagnostic is None
+
+
+def test_process_result_outcome_matches_run_profile_outcome_on_success() -> None:
+    cmd = Command(PY, ["-c", "import sys; sys.exit(0)"])
+    result = cmd.output()
+    with cmd.start() as proc:
+        profile = proc.profile(every_seconds=0.05)
+    assert result.outcome.code == profile.outcome.code == 0
+    assert result.outcome.timed_out == profile.outcome.timed_out is False
+    assert result.outcome.signal == profile.outcome.signal is None
+
+
+def test_process_result_outcome_matches_on_nonzero_exit() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output()
+    assert result.outcome.code == 3
+    assert not result.outcome.timed_out
+    assert result.outcome.signal is None
+    assert not result.outcome.exited_zero
+
+
+def test_process_result_outcome_matches_on_timeout() -> None:
+    code = "import time; time.sleep(30)"
+    result = Command(PY, ["-c", code]).timeout(3.0).output()
+    assert result.outcome.timed_out
+    assert result.outcome.code is None
+
+
+def test_bytes_result_outcome_matches_on_nonzero_exit() -> None:
+    result = Command(PY, ["-c", "import sys; sys.exit(3)"]).output_bytes()
+    assert result.outcome.code == 3
+    assert not result.outcome.timed_out
+    assert not result.outcome.exited_zero
+
+
 # --- signal as a raw int (C7 batch A) ----------------------------------------
 
 
@@ -1023,6 +1093,95 @@ def test_stdout_tee_is_inert_under_output_bytes(tmp_path: pathlib.Path) -> None:
     assert sink.read_bytes() == b""
 
 
+# --- stdin_file — streaming file-backed stdin (T-039) ------------------------
+
+# Echoes each stdin line uppercased until EOF (same helper as test_streaming.py).
+_ECHO_UPPER = (
+    "import sys; [(sys.stdout.write(line.upper()), sys.stdout.flush()) for line in sys.stdin]"
+)
+
+
+def test_stdin_file_feeds_input(tmp_path: pathlib.Path) -> None:
+    src = tmp_path / "in.txt"
+    src.write_text("abc\n", encoding="utf-8")
+    assert Command(PY, ["-c", _ECHO_UPPER]).stdin_file(src).run() == "ABC"
+
+
+def test_stdin_file_accepts_pathlike(tmp_path: pathlib.Path) -> None:
+    # Same StrPath contract as arg()/cwd(): a pathlib.Path works, not just str.
+    src = tmp_path / "in.txt"
+    src.write_text("xyz\n", encoding="utf-8")
+    assert Command(PY, ["-c", _ECHO_UPPER]).stdin_file(src).run() == "XYZ"
+
+
+def test_stdin_file_does_not_touch_filesystem_at_build_time(tmp_path: pathlib.Path) -> None:
+    # Unlike stdout_tee()/stderr_tee(), stdin_file() does not open (or even stat)
+    # the path when called — a not-yet-existing path is accepted here; matches
+    # the rest of the builder, which never touches the filesystem at build time.
+    missing = tmp_path / "does-not-exist-yet.txt"
+    cmd = Command(PY, ["-c", "pass"]).stdin_file(missing)
+    assert isinstance(cmd, Command)
+
+
+def test_stdin_file_missing_path_fails_at_run_not_build(tmp_path: pathlib.Path) -> None:
+    # The error is deferred to spawn time (when the crate actually opens the
+    # file) — surfaced as the generic ProcessError, not FileNotFoundError: a
+    # stdin-write failure is not classified as a launch condition, since the
+    # child process has already spawned successfully by then.
+    missing = tmp_path / "does-not-exist.txt"
+    cmd = Command(PY, ["-c", _ECHO_UPPER]).stdin_file(missing)  # no raise here
+    with pytest.raises(ProcessError):
+        cmd.run()
+
+
+def test_stdin_file_does_not_buffer_whole_file_in_python(tmp_path: pathlib.Path) -> None:
+    # The point of stdin_file() over stdin_bytes()/stdin_text() is that a large
+    # input streams straight from disk to the child, never fully materialized as
+    # a Python object. Feed a file bigger than any reasonable line/record and
+    # confirm the child receives it all — a full-read-into-Python approach would
+    # still pass this, so the real guarantee is architectural (see stdin_file()'s
+    # docstring), but this at least pins that large inputs survive intact.
+    src = tmp_path / "big.bin"
+    payload = b"a" * (8 * 1024 * 1024)  # 8 MiB
+    src.write_bytes(payload)
+    code = (
+        "import sys; data = sys.stdin.buffer.read(); "
+        "print(len(data)); print(data == b'a' * (8 * 1024 * 1024))"
+    )
+    result = Command(PY, ["-c", code]).stdin_file(src).output()
+    lines = result.stdout.splitlines()
+    assert lines[0] == str(8 * 1024 * 1024)
+    assert lines[1] == "True"
+
+
+def test_stdin_file_overrides_earlier_stdin_bytes(tmp_path: pathlib.Path) -> None:
+    # Last stdin-configuring call wins — same convention already in force for
+    # stdin_bytes()/stdin_text()/keep_stdin_open().
+    src = tmp_path / "in.txt"
+    src.write_text("from-file\n", encoding="utf-8")
+    result = (
+        Command(PY, ["-c", _ECHO_UPPER])
+        .stdin_bytes(b"from-bytes\n")
+        .stdin_file(src)
+        .run()
+    )
+    assert result == "FROM-FILE"
+
+
+def test_stdin_bytes_overrides_earlier_stdin_file(tmp_path: pathlib.Path) -> None:
+    # The reverse order also wins for the later call, confirming stdin_file()
+    # participates in the same "last stdin method wins" chain as the others.
+    src = tmp_path / "in.txt"
+    src.write_text("from-file\n", encoding="utf-8")
+    result = (
+        Command(PY, ["-c", _ECHO_UPPER])
+        .stdin_file(src)
+        .stdin_bytes(b"from-bytes\n")
+        .run()
+    )
+    assert result == "FROM-BYTES"
+
+
 def test_stdout_tee_is_inert_under_stdout_null(tmp_path: pathlib.Path) -> None:
     # stdout("null") runs no capture pump — the tee is inert (empty file). null is
     # non-capturing, so the run goes through start() + outcome() (the capture verbs
@@ -1057,6 +1216,167 @@ def test_tee_write_error_is_isolated_from_the_run(tmp_path: pathlib.Path) -> Non
     result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee("/dev/full").output()
     assert result.is_success
     assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+# --- on_stdout_line / on_stderr_line — live per-line callbacks (T-037) -------
+
+
+def test_on_stdout_line_called_in_order_and_keeps_capture() -> None:
+    seen: list[str] = []
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(seen.append).output()
+    assert result.is_success
+    assert seen == ["alpha", "beta"]
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+def test_on_stderr_line_called_in_order_and_keeps_capture() -> None:
+    seen: list[str] = []
+    code = (
+        "import sys; "
+        "print('e1', file=sys.stderr, flush=True); "
+        "print('e2', file=sys.stderr, flush=True); "
+        "print('to-out', flush=True)"
+    )
+    result = Command(PY, ["-c", code]).on_stderr_line(seen.append).output()
+    assert result.stdout.strip() == "to-out"
+    assert seen == ["e1", "e2"]
+    assert result.stderr.splitlines() == ["e1", "e2"]
+
+
+def test_on_stdout_and_on_stderr_line_both_fire_independently() -> None:
+    out_seen: list[str] = []
+    err_seen: list[str] = []
+    code = (
+        "import sys; "
+        "print('o1', flush=True); "
+        "print('e1', file=sys.stderr, flush=True); "
+        "print('o2', flush=True)"
+    )
+    result = (
+        Command(PY, ["-c", code])
+        .on_stdout_line(out_seen.append)
+        .on_stderr_line(err_seen.append)
+        .output()
+    )
+    assert out_seen == ["o1", "o2"]
+    assert err_seen == ["e1"]
+    assert result.stdout.splitlines() == ["o1", "o2"]
+
+
+def test_aoutput_on_stdout_line_fires_on_the_async_path() -> None:
+    # Same callback, driven through the async verb — one bridge, both paths.
+    seen: list[str] = []
+
+    async def scenario() -> ProcessResult:
+        return await Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(seen.append).aoutput()
+
+    result = asyncio.run(scenario())
+    assert result.is_success
+    assert seen == ["alpha", "beta"]
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+def test_on_stdout_line_raising_callback_is_swallowed_and_capture_is_intact() -> None:
+    # Infallible from the binding's perspective: an exception inside the
+    # callback is surfaced via the unraisable hook (like
+    # DryRunRunner.on_invocation / ScriptedRunner.when), never propagated to
+    # the caller and never corrupting the captured result.
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(_line: str) -> None:
+        raise ValueError("callback exploded")
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        result = Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(boom).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert captured
+    assert isinstance(captured[0], ValueError)
+
+
+def test_on_stderr_line_raising_callback_is_swallowed_and_capture_is_intact() -> None:
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    def boom(_line: str) -> None:
+        raise ValueError("stderr callback exploded")
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        code = "import sys; print('e1', file=sys.stderr, flush=True)"
+        result = Command(PY, ["-c", code]).on_stderr_line(boom).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stderr.splitlines() == ["e1"]
+    assert captured
+    assert isinstance(captured[0], ValueError)
+
+
+def test_on_stdout_line_is_inert_under_stdout_null() -> None:
+    seen: list[str] = []
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("null").on_stdout_line(seen.append)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert seen == []
+
+
+def test_on_stdout_line_is_inert_under_stdout_inherit() -> None:
+    seen: list[str] = []
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("inherit").on_stdout_line(seen.append)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert seen == []
+
+
+def test_on_stdout_line_is_inert_under_output_bytes() -> None:
+    # output_bytes() captures stdout raw (no line pump) — same no-op family as
+    # stdout_tee under output_bytes().
+    seen: list[str] = []
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).on_stdout_line(seen.append).output_bytes()
+    assert result.stdout.split() == [b"alpha", b"beta"]
+    assert seen == []
+
+
+def test_on_stderr_line_still_fires_under_output_bytes() -> None:
+    # Unlike on_stdout_line, output_bytes() does NOT silence on_stderr_line:
+    # only the stdout capture goes raw there — stderr still decodes through
+    # the line pump exactly as it does under output().
+    seen: list[str] = []
+    code = "import sys; print('e1', file=sys.stderr, flush=True)"
+    result = Command(PY, ["-c", code]).on_stderr_line(seen.append).output_bytes()
+    assert seen == ["e1"]
+    assert result.stderr.splitlines() == ["e1"]
+
+
+def test_on_stdout_line_repeat_call_replaces_the_previous_handler() -> None:
+    first_seen: list[str] = []
+    second_seen: list[str] = []
+    result = (
+        Command(PY, ["-c", _TEE_TWO_LINES])
+        .on_stdout_line(first_seen.append)
+        .on_stdout_line(second_seen.append)
+        .output()
+    )
+    assert result.is_success
+    assert first_seen == []
+    assert second_seen == ["alpha", "beta"]
 
 
 def test_cancel_on_replaces_a_prior_token() -> None:

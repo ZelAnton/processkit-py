@@ -30,15 +30,36 @@ leaning on it for anything that matters.
 
 **processkit protects against:**
 
-- **Process-tree leakage.** Every process the tool spawns, and everything
-  *that* spawns, dies when the sandbox exits — enforced by the kernel
-  container (Job Object / cgroup v2 / process group), not a best-effort
-  signal to one pid. See [the no-orphan guarantee](process-groups.md#tearing-down).
-- **Resource exhaustion.** Whole-tree memory, process-count (fork bombs), and
-  CPU caps are enforced by the kernel (see
-  [Resource limits](process-groups.md#resource-limits-the-sandbox)); captured
-  output is bounded so a chatty or malicious child cannot grow the parent's
-  memory without limit (see
+- **Process-tree leakage — on Windows, and on Linux at a cgroup-v2 root.**
+  Every process the tool spawns, and everything *that* spawns, dies when the
+  sandbox exits — enforced by the kernel container (Job Object / cgroup v2),
+  not a best-effort signal to one pid. The `process_group` backend — macOS/BSD
+  always, and Linux whenever it falls back from cgroup v2 without delegation
+  (see [the mechanism](process-groups.md#creating-a-group-and-the-mechanism))
+  — is **not** in this category: its teardown is `killpg`, which cannot reach
+  a child that called `setsid()`/`setpgid()` to leave the group before
+  teardown runs — a standard daemonization trick, and exactly how hostile
+  code escapes it. (An ordinary double-fork that never calls
+  `setsid()`/`setpgid()` stays in the group and is still reaped.) See [the
+  no-orphan guarantee and its escape](process-groups.md#tearing-down).
+- **Resource exhaustion — only when the kernel container is real.**
+  Whole-tree memory, process-count (fork bombs), and CPU caps are enforced by
+  the kernel on Windows, and on Linux only when this process runs at a
+  **cgroup-v2 root** (see
+  [Resource limits](process-groups.md#resource-limits-the-sandbox)). A
+  container, a systemd session/scope/service, or any non-root cgroup gets you
+  nothing — the kernel's "no internal processes" rule forbids delegation
+  there — same as macOS/BSD having no whole-tree limit primitive at all (see
+  [Platform support](platforms.md)). The Python API fails closed:
+  `ProcessGroup(...)` raises `ResourceLimit` / `Unsupported` rather than
+  handing back a silently-uncapped group. `python -m processkit`, however,
+  catches that and silently re-spawns the child in an **uncapped**
+  `ProcessGroup()`, only warning on stderr (see [Resource limits: hard cap or
+  best effort?](cli.md#resource-limits-hard-cap-or-best-effort)) — if the cap
+  exists to contain hostile code, treat that stderr warning as a hard
+  failure, not something to shrug off and continue. Captured output is
+  bounded independently of these caps, so a chatty or malicious child cannot
+  grow the parent's memory without limit (see
   [Bounding captured output](commands.md#bounding-captured-output)).
 - **Runaway execution time.** A timeout kills the whole tree at a deadline —
   see [Timeouts & cancellation](timeouts-and-cancellation.md).
@@ -153,7 +174,13 @@ Full treatment: [Tearing down](process-groups.md#tearing-down).
       piped chain) — untrusted code should never run unbounded.
 - [ ] Teardown via a context manager, never `__del__` / `atexit`.
 - [ ] `kill_on_parent_death()` set on the tool, so it dies even if your own
-      process crashes before teardown runs.
+      process crashes before teardown runs — on POSIX this covers only the
+      **direct child** (Linux `PR_SET_PDEATHSIG`; not inherited by
+      grandchildren, resettable by the child itself via
+      `prctl(PR_SET_PDEATHSIG, 0)`, and lost across `exec`/a uid change), and
+      is a documented no-op on macOS/BSD. A tree-wide guarantee against a
+      hard kill of your own process is Windows-only (Job Object). See
+      [Privileges and spawn flags](commands.md#privileges-and-spawn-flags).
 - [ ] (POSIX only, if running as a privileged user) privileges dropped with
       all three of `uid` / `gid` / `groups([...])` set together — `uid` alone
       leaves the child holding the parent's supplementary groups.

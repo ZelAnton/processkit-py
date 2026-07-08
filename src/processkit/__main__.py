@@ -39,7 +39,10 @@ warning to stderr and re-runs the child in a plain, uncapped `ProcessGroup`
 no-orphan containment guarantee either way; only the specific numeric caps
 are dropped. If *no* resource limit was requested and containment itself is
 unavailable (should not happen on any supported platform), that is instead
-treated as the exit-125 internal failure above.
+treated as the exit-125 internal failure above — and so is the (also
+shouldn't-happen) case where the requested cap was rejected *and* the plain,
+uncapped fallback still fails: containment is unavailable outright, not
+merely the specific cap.
 """
 
 from __future__ import annotations
@@ -196,11 +199,18 @@ def _run(
         if not limits_requested:
             _fail(f"containment is unavailable in this environment: {exc}")
             return EXIT_INTERNAL_ERROR
+        try:
+            group = ProcessGroup()
+        except (ResourceLimit, Unsupported) as exc2:
+            # Containment itself is unavailable (not merely the requested
+            # limit) — report that, not the now-moot "running uncapped"
+            # message, and never let it propagate as a traceback.
+            _fail(f"containment is unavailable in this environment: {exc2}")
+            return EXIT_INTERNAL_ERROR
         _fail(
             f"requested resource limits are not supported in this environment "
             f"({exc}); running contained, but uncapped."
         )
-        group = ProcessGroup()
 
     try:
         with group:

@@ -12,12 +12,22 @@ from collections.abc import Iterator
 # A child that spawns a *grandchild* (a detached sleeper), records the
 # grandchild's pid to argv[1], then sleeps. Used to prove whole-tree teardown:
 # killing the child must also reap the grandchild.
-SPAWN_GRANDCHILD = (
-    "import subprocess, sys, time;"
-    "gc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
-    "open(sys.argv[1], 'w').write(str(gc.pid));"
-    "time.sleep(60)"
-)
+#
+# Explicit `with ... as f` + `f.flush()` (like `_STREAM_AND_SPAWN` in
+# test_streaming.py), rather than a bare `open(...).write(...)`: the latter
+# relies on CPython's refcount-close to flush the write as the temporary file
+# object is immediately garbage-collected -- true on CPython today, but not a
+# documented guarantee (and not true at all on, say, PyPy), so a reader
+# waiting on the pid file (`read_pid_when_ready`) would have no correctness
+# guarantee it observes the write in time.
+SPAWN_GRANDCHILD = """
+import subprocess, sys, time
+gc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+with open(sys.argv[1], "w") as f:
+    f.write(str(gc.pid))
+    f.flush()
+time.sleep(60)
+"""
 
 
 def free_port() -> int:

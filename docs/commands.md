@@ -381,11 +381,11 @@ fields**, not just a message:
 
 | Exception | Raised when | Fields |
 |---|---|---|
-| `NonZeroExit` | a checking verb saw a non-success exit code | `program`, `code`, `stdout`, `stderr`, `diagnostic` |
-| `Timeout` | the run's deadline killed it | `program`, `timeout_seconds`, `stdout`, `stderr`, `diagnostic` |
-| `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr`, `diagnostic` |
+| `NonZeroExit` | a checking verb saw a non-success exit code | `program`, `code`, `stdout`, `stderr`, `stdout_bytes` (`bytes \| None`), `diagnostic` |
+| `Timeout` | the run's deadline killed it | `program`, `timeout_seconds`, `stdout`, `stderr`, `stdout_bytes` (`bytes \| None`), `diagnostic` |
+| `Signalled` | the process was killed by a signal | `program`, `signal`, `stdout`, `stderr`, `stdout_bytes` (`bytes \| None`), `diagnostic` |
 | `ProcessNotFound` | the program couldn't be located / spawned | `program` |
-| `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file) | `program` |
+| `PermissionDenied` | the program couldn't be spawned for lack of permission (e.g. a non-executable file), or a permission-denied OS error surfaced from elsewhere in the run (e.g. a group signal the OS refused) | `program` (`str \| None` — `None` for the broader "refused OS operation" case, where no program is being named) |
 | `OutputTooLarge` | an `on_overflow="error"` cap was crossed | `program`, `max_lines`, `max_bytes`, `total_lines`, `total_bytes` |
 | `ResourceLimit` | a memory / process / CPU cap was invalid or couldn't be enforced | — (reason is `str(exc)`) |
 | `Unsupported` | the platform can't perform the requested operation | `operation` |

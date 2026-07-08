@@ -1,7 +1,7 @@
 //! The async streaming/interactive handles: `RunningProcess` plus its
 //! `ProcessStdin`, `StdoutLines`, and `OutputEvents`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
 
 use processkit::prelude::StreamExt;
 use processkit::OutputEvents as PkOutputEvents;
@@ -133,30 +133,51 @@ impl PyOutputEvents {
 /// either is called; using it afterwards raises. Usable as a context manager
 /// (`with` / `async with`): exiting the block tears the process down — a hard
 /// kill of the whole private tree for a standalone handle.
-#[pyclass(name = "RunningProcess", module = "processkit")]
+// `frozen` so every method takes `&self`: the consuming verbs used to take an
+// exclusive `&mut self` PyO3 borrow and hold it across `block_on`/`drive_async`
+// (i.e. across the whole wait, GIL released), so a concurrent `&self` call from
+// another thread — even a plain getter or `__repr__` — raced the borrow flag
+// and surfaced a raw `RuntimeError("Already borrowed")` instead of a typed
+// `ProcessError`. The interior `Mutex<Option<...>>` serializes the access
+// instead; the guard is always released (via the owned-returning helpers below)
+// *before* any `block_on`/await, so a consumed handle reads back cleanly as
+// `None` and the wait window is never held under the lock. The streaming
+// handles (`ProcessStdin`/`StdoutLines`/`OutputEvents`) keep their own
+// `tokio::sync::Mutex` for their async-held stream state — unchanged.
+#[pyclass(name = "RunningProcess", module = "processkit", frozen)]
 pub(crate) struct PyRunningProcess {
     // `None` after a consuming method has taken ownership of the process.
-    pub(crate) inner: Option<PkRunningProcess>,
+    pub(crate) inner: StdMutex<Option<PkRunningProcess>>,
 }
 
 impl From<PkRunningProcess> for PyRunningProcess {
     fn from(running: PkRunningProcess) -> Self {
         Self {
-            inner: Some(running),
+            inner: StdMutex::new(Some(running)),
         }
     }
 }
 
 impl PyRunningProcess {
-    fn running_mut(&mut self) -> PyResult<&mut PkRunningProcess> {
-        self.inner
-            .as_mut()
-            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))
+    /// Lock the inner slot, recovering from a (never-expected) poisoned mutex
+    /// rather than panicking across the FFI boundary — the guarded sections only
+    /// read/`as_mut`/`take` the handle and never panic, so poisoning cannot
+    /// actually happen.
+    fn lock(&self) -> StdMutexGuard<'_, Option<PkRunningProcess>> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn take_running(&mut self) -> PyResult<PkRunningProcess> {
-        self.inner
-            .take()
+    /// Take the process out, returning `None` if the handle was already
+    /// consumed. The lock is released before this returns, so a teardown never
+    /// holds it across the subsequent `block_on`/await.
+    fn take(&self) -> Option<PkRunningProcess> {
+        self.lock().take()
+    }
+
+    /// Take the process out for a consuming verb, erroring if already consumed.
+    /// Like `take`, releases the lock before returning.
+    fn take_running(&self) -> PyResult<PkRunningProcess> {
+        self.take()
             .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))
     }
 }
@@ -182,19 +203,19 @@ impl PyRunningProcess {
     /// The OS process id, or `None` once the handle has been consumed/reaped.
     #[getter]
     fn pid(&self) -> Option<u32> {
-        self.inner.as_ref().and_then(|running| running.pid())
+        self.lock().as_ref().and_then(|running| running.pid())
     }
 
     /// Seconds elapsed since the process started, or `None` once consumed.
     #[getter]
     fn elapsed_seconds(&self) -> Option<f64> {
-        self.inner.as_ref().map(|r| r.elapsed().as_secs_f64())
+        self.lock().as_ref().map(|r| r.elapsed().as_secs_f64())
     }
 
     /// Cumulative CPU time so far in seconds, if measurable (`None` otherwise).
     #[getter]
     fn cpu_time_seconds(&self) -> Option<f64> {
-        self.inner
+        self.lock()
             .as_ref()
             .and_then(|r| r.cpu_time())
             .map(|d| d.as_secs_f64())
@@ -203,19 +224,19 @@ impl PyRunningProcess {
     /// Peak resident memory so far in bytes, if measurable (`None` otherwise).
     #[getter]
     fn peak_memory_bytes(&self) -> Option<u64> {
-        self.inner.as_ref().and_then(|r| r.peak_memory_bytes())
+        self.lock().as_ref().and_then(|r| r.peak_memory_bytes())
     }
 
     /// Number of stdout lines captured so far (`None` once consumed).
     #[getter]
     fn stdout_line_count(&self) -> Option<usize> {
-        self.inner.as_ref().map(|r| r.stdout_line_count())
+        self.lock().as_ref().map(|r| r.stdout_line_count())
     }
 
     /// Number of stderr lines captured so far (`None` once consumed).
     #[getter]
     fn stderr_line_count(&self) -> Option<usize> {
-        self.inner.as_ref().map(|r| r.stderr_line_count())
+        self.lock().as_ref().map(|r| r.stderr_line_count())
     }
 
     /// Whether this handle owns a private tree — i.e. dropping it (or exiting its
@@ -223,7 +244,7 @@ impl PyRunningProcess {
     /// inside a shared `ProcessGroup`; `None` once consumed.
     #[getter]
     fn owns_group(&self) -> Option<bool> {
-        self.inner.as_ref().map(|r| r.kills_tree_on_drop())
+        self.lock().as_ref().map(|r| r.kills_tree_on_drop())
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -238,7 +259,7 @@ impl PyRunningProcess {
     /// handle. Never suppresses an exception raised inside the block.
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
-        &mut self,
+        &self,
         py: Python<'_>,
         _exc_type: Option<Bound<'_, PyAny>>,
         _exc_value: Option<Bound<'_, PyAny>>,
@@ -246,9 +267,12 @@ impl PyRunningProcess {
     ) -> PyResult<bool> {
         // Check before taking: a reentrant-runtime error from `block_on` after the
         // handle is taken would drop (kill-on-drop) a process the caller could
-        // otherwise have torn down correctly from the right context.
+        // otherwise have torn down correctly from the right context. `take()`
+        // releases the lock before `block_on`, so a concurrent getter/`__repr__`
+        // on another thread reads back `None` cleanly rather than blocking on the
+        // teardown wait.
         reject_reentrant_runtime()?;
-        if let Some(running) = self.inner.take() {
+        if let Some(running) = self.take() {
             block_on(py, kill_and_reap(running))?;
         }
         Ok(false)
@@ -261,7 +285,7 @@ impl PyRunningProcess {
     /// Async counterpart of `__exit__`.
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __aexit__<'py>(
-        &mut self,
+        &self,
         py: Python<'py>,
         _exc_type: Option<Bound<'py, PyAny>>,
         _exc_value: Option<Bound<'py, PyAny>>,
@@ -271,7 +295,7 @@ impl PyRunningProcess {
         // event loop) would otherwise drop the just-taken handle (kill-on-drop)
         // instead of leaving it in place for the caller to retry correctly.
         require_event_loop(py)?;
-        let running = self.inner.take();
+        let running = self.take();
         drive_async(py, async move {
             if let Some(running) = running {
                 kill_and_reap(running).await?;
@@ -282,20 +306,29 @@ impl PyRunningProcess {
 
     /// An async iterator over stdout, line by line:
     /// `async for line in proc.stdout_lines(): ...`.
-    fn stdout_lines(&mut self) -> PyResult<PyStdoutLines> {
+    fn stdout_lines(&self) -> PyResult<PyStdoutLines> {
         // Setting up the stream spawns a pump task, so it must run inside the
-        // tokio runtime context.
+        // tokio runtime context. Holding the std lock across this sync call is
+        // safe: it does not await, so it cannot deadlock a concurrent verb.
         let _guard = rt().enter();
-        let lines = self.running_mut()?.stdout_lines().map_err(map_err)?;
+        let mut inner = self.lock();
+        let running = inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+        let lines = running.stdout_lines().map_err(map_err)?;
         Ok(PyStdoutLines {
             inner: Arc::new(Mutex::new(lines)),
         })
     }
 
     /// An async iterator over stdout and stderr as interleaved `OutputEvent`s.
-    fn output_events(&mut self) -> PyResult<PyOutputEvents> {
+    fn output_events(&self) -> PyResult<PyOutputEvents> {
         let _guard = rt().enter();
-        let events = self.running_mut()?.output_events().map_err(map_err)?;
+        let mut inner = self.lock();
+        let running = inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+        let events = running.output_events().map_err(map_err)?;
         Ok(PyOutputEvents {
             inner: Arc::new(Mutex::new(events)),
         })
@@ -305,8 +338,12 @@ impl PyRunningProcess {
     /// kept open (build the `Command` with `keep_stdin_open()`) or was already
     /// taken — so a missing setup fails here with a clear message, not later with
     /// an `AttributeError` on a `None`.
-    fn take_stdin(&mut self) -> PyResult<PyProcessStdin> {
-        self.running_mut()?
+    fn take_stdin(&self) -> PyResult<PyProcessStdin> {
+        let mut inner = self.lock();
+        let running = inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+        running
             .take_stdin()
             .map(|stdin| PyProcessStdin {
                 inner: Arc::new(Mutex::new(Some(stdin))),
@@ -323,16 +360,20 @@ impl PyRunningProcess {
     /// Begin tearing the tree down without waiting. (Dropping the handle, or the
     /// owning group, also kills it; this just starts it early.) Mirrors
     /// `subprocess.Popen.kill()`: fire-and-forget, does not wait for exit.
-    fn kill(&mut self) -> PyResult<()> {
+    fn kill(&self) -> PyResult<()> {
         let _guard = rt().enter();
-        self.running_mut()?.start_kill().map_err(map_err)
+        let mut inner = self.lock();
+        let running = inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+        running.start_kill().map_err(map_err)
     }
 
     /// Wait for exit and return the `Outcome`. Consumes the handle. The
     /// synchronous twin of `aoutcome()` — usable on a handle from either
     /// `start()` or `astart()`, like every other sync/async verb pair in
     /// this library.
-    fn outcome(&mut self, py: Python<'_>) -> PyResult<PyOutcome> {
+    fn outcome(&self, py: Python<'_>) -> PyResult<PyOutcome> {
         // Checked before `take_running()`: see the comment on `reject_reentrant_runtime`.
         reject_reentrant_runtime()?;
         let running = self.take_running()?;
@@ -341,7 +382,7 @@ impl PyRunningProcess {
 
     /// Async counterpart of `outcome()`. (Named `aoutcome`, not `await` — a
     /// reserved word can't be a method name.)
-    fn aoutcome<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn aoutcome<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         // Checked before `take_running()`: see the comment on `require_event_loop`.
         require_event_loop(py)?;
         let running = self.take_running()?;
@@ -350,14 +391,14 @@ impl PyRunningProcess {
 
     /// Wait for exit and return `Finished` (outcome + captured stderr) without
     /// buffering stdout — use this after streaming stdout. Consumes the handle.
-    fn finish(&mut self, py: Python<'_>) -> PyResult<PyFinished> {
+    fn finish(&self, py: Python<'_>) -> PyResult<PyFinished> {
         reject_reentrant_runtime()?;
         let running = self.take_running()?;
         block_on(py, async move { running.finish().await }).map(PyFinished::from)
     }
 
     /// Async counterpart of `finish()`.
-    fn afinish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn afinish<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(
@@ -367,14 +408,14 @@ impl PyRunningProcess {
     }
 
     /// Wait for exit and capture the full `ProcessResult`. Consumes the handle.
-    fn output(&mut self, py: Python<'_>) -> PyResult<PyProcessResult> {
+    fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
         reject_reentrant_runtime()?;
         let running = self.take_running()?;
         block_on(py, async move { running.output_string().await }).map(PyProcessResult::from)
     }
 
     /// Async counterpart of `output()`.
-    fn aoutput<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn aoutput<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
@@ -383,14 +424,14 @@ impl PyRunningProcess {
     }
 
     /// Wait for exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
-    fn output_bytes(&mut self, py: Python<'_>) -> PyResult<PyBytesResult> {
+    fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
         reject_reentrant_runtime()?;
         let running = self.take_running()?;
         block_on(py, async move { running.output_bytes().await }).map(PyBytesResult::from)
     }
 
     /// Async counterpart of `output_bytes()`.
-    fn aoutput_bytes<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn aoutput_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running()?;
         drive_async(py, async move {
@@ -400,7 +441,7 @@ impl PyRunningProcess {
 
     /// Wait for exit while sampling resource usage every `every_seconds`,
     /// returning a `RunProfile`. Consumes the handle.
-    fn profile(&mut self, py: Python<'_>, every_seconds: f64) -> PyResult<PyRunProfile> {
+    fn profile(&self, py: Python<'_>, every_seconds: f64) -> PyResult<PyRunProfile> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         reject_reentrant_runtime()?;
         let running = self.take_running()?;
@@ -408,11 +449,7 @@ impl PyRunningProcess {
     }
 
     /// Async counterpart of `profile()`.
-    fn aprofile<'py>(
-        &mut self,
-        py: Python<'py>,
-        every_seconds: f64,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn aprofile<'py>(&self, py: Python<'py>, every_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         require_event_loop(py)?;
         let running = self.take_running()?;
@@ -427,7 +464,7 @@ impl PyRunningProcess {
     /// sync/async pairing convention, unlike the pre-1.1 `RunningProcess`
     /// where `shutdown()` was itself a coroutine (a trap: the same verb name
     /// meant "call it" on a `ProcessGroup` but "await it" here).
-    fn shutdown(&mut self, py: Python<'_>, grace_seconds: f64) -> PyResult<PyOutcome> {
+    fn shutdown(&self, py: Python<'_>, grace_seconds: f64) -> PyResult<PyOutcome> {
         let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
         reject_reentrant_runtime()?;
         let running = self.take_running()?;
@@ -435,11 +472,7 @@ impl PyRunningProcess {
     }
 
     /// Async counterpart of `shutdown()`.
-    fn ashutdown<'py>(
-        &mut self,
-        py: Python<'py>,
-        grace_seconds: f64,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn ashutdown<'py>(&self, py: Python<'py>, grace_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
         let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
         require_event_loop(py)?;
         let running = self.take_running()?;
@@ -449,7 +482,7 @@ impl PyRunningProcess {
     }
 
     fn __repr__(&self) -> String {
-        match &self.inner {
+        match self.lock().as_ref() {
             Some(running) => format!("RunningProcess(pid={:?})", running.pid()),
             None => "RunningProcess(consumed)".to_string(),
         }

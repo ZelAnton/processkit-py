@@ -128,7 +128,7 @@ also *subclass* it — so your existing `except` clauses keep working:
 | `CalledProcessError` (from `check=True`) | `NonZeroExit` (`.code`, `.stderr`) | — |
 | `TimeoutExpired` | `Timeout` (`.timeout_seconds`) | `TimeoutError` |
 | `FileNotFoundError` (missing program) | `ProcessNotFound` (`.program`) | `FileNotFoundError` |
-| `PermissionError` | `PermissionDenied` (`.program`) | `PermissionError` |
+| `PermissionError` | `PermissionDenied` (`.program`, `str \| None` — `None` for a program-less permission-denied OS error, not just a spawn-time denial) | `PermissionError` |
 
 ```python
 # This subprocess-style handler keeps working, because ProcessNotFound *is* a

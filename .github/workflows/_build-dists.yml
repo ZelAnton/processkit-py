@@ -41,6 +41,19 @@ jobs:
   # GitHub retired the free `macos-13` Intel runner but Rust cross-compiles
   # darwin-x86_64 from an arm64 host trivially (rustup target + cibuildwheel's
   # `CIBW_ARCHS_MACOS`).
+  #
+  # (cp310-win_arm64 note: python.org's own installer page only lists Windows/ARM64
+  # downloads from 3.11 on, which looks alarming next to `build = "cp310-*
+  # cp314t-*"` — but cibuildwheel doesn't use that installer on Windows at all; it
+  # installs interpreters from the `python`/`pythonarm64` NuGet packages, and
+  # `pythonarm64` has shipped 3.10 (down to 3.10.11) since 2023. Verified directly:
+  # `CIBW_ARCHS_WINDOWS=ARM64 cibuildwheel --platform windows
+  # --print-build-identifiers` on the pinned `cibuildwheel>=4,<5` resolves
+  # `cp310-win_arm64`, and PyPI already carries a published
+  # `processkit_py-*-cp310-abi3-win_arm64.whl` for this project's current release —
+  # this build has never actually been silently skipped. The step below still
+  # guards against it regressing, since `if-no-files-found: error` further down only
+  # checks the wheelhouse isn't empty, not that this specific tag is in it.)
   # ---------------------------------------------------------------------------
   build_wheels:
     name: wheels (${{ matrix.os }})
@@ -76,6 +89,30 @@ jobs:
           path: .
       - name: Build wheels
         run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
+      # `if-no-files-found: error` below only fails when wheelhouse/ is entirely
+      # empty; it happily passes if the arm64 job produced only the cp314t wheel
+      # and cibuildwheel silently dropped cp310-win_arm64 (or vice versa), which
+      # is exactly the failure mode that motivated the comment above this job.
+      # Assert the two win_arm64 tags explicitly, so a future regression here
+      # fails loudly instead of shipping an incomplete release.
+      - if: matrix.os == 'windows-11-arm'
+        name: Verify win_arm64 wheel tags were built
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          abi3=(wheelhouse/*-cp310-abi3-win_arm64.whl)
+          freethreaded=(wheelhouse/*-cp314-cp314t-win_arm64.whl)
+          if [ "${#abi3[@]}" -eq 0 ]; then
+            echo "::error::No cp310-abi3-win_arm64 wheel in wheelhouse" \
+              "— cibuildwheel silently dropped the abi3 GIL build for Windows/ARM64." >&2
+            exit 1
+          fi
+          if [ "${#freethreaded[@]}" -eq 0 ]; then
+            echo "::error::No cp314-cp314t-win_arm64 wheel in wheelhouse" \
+              "— cibuildwheel silently dropped the free-threaded build for Windows/ARM64." >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.os }}

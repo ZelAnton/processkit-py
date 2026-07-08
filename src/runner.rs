@@ -3,7 +3,7 @@
 //! sharing one generic set of run verbs over `ProcessRunner`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use processkit::testing::{
     DryRunRunner as PkDryRunRunner, Invocation, RecordReplayRunner as PkRecordReplayRunner,
@@ -210,20 +210,25 @@ fn make_invocation_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync 
 pub(crate) fn extract_runner(
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<Arc<dyn ProcessRunner + Send + Sync>> {
+    // Every runner pyclass is now `#[pyclass(frozen)]`, so read it with `.get()`
+    // (infallible, no runtime borrow) instead of the old `.borrow()` — which
+    // took a shared PyO3 borrow that a concurrent (pre-`frozen`) `&mut self`
+    // builder could reject with a `PanicException`. `.runner()` hands back the
+    // concrete `Arc<…>`, unsize-coerced to the trait object at the return type.
     if let Ok(r) = obj.cast::<PyRunner>() {
-        return Ok(r.borrow().inner.clone());
+        return Ok(r.get().runner());
     }
     if let Ok(r) = obj.cast::<PyScriptedRunner>() {
-        return Ok(r.borrow().inner.clone());
+        return Ok(r.get().runner());
     }
     if let Ok(r) = obj.cast::<PyRecordingRunner>() {
-        return Ok(r.borrow().inner.clone());
+        return Ok(r.get().runner());
     }
     if let Ok(r) = obj.cast::<PyRecordReplayRunner>() {
-        return Ok(r.borrow().inner.clone());
+        return Ok(r.get().runner());
     }
     if let Ok(r) = obj.cast::<PyDryRunRunner>() {
-        return Ok(r.borrow().inner.clone());
+        return Ok(r.get().runner());
     }
     Err(pyo3::exceptions::PyTypeError::new_err(
         "runner must be one of Runner, ScriptedRunner, RecordingRunner, RecordReplayRunner, \
@@ -233,7 +238,10 @@ pub(crate) fn extract_runner(
 
 /// Emit a runner pyclass's `#[pymethods]` block: the six sync + six async run-verb
 /// forwarders (every runner delegates these to the generic `runner_*` helpers
-/// over its `self.inner`), spliced together with the type's own methods. PyO3's
+/// over its `self.runner()` accessor — a uniform inherent method every runner
+/// pyclass defines that hands back an owned `Arc<ConcreteRunner>`, so the macro
+/// stays agnostic to whether the field is a plain `Arc` or a reconfigurable
+/// `Mutex<Arc<…>>`), spliced together with the type's own methods. PyO3's
 /// `multiple-pymethods` is off, so a pyclass may have only ONE `#[pymethods]`
 /// impl — `$unique` captures the constructor / builders / `__repr__` as a token
 /// tree (attributes like `#[new]` / `#[staticmethod]` included) and is emitted in
@@ -247,32 +255,32 @@ macro_rules! runner_pymethods {
 
             /// Run a command and capture output (a non-zero exit is data).
             fn output(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyProcessResult> {
-                runner_output(py, &*self.inner, command)
+                runner_output(py, &*self.runner(), command)
             }
 
             /// Run a command and capture raw-bytes stdout.
             fn output_bytes(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyBytesResult> {
-                runner_output_bytes(py, &*self.inner, command)
+                runner_output_bytes(py, &*self.runner(), command)
             }
 
             /// Require a zero exit and return trimmed stdout.
             fn run(&self, py: Python<'_>, command: &PyCommand) -> PyResult<String> {
-                runner_run(py, &*self.inner, command)
+                runner_run(py, &*self.runner(), command)
             }
 
             /// The command's exit code.
             fn exit_code(&self, py: Python<'_>, command: &PyCommand) -> PyResult<i32> {
-                runner_exit_code(py, &*self.inner, command)
+                runner_exit_code(py, &*self.runner(), command)
             }
 
             /// Read a predicate command's exit code as a bool.
             fn probe(&self, py: Python<'_>, command: &PyCommand) -> PyResult<bool> {
-                runner_probe(py, &*self.inner, command)
+                runner_probe(py, &*self.runner(), command)
             }
 
             /// Start a command and return a `RunningProcess`.
             fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
-                runner_start(py, &*self.inner, command)
+                runner_start(py, &*self.runner(), command)
             }
 
             /// Async counterpart of `output()`.
@@ -281,7 +289,7 @@ macro_rules! runner_pymethods {
                 py: Python<'py>,
                 command: &PyCommand,
             ) -> PyResult<Bound<'py, PyAny>> {
-                runner_aoutput(py, self.inner.clone(), command)
+                runner_aoutput(py, self.runner(), command)
             }
 
             /// Async counterpart of `output_bytes()`.
@@ -290,7 +298,7 @@ macro_rules! runner_pymethods {
                 py: Python<'py>,
                 command: &PyCommand,
             ) -> PyResult<Bound<'py, PyAny>> {
-                runner_aoutput_bytes(py, self.inner.clone(), command)
+                runner_aoutput_bytes(py, self.runner(), command)
             }
 
             /// Async counterpart of `run()`.
@@ -299,7 +307,7 @@ macro_rules! runner_pymethods {
                 py: Python<'py>,
                 command: &PyCommand,
             ) -> PyResult<Bound<'py, PyAny>> {
-                runner_arun(py, self.inner.clone(), command)
+                runner_arun(py, self.runner(), command)
             }
 
             /// Async counterpart of `exit_code()`.
@@ -308,7 +316,7 @@ macro_rules! runner_pymethods {
                 py: Python<'py>,
                 command: &PyCommand,
             ) -> PyResult<Bound<'py, PyAny>> {
-                runner_aexit_code(py, self.inner.clone(), command)
+                runner_aexit_code(py, self.runner(), command)
             }
 
             /// Async counterpart of `probe()`.
@@ -317,7 +325,7 @@ macro_rules! runner_pymethods {
                 py: Python<'py>,
                 command: &PyCommand,
             ) -> PyResult<Bound<'py, PyAny>> {
-                runner_aprobe(py, self.inner.clone(), command)
+                runner_aprobe(py, self.runner(), command)
             }
 
             /// Async counterpart of `start()`.
@@ -326,7 +334,7 @@ macro_rules! runner_pymethods {
                 py: Python<'py>,
                 command: &PyCommand,
             ) -> PyResult<Bound<'py, PyAny>> {
-                runner_astart(py, self.inner.clone(), command)
+                runner_astart(py, self.runner(), command)
             }
         }
     };
@@ -334,9 +342,20 @@ macro_rules! runner_pymethods {
 
 /// The real process runner. Inject it where you'd otherwise call `Command`
 /// verbs directly, so the same code can take a `ScriptedRunner` under test.
-#[pyclass(name = "Runner", module = "processkit")]
+///
+/// `frozen`: it holds an immutable `Arc<JobRunner>` (no builders), so `&self`
+/// throughout — a concurrent call from another thread never trips PyO3's borrow
+/// flag, and `extract_runner` reads it via `.get()` with no runtime borrow.
+#[pyclass(name = "Runner", module = "processkit", frozen)]
 pub(crate) struct PyRunner {
     inner: Arc<JobRunner>,
+}
+
+impl PyRunner {
+    /// The shared accessor the `runner_pymethods!` verbs use (see the macro).
+    fn runner(&self) -> Arc<JobRunner> {
+        self.inner.clone()
+    }
 }
 
 runner_pymethods!(PyRunner {
@@ -355,28 +374,49 @@ runner_pymethods!(PyRunner {
 /// A scripted test double for a `Runner`: configure canned replies for argv
 /// prefixes, then run commands through it without spawning real processes. The
 /// results it returns are genuine `ProcessResult` / `RunningProcess` objects.
-#[pyclass(name = "ScriptedRunner", module = "processkit.testing")]
+/// `frozen` + `Mutex<Arc<…>>`: every method (run verbs AND builders) is `&self`,
+/// so a concurrent call from another thread serializes on the std mutex rather
+/// than racing PyO3's borrow flag into a raw `RuntimeError`. The builders used
+/// to take `&mut self`, which meant `runner.on(...)` on one thread and
+/// `runner.output(...)` on another could collide on that exclusive borrow; they
+/// now reconfigure through interior mutability instead.
+#[pyclass(name = "ScriptedRunner", module = "processkit.testing", frozen)]
 pub(crate) struct PyScriptedRunner {
-    // `Arc` so the async run verbs can hold the runner across the await; builders
-    // reconfigure it via `Arc::try_unwrap`, which requires no in-flight call.
-    inner: Arc<PkScriptedRunner>,
+    // The `Arc` still lets the async run verbs hold the runner across the await;
+    // a builder reconfigures it via `Arc::try_unwrap`, which requires no
+    // in-flight call (sync or async). The lock is only ever held for the brief,
+    // non-awaiting swap — never across a `block_on`/await — so it cannot
+    // serialize a run or deadlock.
+    inner: Mutex<Arc<PkScriptedRunner>>,
 }
 
 impl PyScriptedRunner {
+    /// The shared accessor the `runner_pymethods!` verbs use: clone the current
+    /// runner `Arc` out from under the lock (released before this returns, so a
+    /// verb never holds it across its `block_on`/await).
+    fn runner(&self) -> Arc<PkScriptedRunner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Apply a consuming builder to the wrapped runner. Requires sole ownership
-    /// (no async call holding a clone).
+    /// (no sync or async call holding a clone); `Arc::try_unwrap` fails cleanly
+    /// otherwise. The lock is held only for the non-awaiting swap.
     fn reconfigure(
-        &mut self,
+        &self,
         build: impl FnOnce(PkScriptedRunner) -> PkScriptedRunner,
     ) -> PyResult<()> {
+        let mut guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let placeholder = Arc::new(PkScriptedRunner::new());
-        match Arc::try_unwrap(std::mem::replace(&mut self.inner, placeholder)) {
+        match Arc::try_unwrap(std::mem::replace(&mut *guard, placeholder)) {
             Ok(runner) => {
-                self.inner = Arc::new(build(runner));
+                *guard = Arc::new(build(runner));
                 Ok(())
             }
             Err(original) => {
-                self.inner = original;
+                *guard = original;
                 Err(ProcessError::new_err(
                     "cannot reconfigure a ScriptedRunner while a call is in flight",
                 ))
@@ -389,7 +429,7 @@ runner_pymethods!(PyScriptedRunner {
     #[new]
     fn new() -> Self {
         Self {
-            inner: Arc::new(PkScriptedRunner::new()),
+            inner: Mutex::new(Arc::new(PkScriptedRunner::new())),
         }
     }
 
@@ -397,13 +437,13 @@ runner_pymethods!(PyScriptedRunner {
     /// elements accept a `str` or any `os.PathLike[str]` — unified with
     /// `Command`'s own `arg`/`args` typing, since a prefix matches against a
     /// `Command`'s actual argv (which can itself contain path elements).
-    fn on(&mut self, prefix: Vec<PathBuf>, reply: &PyReply) -> PyResult<()> {
+    fn on(&self, prefix: Vec<PathBuf>, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.on(prefix, reply))
     }
 
     /// The reply for any command not matched by an `on(...)` rule.
-    fn fallback(&mut self, reply: &PyReply) -> PyResult<()> {
+    fn fallback(&self, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.fallback(reply))
     }
@@ -415,7 +455,7 @@ runner_pymethods!(PyScriptedRunner {
     /// predicate is treated as "does not match" (like
     /// `Supervisor.stop_when`), with the error surfaced via the unraisable
     /// hook rather than silently swallowed.
-    fn when(&mut self, predicate: Py<PyAny>, reply: &PyReply) -> PyResult<()> {
+    fn when(&self, predicate: Py<PyAny>, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.when(make_command_predicate(predicate), reply))
     }
@@ -426,7 +466,7 @@ runner_pymethods!(PyScriptedRunner {
     /// retry scenarios (fail once, then succeed). Matches like `on()` (program
     /// + argument prefix).
     fn on_sequence(
-        &mut self,
+        &self,
         py: Python<'_>,
         prefix: Vec<PathBuf>,
         replies: Vec<Py<PyReply>>,
@@ -439,7 +479,13 @@ runner_pymethods!(PyScriptedRunner {
                 "on_sequence needs at least one reply",
             ));
         }
-        let replies: Vec<PkReply> = replies.iter().map(|r| r.borrow(py).inner.clone()).collect();
+        // `try_borrow`, not the panicking `borrow`: a concurrent access to one
+        // of these `Reply` handles from another thread must surface as a clean
+        // `PyErr`, not a `PanicException` across the FFI boundary.
+        let replies: Vec<PkReply> = replies
+            .iter()
+            .map(|r| Ok(r.try_borrow(py)?.inner.clone()))
+            .collect::<PyResult<_>>()?;
         self.reconfigure(move |runner| runner.on_sequence(prefix, replies))
     }
 
@@ -554,9 +600,19 @@ impl PyReply {
 /// (`.program`, ...), with no built-in assumption that a cassette only ever
 /// holds successes. See `tests/test_runner_seam.py`'s
 /// `test_cassette_records_and_replays_a_failed_call`.
-#[pyclass(name = "RecordReplayRunner", module = "processkit.testing")]
+/// `frozen`: an immutable `Arc<…>` (no builders; `record`/`replay` are
+/// constructors and `save` only reads), so `&self` throughout and no borrow-flag
+/// race with a concurrent call.
+#[pyclass(name = "RecordReplayRunner", module = "processkit.testing", frozen)]
 pub(crate) struct PyRecordReplayRunner {
     inner: Arc<PkRecordReplayRunner<JobRunner>>,
+}
+
+impl PyRecordReplayRunner {
+    /// The shared accessor the `runner_pymethods!` verbs use (see the macro).
+    fn runner(&self) -> Arc<PkRecordReplayRunner<JobRunner>> {
+        self.inner.clone()
+    }
 }
 
 runner_pymethods!(PyRecordReplayRunner {
@@ -679,12 +735,23 @@ impl PyInvocation {
 /// A recording test double: replies to every command with a canned `Reply` and
 /// records each call, so a test can assert on *what* its code ran. Inspect the
 /// captured calls with `calls()` / `only_call()` (each an `Invocation`).
-#[pyclass(name = "RecordingRunner", module = "processkit.testing")]
+/// `frozen`: an immutable `Arc<…>` — every recorded call is captured through the
+/// crate runner's own internal synchronization (`calls()`/`only_call()` just
+/// read a snapshot), so this pyclass needs no builder and stays `&self`
+/// throughout, with no borrow-flag race with a concurrent call.
+#[pyclass(name = "RecordingRunner", module = "processkit.testing", frozen)]
 pub(crate) struct PyRecordingRunner {
     // Type-erased (not the crate's own `RecordingRunner<ScriptedRunner>`
     // specialization), so `new()` can wrap ANY of the five runner pyclasses —
     // not just a fresh `ScriptedRunner` the way `replying()` builds one.
     inner: Arc<PkRecordingRunner<Arc<dyn ProcessRunner + Send + Sync>>>,
+}
+
+impl PyRecordingRunner {
+    /// The shared accessor the `runner_pymethods!` verbs use (see the macro).
+    fn runner(&self) -> Arc<PkRecordingRunner<Arc<dyn ProcessRunner + Send + Sync>>> {
+        self.inner.clone()
+    }
 }
 
 runner_pymethods!(PyRecordingRunner {
@@ -750,30 +817,43 @@ runner_pymethods!(PyRecordingRunner {
 /// command's own `success_codes` so the checking verbs agree). Inspect the
 /// rendered lines with `commands()` / `only_command()`, or stream them live as
 /// each call happens with `on_invocation()`.
-#[pyclass(name = "DryRunRunner", module = "processkit.testing")]
+/// `frozen` + `Mutex<Arc<…>>`, mirroring `PyScriptedRunner`: `on_invocation` is a
+/// builder that used to take `&mut self` and could collide with a concurrent
+/// verb's borrow; it now reconfigures through interior mutability, so every
+/// method is `&self`.
+#[pyclass(name = "DryRunRunner", module = "processkit.testing", frozen)]
 pub(crate) struct PyDryRunRunner {
     // `Arc` so the async run verbs can hold the runner across the await;
     // `on_invocation` reconfigures it via `Arc::try_unwrap`, which requires no
-    // in-flight call — mirrors `PyScriptedRunner`.
-    inner: Arc<PkDryRunRunner>,
+    // in-flight call. The lock is only held for the brief, non-awaiting swap.
+    inner: Mutex<Arc<PkDryRunRunner>>,
 }
 
 impl PyDryRunRunner {
+    /// The shared accessor the `runner_pymethods!` verbs (and `commands()`/
+    /// `only_command()`/`__repr__`) use: clone the current runner `Arc` out from
+    /// under the lock, released before this returns.
+    fn runner(&self) -> Arc<PkDryRunRunner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Apply a consuming builder to the wrapped runner. Requires sole ownership
-    /// (no async call holding a clone); the rendered-commands log is carried
-    /// across, since the builder only sets the callback field.
-    fn reconfigure(
-        &mut self,
-        build: impl FnOnce(PkDryRunRunner) -> PkDryRunRunner,
-    ) -> PyResult<()> {
+    /// (no sync or async call holding a clone); the rendered-commands log is
+    /// carried across, since the builder only sets the callback field. The lock
+    /// is held only for the non-awaiting swap.
+    fn reconfigure(&self, build: impl FnOnce(PkDryRunRunner) -> PkDryRunRunner) -> PyResult<()> {
+        let mut guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let placeholder = Arc::new(PkDryRunRunner::new());
-        match Arc::try_unwrap(std::mem::replace(&mut self.inner, placeholder)) {
+        match Arc::try_unwrap(std::mem::replace(&mut *guard, placeholder)) {
             Ok(runner) => {
-                self.inner = Arc::new(build(runner));
+                *guard = Arc::new(build(runner));
                 Ok(())
             }
             Err(original) => {
-                self.inner = original;
+                *guard = original;
                 Err(ProcessError::new_err(
                     "cannot reconfigure a DryRunRunner while a call is in flight",
                 ))
@@ -786,7 +866,7 @@ runner_pymethods!(PyDryRunRunner {
     #[new]
     fn new() -> Self {
         Self {
-            inner: Arc::new(PkDryRunRunner::new()),
+            inner: Mutex::new(Arc::new(PkDryRunRunner::new())),
         }
     }
 
@@ -796,7 +876,7 @@ runner_pymethods!(PyDryRunRunner {
     /// `callback` is infallible from the crate's perspective: a raising one is
     /// surfaced via the unraisable hook (like `ScriptedRunner.when`'s
     /// predicate) rather than propagating across the FFI boundary.
-    fn on_invocation(&mut self, callback: Py<PyAny>) -> PyResult<()> {
+    fn on_invocation(&self, callback: Py<PyAny>) -> PyResult<()> {
         self.reconfigure(move |runner| runner.on_invocation(make_invocation_callback(callback)))
     }
 
@@ -804,7 +884,7 @@ runner_pymethods!(PyDryRunRunner {
     /// produced by `Command.command_line()`, the same display quoting you'd
     /// reach for by hand.
     fn commands(&self) -> Vec<String> {
-        self.inner.commands()
+        self.runner().commands()
     }
 
     /// The single rendered command line; raises `ProcessError` unless exactly
@@ -812,7 +892,7 @@ runner_pymethods!(PyDryRunRunner {
     /// crate's own `only_command()`, which *panics* on the wrong count — a
     /// Python-reachable call must raise, not abort across the FFI boundary.)
     fn only_command(&self) -> PyResult<String> {
-        let commands = self.inner.commands();
+        let commands = self.runner().commands();
         match commands.len() {
             1 => Ok(commands.into_iter().next().expect("length checked above")),
             n => Err(ProcessError::new_err(format!(
@@ -822,7 +902,7 @@ runner_pymethods!(PyDryRunRunner {
     }
 
     fn __repr__(&self) -> String {
-        format!("DryRunRunner(commands={})", self.inner.commands().len())
+        format!("DryRunRunner(commands={})", self.runner().commands().len())
     }
 });
 

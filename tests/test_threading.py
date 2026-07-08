@@ -207,26 +207,34 @@ def test_group_start_races_with_kill_all_stay_consistent() -> None:
                 assert wait_dead(pid, timeout=15.0), f"child {pid} survived kill_all()"
 
 
-def test_group_start_vs_shutdown_race_never_hangs_or_leaks_a_child() -> None:
-    # Known limitation, pinned rather than assumed away: `start()` takes a
-    # shared (`&self`) borrow and `shutdown()`/`__exit__` take an exclusive
-    # (`&mut self`) borrow at the PyO3 binding layer. A genuine cross-thread
-    # race between the two can therefore surface as a raw `RuntimeError`
-    # ("Already borrowed" / "Already mutably borrowed") from PyO3's own
-    # reentrancy guard, instead of the library's own `ProcessError` — this
-    # construction is not currently hardened against `start()` and
-    # `shutdown()`/`__exit__` being called concurrently, from different
-    # threads, on the very same group instance (as opposed to the
-    # `kill_all()` case above, which only ever takes a shared borrow and is
-    # safe). What must still hold, whichever of those two exception shapes
-    # comes back (or a clean success): no thread hangs, and no started child
-    # process survives past the test.
+def test_group_start_vs_shutdown_race_is_hardened_and_reaps_the_tree() -> None:
+    # Regression for T-052 (was a *pinned known limitation* before the fix):
+    # `ProcessGroup` is now `#[pyclass(frozen)]` with an interior `Mutex`, so
+    # `start()` on one thread racing `shutdown()`/`__exit__` on another no longer
+    # collides on PyO3's per-object borrow flag. The concurrent `start()` must
+    # resolve cleanly EITHER way — a real pid (it won the race, the child was
+    # started before the group closed) or the library's own `ProcessError` (it
+    # lost, the group was already closed) — and NEVER a raw `RuntimeError`
+    # ("Already borrowed"). There is deliberately no `except RuntimeError`
+    # clause: a raw borrow error must now propagate and fail the test.
+    #
+    # The second half is the load-bearing part of the fix: because `__exit__`/
+    # `shutdown()` no longer extract a `&mut self` borrow that can fail *before*
+    # the teardown body, the graceful teardown is never skipped — so every child
+    # that DID start is reaped by the group's own shutdown here, not left alive
+    # for a later hard kill when the object is GC'd.
     n_threads = 8
     group = ProcessGroup()
     outcomes: list[str] = []
+    started_pids: list[int] = []
     lock = threading.Lock()
+    # +1 for the main thread: every starter and the shutdown are released from
+    # the barrier together, to actually hit the race window rather than run the
+    # starts fully before the teardown.
+    barrier = threading.Barrier(n_threads + 1)
 
     def start_one() -> None:
+        barrier.wait(timeout=30)
         try:
             running = group.start(Command(PY, ["-c", "import time; time.sleep(5)"]))
             assert running.pid is not None
@@ -236,39 +244,120 @@ def test_group_start_vs_shutdown_race_never_hangs_or_leaks_a_child() -> None:
         except ProcessError:
             with lock:
                 outcomes.append("rejected")
-        except RuntimeError as exc:
-            assert "borrow" in str(exc).lower(), f"unexpected RuntimeError: {exc!r}"
-            with lock:
-                outcomes.append("borrow_race")
 
-    started_pids: list[int] = []
     threads = [threading.Thread(target=start_one) for _ in range(n_threads)]
     for t in threads:
         t.start()
 
-    try:
-        group.shutdown()
-    except RuntimeError as exc:
-        assert "borrow" in str(exc).lower(), f"unexpected RuntimeError: {exc!r}"
+    # Release the starters and tear the group down at (nearly) the same instant.
+    barrier.wait(timeout=30)
+    group.shutdown()
 
     for t in threads:
         t.join(timeout=30)
 
     assert len(outcomes) == n_threads
-    assert all(kind in ("started", "rejected", "borrow_race") for kind in outcomes)
+    assert all(kind in ("started", "rejected") for kind in outcomes), (
+        f"a start resolved as neither a pid nor a clean ProcessError: {outcomes!r}"
+    )
 
-    # Whatever the race above did, the group must end the test fully torn
-    # down: retry shutdown() (idempotent once no other thread contends for the
-    # borrow) until it actually goes through.
-    for _ in range(50):
-        try:
-            group.shutdown()
-            break
-        except RuntimeError:
-            time.sleep(0.05)
-
+    # A single graceful `shutdown()` above (now always reliable — no borrow race
+    # to retry around) must have reaped every child that started.
     for pid in started_pids:
-        assert wait_dead(pid, timeout=15.0), f"child {pid} survived the start/shutdown race"
+        assert wait_dead(pid, timeout=15.0), f"child {pid} survived the group's graceful teardown"
+
+
+def test_group_methods_during_teardown_never_raise_a_raw_borrow_error() -> None:
+    # Regression for T-052: with `ProcessGroup` frozen + interior `Mutex`, any
+    # `&self` method (`stats`, `members`, `kill_all`, `__repr__`) called from
+    # other threads WHILE `shutdown()` tears the group down returns a value or a
+    # clean, typed error (`ProcessError` once closed, or `Unsupported` where the
+    # mechanism can't answer) — never a raw `RuntimeError("Already borrowed")`
+    # from PyO3's reentrancy guard, which the old `&mut self`-holding `shutdown`
+    # produced for the whole (GIL-released) teardown window.
+    n_callers = 8
+    group = ProcessGroup()
+    # Seed a real child so the teardown has non-trivial work to do.
+    group.start(Command(PY, ["-c", "import time; time.sleep(5)"]))
+
+    raw_errors: list[BaseException] = []
+    stop = threading.Event()
+    lock = threading.Lock()
+
+    def caller() -> None:
+        # Cheap, read-only-ish ops only (no spawning in a hot loop): the point is
+        # to hammer the borrow surface, not to start a storm of processes.
+        ops = (group.stats, group.members, group.kill_all, lambda: repr(group))
+        while not stop.is_set():
+            for op in ops:
+                try:
+                    op()
+                except (ProcessError, Unsupported):
+                    pass  # typed, expected — the group is closing/closed
+                except RuntimeError as exc:  # the bug this test guards against
+                    with lock:
+                        raw_errors.append(exc)
+                    return
+
+    callers = [threading.Thread(target=caller) for _ in range(n_callers)]
+    for t in callers:
+        t.start()
+
+    # Let the callers spin against the live group briefly, then tear it down out
+    # from under them.
+    time.sleep(0.1)
+    group.shutdown()
+    stop.set()
+
+    for t in callers:
+        t.join(timeout=30)
+
+    assert not raw_errors, f"a concurrent method saw a raw borrow error: {raw_errors!r}"
+
+
+def test_running_process_teardown_races_with_getters_are_hardened() -> None:
+    # Regression for T-052, the `RunningProcess` half: the consuming verbs
+    # (`shutdown`/`outcome`/`__exit__`/…) used to hold a `&mut self` PyO3 borrow
+    # across the entire GIL-released wait, so a concurrent `&self` getter
+    # (`pid`, `repr`, `owns_group`) from another thread hit "Already borrowed".
+    # Now `RunningProcess` is frozen + interior `Mutex`: those getters return a
+    # value or `None` (once the handle is consumed) — never a raw `RuntimeError`
+    # — and the process is still torn down.
+    n_readers = 8
+    proc = Command(PY, ["-c", "import time; time.sleep(5)"]).start()
+    pid = proc.pid
+    assert pid is not None
+
+    raw_errors: list[BaseException] = []
+    stop = threading.Event()
+    lock = threading.Lock()
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                _ = proc.pid
+                _ = repr(proc)
+                _ = proc.owns_group
+            except RuntimeError as exc:  # the bug this test guards against
+                with lock:
+                    raw_errors.append(exc)
+                return
+
+    readers = [threading.Thread(target=reader) for _ in range(n_readers)]
+    for t in readers:
+        t.start()
+
+    # Let the readers spin against the live handle, then consume it from under
+    # them with a graceful shutdown.
+    time.sleep(0.1)
+    proc.shutdown(grace_seconds=1.0)
+    stop.set()
+
+    for t in readers:
+        t.join(timeout=30)
+
+    assert not raw_errors, f"a concurrent getter saw a raw borrow error: {raw_errors!r}"
+    assert wait_dead(pid, timeout=15.0), "the process survived its graceful shutdown"
 
 
 # --- a shared CliClient under concurrent calls ------------------------------

@@ -52,11 +52,14 @@ fn resolve_concurrency(concurrency: Option<usize>) -> PyResult<usize> {
 }
 
 /// Clone the inner `Command`s out of the Python handles (under the GIL) so the
-/// owned list can move into the async batch driver.
-fn take_commands(py: Python<'_>, commands: &[Py<PyCommand>]) -> Vec<processkit::Command> {
+/// owned list can move into the async batch driver. `try_borrow`, not the
+/// panicking `borrow`: a concurrent access to one of these `Command` handles
+/// from another thread surfaces as a clean `PyErr`, not a `PanicException`
+/// across the FFI boundary.
+fn take_commands(py: Python<'_>, commands: &[Py<PyCommand>]) -> PyResult<Vec<processkit::Command>> {
     commands
         .iter()
-        .map(|c| c.borrow(py).inner.clone())
+        .map(|c| Ok(c.try_borrow(py)?.inner.clone()))
         .collect()
 }
 
@@ -97,7 +100,7 @@ pub(crate) fn output_all(
     concurrency: Option<usize>,
     runner: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
-    let cmds = take_commands(py, &commands);
+    let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     let fut = async move { pk_output_all(cmds, n, &runner).await };
@@ -114,7 +117,7 @@ pub(crate) fn aoutput_all<'py>(
     concurrency: Option<usize>,
     runner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let cmds = take_commands(py, &commands);
+    let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -132,7 +135,7 @@ pub(crate) fn output_all_bytes(
     concurrency: Option<usize>,
     runner: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
-    let cmds = take_commands(py, &commands);
+    let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     let fut = async move { pk_output_all_bytes(cmds, n, &runner).await };
@@ -149,7 +152,7 @@ pub(crate) fn aoutput_all_bytes<'py>(
     concurrency: Option<usize>,
     runner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let cmds = take_commands(py, &commands);
+    let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     pyo3_async_runtimes::tokio::future_into_py(py, async move {

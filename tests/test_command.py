@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import multiprocessing
 import os
 import pathlib
 import pickle
@@ -1608,7 +1609,17 @@ def _run_in_worker_process() -> ProcessResult:
 
 
 def test_process_result_round_trips_through_a_real_process_pool_executor() -> None:
-    with ProcessPoolExecutor(max_workers=1) as pool:
+    # Force "spawn" explicitly rather than relying on the platform default.
+    # The Rust extension starts a tokio runtime with background worker
+    # threads on import; forking a multi-threaded process is unsafe (only the
+    # forking thread survives in the child, so a lock held by another tokio
+    # worker at fork time is stuck forever) and deadlocks the child the
+    # moment it drives the async runtime again. Linux (pre-3.14) defaults to
+    # "fork" for `ProcessPoolExecutor`, so this must be pinned to "spawn" to
+    # avoid reintroducing that hang there; Windows/macOS/3.14 already default
+    # to spawn-like behavior, which is why the hazard didn't show up there.
+    mp_context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=1, mp_context=mp_context) as pool:
         result = pool.submit(_run_in_worker_process).result(timeout=30)
     assert isinstance(result, ProcessResult)
     assert result.stdout.strip() == "from worker"

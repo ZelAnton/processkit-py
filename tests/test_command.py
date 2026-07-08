@@ -1159,12 +1159,7 @@ def test_stdin_file_overrides_earlier_stdin_bytes(tmp_path: pathlib.Path) -> Non
     # stdin_bytes()/stdin_text()/keep_stdin_open().
     src = tmp_path / "in.txt"
     src.write_text("from-file\n", encoding="utf-8")
-    result = (
-        Command(PY, ["-c", _ECHO_UPPER])
-        .stdin_bytes(b"from-bytes\n")
-        .stdin_file(src)
-        .run()
-    )
+    result = Command(PY, ["-c", _ECHO_UPPER]).stdin_bytes(b"from-bytes\n").stdin_file(src).run()
     assert result == "FROM-FILE"
 
 
@@ -1173,12 +1168,7 @@ def test_stdin_bytes_overrides_earlier_stdin_file(tmp_path: pathlib.Path) -> Non
     # participates in the same "last stdin method wins" chain as the others.
     src = tmp_path / "in.txt"
     src.write_text("from-file\n", encoding="utf-8")
-    result = (
-        Command(PY, ["-c", _ECHO_UPPER])
-        .stdin_file(src)
-        .stdin_bytes(b"from-bytes\n")
-        .run()
-    )
+    result = Command(PY, ["-c", _ECHO_UPPER]).stdin_file(src).stdin_bytes(b"from-bytes\n").run()
     assert result == "FROM-BYTES"
 
 

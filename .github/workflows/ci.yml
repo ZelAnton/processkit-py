@@ -90,6 +90,13 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      # Runs the crate's own `#[cfg(test)]` unit tests (pure helpers in
+      # convert.rs/supervisor.rs — no PyO3/GIL/process-spawn coverage; that's
+      # `tests/`'s job, see docs/internals.md). Deliberately NOT
+      # `--features extension-module`/`--all-features`: that feature makes the
+      # crate a non-linkable Python extension, which `cargo test`'s own binary
+      # can't run.
+      - run: cargo test
 
   test:
     # One matrix over (OS × interpreter): the empty `python` entry runs the abi3

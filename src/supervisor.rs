@@ -518,3 +518,58 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySupervisionOutcome>()?;
     Ok(())
 }
+
+// Rust-level unit tests for the pure helpers above. See `docs/internals.md`'s
+// testing section for the intended split between this module and `tests/`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_restart_policy ------------------------------------------------
+
+    #[test]
+    fn parse_restart_policy_accepts_every_supported_name() {
+        let cases = [
+            ("always", RestartPolicy::Always),
+            ("never", RestartPolicy::Never),
+            ("on_crash", RestartPolicy::OnCrash),
+            ("on-crash", RestartPolicy::OnCrash),
+            ("oncrash", RestartPolicy::OnCrash),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(parse_restart_policy(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn parse_restart_policy_is_case_insensitive() {
+        assert_eq!(
+            parse_restart_policy("ALWAYS").unwrap(),
+            RestartPolicy::Always
+        );
+        assert_eq!(
+            parse_restart_policy("On_Crash").unwrap(),
+            RestartPolicy::OnCrash
+        );
+    }
+
+    #[test]
+    fn parse_restart_policy_rejects_unknown_name() {
+        assert!(parse_restart_policy("sometimes").is_err());
+    }
+
+    // --- stop_reason_str -------------------------------------------------
+
+    #[test]
+    fn stop_reason_str_covers_every_variant() {
+        let cases = [
+            (StopReason::PolicySatisfied, "policy_satisfied"),
+            (StopReason::Predicate, "predicate"),
+            (StopReason::RestartsExhausted, "restarts_exhausted"),
+            (StopReason::GaveUp, "gave_up"),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(stop_reason_str(reason), expected, "{reason:?}");
+        }
+    }
+}

@@ -536,3 +536,293 @@ pub(crate) fn build_retry_policy(
     }
     Ok(policy)
 }
+
+// Rust-level unit tests for the pure helpers above (chiefly the boundary
+// values Python-side integration tests can't easily reach in every
+// combination — NaN/infinite durations, unknown preset names, the
+// `Signal`/bool-as-int extraction order). See `docs/internals.md`'s testing
+// section for the intended split between this module and `tests/`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::{PyBool, PyInt, PyString};
+
+    // --- positive_duration / nonnegative_duration --------------------------
+
+    #[test]
+    fn positive_duration_rejects_nan() {
+        assert!(positive_duration(f64::NAN, "timeout").is_err());
+    }
+
+    #[test]
+    fn positive_duration_rejects_positive_infinity() {
+        assert!(positive_duration(f64::INFINITY, "timeout").is_err());
+    }
+
+    #[test]
+    fn positive_duration_rejects_negative_infinity() {
+        assert!(positive_duration(f64::NEG_INFINITY, "timeout").is_err());
+    }
+
+    #[test]
+    fn positive_duration_rejects_negative_value() {
+        assert!(positive_duration(-1.0, "timeout").is_err());
+    }
+
+    #[test]
+    fn positive_duration_rejects_zero() {
+        // Unlike `nonnegative_duration`, `0.0` is not a *positive* duration.
+        assert!(positive_duration(0.0, "timeout").is_err());
+    }
+
+    #[test]
+    fn positive_duration_rejects_value_overflowing_duration() {
+        // Finite but far beyond `Duration::MAX` (~5.85e11 seconds): must be a
+        // clean error, not a panic in `try_from_secs_f64`.
+        assert!(positive_duration(f64::MAX, "timeout").is_err());
+    }
+
+    #[test]
+    fn positive_duration_accepts_valid_value() {
+        assert_eq!(
+            positive_duration(1.5, "timeout").unwrap(),
+            Duration::from_secs_f64(1.5)
+        );
+    }
+
+    #[test]
+    fn nonnegative_duration_rejects_nan() {
+        assert!(nonnegative_duration(f64::NAN, "grace").is_err());
+    }
+
+    #[test]
+    fn nonnegative_duration_rejects_positive_infinity() {
+        assert!(nonnegative_duration(f64::INFINITY, "grace").is_err());
+    }
+
+    #[test]
+    fn nonnegative_duration_rejects_negative_infinity() {
+        assert!(nonnegative_duration(f64::NEG_INFINITY, "grace").is_err());
+    }
+
+    #[test]
+    fn nonnegative_duration_rejects_negative_value() {
+        assert!(nonnegative_duration(-0.001, "grace").is_err());
+    }
+
+    #[test]
+    fn nonnegative_duration_accepts_zero() {
+        // Unlike `positive_duration`, `0.0` means "immediately" and is allowed.
+        assert_eq!(nonnegative_duration(0.0, "grace").unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn nonnegative_duration_rejects_value_overflowing_duration() {
+        assert!(nonnegative_duration(f64::MAX, "grace").is_err());
+    }
+
+    #[test]
+    fn nonnegative_duration_accepts_valid_value() {
+        assert_eq!(
+            nonnegative_duration(2.5, "grace").unwrap(),
+            Duration::from_secs_f64(2.5)
+        );
+    }
+
+    // --- parse_signal_name / parse_signal -----------------------------------
+
+    #[test]
+    fn parse_signal_name_accepts_every_named_variant() {
+        let cases = [
+            ("term", PkSignal::Term),
+            ("kill", PkSignal::Kill),
+            ("int", PkSignal::Int),
+            ("hup", PkSignal::Hup),
+            ("quit", PkSignal::Quit),
+            ("usr1", PkSignal::Usr1),
+            ("usr2", PkSignal::Usr2),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(parse_signal_name(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn parse_signal_name_accepts_sig_prefix() {
+        assert_eq!(parse_signal_name("sigterm").unwrap(), PkSignal::Term);
+        assert_eq!(parse_signal_name("sigkill").unwrap(), PkSignal::Kill);
+    }
+
+    #[test]
+    fn parse_signal_name_is_case_insensitive() {
+        assert_eq!(parse_signal_name("TERM").unwrap(), PkSignal::Term);
+        assert_eq!(parse_signal_name("SigTerm").unwrap(), PkSignal::Term);
+        assert_eq!(parse_signal_name("SIGKILL").unwrap(), PkSignal::Kill);
+    }
+
+    #[test]
+    fn parse_signal_name_rejects_unknown_name() {
+        assert!(parse_signal_name("bogus").is_err());
+    }
+
+    /// `Python::attach` panics unless the interpreter is initialized — normally
+    /// done by the embedding Python process, but nothing does that for a plain
+    /// `cargo test` binary (built without the `extension-module` feature, so
+    /// `pyo3`'s `auto-initialize` isn't assumed either). `Python::initialize()`
+    /// is a no-op if already initialized, so this is safe to call from every
+    /// test that needs the GIL.
+    fn ensure_python_initialized() {
+        Python::initialize();
+    }
+
+    #[test]
+    fn parse_signal_accepts_raw_number() {
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyInt::new(py, 37i32).into_any();
+            assert_eq!(parse_signal(&obj).unwrap(), PkSignal::Other(37));
+        });
+    }
+
+    #[test]
+    fn parse_signal_accepts_bool_as_int() {
+        // `bool` is a Python `int` subtype, so both booleans take the raw-number
+        // path rather than being extracted (and rejected) as signal names.
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let true_obj = PyBool::new(py, true).to_owned().into_any();
+            assert_eq!(parse_signal(&true_obj).unwrap(), PkSignal::Other(1));
+            let false_obj = PyBool::new(py, false).to_owned().into_any();
+            assert_eq!(parse_signal(&false_obj).unwrap(), PkSignal::Other(0));
+        });
+    }
+
+    #[test]
+    fn parse_signal_accepts_name_string() {
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyString::new(py, "hup").into_any();
+            assert_eq!(parse_signal(&obj).unwrap(), PkSignal::Hup);
+        });
+    }
+
+    #[test]
+    fn parse_signal_rejects_unknown_name_string() {
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyString::new(py, "bogus").into_any();
+            assert!(parse_signal(&obj).is_err());
+        });
+    }
+
+    // --- parse_priority ------------------------------------------------------
+
+    #[test]
+    fn parse_priority_accepts_every_variant() {
+        let cases = [
+            ("idle", Priority::Idle),
+            ("below_normal", Priority::BelowNormal),
+            ("normal", Priority::Normal),
+            ("above_normal", Priority::AboveNormal),
+            ("high", Priority::High),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(parse_priority(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn parse_priority_rejects_unknown_name() {
+        assert!(parse_priority("realtime").is_err());
+    }
+
+    // --- parse_overflow_mode -------------------------------------------------
+
+    #[test]
+    fn parse_overflow_mode_accepts_every_variant() {
+        let cases = [
+            ("drop_oldest", OverflowMode::DropOldest),
+            ("drop_newest", OverflowMode::DropNewest),
+            ("error", OverflowMode::Error),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(parse_overflow_mode(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn parse_overflow_mode_rejects_unknown_name() {
+        assert!(parse_overflow_mode("bogus").is_err());
+    }
+
+    // --- parse_line_terminator -----------------------------------------------
+
+    #[test]
+    fn parse_line_terminator_accepts_every_variant_and_alias() {
+        let cases = [
+            ("newline", LineTerminator::Newline),
+            ("lf", LineTerminator::Newline),
+            ("carriage_return", LineTerminator::CarriageReturn),
+            ("cr", LineTerminator::CarriageReturn),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(parse_line_terminator(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn parse_line_terminator_rejects_unknown_mode() {
+        assert!(parse_line_terminator("bogus").is_err());
+    }
+
+    // --- build_output_buffer_policy ------------------------------------------
+
+    #[test]
+    fn build_output_buffer_policy_rejects_both_caps_unset() {
+        assert!(build_output_buffer_policy(None, None, "drop_oldest", "output_limit").is_err());
+    }
+
+    #[test]
+    fn build_output_buffer_policy_accepts_only_max_bytes() {
+        let policy =
+            build_output_buffer_policy(Some(1024), None, "drop_oldest", "output_limit").unwrap();
+        assert_eq!(policy.max_bytes, Some(1024));
+        assert_eq!(policy.max_lines, None);
+        assert_eq!(policy.overflow, OverflowMode::DropOldest);
+    }
+
+    #[test]
+    fn build_output_buffer_policy_accepts_only_max_lines() {
+        let policy =
+            build_output_buffer_policy(None, Some(10), "drop_oldest", "output_limit").unwrap();
+        assert_eq!(policy.max_lines, Some(10));
+        assert_eq!(policy.max_bytes, None);
+    }
+
+    #[test]
+    fn build_output_buffer_policy_accepts_both_caps() {
+        let policy =
+            build_output_buffer_policy(Some(2048), Some(20), "drop_newest", "output_limit")
+                .unwrap();
+        assert_eq!(policy.max_bytes, Some(2048));
+        assert_eq!(policy.max_lines, Some(20));
+        assert_eq!(policy.overflow, OverflowMode::DropNewest);
+    }
+
+    #[test]
+    fn build_output_buffer_policy_applies_every_overflow_mode() {
+        for (name, expected) in [
+            ("drop_oldest", OverflowMode::DropOldest),
+            ("drop_newest", OverflowMode::DropNewest),
+            ("error", OverflowMode::Error),
+        ] {
+            let policy = build_output_buffer_policy(Some(1), None, name, "output_limit").unwrap();
+            assert_eq!(policy.overflow, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn build_output_buffer_policy_rejects_unknown_overflow_mode() {
+        assert!(build_output_buffer_policy(Some(1), None, "bogus", "output_limit").is_err());
+    }
+}

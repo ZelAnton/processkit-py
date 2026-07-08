@@ -249,3 +249,41 @@ meant to be public. Run `uv run pytest tests/test_api_surface.py` and
 stubtest-allowlist.txt` locally (both also run in CI) before opening a pull
 request — they will fail loudly, and specifically, if any of the three views
 disagree.
+
+## Rust unit tests (`cargo test`) vs. the Python suite (`tests/`)
+
+The binding has two independent levels of test coverage, split by what they
+can exercise without a live Python interpreter:
+
+- **Rust `#[cfg(test)]` modules** (`src/convert.rs`, `src/supervisor.rs`) cover
+  the crate's *pure, PyO3-free helpers* — string/number parsing
+  (`parse_priority`, `parse_signal`/`parse_signal_name`, `parse_overflow_mode`,
+  `parse_line_terminator`, `parse_restart_policy`, `stop_reason_str`) and
+  boundary-value validation (`positive_duration`/`nonnegative_duration`'s
+  NaN/infinite/negative/overflowing-`Duration` cases,
+  `build_output_buffer_policy`'s cap combinations). These are cheap to write
+  and run per-case (every named preset, every alias, the unknown-name
+  rejection), which the Python suite can only reach indirectly and rarely
+  exhaustively. `cargo test` runs them **without** the `extension-module`
+  feature — the crate is deliberately structured (see the `[features]` comment
+  in `Cargo.toml`) so `cargo test`/`cargo check` work without ever linking as a
+  Python extension; the handful of these tests that do need the GIL (e.g.
+  `parse_signal`'s `Bound<'_, PyAny>` argument) call `Python::initialize()`
+  first, since nothing else brings up the interpreter in a plain test binary.
+  `cargo test` runs in CI's `rust-lint` job alongside `cargo fmt`/`cargo
+  clippy`.
+- **`tests/` (pytest, `uv run pytest`)** covers everything that needs PyO3, the
+  GIL, or a real child process/event loop: the compiled classes' behavior
+  (`Command`, `Pipeline`, `ProcessGroup`, `Supervisor`, `CliClient`, the runner
+  doubles), the sync/async verb pairs, exception mapping, the stdout/stderr
+  capture and tee pipeline, and the stub/runtime/surface drift guards above.
+  This is also where a parsing helper's *observable* behavior through the
+  Python-facing API is covered end-to-end (e.g. `Command.priority("bogus")`
+  raising `ValueError`), even though the exhaustive boundary-value cases for
+  the helper itself live in the Rust tests instead.
+
+When adding a new pure helper to `convert.rs`/`supervisor.rs`, prefer a Rust
+`#[cfg(test)]` case for its boundary values; reach for a Python test only for
+behavior that's actually observable through the compiled API (an exception's
+type/message, a builder's resulting policy) rather than the helper's internals
+directly.

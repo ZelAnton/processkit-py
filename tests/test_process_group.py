@@ -154,16 +154,60 @@ def test_resource_limited_group_runs() -> None:
 @pytest.mark.skipif(
     sys.platform != "win32", reason="Job Object active-process limit is Windows-specific"
 )
-def test_max_processes_enforcement_rejects_second_spawn() -> None:
-    # `test_resource_limited_group_runs` only pins construction-time
-    # acceptance of `max_processes` — this pins actual OS-level ENFORCEMENT:
-    # the Windows Job Object's active-process ceiling really rejects a spawn
-    # that would exceed it, rather than silently letting it through.
-    with ProcessGroup(max_processes=1) as group:
-        first = group.start(Command(PY, ["-c", "import time; time.sleep(5)"]))
-        assert first.pid is not None
+def test_max_processes_enforcement_rejects_second_spawn(tmp_path: pathlib.Path) -> None:
+    # `test_resource_limited_group_runs` only pins construction-time acceptance
+    # of `max_processes` — this pins actual OS-level ENFORCEMENT: the Windows Job
+    # Object's active-process ceiling really rejects a spawn that would exceed it,
+    # rather than silently letting it through.
+    #
+    # The ceiling is 2, not 1, on purpose. A Windows console child costs *two*
+    # Job Object slots — the interpreter plus the conhost.exe the OS pairs with
+    # its console — so `max_processes=1` cannot hold even one live child: its
+    # conhost is starved, the child dies within milliseconds, and the job empties.
+    # A "second" spawn attempted after that is really spawning into an empty job,
+    # which is legitimately allowed — that intermittent empty-job window (widened
+    # under xdist / parallel-process load, hidden by an isolated `-n 0` run) was
+    # the observed flake, NOT a fail-open in the enforcement itself. The
+    # enforcement is fail-closed once the job is genuinely full (asserted below);
+    # `max_processes=2` holds exactly one live console child so that full state is
+    # reachable and stable.
+    with ProcessGroup(max_processes=2) as group:
+        occupant = group.start(Command(PY, ["-c", "import time; time.sleep(60)"]))
+        pid = occupant.pid
+        assert pid is not None
+        # Wait until the job is provably FULL — its active-process count is at the
+        # ceiling and our occupant is alive and counted — before the over-limit
+        # attempt. A non-None pid alone (what the old test relied on) does not
+        # establish a full ceiling: the child may not be counted yet, or may
+        # already have exited.
+        assert wait_until(
+            lambda: (
+                group.stats().active_process_count >= 2 and is_alive(pid) and pid in group.members()
+            ),
+            timeout=15.0,
+        ), (
+            "job never filled to its max_processes=2 ceiling "
+            f"(active={group.stats().active_process_count}, members={group.members()})"
+        )
+
+        # The ceiling is full: any further spawn would exceed max_processes and
+        # must fail CLOSED — a synchronous `ProcessError`, with the rejected
+        # payload never executed (the Job Object refuses the over-limit assignment
+        # before the process runs; enforcement is not fail-open-then-error). The
+        # payload writes a marker as its first act, so an absent marker proves it
+        # never ran.
+        over_limit_ran = tmp_path / "over_limit_ran"
+        over_limit_code = (
+            f"import pathlib, time; "
+            f"pathlib.Path({str(over_limit_ran)!r}).write_text('ran'); "
+            f"time.sleep(60)"
+        )
         with pytest.raises(ProcessError):
-            group.start(Command(PY, ["-c", "import time; time.sleep(5)"]))
+            group.start(Command(PY, ["-c", over_limit_code]))
+        assert not wait_until(over_limit_ran.exists, timeout=1.0), (
+            "the over-limit spawn executed its payload before being rejected — "
+            "max_processes enforcement is fail-open, not fail-closed"
+        )
 
 
 def test_group_shutdown_grace_kwarg_tears_down(pid_file: pathlib.Path) -> None:

@@ -406,12 +406,19 @@ def test_supervision_outcome_not_equal_when_a_field_differs() -> None:
     assert clean != 5
 
 
-def test_supervision_outcome_pickle_round_trip_preserves_equality() -> None:
-    original = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
-    restored = pickle.loads(pickle.dumps(original))
-    assert restored == original
-    assert restored.restarts == original.restarts
-    assert restored.stopped == original.stopped
-    assert restored.storm_pauses == original.storm_pauses
-    assert restored.final_result == original.final_result
-    assert restored.final_result.is_success
+def test_supervision_outcome_pickle_raises_type_error() -> None:
+    # SupervisionOutcome is NOT picklable (T-079): its identity includes
+    # `final_result` (a ProcessResult), which cannot be faithfully reconstructed
+    # from a pickle — the crate's ProcessResult comparison also spans the hidden
+    # timeout/success_codes that have no accessor to read back. Refuse loudly
+    # rather than hand back a value that silently breaks the round-trip. To cross
+    # a process boundary, read the fields you need or pickle
+    # `final_result.outcome` (an Outcome, which round-trips exactly).
+    outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    with pytest.raises(TypeError, match="SupervisionOutcome cannot be pickled"):
+        pickle.dumps(outcome)
+
+    # The picklable escape hatch: the final run's Outcome summary round-trips.
+    restored = pickle.loads(pickle.dumps(outcome.final_result.outcome))
+    assert restored == outcome.final_result.outcome
+    assert restored.exited_zero

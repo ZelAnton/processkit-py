@@ -37,9 +37,15 @@ class ProcessResult:
     signal-kill are all reported as data here — never raised by `output()`.
 
     Value semantics: `==`/`hash()` compare every field (program/stdout/stderr/
-    outcome/success codes — not the incidental `duration_seconds`/`truncated`),
-    and instances are picklable (e.g. to return one from a
-    `concurrent.futures.ProcessPoolExecutor` worker)."""
+    outcome/success codes — not the incidental `duration_seconds`/`truncated`).
+    **Not** picklable: equality also spans the configured `timeout` and accepted
+    `success_codes`, which processkit exposes no accessor to read back, so a
+    pickled result could not reconstruct them and would compare unequal to its
+    original for any command that set `.timeout(...)`/`.success_codes(...)`;
+    pickling raises `TypeError`. Pickle `result.outcome` (an `Outcome`, which
+    round-trips exactly — e.g. to return it from a
+    `concurrent.futures.ProcessPoolExecutor` worker), or persist
+    `result.stdout`/`.stderr`/`.code` yourself, to cross a process boundary."""
 
     @property
     def stdout(self) -> str: ...
@@ -81,18 +87,6 @@ class ProcessResult:
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
-    # `__reduce__`'s factory (see the class docstring on pickling); private,
-    # not for direct use — declared only so stubtest sees the real member.
-    @staticmethod
-    def _unpickle(
-        program: str,
-        stdout: str,
-        stderr: str,
-        code: int | None,
-        signal: int | None,
-        timed_out: bool,
-        is_success: bool,
-    ) -> ProcessResult: ...
 
 @final
 class BytesResult:
@@ -386,7 +380,8 @@ class Outcome:
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
-    # `__reduce__`'s factory — see `ProcessResult._unpickle`.
+    # `__reduce__`'s factory (see the class docstring on pickling); private,
+    # not for direct use — declared only so stubtest sees the real member.
     @staticmethod
     def _unpickle(code: int | None, signal: int | None, timed_out: bool) -> Outcome: ...
 
@@ -418,7 +413,8 @@ class Finished:
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
-    # `__reduce__`'s factory — see `ProcessResult._unpickle`.
+    # `__reduce__`'s factory (see the class docstring on pickling); private,
+    # not for direct use — declared only so stubtest sees the real member.
     @staticmethod
     def _unpickle(
         stderr: str, code: int | None, signal: int | None, timed_out: bool
@@ -641,8 +637,12 @@ class SupervisionOutcome:
     """The result of a `Supervisor.run()`.
 
     Value semantics: `==`/`hash()` compare every field (`final_result` via
-    `ProcessResult`'s own comparison, plus `restarts`/`stopped`/`storm_pauses`);
-    picklable."""
+    `ProcessResult`'s own comparison, plus `restarts`/`stopped`/`storm_pauses`).
+    **Not** picklable: its identity includes `final_result` (a `ProcessResult`),
+    which cannot be faithfully reconstructed from a pickle (its `timeout`/
+    `success_codes` have no accessor to read back), so pickling raises
+    `TypeError`. Read the fields you need, or pickle `final_result.outcome` (an
+    `Outcome`, which round-trips exactly), to cross a process boundary."""
 
     @property
     def final_result(self) -> ProcessResult: ...
@@ -660,20 +660,6 @@ class SupervisionOutcome:
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
-    # `__reduce__`'s factory — see `ProcessResult._unpickle`.
-    @staticmethod
-    def _unpickle(
-        program: str,
-        stdout: str,
-        stderr: str,
-        code: int | None,
-        signal: int | None,
-        timed_out: bool,
-        is_success: bool,
-        restarts: int,
-        stopped: str,
-        storm_pauses: int,
-    ) -> SupervisionOutcome: ...
 
 @final
 class Supervisor:

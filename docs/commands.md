@@ -138,6 +138,67 @@ how processkit finds the executable to spawn. If the program is not found, the
 preferred directories are included in the failure diagnostics along with the
 normal search locations.
 
+Here is a self-contained example that creates two local tool directories and
+prefers both before the system `PATH`:
+
+```python
+import os
+import stat
+import tempfile
+from pathlib import Path
+
+from processkit import Command
+
+name = "demo-tool"
+
+
+def write_tool(directory: Path, text: str) -> Path:
+    directory.mkdir(parents=True)
+    if os.name == "nt":
+        tool = directory / f"{name}.cmd"
+        tool.write_text(f"@echo off\necho {text}\n", encoding="utf-8")
+    else:
+        tool = directory / name
+        tool.write_text(f"#!/bin/sh\necho {text}\n", encoding="utf-8")
+        tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+    return tool
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    project = Path(tmp)
+    first = write_tool(project / "node_modules" / ".bin", "node tool")
+    second = write_tool(project / "target" / "debug", "debug tool")
+
+    # Search order for the bare name "demo-tool":
+    #   1. ./node_modules/.bin
+    #   2. ./target/debug
+    #   3. the parent process PATH
+    out = (
+        Command(name)
+        .cwd(project)
+        .prefer_local(first.parent)
+        .prefer_local(second.parent)
+        .run()
+    )
+    assert out == "node tool"
+
+    # The child still receives the inherited PATH unless you change it with
+    # env(...). prefer_local only affects processkit's spawn-time lookup.
+    assert str(first.parent) not in os.environ.get("PATH", "")
+
+    # Path-form programs bypass prefer_local and are used exactly as written.
+    assert Command(second).prefer_local(first.parent).run() == "debug tool"
+    assert (
+        Command(f".{os.sep}{second.name}")
+        .cwd(second.parent)
+        .prefer_local(first.parent)
+        .run()
+        == "debug tool"
+    )
+
+    print(out)
+```
+
 ## Environment and sandboxing
 
 The environment builders compose, applied in a fixed order at spawn:

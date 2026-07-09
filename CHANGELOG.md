@@ -16,6 +16,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 -
 
+## [1.2.1] - 2026-07-09
+
+### Added
+
+- Add Command.prefer_local, exposing crate 2.2's bare-name resolution override
+- Add Command.prefer_local, exposing crate 2.2's bare-name resolution override
+- Add a runnable Command.prefer_local example to docs
+- Add ProcessStdin.send_control for interactive control-byte delivery
+- Add ProcessStdin.send_control for interactive control-byte delivery
+- Add Command.prefer_local usage example to docs/commands.md
+
+
+### Changed
+
+- Broaden Command.priority docstring privilege caveat to cover above_normal and niced-parent normal
+- Bump processkit dependency requirement and lockfile to 2.2.0
+- Bump processkit dependency requirement and lockfile to 2.2.0
+- Broaden Command.priority docstring privilege caveat to cover above_normal and niced-parent normal
+- Initialize integration workspace for batch B-20260709T132808Z
+- Initialize integration workspace for batch B-20260709T144637Z
+- Apply rustfmt to send_control signature
+- Bump processkit dependency to 2.2.1
+- Initialize integration workspace for batch B-20260709T162529Z
+- Bump processkit dependency to 2.2.1
+
+
+### Fixed
+
+- Fix Windows-incompatible relative path-form assertion in the prefer_local example
+
 ## [1.2.0] - 2026-07-08
 
 ### Added
@@ -835,7 +865,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/ZelAnton/processkit-py/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/ZelAnton/processkit-py/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/ZelAnton/processkit-py/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ZelAnton/processkit-py/compare/v1.0.0...v1.1.0

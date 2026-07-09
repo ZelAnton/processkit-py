@@ -518,19 +518,15 @@ impl PySupervisor {
 
     /// Async counterpart of `run()`. Consumes the supervisor.
     ///
-    /// Warning — unbounded `restart="always"` is not reclaimable if dropped:
-    /// this bridges the supervision future onto the shared tokio runtime via
-    /// `future_into_py`, which spawns the task immediately, not lazily on
-    /// `await`. If the returned awaitable is dropped without being awaited
-    /// (or the event loop closes before it resolves), that spawned task is
-    /// NOT cancelled — it keeps running detached from any Python owner,
-    /// forever pinning every `Py<PyAny>` callback it captured
-    /// (`stop_when`/`give_up_when`, and anything they close over) for the
-    /// life of the interpreter. Pair this with `restart="always"` and no
-    /// `max_restarts`/`stop_when`, and the task also never finishes on its
-    /// own: it restarts the child process forever with no way to reclaim it.
-    /// Always `await` what `arun()` returns, and give `restart="always"` a
-    /// `max_restarts=` or `stop_when=` so supervision has a defined end.
+    /// Like every `a`-prefixed verb, this returns a lazy awaitable: supervision
+    /// does not start until the awaitable is first `await`ed (see the bridge's
+    /// lifecycle contract in `runtime.rs`). So an `arun()` that is never awaited
+    /// — even an unbounded `restart="always"` one — starts nothing and, when
+    /// dropped, releases the supervisor and every `Py<PyAny>` callback it
+    /// captured (`stop_when`/`give_up_when`, and anything they close over)
+    /// instead of pinning them for the life of the interpreter. Still give an
+    /// awaited `restart="always"` a `max_restarts=` or `stop_when=` so
+    /// supervision has a defined end rather than restarting forever.
     fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let supervisor = self.take_supervisor()?;

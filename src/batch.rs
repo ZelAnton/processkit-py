@@ -19,7 +19,7 @@ use crate::command::PyCommand;
 use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::runner::extract_runner;
-use crate::runtime::block_on_interruptible;
+use crate::runtime::{block_on_interruptible, drive_async_py};
 
 /// Resolve an optional Python `runner=` argument to the runner every command in
 /// the batch is driven through: the real `JobRunner` by default, or whatever
@@ -120,7 +120,7 @@ pub(crate) fn aoutput_all<'py>(
     let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    drive_async_py(py, async move {
         let results = pk_output_all(cmds, n, &runner).await;
         Python::attach(|py| string_results_to_pylist(py, results))
     })
@@ -155,7 +155,7 @@ pub(crate) fn aoutput_all_bytes<'py>(
     let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
-    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+    drive_async_py(py, async move {
         let results = pk_output_all_bytes(cmds, n, &runner).await;
         Python::attach(|py| bytes_results_to_pylist(py, results))
     })

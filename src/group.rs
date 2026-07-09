@@ -17,7 +17,9 @@ use crate::runner::{
     runner_exit_code, runner_output, runner_output_bytes, runner_probe, runner_run,
 };
 use crate::running::PyRunningProcess;
-use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
+use crate::runtime::{
+    block_on, drive_async, drive_async_py, reject_reentrant_runtime, require_event_loop,
+};
 
 /// A snapshot of a `ProcessGroup`'s resource usage.
 #[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
@@ -200,7 +202,7 @@ impl PyProcessGroup {
     }
 
     fn __aenter__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })
+        drive_async_py(py, async move { Ok(slf) })
     }
 
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]

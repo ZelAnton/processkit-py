@@ -177,6 +177,12 @@ Two invariants worth internalizing when adding a new verb:
   `Command`/`Pipeline`, every runner (real and test doubles), `RunningProcess`,
   `ProcessGroup`, `Supervisor`, and `CliClient`. A new verb should ship both
   halves together, wired through `block_on`/`drive_async` respectively.
+  `drive_async` returns a **lazy** awaitable (`PyLazyFuture`): it does not hand
+  the work to `future_into_py` — and so spawns nothing — until the first
+  `await`, so an `a`-verb built but never awaited starts no work and, when
+  dropped, releases what it captured (and tears down a process it already owns);
+  once awaited it delegates to the real `asyncio.Future` for cancellation, so
+  `Future.cancel()` behaves exactly as before.
 - **`gil_used = false`.** See the free-threading note above — a deliberate,
   narrowly-justified opt-in, not a default to imitate carelessly in a module
   that *does* need shared mutable state outside PyO3's own guarding.

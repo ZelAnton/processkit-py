@@ -17,7 +17,9 @@ use crate::errors::{map_err, ProcessError};
 use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
-use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop, rt};
+use crate::runtime::{
+    block_on, drive_async, drive_async_py, reject_reentrant_runtime, require_event_loop, rt,
+};
 
 /// A writable handle to a running process's stdin. Obtain it once via
 /// `RunningProcess.take_stdin()`; all methods are awaitable.
@@ -32,7 +34,7 @@ impl PyProcessStdin {
     /// Write raw bytes to the child's stdin.
     fn write<'py>(&self, py: Python<'py>, data: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         let stdin = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             let mut guard = stdin.lock().await;
             let writer = guard
                 .as_mut()
@@ -44,7 +46,7 @@ impl PyProcessStdin {
     /// Write a line of text, appending a newline.
     fn write_line<'py>(&self, py: Python<'py>, line: String) -> PyResult<Bound<'py, PyAny>> {
         let stdin = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             let mut guard = stdin.lock().await;
             let writer = guard
                 .as_mut()
@@ -66,7 +68,7 @@ impl PyProcessStdin {
         }
 
         let stdin = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             let mut guard = stdin.lock().await;
             let writer = guard
                 .as_mut()
@@ -84,7 +86,7 @@ impl PyProcessStdin {
     /// Flush buffered writes to the child.
     fn flush<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stdin = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             let mut guard = stdin.lock().await;
             let writer = guard
                 .as_mut()
@@ -96,7 +98,7 @@ impl PyProcessStdin {
     /// Close stdin (sending EOF to the child). Idempotent.
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stdin = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             let writer = { stdin.lock().await.take() };
             match writer {
                 Some(writer) => writer.finish().await.map_err(PyErr::from),
@@ -121,7 +123,7 @@ impl PyStdoutLines {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             match stream.lock().await.next().await {
                 Some(line) => Ok(line),
                 None => Err(PyStopAsyncIteration::new_err(())),
@@ -144,7 +146,7 @@ impl PyOutputEvents {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = self.inner.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        drive_async_py(py, async move {
             match stream.lock().await.next().await {
                 Some(event) => Ok(PyOutputEvent::from_event(event)),
                 None => Err(PyStopAsyncIteration::new_err(())),
@@ -307,7 +309,7 @@ impl PyRunningProcess {
     }
 
     fn __aenter__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(slf) })
+        drive_async_py(py, async move { Ok(slf) })
     }
 
     /// Async counterpart of `__exit__`.
@@ -319,9 +321,10 @@ impl PyRunningProcess {
         _exc_value: Option<Bound<'py, PyAny>>,
         _traceback: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Check before taking: a synchronously-failing `drive_async` (no running
-        // event loop) would otherwise drop the just-taken handle (kill-on-drop)
-        // instead of leaving it in place for the caller to retry correctly.
+        // Check before taking: with no running event loop the taken handle would
+        // otherwise be wrapped in a never-awaitable lazy future whose only fate
+        // is kill-on-drop, silently spending it instead of leaving it in place
+        // for the caller to retry correctly. See `require_event_loop`.
         require_event_loop(py)?;
         let running = self.take();
         drive_async(py, async move {

@@ -188,13 +188,17 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # Path-form programs bypass prefer_local and are used exactly as written.
     assert Command(second).prefer_local(first.parent).run() == "debug tool"
-    assert (
-        Command(f".{os.sep}{second.name}")
-        .cwd(second.parent)
-        .prefer_local(first.parent)
-        .run()
-        == "debug tool"
-    )
+    old_cwd = Path.cwd()
+    os.chdir(project)
+    try:
+        assert (
+            Command(f"target{os.sep}debug{os.sep}{second.name}")
+            .prefer_local(first.parent)
+            .run()
+            == "debug tool"
+        )
+    finally:
+        os.chdir(old_cwd)
 
     print(out)
 ```

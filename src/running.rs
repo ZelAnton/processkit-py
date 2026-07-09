@@ -54,11 +54,7 @@ impl PyProcessStdin {
     }
 
     /// Send a single control byte to the child's stdin.
-    fn send_control<'py>(
-        &self,
-        py: Python<'py>,
-        control: String,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn send_control<'py>(&self, py: Python<'py>, control: String) -> PyResult<Bound<'py, PyAny>> {
         let mut chars = control.chars();
         let c = chars.next().ok_or_else(|| {
             PyValueError::new_err("send_control() requires exactly one control character")

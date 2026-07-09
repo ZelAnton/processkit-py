@@ -433,8 +433,7 @@ def test_wait_for_port_zero_timeout_with_large_interval(
             )
         elapsed = loop.time() - start
         assert elapsed < 2.0, (
-            "zero-timeout connection attempt scaled with the retry interval "
-            f"({elapsed:.1f}s)"
+            f"zero-timeout connection attempt scaled with the retry interval ({elapsed:.1f}s)"
         )
 
     asyncio.run(scenario())

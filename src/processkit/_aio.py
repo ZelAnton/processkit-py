@@ -30,6 +30,9 @@ __all__ = [
 ]
 
 
+_ZERO_TIMEOUT_CONNECT_TICK = 0.05
+
+
 class WaitTimeout(ProcessError, TimeoutError):
     """A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
     `wait_for_path`) didn't succeed within its deadline.
@@ -278,8 +281,9 @@ async def wait_for_port(
     ``timeout=0``, a connection attempt is still made (at least one), so an
     already-ready port succeeds instead of failing before a connection was
     ever tried — this first attempt is not cut short by the already-expired
-    deadline. It IS bounded, though: to a short ``interval``-sized event-loop
-    tick, not left uncapped — an unresolvable/blackhole address would
+    deadline. It IS bounded, though: to a short, fixed event-loop tick (or a
+    smaller caller-supplied ``interval``), not left uncapped — an
+    unresolvable/blackhole address would
     otherwise be free to block on the OS's own (much longer, or absent)
     connect/DNS timeout well past the caller's requested deadline. A
     **negative** ``timeout`` is rejected outright — raises `ValueError`, same
@@ -307,8 +311,8 @@ async def wait_for_port(
         # on the floor (a known leak). Owning the task lets us close it instead.
         conn = asyncio.ensure_future(asyncio.open_connection(host, port))
         try:
-            # `interval` (never unbounded/`None`) only on this — the first —
-            # attempt, and only when the deadline has already passed
+            # A short fixed tick (never unbounded/`None`) only on this — the
+            # first — attempt, and only when the deadline has already passed
             # (``remaining <= 0``, e.g. at ``timeout=0``):
             # `asyncio.wait_for(fut, timeout<=0)` cancels ``fut`` before it
             # ever runs, which would reject an already-ready port before a
@@ -317,14 +321,16 @@ async def wait_for_port(
             # version passed `None` (no cap) here instead, which let a
             # connection attempt against an unresolvable/blackhole address
             # block on the OS's own (much longer, or absent) timeout — a
-            # regression this short, bounded tick fixes: real enough to let an
-            # already-listening local port answer, short enough to never hang
-            # the caller past their requested (zero) deadline. ``interval`` is
-            # always positive (the guard above rejects non-positive/NaN), so
-            # this never re-triggers `wait_for`'s own ``timeout<=0``
+            # regression this bounded tick fixes: real enough to let an
+            # already-listening local port answer, short enough to never scale
+            # with a caller-supplied retry interval. Preserve intervals smaller
+            # than the cap; the guard above ensures the result stays positive,
+            # so this never re-triggers `wait_for`'s own ``timeout<=0``
             # fast-cancel path. Every later attempt is still bounded by the
             # real ``remaining``.
-            connect_timeout = interval if remaining <= 0 else remaining
+            connect_timeout = (
+                min(interval, _ZERO_TIMEOUT_CONNECT_TICK) if remaining <= 0 else remaining
+            )
             _reader, writer = await asyncio.wait_for(conn, timeout=connect_timeout)
         except (OSError, asyncio.TimeoutError) as exc:
             _close_pending_connection(conn)

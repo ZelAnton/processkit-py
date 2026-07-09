@@ -412,6 +412,34 @@ def test_wait_for_port_zero_timeout_does_not_hang_on_a_stalled_connect(
     asyncio.run(scenario())
 
 
+def test_wait_for_port_zero_timeout_with_large_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def hanging_open_connection(
+        _host: str, _port: int, **_kwargs: object
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    monkeypatch.setattr(asyncio, "open_connection", hanging_open_connection)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                wait_for_port("example.invalid", 1, timeout=0.0, interval=300.0),
+                timeout=2.0,
+            )
+        elapsed = loop.time() - start
+        assert elapsed < 2.0, (
+            "zero-timeout connection attempt scaled with the retry interval "
+            f"({elapsed:.1f}s)"
+        )
+
+    asyncio.run(scenario())
+
+
 def test_wait_for_port_chains_last_connection_error() -> None:
     # A typo'd/unresolvable hostname must not have its evidence (the DNS
     # failure) silently discarded — it survives as the TimeoutError's cause.

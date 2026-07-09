@@ -291,9 +291,21 @@ assert finished.exited_zero
 ```
 
 `ProcessStdin` is fully awaitable: `await write(bytes)`, `write_line(str)`
-(newline + flush), `flush()`, and `close()` (EOF). `take_stdin()` **raises**
-`ProcessError` if the `Command` didn't `keep_stdin_open()` or the writer was
-already taken — so a missing setup fails right here, not later on a `None`.
+(newline + flush), `send_control(str)`, `flush()`, and `close()` (EOF).
+`send_control()` accepts exactly one recognized control character and writes
+the mapped control byte to the child's stdin pipe: for example,
+`await stdin.send_control("c")` writes Ctrl-C (`\x03`) and
+`await stdin.send_control("d")` writes Ctrl-D (`\x04`). Invalid input raises
+`ValueError`.
+
+This is a byte in a normal pipe, not a terminal signal. It only affects
+children that read and interpret that byte from stdin; real terminal semantics
+such as SIGINT/SIGTSTP delivery require a pseudoterminal, which `processkit`
+does not provide yet.
+
+`take_stdin()` **raises** `ProcessError` if the `Command` didn't
+`keep_stdin_open()` or the writer was already taken — so a missing setup fails
+right here, not later on a `None`.
 
 **Avoid the full-duplex deadlock.** A child's stdout pipe has a finite OS
 buffer; once it fills, the child blocks *writing* stdout until something reads

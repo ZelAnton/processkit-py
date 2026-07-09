@@ -8,7 +8,7 @@ use processkit::OutputEvents as PkOutputEvents;
 use processkit::ProcessStdin as PkProcessStdin;
 use processkit::RunningProcess as PkRunningProcess;
 use processkit::StdoutLines as PkStdoutLines;
-use pyo3::exceptions::{PyOSError, PyStopAsyncIteration};
+use pyo3::exceptions::{PyOSError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use tokio::sync::Mutex;
 
@@ -50,6 +50,38 @@ impl PyProcessStdin {
                 .as_mut()
                 .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
             writer.write_line(&line).await.map_err(PyErr::from)
+        })
+    }
+
+    /// Send a single control byte to the child's stdin.
+    fn send_control<'py>(
+        &self,
+        py: Python<'py>,
+        control: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let mut chars = control.chars();
+        let c = chars.next().ok_or_else(|| {
+            PyValueError::new_err("send_control() requires exactly one control character")
+        })?;
+        if chars.next().is_some() {
+            return Err(PyValueError::new_err(
+                "send_control() requires exactly one control character",
+            ));
+        }
+
+        let stdin = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut guard = stdin.lock().await;
+            let writer = guard
+                .as_mut()
+                .ok_or_else(|| PyOSError::new_err("stdin is closed"))?;
+            writer.send_control(c).await.map_err(|err| {
+                if err.kind() == std::io::ErrorKind::InvalidInput {
+                    PyValueError::new_err(err.to_string())
+                } else {
+                    PyErr::from(err)
+                }
+            })
         })
     }
 

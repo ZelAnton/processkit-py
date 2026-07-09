@@ -43,6 +43,14 @@ _ECHO_UPPER = (
     "import sys; [(sys.stdout.write(line.upper()), sys.stdout.flush()) for line in sys.stdin]"
 )
 
+# Echoes the first raw stdin byte to stdout.
+_ECHO_ONE_STDIN_BYTE = (
+    "import sys; "
+    "data = sys.stdin.buffer.read(1); "
+    "sys.stdout.buffer.write(data); "
+    "sys.stdout.buffer.flush()"
+)
+
 # stdout + stderr on both streams.
 _BOTH_STREAMS = (
     "import sys; "
@@ -221,6 +229,32 @@ def test_interactive_stdin_write_accepts_bytearray_and_memoryview() -> None:
         return lines
 
     assert asyncio.run(scenario()) == ["FROM-BYTEARRAY", "FROM-MEMORYVIEW"]
+
+
+def test_interactive_stdin_send_control_writes_control_byte() -> None:
+    async def scenario() -> bytes:
+        proc = await Command(PY, ["-c", _ECHO_ONE_STDIN_BYTE]).keep_stdin_open().astart()
+        stdin = proc.take_stdin()
+        await stdin.send_control("d")
+        await stdin.close()
+        result = await proc.aoutput_bytes()
+        return result.stdout
+
+    assert asyncio.run(scenario()) == b"\x04"
+
+
+def test_interactive_stdin_send_control_rejects_invalid_argument() -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", _ECHO_ONE_STDIN_BYTE]).keep_stdin_open().astart()
+        stdin = proc.take_stdin()
+        with pytest.raises(ValueError):
+            await stdin.send_control("0")
+        with pytest.raises(ValueError):
+            await stdin.send_control("cc")
+        await stdin.close()
+        await proc.aoutcome()
+
+    asyncio.run(scenario())
 
 
 def test_take_stdin_is_once() -> None:

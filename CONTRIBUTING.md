@@ -21,6 +21,8 @@ parity), and how the stub/runtime/`__all__` drift guard works.
 ```sh
 uv run maturin develop              # build the Rust extension and install it in-place
 uv run pytest                       # run the tests (requires maturin develop first)
+cargo test --all-targets            # Rust unit tests (Linux/macOS)
+pwsh ./scripts/cargo-test-windows.ps1  # Rust unit tests (Windows; after maturin develop)
 uv run ruff format --check .        # formatting must be clean
 uv run ruff check .                 # lint
 uv run mypy                         # type-check (strict)
@@ -29,7 +31,10 @@ uv run maturin build --release --out dist  # build a release abi3 wheel
 
 `ruff check`, `mypy --strict`, and `pytest` (with warnings promoted to errors)
 are the gates CI enforces, so run them locally before opening a pull request.
-CI additionally runs `cargo fmt --check` and `cargo clippy -- -D warnings`.
+CI additionally runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and
+the Rust unit tests. On Windows, the script obtains uv's selected Python base
+prefix programmatically and adds it to `PATH`, allowing the Cargo test binary
+to find the base Python DLL without a machine-specific path.
 
 ## Pre-commit (optional but recommended)
 

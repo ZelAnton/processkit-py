@@ -98,6 +98,24 @@ jobs:
       # can't run.
       - run: cargo test
 
+  rust-test-windows:
+    name: rust-test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+      # Build/install the extension exactly as a normal local checkout does,
+      # then expose uv's base Python DLL while Cargo starts its test executable.
+      - run: uv run maturin develop
+      - run: pwsh ./scripts/cargo-test-windows.ps1
+
   test:
     # One matrix over (OS × interpreter): the empty `python` entry runs the abi3
     # (GIL) build via the project's pinned interpreter; `3.14t` provisions the

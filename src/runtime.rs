@@ -3,6 +3,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -13,8 +14,74 @@ use crate::errors::{map_err, ProcessError};
 
 /// The one tokio runtime the binding owns, shared by the sync surface
 /// (`block_on`) and the async surface (`future_into_py`).
+///
+/// This is the *raw*, infallible accessor. Every path that actually **drives**
+/// the runtime — `block_on`, `future_into_py`, or `Runtime::enter` to spawn a
+/// stream pump — must first pass [`guard_against_fork`] (directly, or via the
+/// checked [`runtime`] accessor) so a runtime copied into a POSIX `fork()` child
+/// is refused instead of hung.
 pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
     pyo3_async_runtimes::tokio::get_runtime()
+}
+
+/// PID of the process that first touched the shared tokio runtime, or `0` before
+/// the first touch. Set once on first access and compared on every later one to
+/// detect a POSIX `fork()` that copied an already-initialized runtime into a
+/// child (see [`guard_against_fork`]). A real `getpid()` is never `0`, so `0` is
+/// a safe "not yet claimed" sentinel.
+static RUNTIME_OWNER_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Fail fast if the shared tokio runtime would be driven from a process that
+/// `fork()`ed *after* the runtime was already initialized in its parent.
+///
+/// `pyo3-async-runtimes` keeps the tokio runtime in a process-global `OnceLock`.
+/// A POSIX `fork()` copies that struct — including the `OnceLock`'s "already
+/// initialized" flag — into the child, but **not** the runtime's worker threads:
+/// `fork()` carries only the calling thread into the child. So in the child the
+/// runtime *looks* ready yet has no workers to drive I/O, and any lock a vanished
+/// worker held at fork time (the tokio I/O driver's, the allocator's) stays
+/// locked forever. Driving it there — `block_on`, `future_into_py`, or even
+/// `Runtime::enter` plus spawning a stream pump — hangs or panics with no
+/// recovery.
+///
+/// We cannot rebuild the managed runtime in the child: its `OnceLock` is already
+/// set and private to `pyo3-async-runtimes`, so there is no sound "reset". The
+/// only safe answer is to refuse quickly and clearly and point the caller at the
+/// `spawn` / `forkserver` multiprocessing start methods (see
+/// `docs/platforms.md`). Claiming ownership on the first *touch* rather than at
+/// import means a process that forks *before* its first processkit call is
+/// unaffected — its child simply initializes its own fresh runtime.
+fn guard_against_fork() -> PyResult<()> {
+    // `std::process::id()` is an uncached `getpid()` on Unix, so it reflects the
+    // child's real PID immediately after `fork()` (not the parent's). On Windows,
+    // where there is no `fork()`, the PID never changes and this is a no-op.
+    let me = std::process::id();
+    // Claim ownership on the first touch; otherwise the stored owner must be us.
+    // A stored owner that is neither `0` nor `me` is a parent's PID carried in by
+    // `fork()` — exactly the hazard we refuse.
+    match RUNTIME_OWNER_PID.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(()),
+        Err(owner) if owner == me => Ok(()),
+        Err(_forked) => Err(ProcessError::new_err(
+            "processkit's async runtime was initialized in a parent process and \
+             cannot be used here: this process was created by POSIX fork() (for \
+             example os.fork(), or multiprocessing / ProcessPoolExecutor with the \
+             default 'fork' start method on Linux) after processkit had already \
+             run. A forked child does not inherit the runtime's worker threads, so \
+             driving it now would hang or panic. Use the 'spawn' or 'forkserver' \
+             start method (multiprocessing.get_context(\"spawn\")), or perform the \
+             fork before the first processkit call.",
+        )),
+    }
+}
+
+/// The shared runtime, guarded against post-`fork()` use. Use this over [`rt`]
+/// anywhere the returned handle is driven immediately (`enter` to spawn a stream
+/// pump); [`rt`] stays infallible for the hot loop in [`block_on_interruptible`],
+/// which runs [`guard_against_fork`] once up front instead of per iteration.
+pub(crate) fn runtime() -> PyResult<&'static tokio::runtime::Runtime> {
+    guard_against_fork()?;
+    Ok(rt())
 }
 
 /// Bridge a crate future to a Python awaitable: convert its error to the right
@@ -148,6 +215,11 @@ impl PyLazyFuture {
     /// machinery. Idempotent on re-await: later calls delegate to the same
     /// backing future, mirroring `asyncio.Future` semantics.
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        // Refuse before touching state so a fork child fails cleanly and
+        // idempotently on every await, without spending the inert work (which
+        // `future_into_py` below would otherwise schedule onto a runtime whose
+        // worker threads did not survive the fork).
+        guard_against_fork()?;
         let mut state = self.lock();
         if let LazyState::Started(inner) = &*state {
             return inner.bind(py).call_method0(intern!(py, "__await__"));
@@ -209,6 +281,10 @@ where
     F: std::future::Future<Output = T> + Send,
     T: Send,
 {
+    // Refuse a runtime copied into a POSIX `fork()` child before touching it —
+    // otherwise `rt().block_on` below drives a runtime with no surviving worker
+    // threads and hangs/panics for good. Checked once here, not per loop tick.
+    guard_against_fork()?;
     // `rt().block_on` is NOT re-entrant: driving it from a thread that is already
     // inside the runtime panics ("Cannot start a runtime from within a runtime").
     // That happens if a Rust->Python callback running inside the runtime — e.g. a

@@ -45,6 +45,43 @@ runtime that grants cgroup delegation.
 Operations a platform can't perform raise `Unsupported` — catch it if you target
 multiple platforms.
 
+## Multiprocessing: use `spawn` or `forkserver`, not `fork`
+
+processkit runs a tokio runtime with background worker threads, started lazily
+the first time you call any verb. A bare POSIX `fork()` copies that runtime into
+the child **without** its worker threads — `fork()` carries only the calling
+thread across — and any lock a worker held at fork time stays locked forever in
+the child. Driving the copied runtime there (any further processkit call) would
+deadlock or panic with no recovery. This is the standard "don't `fork()` a
+multi-threaded process" hazard; processkit is not special here, but its runtime
+makes the process multi-threaded as soon as you use it.
+
+**What processkit does about it.** Rather than hang, a processkit verb called
+from a process that `fork()`ed *after* the runtime was initialized fails fast
+with a clear `ProcessError` (it detects the PID change and refuses before
+touching the dead runtime). Nothing is spawned, so nothing is orphaned. It does
+**not** transparently rebuild the runtime in the child: the managed runtime lives
+in a process-global that cannot be soundly reset, so a clean refusal is the safe
+contract.
+
+**What you should do.** Choose a fork-free start method for `multiprocessing` /
+`concurrent.futures.ProcessPoolExecutor` whenever the workers use processkit:
+
+```python
+import multiprocessing as mp
+
+ctx = mp.get_context("spawn")  # or "forkserver"
+with ctx.Pool() as pool:
+    ...
+```
+
+`spawn` and `forkserver` start each worker from a fresh interpreter, so every
+worker initializes its own runtime cleanly. On macOS and Windows `spawn` is
+already the default; on Linux the default is still `fork` for `multiprocessing`
+below Python 3.14, so set the context explicitly there. If you must call
+`os.fork()` directly, do it **before** the first processkit call in the parent —
+a child that forks before the runtime is initialized simply builds its own.
+
 ## Python build
 
 - Distributed as **abi3 wheels for CPython 3.10+** (one wheel per OS/arch runs on

@@ -18,7 +18,7 @@ use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
 use crate::runtime::{
-    block_on, drive_async, drive_async_py, reject_reentrant_runtime, require_event_loop, rt,
+    block_on, drive_async, drive_async_py, reject_reentrant_runtime, require_event_loop, runtime,
 };
 
 /// A writable handle to a running process's stdin. Obtain it once via
@@ -341,7 +341,7 @@ impl PyRunningProcess {
         // Setting up the stream spawns a pump task, so it must run inside the
         // tokio runtime context. Holding the std lock across this sync call is
         // safe: it does not await, so it cannot deadlock a concurrent verb.
-        let _guard = rt().enter();
+        let _guard = runtime()?.enter();
         let mut inner = self.lock();
         let running = inner
             .as_mut()
@@ -354,7 +354,7 @@ impl PyRunningProcess {
 
     /// An async iterator over stdout and stderr as interleaved `OutputEvent`s.
     fn output_events(&self) -> PyResult<PyOutputEvents> {
-        let _guard = rt().enter();
+        let _guard = runtime()?.enter();
         let mut inner = self.lock();
         let running = inner
             .as_mut()
@@ -392,7 +392,7 @@ impl PyRunningProcess {
     /// owning group, also kills it; this just starts it early.) Mirrors
     /// `subprocess.Popen.kill()`: fire-and-forget, does not wait for exit.
     fn kill(&self) -> PyResult<()> {
-        let _guard = rt().enter();
+        let _guard = runtime()?.enter();
         let mut inner = self.lock();
         let running = inner
             .as_mut()

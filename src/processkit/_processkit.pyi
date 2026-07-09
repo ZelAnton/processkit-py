@@ -884,9 +884,13 @@ class CliClient:
         default_env: Mapping[str, str] | None = ...,
         default_env_remove: Sequence[str] | None = ...,
         # A resolver is called fresh each time a command is *built* (not each
-        # retry attempt), synchronously, and is expected to be infallible —
-        # a raising/non-str-returning callback is surfaced via the
-        # unraisable hook and falls back to an empty string.
+        # retry attempt), synchronously. It is expected to return a `str`; a
+        # resolver that raises or returns a non-`str` is fail-closed — the
+        # exception propagates out of the verb (or `command()`) that triggered
+        # the build, before the runner is reached, so no process is spawned with
+        # a missing/blank credential. (A resolver whose key is already set by an
+        # explicit per-command `env()` or a static `default_env` never runs, so
+        # it cannot abort a call whose value it does not supply.)
         default_env_fn: Mapping[str, Callable[[], str]] | None = ...,
         # `default_retry_if` is the opt-in gate for the client-wide retry
         # policy (mirrors `Command.retry()`'s required `retry_if`) — the

@@ -14,7 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Fixed
--
+- `CliClient` `default_env_fn` resolvers are now fail-closed: a resolver that
+  raises or returns a non-`str` aborts the triggering `command()`/verb with that
+  exception, *before* the runner is reached, so no process is spawned. Previously
+  the failure was only reported via the unraisable hook and the resolved value
+  fell back to an empty string — running the command with a silently-missing
+  credential. Applies uniformly to `command()`, the sync verbs, and the async
+  verbs; a resolver whose key is already set by an explicit per-command `env()`
+  or a static `default_env` still never runs (and so cannot abort the call).
 
 ## [1.2.1] - 2026-07-09
 

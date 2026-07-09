@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import inspect
 import sys
 from collections.abc import AsyncIterator
@@ -247,8 +248,17 @@ def test_wait_until_second_cancellation_during_drain_does_not_leak_task_exceptio
     # while it is still draining an already-cancelling predicate, and that
     # predicate's cleanup then raises its own (non-CancelledError) exception,
     # the fresh cancellation must still win — not get replaced by the
-    # predicate's unrelated error.
+    # predicate's unrelated error. Also pins the companion regression: _quiesce
+    # must still retrieve that unrelated exception from the now-finished inner
+    # task (even though it discards it), or asyncio's default handler reports
+    # "Task exception was never retrieved" once the task is garbage-collected —
+    # caught here with a private `loop.set_exception_handler`, deterministically
+    # (not by scraping captured stderr, whose GC timing isn't guaranteed).
     async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        unraisable: list[dict[str, object]] = []
+        loop.set_exception_handler(lambda _loop, context: unraisable.append(context))
+
         first_cancel_seen = asyncio.Event()
 
         async def flaky_predicate() -> bool:
@@ -267,6 +277,9 @@ def test_wait_until_second_cancellation_during_drain_does_not_leak_task_exceptio
         outer.cancel()  # a fresh, second cancellation lands while still draining
         with pytest.raises(asyncio.CancelledError):
             await outer
+        del outer  # drop the last reference so the inner task's own __del__ can run
+        gc.collect()  # a Task participates in a refcount cycle; force collection now
+        assert not unraisable, f"leaked task exception(s): {unraisable}"
 
     asyncio.run(scenario())
 
@@ -357,6 +370,44 @@ def test_wait_for_port_ready_at_zero_timeout() -> None:
         server = await asyncio.start_server(lambda _r, w: w.close(), "127.0.0.1", port)
         async with server:
             await wait_for_port("127.0.0.1", port, timeout=0.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_port_zero_timeout_does_not_hang_on_a_stalled_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A regression: at timeout=0, the first attempt used to be given an
+    # unbounded `asyncio.wait_for(..., timeout=None)`, so a connect that never
+    # resolves/connects (e.g. a DNS lookup against an unresolvable/blackhole
+    # address) could block far past the caller's requested zero deadline —
+    # potentially forever, or until the OS's own (much longer) connect/DNS
+    # timeout. A never-resolving `open_connection` monkeypatch pins this
+    # deterministically instead of relying on a real unreachable address and
+    # the OS's own timeout (slow and environment-dependent).
+    async def hanging_open_connection(
+        _host: str, _port: int, **_kwargs: object
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        await asyncio.Event().wait()  # never resolves, never connects
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    monkeypatch.setattr(asyncio, "open_connection", hanging_open_connection)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                wait_for_port("this-host-does-not-resolve.invalid", 1, timeout=0.0),
+                timeout=5.0,
+            )
+        elapsed = loop.time() - start
+        # Bounded by a short event-loop tick (~`interval`, default 0.05s), not
+        # the outer 5s guard — a regression (unbounded first attempt) would
+        # only ever return via that outer `asyncio.wait_for` firing at ~5s.
+        assert elapsed < 2.0, (
+            f"wait_for_port(timeout=0) did not bound the stalled connect ({elapsed:.1f}s)"
+        )
 
     asyncio.run(scenario())
 

@@ -154,6 +154,11 @@ class Command:
     def arg(self, arg: StrPath) -> Command: ...
     def args(self, args: Args) -> Command: ...
     def cwd(self, path: StrPath) -> Command: ...
+    def prefer_local(self, dir: StrPath) -> Command:
+        """Search this directory before ``PATH`` when resolving a bare-name
+        program. Repeated calls accumulate in priority order, path-form
+        programs are unchanged, and the child's own ``PATH`` is not rewritten."""
+
     def env(self, key: str, value: str) -> Command: ...
     def envs(self, vars: Mapping[str, str]) -> Command: ...
     def env_remove(self, key: str) -> Command: ...
@@ -976,6 +981,9 @@ class ProcessNotFound(ProcessError, FileNotFoundError):
     """
 
     program: str
+    # The searched directories joined by the platform path separator, or `None`
+    # when no PATH-like search was used.
+    searched: str | None
 
 class PermissionDenied(ProcessError, PermissionError):
     """The program could not be spawned because of insufficient permissions

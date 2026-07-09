@@ -95,6 +95,18 @@ impl PyCommand {
         }
     }
 
+    /// Search this directory before `PATH` when resolving a bare-name program.
+    ///
+    /// Repeated calls accumulate in priority order. This only affects programs
+    /// such as `"tool"`; path-form programs such as `"./tool"` or
+    /// `"/opt/tool"` are left unchanged. The child's own `PATH` environment is
+    /// not rewritten.
+    fn prefer_local(&self, dir: PathBuf) -> Self {
+        Self {
+            inner: self.inner.clone().prefer_local(dir),
+        }
+    }
+
     fn env(&self, key: &str, value: &str) -> Self {
         Self {
             inner: self.inner.clone().env(key, value),

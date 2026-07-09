@@ -10,6 +10,7 @@ so an early return, an exception, or a cancelled task can never leak a child.
 - [The two surfaces: sync and async](#the-two-surfaces-sync-and-async)
 - [Picking a verb](#picking-a-verb)
 - [Program, arguments, working directory](#program-arguments-working-directory)
+- [Local program search](#local-program-search)
 - [Environment and sandboxing](#environment-and-sandboxing)
 - [Standard input](#standard-input)
 - [Redirecting stdout and stderr](#redirecting-stdout-and-stderr)
@@ -108,6 +109,34 @@ cmd.arguments            # ["--password", "hunter2"]
 cmd.command_line()       # "login --password hunter2" — includes the secret!
 repr(cmd)                # redacted: shows arg COUNT, never values
 ```
+
+## Local program search
+
+Use `prefer_local(dir)` when a bare-name program should resolve from a project or
+toolchain directory before falling back to the system `PATH`: for example
+`node_modules/.bin`, `target/debug`, or a vendored tool directory. The directory
+argument accepts `str` and `os.PathLike[str]`, like `cwd`.
+
+```python
+out = (
+    Command("ruff")
+    .prefer_local(Path(".venv/bin"))
+    .prefer_local(Path("tools/bin"))
+    .arg("--version")
+    .run()
+)
+```
+
+Repeated calls accumulate in priority order, so the first preferred directory is
+searched first, then the next, then the normal `PATH`. The search reuses the same
+platform behavior as `PATH` resolution, including `PATHEXT` on Windows.
+
+`prefer_local` affects only bare-name programs such as `"ruff"` or `"cargo"`.
+Path-form programs such as `"./ruff"`, `"tools/ruff"`, or an absolute path are
+used as written. It also does not rewrite the child's own `PATH`; it only changes
+how processkit finds the executable to spawn. If the program is not found, the
+preferred directories are included in the failure diagnostics along with the
+normal search locations.
 
 ## Environment and sandboxing
 

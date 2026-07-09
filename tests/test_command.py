@@ -46,6 +46,18 @@ from processkit.testing import RecordingRunner, Reply, ScriptedRunner
 from .conftest import NO_SUCH_PROGRAM, PY
 
 
+def _make_executable_command(directory: pathlib.Path, name: str, output: str) -> pathlib.Path:
+    if os.name == "nt":
+        path = directory / f"{name}.cmd"
+        path.write_text(f"@echo off\r\necho {output}\r\n", encoding="utf-8")
+        return path
+
+    path = directory / name
+    path.write_text(f"#!/bin/sh\nprintf '%s\\n' {output!r}\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def test_output_captures_stdout_and_code() -> None:
     result = Command(PY, ["-c", "print('hello')"]).output()
     assert result.stdout.strip() == "hello"
@@ -94,6 +106,61 @@ def test_probe_true_and_false() -> None:
 def test_missing_program_raises_process_not_found() -> None:
     with pytest.raises(ProcessNotFound):
         Command(NO_SUCH_PROGRAM).output()
+
+
+def test_prefer_local_finds_program_before_path(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local_dir = tmp_path / "local-bin"
+    path_dir = tmp_path / "path-bin"
+    local_dir.mkdir()
+    path_dir.mkdir()
+    _make_executable_command(local_dir, "pk-tool", "local")
+    _make_executable_command(path_dir, "pk-tool", "path")
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    assert Command("pk-tool").prefer_local(local_dir).run() == "local"
+
+
+def test_prefer_local_accumulates_in_priority_order(tmp_path: pathlib.Path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    _make_executable_command(first_dir, "pk-tool", "first")
+    _make_executable_command(second_dir, "pk-tool", "second")
+
+    output = Command("pk-tool").prefer_local(first_dir).prefer_local(second_dir).run()
+
+    assert output == "first"
+
+
+def test_prefer_local_does_not_affect_path_form_program(tmp_path: pathlib.Path) -> None:
+    local_dir = tmp_path / "local-bin"
+    explicit_dir = tmp_path / "explicit-bin"
+    local_dir.mkdir()
+    explicit_dir.mkdir()
+    _make_executable_command(local_dir, "pk-tool", "local")
+    explicit_program = _make_executable_command(explicit_dir, "pk-tool", "explicit")
+
+    assert Command(explicit_program).prefer_local(local_dir).run() == "explicit"
+
+
+def test_prefer_local_failure_diagnostics_include_preferred_dirs(
+    tmp_path: pathlib.Path,
+) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+
+    with pytest.raises(ProcessNotFound) as excinfo:
+        Command(NO_SUCH_PROGRAM).prefer_local(first_dir).prefer_local(second_dir).output()
+
+    searched = excinfo.value.searched
+    assert searched is not None
+    assert str(first_dir) in searched
+    assert str(second_dir) in searched
 
 
 def test_timeout_is_captured_by_output() -> None:

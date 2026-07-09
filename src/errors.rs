@@ -109,6 +109,7 @@ fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<PyFileNotFoundError>(),
         "The program could not be found / spawned. Also a `FileNotFoundError`.",
     )?;
+    not_found.setattr("searched", py.None())?;
     let permission_denied = make_dual_exception(
         py,
         "PermissionDenied",
@@ -287,6 +288,9 @@ pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
             }
             E::Exit { .. } => {
                 let _ = value.setattr("diagnostic", error.diagnostic());
+            }
+            E::NotFound { searched, .. } => {
+                let _ = value.setattr("searched", searched.as_deref());
             }
             E::OutputTooLarge {
                 max_lines,

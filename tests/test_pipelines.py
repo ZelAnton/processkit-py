@@ -136,7 +136,10 @@ def test_pipeline_stage_timeout_kills_its_whole_subtree(pid_file: pathlib.Path) 
     # stage's whole subtree, including a grandchild it forks off -- previously
     # the stage's own kill reached only its direct child, so a forking stage's
     # grandchild survived, kept the pipe open, and stalled the downstream stage.
-    spawner = spawn_grandchild_command(pid_file).timeout(0.3)
+    # Keep this comfortably above Windows process-start latency under xdist:
+    # the timeout must fire after the grandchild PID is observable, otherwise
+    # the probe races the very timeout whose teardown behavior it is testing.
+    spawner = spawn_grandchild_command(pid_file).timeout(2.0)
     downstream = Command(PY, ["-c", "import sys; sys.stdin.read()"])
     pipe = spawner | downstream
 

@@ -456,6 +456,13 @@ class ProcessStdin:
 
     async def write(self, data: ReadableBuffer) -> None: ...
     async def write_line(self, line: str) -> None: ...
+    async def send_control(self, control: str) -> None:
+        """Write one mapped control byte, e.g. ``"c"`` -> Ctrl-C (``\\x03``).
+
+        This writes a byte to the child's stdin pipe, not a terminal signal;
+        real SIGINT/SIGTSTP delivery requires a pseudoterminal.
+        """
+
     async def flush(self) -> None: ...
     async def close(self) -> None: ...
 

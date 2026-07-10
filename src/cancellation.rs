@@ -5,11 +5,14 @@ use processkit::CancellationToken as PkCancellationToken;
 use pyo3::prelude::*;
 
 /// A cancel switch: fire it to tear down every run wired to it (via
-/// `Command.cancel_on()`) — the whole process tree, surfacing `Cancelled`.
-/// Cheap to clone/share: every clone (and every `child_token()`) refers to
-/// the same underlying cancellation state, so cancelling any one of them
-/// cancels them all. A cancelled token stays cancelled forever — never call
-/// this to mean "pause" (use `ProcessGroup.suspend()`/`resume()` for that).
+/// `Command.cancel_on()`), surfacing `Cancelled`. Cheap to clone/share: every
+/// clone refers to the same underlying state, so cancelling any clone cancels
+/// every run wired to it. `child_token()` derives a separate, scoped token
+/// instead: it is cancelled automatically when this one is, but cancelling it
+/// back does NOT propagate to this token or to its other children —
+/// cancellation only flows parent-to-child, never child-to-parent or between
+/// siblings. A cancelled token stays cancelled forever — never call this to
+/// mean "pause" (use `ProcessGroup.suspend()`/`resume()` for that).
 #[pyclass(name = "CancellationToken", module = "processkit")]
 pub(crate) struct PyCancellationToken {
     pub(crate) inner: PkCancellationToken,

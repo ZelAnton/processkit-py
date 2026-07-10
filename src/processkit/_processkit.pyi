@@ -347,13 +347,21 @@ class CancellationToken:
     """A cancel switch: fire it to tear down every run wired to it via
     `Command.cancel_on()` / `CliClient`'s `default_cancel_on=` /
     `Pipeline.cancel_on()` — surfacing `Cancelled`. Cheap to clone/share:
-    every clone and every `child_token()` refers to the same underlying
-    cancellation state. A cancelled token stays cancelled forever."""
+    every clone refers to the same underlying state, so cancelling any clone
+    cancels every run wired to it. A cancelled token stays cancelled forever.
+
+    `child_token()` derives a separate, scoped token: it is cancelled
+    automatically when this one is, but cancelling it back does NOT
+    propagate to this token or to its other children — cancellation only
+    flows parent-to-child, never child-to-parent or between siblings."""
 
     def __init__(self) -> None: ...
     def cancel(self) -> None: ...
     def is_cancelled(self) -> bool: ...
-    def child_token(self) -> CancellationToken: ...
+    def child_token(self) -> CancellationToken:
+        """A new token that is cancelled automatically when this one is, but
+        can also be cancelled independently — cancelling the child does not
+        affect this token or its other children."""
     def __repr__(self) -> str: ...
 
 @final

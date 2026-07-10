@@ -1679,9 +1679,7 @@ def test_process_result_pickle_refusal_is_config_independent() -> None:
     # the contract ("ProcessResult is not picklable") is simple and total, not a
     # per-instance guess that would surprise callers.
     plain = Command(PY, ["-c", "print('plain')"]).output()
-    customized = (
-        Command(PY, ["-c", "import sys; sys.exit(3)"]).success_codes([0, 3]).output()
-    )
+    customized = Command(PY, ["-c", "import sys; sys.exit(3)"]).success_codes([0, 3]).output()
     for result in (plain, customized):
         with pytest.raises(TypeError, match="ProcessResult cannot be pickled"):
             pickle.dumps(result)

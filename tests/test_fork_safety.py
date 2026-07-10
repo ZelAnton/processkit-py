@@ -126,7 +126,13 @@ async def _use_async():
 
 
 asyncio.run(_use_async())
-print("OK")
+
+# `os._exit()` (used throughout this driver to avoid post-fork interpreter
+# cleanup) skips the atexit stdout flush, and under `capture_output=True`
+# this stdout is a pipe — block-buffered, not line-buffered — so the success
+# marker must be flushed explicitly or it is silently dropped while the exit
+# code still reads 0. Flush before exiting so the parent test observes "OK".
+print("OK", flush=True)
 os._exit(0)
 """
 
@@ -163,4 +169,11 @@ def test_use_fork_use_refuses_without_hanging_or_orphaning(tmp_path: pathlib.Pat
         f"fork-safety driver failed (code {result.returncode}); "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
-    assert result.stdout.strip().splitlines()[-1] == "OK"
+    # Use a slice (`[-1:]`) rather than an index (`[-1]`) so an unexpectedly
+    # empty stdout fails as a clear, informative assertion — not a bare
+    # IndexError that hides what the driver actually did.
+    tail = result.stdout.strip().splitlines()[-1:]
+    assert tail == ["OK"], (
+        f"fork-safety driver did not confirm success with a trailing 'OK'; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )

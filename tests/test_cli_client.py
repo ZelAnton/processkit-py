@@ -252,7 +252,9 @@ _ASYNC_VERBS = ["arun", "aoutput", "aoutput_bytes", "aexit_code", "aprobe"]
 @pytest.mark.parametrize("verb", _SYNC_VERBS)
 def test_cli_client_default_env_fn_raise_aborts_sync_verb_before_spawn(verb: str) -> None:
     runner = RecordingRunner.replying(Reply.ok("should-not-run"))
-    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    # A resolver that raises (its float-typed body never actually returns) — the
+    # deliberate wrong shape is what exercises the fail-closed abort.
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)  # type: ignore[dict-item, return-value]
     # The resolver's own exception reaches the caller unchanged (not swallowed,
     # not remapped) — its cause is preserved.
     with pytest.raises(ZeroDivisionError):
@@ -263,7 +265,9 @@ def test_cli_client_default_env_fn_raise_aborts_sync_verb_before_spawn(verb: str
 @pytest.mark.parametrize("verb", _ASYNC_VERBS)
 def test_cli_client_default_env_fn_raise_aborts_async_verb_before_spawn(verb: str) -> None:
     runner = RecordingRunner.replying(Reply.ok("should-not-run"))
-    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    # Deliberately-raising resolver (float-typed body, never returns); see the
+    # sync twin above.
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)  # type: ignore[dict-item, return-value]
 
     async def scenario() -> None:
         with pytest.raises(ZeroDivisionError):
@@ -277,7 +281,8 @@ def test_cli_client_default_env_fn_raise_aborts_command_build() -> None:
     # `command()` applies the client's defaults (resolving every default_env_fn),
     # so it is on the failing path too — same fail-closed behaviour as the verbs.
     runner = RecordingRunner.replying(Reply.ok("should-not-run"))
-    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    # Deliberately-raising resolver (float-typed body, never returns).
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)  # type: ignore[dict-item, return-value]
     with pytest.raises(ZeroDivisionError):
         client.command(["--version"])
     assert len(runner.calls()) == 0
@@ -287,7 +292,7 @@ def test_cli_client_default_env_fn_non_str_result_aborts_before_spawn() -> None:
     # A non-`str` result is just as fail-closed as a raise: the failed `str`
     # conversion surfaces as a `TypeError`, before the runner is reached.
     runner = RecordingRunner.replying(Reply.ok("should-not-run"))
-    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1}, runner=runner)  # type: ignore[dict-item]  # deliberately non-str to exercise the fail-closed conversion
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1}, runner=runner)  # type: ignore[dict-item, return-value]  # deliberately non-str to exercise the fail-closed conversion
     with pytest.raises(TypeError):
         client.run(["--version"])
     assert len(runner.calls()) == 0
@@ -333,7 +338,9 @@ def test_cli_client_default_env_fn_failure_is_skipped_when_key_already_set() -> 
     # whose value it does not supply. The explicit value wins and the runner is
     # invoked normally.
     runner = RecordingRunner.replying(Reply.ok(""))
-    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    # Deliberately-raising resolver (float-typed body, never returns); here its
+    # key is already set, so it must never even run.
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)  # type: ignore[dict-item, return-value]
     cmd = Command(NO_SUCH_PROGRAM, ["--version"]).env("PK_TOKEN", "explicit")
     client.run(cmd)
     assert runner.only_call().env_is("PK_TOKEN", "explicit")

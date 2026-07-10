@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Changed
+-
+
+### Fixed
+-
+
+## [1.2.2] - 2026-07-10
+
+### Added
+-
+
+### Changed
 - `ProcessResult` and `SupervisionOutcome` are no longer picklable — pickling
   either now raises `TypeError` (they were advertised as picklable in 1.2.0).
   Their equality is the underlying `processkit` crate's own comparison, which
@@ -897,7 +908,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/ZelAnton/processkit-py/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/ZelAnton/processkit-py/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/ZelAnton/processkit-py/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/ZelAnton/processkit-py/compare/v1.1.0...v1.1.1

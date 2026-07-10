@@ -62,9 +62,65 @@ thread_local! {
     /// defaults) picks it up and raises it, aborting the call before the runner is
     /// ever reached. Thread-local, not a shared cell on the client: the resolvers
     /// for one build all run on one thread, so the capture-then-read hand-off can
-    /// never interleave with a concurrent build on another thread. Empty between
-    /// builds — every `build_command` takes the slot before returning.
+    /// never interleave with a concurrent build on *another* thread.
+    ///
+    /// The slot is *not* owned by a single build, though: a resolver may itself
+    /// make a nested processkit call on the same thread (the classic "read a
+    /// secret via a child `CliClient.run()`" pattern), and that nested
+    /// `build_command` re-enters this slot while the outer build's error is still
+    /// parked. To stay correct under that reentrancy, [`build_command`] brackets
+    /// its build with [`ResolverErrorScope`], which saves and clears the slot on
+    /// entry and restores it on exit — so a nested build gets a fresh slot for its
+    /// own resolvers and never observes, consumes, or clobbers the outer build's
+    /// parked error (which would silently revert the outer call to fail-open).
+    /// Empty between top-level builds.
     static RESOLVER_ERROR: RefCell<Option<PyErr>> = const { RefCell::new(None) };
+}
+
+/// RAII bracket that makes the [`RESOLVER_ERROR`] hand-off reentrancy-safe. A
+/// `default_env_fn` resolver can trigger a *nested* [`build_command`] on the same
+/// thread (e.g. it fetches a secret via a child `CliClient.run()`); without a
+/// bracket, that nested build's entry-clear would wipe an outer build's already-
+/// parked error, so the outer `build_command` would read an empty slot and
+/// silently revert to the fail-open (blank-credential) behaviour this whole
+/// mechanism exists to prevent. On construction the guard *takes* (saves and
+/// clears) whatever the slot holds — an outer build's parked error if this build
+/// is nested, or `None` at the top level — giving this build a fresh, empty slot;
+/// on drop it puts that saved value back, so an outer build still finds its error
+/// waiting. Restoring in `Drop` also keeps the slot consistent if the build
+/// unwinds.
+struct ResolverErrorScope {
+    /// The slot's contents from before this build, restored on drop. Held in an
+    /// `Option` only so `Drop` (which gets `&mut self`) can move the `PyErr` back
+    /// out on restore.
+    outer: Option<PyErr>,
+}
+
+impl ResolverErrorScope {
+    /// Enter a build: save and clear the slot, leaving it empty for this build's
+    /// own resolvers to park into.
+    fn enter() -> Self {
+        Self {
+            outer: RESOLVER_ERROR.with(|slot| slot.borrow_mut().take()),
+        }
+    }
+
+    /// Take this build's own parked resolver error, if any. Leaves the slot empty
+    /// so the `Drop` restore puts the *outer* build's saved error back.
+    fn take_error(&self) -> Option<PyErr> {
+        RESOLVER_ERROR.with(|slot| slot.borrow_mut().take())
+    }
+}
+
+impl Drop for ResolverErrorScope {
+    fn drop(&mut self) {
+        // Restore the outer build's parked error (or `None` at the top level),
+        // undoing the `take` in `enter` — so a nested build leaves the outer
+        // build's slot exactly as it found it.
+        RESOLVER_ERROR.with(|slot| {
+            *slot.borrow_mut() = self.outer.take();
+        });
+    }
 }
 
 /// Wrap a Python zero-arg callable as a `CliClient.default_env_fn` resolver.
@@ -125,21 +181,28 @@ fn make_env_resolver(callback: Py<PyAny>) -> impl Fn() -> String + Send + Sync +
 /// spawned. The build is synchronous (no `await` between the resolvers and the
 /// read), so the whole capture-then-read hand-off stays on one thread — the
 /// caller's for the sync verbs and `command()`, the polling worker for the async
-/// verbs — and never interleaves with another build.
+/// verbs — and never interleaves with another build on a *different* thread.
+///
+/// A resolver can, however, re-enter `build_command` on the *same* thread (it
+/// makes a nested processkit call — e.g. reads a secret via a child
+/// `CliClient.run()`). [`ResolverErrorScope`] brackets the build so that nested
+/// build gets its own fresh slot and neither consumes nor clobbers this build's
+/// parked error; without it, the nested build would clear an outer parked error
+/// and the outer call would silently revert to fail-open.
 fn build_command(
     client: &PkCliClient<Arc<dyn ProcessRunner + Send + Sync>>,
     call: ClientCall,
 ) -> PyResult<PkCommand> {
-    // Defensive clear (the take below empties the slot after every build, so it
-    // is normally already `None`), then build — which invokes the resolvers.
-    RESOLVER_ERROR.with(|slot| {
-        slot.borrow_mut().take();
-    });
+    // Save + clear the slot for the duration of this build (restored on drop), so
+    // the capture-then-read hand-off is reentrancy-safe: a nested build triggered
+    // by a resolver on this thread cannot see or wipe an outer build's parked
+    // error. The build itself invokes the resolvers.
+    let scope = ResolverErrorScope::enter();
     let command = match call {
         ClientCall::Args(args) => client.command(args),
         ClientCall::Cmd(cmd) => (*cmd).into_command(client),
     };
-    match RESOLVER_ERROR.with(|slot| slot.borrow_mut().take()) {
+    match scope.take_error() {
         Some(err) => Err(err),
         None => Ok(command),
     }

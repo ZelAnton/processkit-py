@@ -339,6 +339,56 @@ def test_cli_client_default_env_fn_failure_is_skipped_when_key_already_set() -> 
     assert runner.only_call().env_is("PK_TOKEN", "explicit")
 
 
+def test_cli_client_default_env_fn_failure_survives_a_reentrant_nested_build() -> None:
+    # R-01 regression: the fail-closed hand-off must be reentrancy-safe. When one
+    # resolver has already parked a failure and a *later* resolver performs a
+    # NESTED processkit build on the same thread (the classic "fetch a secret via
+    # a child CliClient.run()" pattern), that nested build must not clear the outer
+    # resolver's parked error — otherwise the outer call silently reverts to the
+    # fail-open (blank-credential) behaviour this whole feature exists to prevent.
+    #
+    # `default_env_fn` is extracted into a Rust HashMap, so the *registration*
+    # order of the two resolvers is not deterministic. To pin the "fails first,
+    # nested build second" ordering regardless of registration order, ONE resolver
+    # is shared by both keys and branches on its invocation count: whichever key
+    # the crate resolves first, that call raises (parks the error); the second call
+    # runs the nested build. The crate resolves the keys sequentially on one
+    # thread, so this ordering is exact.
+    inner_runner = RecordingRunner.replying(Reply.ok("secret-token"))
+    vault = CliClient(NO_SUCH_PROGRAM, runner=inner_runner)
+    outer_runner = RecordingRunner.replying(Reply.ok("should-not-run"))
+
+    invocations = 0
+
+    def resolver() -> str:
+        nonlocal invocations
+        invocations += 1
+        if invocations == 1:
+            # Earliest-resolved key: fail, parking the real cause for the outer
+            # build to raise.
+            raise RuntimeError("cannot resolve outer credential")
+        # Later-resolved key: a nested processkit build/run on this same thread,
+        # which re-enters the shared RESOLVER_ERROR slot.
+        return vault.run(["read", "token"])
+
+    client = CliClient(
+        NO_SUCH_PROGRAM,
+        default_env_fn={"OUTER_CRED_A": resolver, "OUTER_CRED_B": resolver},
+        runner=outer_runner,
+    )
+
+    # Fail-closed is preserved: the outer build surfaces the real resolver failure
+    # (its cause intact), not a lost error or a fail-open success.
+    with pytest.raises(RuntimeError, match="cannot resolve outer credential"):
+        client.run(["push"])
+    # The outer command never spawned...
+    assert len(outer_runner.calls()) == 0
+    # ...and the test genuinely exercised the reentrant path: the nested build ran
+    # to completion (its own runner was invoked), yet did not swallow the outer
+    # error.
+    assert len(inner_runner.calls()) == 1
+
+
 # --- default_cancel_on (C7 batch B) ------------------------------------------
 
 

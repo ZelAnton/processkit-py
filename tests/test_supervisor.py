@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import pickle
-import sys
 
 import pytest
 
@@ -77,19 +76,11 @@ def test_supervisor_run_is_once() -> None:
 
 def test_sync_verb_in_stop_when_surfaces_clear_error() -> None:
     # Calling a synchronous verb from inside the supervisor's stop_when predicate
-    # used to re-enter the tokio runtime and PANIC ("Cannot start a runtime from
-    # within a runtime"); the panic was swallowed into "do not stop", so the
-    # predicate silently never fired. It must now surface a clear `ProcessError`.
-    captured: list[BaseException] = []
-
-    def hook(unraisable: object) -> None:
-        exc = getattr(unraisable, "exc_value", None)
-        if isinstance(exc, BaseException):
-            captured.append(exc)
-
-    old_hook = sys.unraisablehook
-    sys.unraisablehook = hook
-    try:
+    # re-enters the tokio runtime; the reentrancy guard raises a clear
+    # `ProcessError`. That error must now abort supervision and reach the caller
+    # — no longer swallowed into "do not stop" (and merely reported to the
+    # unraisable hook) while the loop kept restarting.
+    with pytest.raises(ProcessError, match="async context"):
         Supervisor(
             Command(PY, ["-c", "import sys; sys.exit(1)"]),
             restart="always",
@@ -98,14 +89,6 @@ def test_sync_verb_in_stop_when_surfaces_clear_error() -> None:
             backoff_initial=0.001,
             stop_when=lambda r: Command(PY, ["-c", "pass"]).probe(),  # a SYNC verb
         ).run()
-    finally:
-        sys.unraisablehook = old_hook
-
-    assert captured, "the predicate's error should reach the unraisable hook"
-    assert all(isinstance(e, ProcessError) for e in captured), (
-        f"expected ProcessError, got {[type(e).__name__ for e in captured]}"
-    )
-    assert "async context" in str(captured[0]), str(captured[0])
 
 
 def test_reentrant_run_call_leaves_the_target_supervisor_usable() -> None:
@@ -129,6 +112,114 @@ def test_reentrant_run_call_leaves_the_target_supervisor_usable() -> None:
     assert outcome.stopped == "predicate"
     # `target` must still be usable after the failed reentrant call.
     assert target.run().final_result.is_success
+
+
+def test_supervisor_stop_when_raising_predicate_propagates_and_stops() -> None:
+    # A stop_when predicate that raises aborts supervision with that error instead
+    # of being swallowed into "do not stop" and looping to max_restarts. It is
+    # consulted once (after the first run) and stops there — no further restarts,
+    # no background work.
+    runs: list[int] = []
+
+    def stop(_result: object) -> bool:
+        runs.append(1)
+        raise ValueError("predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("x"))
+    with pytest.raises(ValueError, match="predicate exploded"):
+        Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            # Safety net: a broken binding that swallowed the error would loop to
+            # here (and fail the count assertion) rather than hang the suite.
+            max_restarts=5,
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            stop_when=stop,
+            runner=runner,
+        ).run()
+
+    assert runs == [1], "predicate consulted once then stopped — no restart loop"
+
+
+def test_supervisor_stop_when_non_bool_predicate_propagates() -> None:
+    # A non-bool return is as undecidable as a raise: it must surface a TypeError,
+    # not be coerced to "do not stop".
+    def stop(_result: object) -> bool:
+        return "not a bool"  # type: ignore[return-value]
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("x"))
+    with pytest.raises(TypeError):
+        Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            max_restarts=3,
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            stop_when=stop,
+            runner=runner,
+        ).run()
+
+
+def test_supervisor_arun_stop_when_raising_predicate_propagates() -> None:
+    # The async supervision loop propagates a raising stop_when just like the sync
+    # loop — the error is not confined to the unraisable hook.
+    def stop(_result: object) -> bool:
+        raise RuntimeError("async predicate bug")
+
+    async def scenario() -> None:
+        runner = ScriptedRunner()
+        runner.fallback(Reply.ok("x"))
+        await Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            max_restarts=3,
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            stop_when=stop,
+            runner=runner,
+        ).arun()
+
+    with pytest.raises(RuntimeError, match="async predicate bug"):
+        asyncio.run(scenario())
+
+
+def test_concurrent_supervisions_do_not_mix_predicate_errors() -> None:
+    # Two-plus supervisions run concurrently, each with a stop_when that raises a
+    # DISTINCT error. Each `arun()` must surface its OWN error, never a sibling's
+    # — per-supervisor error slots keep concurrent runs isolated.
+    async def one(tag: str) -> str:
+        def stop(_result: object) -> bool:
+            raise ValueError(tag)  # closes over this run's own tag
+
+        runner = ScriptedRunner()
+        runner.fallback(Reply.ok("x"))
+        sup = Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            max_restarts=3,
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            stop_when=stop,
+            runner=runner,
+        )
+        try:
+            await sup.arun()
+        except ValueError as exc:
+            return str(exc)
+        return "no error"
+
+    async def scenario() -> list[str]:
+        return await asyncio.gather(*(one(f"sup-{i}") for i in range(8)))
+
+    results = sorted(asyncio.run(scenario()))
+    assert results == sorted(f"sup-{i}" for i in range(8))
 
 
 # --- give_up_when (permanent-failure classifier) ----------------------------
@@ -222,42 +313,54 @@ def test_supervisor_give_up_when_classifies_a_failed_spawn() -> None:
     assert isinstance(seen[0], ProcessNotFound)
 
 
-def test_supervisor_give_up_when_raising_classifier_surfaces_via_unraisable() -> None:
-    # A classifier that raises (or returns non-bool) must NOT silently give up,
-    # nor crash the run: it reads as "not permanent" (keep restarting) and the
-    # error reaches the unraisable hook, mirroring `stop_when`'s own contract.
-    captured: list[BaseException] = []
-
-    def hook(unraisable: object) -> None:
-        exc = getattr(unraisable, "exc_value", None)
-        if isinstance(exc, BaseException):
-            captured.append(exc)
+def test_supervisor_give_up_when_raising_classifier_propagates_and_stops() -> None:
+    # A classifier that raises must NOT silently keep restarting: it aborts
+    # supervision with that error, consulted exactly once (on the first crash) —
+    # no restart loop, mirroring `stop_when`'s own contract.
+    seen: list[int] = []
 
     def boom(_attempt: object) -> bool:
+        seen.append(1)
         raise RuntimeError("classifier bug")
 
     runner = ScriptedRunner()
     runner.fallback(Reply.fail(7, "crash"))
-    old_hook = sys.unraisablehook
-    sys.unraisablehook = hook
-    try:
-        outcome = Supervisor(
+    with pytest.raises(RuntimeError, match="classifier bug"):
+        Supervisor(
             Command(NO_SUCH_PROGRAM),
             restart="always",
-            max_restarts=1,
+            # Safety net (see the crash test): a broken binding would loop to here
+            # rather than hang the suite.
+            max_restarts=5,
             backoff_initial=0.001,
             backoff_factor=1.0,
             jitter=False,
             give_up_when=boom,
             runner=runner,
         ).run()
-    finally:
-        sys.unraisablehook = old_hook
 
-    # Ran to exhaustion instead of giving up on the raising classifier.
-    assert outcome.stopped == "restarts_exhausted"
-    assert captured, "the classifier's error should reach the unraisable hook"
-    assert any(isinstance(e, RuntimeError) for e in captured)
+    assert seen == [1], "classifier consulted once then stopped — no restart loop"
+
+
+def test_supervisor_give_up_when_non_bool_classifier_propagates() -> None:
+    # A non-bool classifier verdict is undecidable ground for restarting — it must
+    # surface a TypeError rather than read as "not permanent".
+    def give_up(_attempt: object) -> bool:
+        return 1  # type: ignore[return-value]
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.fail(7, "crash"))
+    with pytest.raises(TypeError):
+        Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="always",
+            max_restarts=3,
+            backoff_initial=0.001,
+            backoff_factor=1.0,
+            jitter=False,
+            give_up_when=give_up,
+            runner=runner,
+        ).run()
 
 
 # --- backoff validation -----------------------------------------------------

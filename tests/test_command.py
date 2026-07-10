@@ -1037,9 +1037,9 @@ def test_timeout_signal_rejects_bool() -> None:
     # that delivers nothing. Rejected with TypeError before the number path, on
     # every platform.
     with pytest.raises(TypeError):
-        Command("x").timeout_signal(True)  # type: ignore[arg-type]
+        Command("x").timeout_signal(True)
     with pytest.raises(TypeError):
-        Command("x").timeout_signal(False)  # type: ignore[arg-type]
+        Command("x").timeout_signal(False)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")

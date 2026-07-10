@@ -393,9 +393,9 @@ def test_group_signal_rejects_bool() -> None:
     # platform regardless of signal-delivery support.
     with ProcessGroup() as group:
         with pytest.raises(TypeError):
-            group.signal(True)  # type: ignore[arg-type]
+            group.signal(True)
         with pytest.raises(TypeError):
-            group.signal(False)  # type: ignore[arg-type]
+            group.signal(False)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")

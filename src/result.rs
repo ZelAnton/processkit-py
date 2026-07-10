@@ -10,23 +10,46 @@
 //! `Duration`, `bool`, text/bytes; no floats are *stored*, only derived as
 //! `f64` getters), so hashing is semantically sound.
 //!
-//! Pickle is a harder call. `processkit::ProcessResult`/`Outcome`/`Finished`/
-//! `RunProfile`/`SupervisionOutcome` are all `#[non_exhaustive]` (or, for
-//! `ProcessResult`, plain-field-private) with **no public constructor** —
-//! `ProcessResult::new` is `pub(crate)`, and none of the others expose a
-//! builder either. So this binding cannot fabricate one from arbitrary
-//! unpickled data by calling into the crate directly; the *only*
-//! crate-sanctioned way to synthesize one outside a real run is to drive its
-//! `testing::ScriptedRunner` double (the same mechanism the crate's own
-//! cassette replay uses) through one in-memory, no-subprocess "run" — see
-//! `scripted_process_result` below. `ProcessResult`/`Outcome`/`Finished`/
-//! `SupervisionOutcome` (in `supervisor.rs`) use it and support pickle.
-//! `BytesResult` and `RunProfile` explicitly do not (see their `__reduce__`):
-//! `BytesResult`'s raw stdout may not be valid UTF-8 and `Reply` is a text-only
-//! channel; `RunProfile` reports genuine OS resource-sampling telemetry
-//! (`cpu_time_seconds`/`peak_memory_bytes`/`samples`) that has no synthesis
-//! path outside an actually-monitored run. Both raise a clear `TypeError`
-//! rather than failing silently/confusingly.
+//! Pickle is a harder call, and the answer differs per type. All of
+//! `processkit::ProcessResult`/`Outcome`/`Finished`/`RunProfile`/
+//! `SupervisionOutcome` are `#[non_exhaustive]` (or, for `ProcessResult`,
+//! plain-field-private) with **no public constructor** — `ProcessResult::new`
+//! is `pub(crate)`, and none of the others expose a builder either. So this
+//! binding cannot fabricate one from arbitrary unpickled data by calling into
+//! the crate directly; the *only* crate-sanctioned way to synthesize one
+//! outside a real run is to drive its `testing::ScriptedRunner` double (the
+//! same mechanism the crate's own cassette replay uses) through one in-memory,
+//! no-subprocess "run" — see `scripted_outcome` below.
+//!
+//! That channel round-trips **`Outcome` and `Finished` exactly**: an `Outcome`
+//! is fully determined by `(code, signal, timed_out)` (all Python-visible), and
+//! a `Finished` adds only its `stderr` (carried through verbatim) — so a
+//! reconstructed value compares `==` its original. They support pickle.
+//!
+//! It does **not** round-trip `ProcessResult` (nor, therefore,
+//! `SupervisionOutcome` in `supervisor.rs`, whose identity includes a
+//! `ProcessResult` `final_result`). `ProcessResult`'s equality — the crate's
+//! own `PartialEq`, which `__eq__` delegates to — compares two fields the crate
+//! exposes through **no accessor**: the configured `timeout` and the accepted
+//! `ok_codes`. A `__reduce__` holding only `&self` cannot read them to
+//! serialize them, and a scripted reconstruction would default them
+//! (`timeout=None`, `ok_codes=[0]`), so a result from a command that set
+//! `.timeout(...)` or `.success_codes(...)` would unpickle **unequal** to its
+//! original (same visible fields and hash, but `!=`). These results are also
+//! produced deep inside the crate (group/batch/supervisor/CLI-client runs)
+//! where the binding never sees the originating command's config to stash a
+//! reconstruction seed, so there is no faithful channel to add either. Rather
+//! than hand back a value that silently breaks the pickle round-trip invariant,
+//! `ProcessResult`/`SupervisionOutcome` refuse to pickle — the same explicit
+//! `TypeError` `BytesResult`/`RunProfile` raise. Pickle `result.outcome` (an
+//! `Outcome`), or persist the fields you need, to cross a process boundary.
+//!
+//! `BytesResult` and `RunProfile` likewise do not pickle (see their
+//! `__reduce__`): `BytesResult`'s raw stdout may not be valid UTF-8 and `Reply`
+//! is a text-only channel; `RunProfile` reports genuine OS resource-sampling
+//! telemetry (`cpu_time_seconds`/`peak_memory_bytes`/`samples`) with no
+//! synthesis path outside an actually-monitored run. Every non-picklable type
+//! raises a clear `TypeError` rather than failing silently/confusingly.
 
 use std::hash::{Hash, Hasher};
 
@@ -44,79 +67,34 @@ use pyo3::types::PyBytes;
 
 use crate::runtime::block_on;
 
-/// Reconstruct a genuine `processkit::ProcessResult<String>` for unpickling —
-/// see the module doc above for *why* this goes through `ScriptedRunner`
-/// rather than a direct constructor.
-///
-/// `is_success` picks a matching synthetic `ok_codes`: the crate exposes no
-/// accessor for the *original* `ok_codes`/`timeout`, so those two
-/// Python-invisible fields are approximated (reproducing `is_success`
-/// faithfully) rather than reproduced exactly. Consequence: unpickling a
-/// `ProcessResult` whose command used a customized `ok_codes()`/`timeout()`
-/// yields a value equal in every *observable* way, but the crate's own
-/// `PartialEq` also compares the (here-approximated) `ok_codes`/`timeout`
-/// fields directly, so `unpickled == original` is only guaranteed for the
-/// common default-`ok_codes`, no-configured-`timeout` case.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn scripted_process_result(
-    py: Python<'_>,
-    program: String,
-    stdout: String,
-    stderr: String,
-    code: Option<i32>,
-    signal: Option<i32>,
-    timed_out: bool,
-    is_success: bool,
-) -> PyResult<PkProcessResult<String>> {
-    let reply = if timed_out {
-        PkReply::timeout()
-    } else if let Some(code) = code {
-        PkReply::fail(code, String::new())
-    } else {
-        PkReply::signalled(signal)
-    }
-    .with_stdout(stdout)
-    .with_stderr(stderr);
-
-    let mut command = PkCommand::new(&program);
-    command = if is_success {
-        // `is_success` can only be true for an `Exited` outcome, so `code` is
-        // `Some` here.
-        command.ok_codes(vec![code.unwrap_or(0)])
-    } else if code == Some(0) {
-        // Force a mismatch: the crate default `ok_codes` is `[0]`, which would
-        // otherwise wrongly recompute `is_success = true` for an original
-        // result that failed on exit code 0 via a custom, 0-excluding
-        // `ok_codes()`.
-        command.ok_codes(vec![i32::MIN])
-    } else {
-        command
-    };
-
-    let runner = PkScriptedRunner::new().fallback(reply);
-    block_on(py, async move { runner.output_string(&command).await })
-}
-
 /// Reconstruct a genuine `processkit::Outcome` for unpickling `Outcome`/
-/// `Finished` — see `scripted_process_result`; only the outcome half of a
-/// scripted result is needed here; program/stdout/stderr/`ok_codes` are
-/// irrelevant so a synthetic (unobserved) `is_success` is fine.
+/// `Finished` — see the module doc above for *why* this goes through
+/// `ScriptedRunner` rather than a direct constructor (the crate exposes no
+/// public `Outcome` constructor).
+///
+/// An `Outcome` is fully determined by its `(code, signal, timed_out)` triple,
+/// all Python-visible, so this reconstruction is **exact**: the resulting
+/// `Outcome` compares `==` the original. (This is why `Outcome`/`Finished`
+/// pickle while `ProcessResult` — whose identity also spans the accessor-less
+/// `timeout`/`ok_codes` — does not; see the module doc.) The result's
+/// program/stdout/stderr/`ok_codes` are irrelevant to the `Outcome` it yields,
+/// so a bare command and empty streams suffice.
 fn scripted_outcome(
     py: Python<'_>,
     code: Option<i32>,
     signal: Option<i32>,
     timed_out: bool,
 ) -> PyResult<PkOutcome> {
-    let result = scripted_process_result(
-        py,
-        String::new(),
-        String::new(),
-        String::new(),
-        code,
-        signal,
-        timed_out,
-        false,
-    )?;
+    let reply = if timed_out {
+        PkReply::timeout()
+    } else if let Some(code) = code {
+        PkReply::fail(code, String::new())
+    } else {
+        PkReply::signalled(signal)
+    };
+    let command = PkCommand::new("");
+    let runner = PkScriptedRunner::new().fallback(reply);
+    let result = block_on(py, async move { runner.output_string(&command).await })?;
     Ok(result.outcome())
 }
 
@@ -385,52 +363,28 @@ impl PyProcessResult {
         hasher.finish()
     }
 
-    /// Pickle support: see the module doc for why this goes through
-    /// `scripted_process_result` rather than a direct constructor, and the
-    /// `ok_codes`/`timeout` approximation caveat that follows from it.
-    #[allow(clippy::type_complexity)]
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(
-        Py<PyAny>,
-        (String, String, String, Option<i32>, Option<i32>, bool, bool),
-    )> {
-        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
-        Ok((
-            factory,
-            (
-                self.inner.program().to_string(),
-                self.inner.stdout().to_string(),
-                self.inner.stderr().to_string(),
-                self.inner.code(),
-                self.inner.signal(),
-                self.inner.timed_out(),
-                self.inner.is_success(),
-            ),
+    /// Unlike `Outcome`/`Finished`, `ProcessResult` is **not** picklable. Its
+    /// equality — the crate's own `ProcessResult` `PartialEq`, which `__eq__`
+    /// delegates to — compares the configured `timeout` and the accepted
+    /// `ok_codes`, and `processkit` exposes no accessor for either. A
+    /// `__reduce__` holding only `&self` cannot read them to serialize them, and
+    /// the scripted reconstruction channel would default them
+    /// (`timeout=None`/`ok_codes=[0]`), so a result from a command that set
+    /// `.timeout(...)`/`.success_codes(...)` would unpickle **unequal** to its
+    /// original (same visible fields and hash, but `!=`). Refuse loudly rather
+    /// than silently break the round-trip invariant — the same call
+    /// `BytesResult`/`RunProfile` make. Pickle `result.outcome` (an `Outcome`,
+    /// which round-trips exactly), or persist `result.stdout`/`.stderr`/`.code`
+    /// yourself, to cross a process boundary.
+    fn __reduce__(&self) -> PyResult<()> {
+        Err(PyTypeError::new_err(
+            "ProcessResult cannot be pickled: its equality (the processkit crate's own \
+             ProcessResult comparison) also spans the configured timeout and accepted \
+             success_codes, which processkit exposes no accessor to read back, so a pickled \
+             result would unpickle unequal to its original for any command that set .timeout(...) \
+             or .success_codes(...); pickle result.outcome (an Outcome, which round-trips \
+             exactly), or persist result.stdout/.stderr/.code yourself",
         ))
-    }
-
-    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod
-    /// rather than a module-level function, so it rides along with the class
-    /// in the stub/API-surface checks instead of needing its own module-level
-    /// stub entry (see the module doc for what it reconstructs and why).
-    #[staticmethod]
-    #[allow(clippy::too_many_arguments)]
-    fn _unpickle(
-        py: Python<'_>,
-        program: String,
-        stdout: String,
-        stderr: String,
-        code: Option<i32>,
-        signal: Option<i32>,
-        timed_out: bool,
-        is_success: bool,
-    ) -> PyResult<Self> {
-        let inner = scripted_process_result(
-            py, program, stdout, stderr, code, signal, timed_out, is_success,
-        )?;
-        Ok(Self { inner })
     }
 }
 
@@ -672,7 +626,10 @@ impl PyOutcome {
         ))
     }
 
-    /// `__reduce__`'s factory — see `ProcessResult._unpickle`'s doc.
+    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod
+    /// rather than a module-level function, so it rides along with the class in
+    /// the stub/API-surface checks instead of needing its own module-level stub
+    /// entry. Reconstructs the `Outcome` via `scripted_outcome` (see its doc).
     #[staticmethod]
     fn _unpickle(
         py: Python<'_>,
@@ -840,7 +797,9 @@ impl PyFinished {
         ))
     }
 
-    /// `__reduce__`'s factory — see `ProcessResult._unpickle`'s doc.
+    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod, as
+    /// on `Outcome` (see `PyOutcome::_unpickle`). Reconstructs the `outcome` half
+    /// via `scripted_outcome`; `stderr` is carried through as-is.
     #[staticmethod]
     fn _unpickle(
         py: Python<'_>,

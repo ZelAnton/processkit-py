@@ -17,8 +17,9 @@ use processkit::Priority;
 use processkit::RetryPolicy;
 use processkit::Signal as PkSignal;
 use processkit::StdioMode;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBool;
 use tokio::io::AsyncWrite;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -486,15 +487,89 @@ fn parse_signal_name(name: &str) -> PyResult<PkSignal> {
     }
 }
 
+/// The highest raw signal number that is actually deliverable on the current
+/// Unix platform — the upper bound of the crate's documented `Other(1..=SIGRTMAX)`
+/// escape-hatch range, used to reject numbers that would otherwise be a silent
+/// no-op on the process-group backend.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn max_deliverable_signal() -> i32 {
+    // glibc/musl compute the real-time signal ceiling at runtime (a few low RT
+    // numbers are reserved for the C library / NPTL), so `SIGRTMAX` is a
+    // function, not a compile-time constant.
+    libc::SIGRTMAX()
+}
+
+/// macOS/BSD have no POSIX real-time signals in the `libc` binding; the highest
+/// standard signal is `SIGUSR2` (31) and `NSIG` is 32, so `1..=SIGUSR2` is the
+/// deliverable range. A conservative ceiling: a platform with extra high-numbered
+/// RT signals the `libc` crate doesn't name would reject them — an acceptable
+/// trade for a raw escape hatch whose portable alternative is a signal *name*.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn max_deliverable_signal() -> i32 {
+    libc::SIGUSR2
+}
+
+/// Validate a raw platform signal number and wrap it in the crate's
+/// `Signal::Other` escape hatch. On Unix the number must be a real, deliverable
+/// signal (`1..=SIGRTMAX`): `0` (the POSIX existence probe that delivers
+/// nothing), negatives, and out-of-range values are rejected up front rather
+/// than reaching the backend as a silent no-op (the process-group mechanism
+/// swallows the `EINVAL` a bad number would raise).
+#[cfg(unix)]
+fn validate_raw_signal(raw: i32) -> PyResult<PkSignal> {
+    let max = max_deliverable_signal();
+    if (1..=max).contains(&raw) {
+        Ok(PkSignal::Other(raw))
+    } else {
+        Err(PyValueError::new_err(format!(
+            "invalid signal number {raw}: a raw signal must be a real, deliverable \
+             signal in 1..={max} on this platform. 0 is the POSIX existence probe \
+             (kill(pid, 0)) that delivers nothing, and an out-of-range number is \
+             silently dropped by the process-group backend instead of erroring — \
+             either way the send would be a no-op. Pass a valid signal number, or \
+             a portable name: term, kill, int, hup, quit, usr1, usr2."
+        )))
+    }
+}
+
+/// On Windows a Job Object has no POSIX signals, so a raw number can never be
+/// delivered. Surface that immediately and consistently — the same `Unsupported`
+/// the crate raises at delivery time — from both `Command.timeout_signal` and
+/// `ProcessGroup.signal`, instead of storing a number that only fails much later
+/// when the timeout fires. The named `"kill"` still works: it takes the
+/// `parse_signal_name` path, not this one.
+#[cfg(not(unix))]
+fn validate_raw_signal(raw: i32) -> PyResult<PkSignal> {
+    Err(crate::errors::Unsupported::new_err(format!(
+        "raw signal number {raw} is not supported on this platform: a Job Object \
+         has no POSIX signals, so only the named signal \"kill\" (which maps to a \
+         Job Object terminate) is deliverable on Windows."
+    )))
+}
+
 /// Parse a signal argument that is either a portable name (see
 /// `parse_signal_name`) or a raw platform signal number — the crate's
-/// `Signal::Other(i32)` escape hatch, passed through verbatim (Unix only; a
-/// raw number is `Unsupported` on Windows like every non-`Kill` signal). An
-/// `int` (Python `bool` included, since `bool` is a Python `int` subtype) takes
-/// this path; anything else is extracted as a name string.
+/// `Signal::Other(i32)` escape hatch (Unix only; a raw number is `Unsupported`
+/// on Windows like every non-`Kill` signal). An `int` takes the raw-number path
+/// (validated by [`validate_raw_signal`]); anything else is extracted as a name
+/// string.
+///
+/// `bool` is rejected **before** the number path: it is a Python `int` subtype,
+/// so `True`/`False` would otherwise slip through as raw signals `1`/`0` — and
+/// raw `0` is the existence probe that delivers nothing, turning a boolean-config
+/// typo into a silent no-op send. A bool is never a meaningful signal, so this is
+/// a `TypeError`, not a value-range error.
 pub(crate) fn parse_signal(obj: &Bound<'_, PyAny>) -> PyResult<PkSignal> {
+    if obj.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(
+            "signal must be a name (str) or a raw signal number (int), not a bool: \
+             a bool is an int subtype that would silently become raw signal 1 (True) \
+             or 0 (False), and raw 0 delivers nothing. Pass an explicit signal number \
+             or a portable name (term, kill, int, hup, quit, usr1, usr2).",
+        ));
+    }
     if let Ok(raw) = obj.extract::<i32>() {
-        return Ok(PkSignal::Other(raw));
+        return validate_raw_signal(raw);
     }
     parse_signal_name(&obj.extract::<String>()?)
 }
@@ -695,25 +770,78 @@ mod tests {
         Python::initialize();
     }
 
+    #[cfg(unix)]
     #[test]
-    fn parse_signal_accepts_raw_number() {
+    fn parse_signal_accepts_valid_raw_number_on_unix() {
+        // 10 is a real, deliverable signal on every Unix (SIGUSR1 on Linux,
+        // SIGBUS on macOS) — inside `1..=SIGRTMAX` everywhere, so it passes
+        // validation and rides the `Signal::Other` escape hatch verbatim.
         ensure_python_initialized();
         Python::attach(|py| {
-            let obj = PyInt::new(py, 37i32).into_any();
-            assert_eq!(parse_signal(&obj).unwrap(), PkSignal::Other(37));
+            let obj = PyInt::new(py, 10i32).into_any();
+            assert_eq!(parse_signal(&obj).unwrap(), PkSignal::Other(10));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_signal_rejects_zero_on_unix() {
+        // Signal 0 is the POSIX existence probe — `kill(pid, 0)` delivers
+        // nothing, so a `0` send is a silent no-op, not a real signal.
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyInt::new(py, 0i32).into_any();
+            assert!(parse_signal(&obj).is_err());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_signal_rejects_negative_on_unix() {
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyInt::new(py, -1i32).into_any();
+            assert!(parse_signal(&obj).is_err());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_signal_rejects_out_of_range_on_unix() {
+        // Far above any real SIGRTMAX (64 on Linux, 31 on macOS): the
+        // process-group backend would silently drop it (EINVAL swallowed), so
+        // reject it up front instead of letting the send be a no-op.
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyInt::new(py, 100_000i32).into_any();
+            assert!(parse_signal(&obj).is_err());
+        });
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn parse_signal_rejects_raw_number_off_unix() {
+        // No POSIX signals on Windows — a raw number can never be delivered, so
+        // it is rejected immediately (only the named "kill" works there).
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyInt::new(py, 10i32).into_any();
+            assert!(parse_signal(&obj).is_err());
         });
     }
 
     #[test]
-    fn parse_signal_accepts_bool_as_int() {
-        // `bool` is a Python `int` subtype, so both booleans take the raw-number
-        // path rather than being extracted (and rejected) as signal names.
+    fn parse_signal_rejects_bool() {
+        // `bool` is a Python `int` subtype but is never a meaningful signal; it
+        // must be rejected before the raw-number path on every platform, so a
+        // `False`/`True` config typo cannot silently become the no-op existence
+        // probe (signal 0) or raw signal 1.
         ensure_python_initialized();
         Python::attach(|py| {
             let true_obj = PyBool::new(py, true).to_owned().into_any();
-            assert_eq!(parse_signal(&true_obj).unwrap(), PkSignal::Other(1));
+            assert!(parse_signal(&true_obj).is_err());
             let false_obj = PyBool::new(py, false).to_owned().into_any();
-            assert_eq!(parse_signal(&false_obj).unwrap(), PkSignal::Other(0));
+            assert!(parse_signal(&false_obj).is_err());
         });
     }
 

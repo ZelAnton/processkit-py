@@ -215,6 +215,13 @@ impl PyCommand {
     /// The signal sent first on a graceful timeout (default `term`): one of
     /// `term`/`kill`/`int`/`hup`/`quit`/`usr1`/`usr2`, or a raw platform signal
     /// number (Unix only — the crate's `Signal::Other` escape hatch).
+    ///
+    /// A raw number is validated as a real, deliverable signal: on Unix it must
+    /// be in `1..=SIGRTMAX` (`0`, the existence probe that delivers nothing,
+    /// negatives, and out-of-range values raise `ValueError`); on Windows a raw
+    /// number is never deliverable and raises `Unsupported` (only the named
+    /// `"kill"` works there). A `bool` raises `TypeError` — it is an `int`
+    /// subtype that would otherwise silently become raw signal `1`/`0`.
     fn timeout_signal(&self, name: &Bound<'_, PyAny>) -> PyResult<Self> {
         let signal = parse_signal(name)?;
         Ok(Self {

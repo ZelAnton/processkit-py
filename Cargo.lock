@@ -186,6 +186,7 @@ dependencies = [
 name = "processkit-py"
 version = "1.2.1"
 dependencies = [
+ "libc",
  "processkit",
  "pyo3",
  "pyo3-async-runtimes",

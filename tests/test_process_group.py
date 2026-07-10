@@ -385,6 +385,39 @@ def test_group_signal_unknown_name_rejected() -> None:
         group.signal("not-a-signal")  # type: ignore[arg-type]  # invalid on purpose
 
 
+def test_group_signal_rejects_bool() -> None:
+    # `bool` is a Python `int` subtype but never a real signal; rejected with
+    # TypeError before the raw-number path (mirrors `Command.timeout_signal`), so
+    # a `False`/`True` config typo can't become the no-op existence probe. The
+    # guard runs in `parse_signal` before the backend, so this holds on every
+    # platform regardless of signal-delivery support.
+    with ProcessGroup() as group:
+        with pytest.raises(TypeError):
+            group.signal(True)  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            group.signal(False)  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")
+def test_group_signal_rejects_invalid_raw_number_on_posix() -> None:
+    # 0 (the existence probe), negatives, and out-of-range numbers would be
+    # silently swallowed by the process-group backend — rejected with ValueError
+    # up front instead. Validated before the backend, so no started process is
+    # needed and the platform's delivery support is irrelevant.
+    with ProcessGroup() as group:
+        for bad in (0, -1, 100_000):
+            with pytest.raises(ValueError):
+                group.signal(bad)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows has no POSIX signals")
+def test_group_signal_raw_number_unsupported_on_windows() -> None:
+    # A Job Object has no POSIX signals — a raw number is Unsupported, the same
+    # as every non-"kill" name on Windows.
+    with ProcessGroup() as group, pytest.raises(Unsupported):
+        group.signal(9)
+
+
 def test_group_stats() -> None:
     with ProcessGroup() as group:
         group.start(Command(PY, ["-c", "import time; time.sleep(2)"]))

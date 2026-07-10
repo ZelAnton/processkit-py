@@ -72,6 +72,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
+# Unix only: `convert.rs::parse_signal` validates a raw signal number against the
+# platform's deliverable range (`1..=SIGRTMAX` on Linux/Android via the runtime
+# `SIGRTMAX()`; `1..=SIGUSR2` on macOS/BSD, which have no real-time signals in the
+# binding). Already in the tree transitively (via `processkit`/`tokio`); declared
+# directly and platform-gated so it never rides into Windows builds, which take
+# the `#[cfg(not(unix))]` "raw numbers are Unsupported" path instead.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 lto = true
 codegen-units = 1

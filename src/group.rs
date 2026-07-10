@@ -331,6 +331,12 @@ impl PyProcessGroup {
     /// number (Unix only) — but a Job Object has no POSIX signals, so on
     /// Windows only `kill` is deliverable; every other name/number raises
     /// `Unsupported` there.
+    ///
+    /// A raw number is validated up front as a real, deliverable signal
+    /// (`1..=SIGRTMAX` on Unix), so a `0` (the existence probe), a negative, or
+    /// an out-of-range value raises `ValueError` instead of reaching the backend
+    /// as a silent no-op. A `bool` raises `TypeError` (it is an `int` subtype
+    /// that would otherwise become raw signal `1`/`0`).
     fn signal(&self, name: &Bound<'_, PyAny>) -> PyResult<()> {
         let signal = parse_signal(name)?;
         self.group()?.signal(signal).map_err(map_err)

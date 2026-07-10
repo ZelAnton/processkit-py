@@ -1031,6 +1031,40 @@ def test_timeout_signal_accepts_a_raw_int() -> None:
     assert result.timed_out
 
 
+def test_timeout_signal_rejects_bool() -> None:
+    # `bool` is a Python `int` subtype; without an explicit guard `True`/`False`
+    # would silently mean raw signal 1/0 — and raw 0 is the POSIX existence probe
+    # that delivers nothing. Rejected with TypeError before the number path, on
+    # every platform.
+    with pytest.raises(TypeError):
+        Command("x").timeout_signal(True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        Command("x").timeout_signal(False)  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")
+def test_timeout_signal_rejects_zero_negative_and_out_of_range_on_posix() -> None:
+    # Signal 0 is the POSIX existence probe (`kill(pid, 0)`) — it delivers
+    # nothing, so it must not be accepted as a real signal; a negative or a
+    # number past SIGRTMAX would likewise be a silent no-op on the process-group
+    # backend, so all three raise ValueError up front.
+    for bad in (0, -1, 100_000):
+        with pytest.raises(ValueError):
+            Command("x").timeout_signal(bad)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows has no POSIX signals")
+def test_timeout_signal_raw_int_unsupported_on_windows() -> None:
+    # A Job Object has no POSIX signals, so a raw number can never be delivered:
+    # rejected immediately from the builder (consistently with
+    # `ProcessGroup.signal`), rather than only failing when the timeout fires.
+    with pytest.raises(Unsupported):
+        Command("x").timeout_signal(9)
+    # The named "kill" still configures fine — the raw-number guard leaves the
+    # name path untouched.
+    Command("x").timeout_signal("kill")
+
+
 # --- CancellationToken / cancel_on (C7 batch B) ------------------------------
 
 

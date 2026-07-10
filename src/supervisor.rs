@@ -1,7 +1,7 @@
 //! The `Supervisor` (restart/backoff) and its `SupervisionOutcome`.
 
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use processkit::GiveUpAttempt;
@@ -17,10 +17,39 @@ use pyo3::prelude::*;
 
 use crate::command::PyCommand;
 use crate::convert::{build_output_buffer_policy, nonnegative_duration, positive_duration};
-use crate::errors::{map_err_ref, ProcessError};
+use crate::errors::{map_err, map_err_ref, ProcessError};
 use crate::result::PyProcessResult;
 use crate::runner::extract_runner;
-use crate::runtime::{block_on, drive_async, reject_reentrant_runtime, require_event_loop};
+use crate::runtime::{block_on, drive_async_py, reject_reentrant_runtime, require_event_loop};
+
+/// A one-shot sink for the error a control-predicate (`stop_when` /
+/// `give_up_when`) raised — or the `TypeError` a non-`bool` return produced.
+///
+/// The crate's predicate closures are infallible (`-> bool`), so a raising
+/// predicate cannot abort supervision by itself. Instead the wrapper stashes the
+/// error here and returns "stop"/"give up" so the loop halts on that iteration;
+/// `run()`/`arun()` then reads this slot and re-raises the stashed error to the
+/// caller instead of handing back the (now meaningless) outcome or the mapped
+/// crate error. A fresh slot is created per `Supervisor` and shared between its
+/// two predicate closures — and a `Supervisor` runs exactly once (`run`/`arun`
+/// consume it), so two supervisions never share a slot and their errors cannot
+/// cross, even when run concurrently.
+type ErrorSlot = Arc<Mutex<Option<PyErr>>>;
+
+/// Stash the first control-predicate error of a supervision run. First-error
+/// wins: the loop halts on the first raise, so at most one write happens, but
+/// keeping the earliest is the defensive choice regardless.
+fn record_slot_error(slot: &ErrorSlot, err: PyErr) {
+    let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if guard.is_none() {
+        *guard = Some(err);
+    }
+}
+
+/// Take the stashed control-predicate error, if any, once the run has ended.
+fn take_slot_error(slot: &ErrorSlot) -> Option<PyErr> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
 
 /// Parse a restart policy name into a crate `RestartPolicy` — supervisor-only,
 /// so it lives here rather than in the general `convert.rs` grab-bag.
@@ -49,19 +78,24 @@ fn stop_reason_str(reason: StopReason) -> &'static str {
 
 /// Wrap a Python predicate `(ProcessResult) -> bool` as a `Supervisor.stop_when`
 /// callback. The crate's predicate is infallible (`-> bool`), so a raising or
-/// non-bool predicate is treated as "do not stop" — but the error is surfaced
-/// via the unraisable hook (stderr) rather than silently swallowed, so a buggy
-/// predicate is visible instead of looping invisibly to `max_restarts`.
+/// non-`bool` predicate cannot fail the loop directly. Instead the error is
+/// **stashed in `slot`** and the wrapper returns `true` (stop) so the loop halts
+/// on this iteration without launching another restart; `run()`/`arun()` then
+/// re-raises the stashed error to the caller. This propagates a buggy predicate
+/// to the code that owns the supervisor — a supervisor whose stop condition is
+/// undecidable must not keep restarting on a guess — rather than swallowing it
+/// into "do not stop" and looping invisibly to `max_restarts`.
 fn make_stop_predicate(
     callback: Py<PyAny>,
+    slot: ErrorSlot,
 ) -> impl Fn(&PkProcessResult<String>) -> bool + Send + Sync + 'static {
     move |result| {
         // `try_attach`, not `attach`: `stop_when` runs on a tokio supervision
         // worker not joined at `Py_Finalize` (the runtime is an immortal
-        // singleton). A finalizing interpreter yields `None` -> "do not stop"
-        // (the same default as a raising/non-bool predicate), instead of the
-        // panic/crash a plain `attach` would cause at shutdown. Same finalization
-        // guard as `logging.rs`'s bridge.
+        // singleton). A finalizing interpreter yields `None` -> "do not stop",
+        // instead of the panic/crash a plain `attach` would cause at shutdown —
+        // there is no live caller to re-raise to during finalization anyway. Same
+        // finalization guard as `logging.rs`'s bridge.
         Python::try_attach(|py| {
             let py_result = match Py::new(
                 py,
@@ -70,9 +104,11 @@ fn make_stop_predicate(
                 },
             ) {
                 Ok(py_result) => py_result,
+                // Stash and stop: a bridge error (e.g. allocation failure building
+                // the argument) is undecidable ground for continuing to restart.
                 Err(err) => {
-                    err.write_unraisable(py, None);
-                    return false;
+                    record_slot_error(&slot, err);
+                    return true;
                 }
             };
             match callback
@@ -80,9 +116,11 @@ fn make_stop_predicate(
                 .and_then(|value| value.extract::<bool>(py))
             {
                 Ok(stop) => stop,
+                // A raise or a non-`bool` return: stash the error and stop so the
+                // loop halts here; `run()`/`arun()` re-raises it to the caller.
                 Err(err) => {
-                    err.write_unraisable(py, Some(callback.bind(py)));
-                    false
+                    record_slot_error(&slot, err);
+                    true
                 }
             }
         })
@@ -124,21 +162,25 @@ fn make_stop_predicate(
 /// interpreter is finalizing — that worker thread is not joined at `Py_Finalize`
 /// — and the classifier then reads as "not permanent" (keep restarting) without
 /// touching Python, rather than panicking/crashing at shutdown. The crate's
-/// classifier is infallible (`-> bool`), so a raising or non-bool callback also
-/// reads as "not permanent" — keep restarting, the safe default that matches an
-/// unset classifier — but the error is surfaced via the unraisable hook (stderr)
-/// rather than silently swallowed, so a buggy classifier is visible instead of
-/// looping invisibly.
+/// classifier is infallible (`-> bool`), so a raising or non-`bool` callback
+/// cannot fail the loop directly; instead the error is **stashed in `slot`** and
+/// the wrapper returns `true` (give up) so the loop halts on this iteration, and
+/// `run()`/`arun()` re-raises it to the caller — a buggy classifier is surfaced
+/// to the owning code rather than swallowed into "keep restarting" and looping
+/// invisibly. (For a `Failed`/spawn verdict, `true` makes the crate return the
+/// spawn error, which the run's error slot then shadows with the classifier's
+/// own error.)
 fn make_give_up_classifier(
     callback: Py<PyAny>,
+    slot: ErrorSlot,
 ) -> impl Fn(&GiveUpAttempt<'_>) -> bool + Send + Sync + 'static {
     move |attempt| {
         // `try_attach`, not `attach`: the classifier runs on a tokio supervision
         // worker not joined at `Py_Finalize` (the runtime is an immortal
         // singleton). A finalizing interpreter yields `None` -> "not permanent" /
-        // keep restarting (the same default as a raising/non-bool classifier and
-        // as an unset classifier), instead of the panic/crash a plain `attach`
-        // would cause at shutdown. Same finalization guard as `logging.rs`.
+        // keep restarting, instead of the panic/crash a plain `attach` would
+        // cause at shutdown — there is no live caller to re-raise to during
+        // finalization anyway. Same finalization guard as `logging.rs`.
         Python::try_attach(|py| {
             // Build the Python-facing view of this attempt (see the doc above).
             let arg: Py<PyAny> = match attempt {
@@ -150,9 +192,11 @@ fn make_give_up_classifier(
                         },
                     ) {
                         Ok(result) => result.into_any(),
+                        // Stash and give up: a bridge error is undecidable ground
+                        // for continuing to restart.
                         Err(err) => {
-                            err.write_unraisable(py, None);
-                            return false;
+                            record_slot_error(&slot, err);
+                            return true;
                         }
                     }
                 }
@@ -170,9 +214,11 @@ fn make_give_up_classifier(
                 .and_then(|value| value.extract::<bool>(py))
             {
                 Ok(give_up) => give_up,
+                // A raise or a non-`bool` return: stash the error and halt so the
+                // loop stops here; `run()`/`arun()` re-raises it to the caller.
                 Err(err) => {
-                    err.write_unraisable(py, Some(callback.bind(py)));
-                    false
+                    record_slot_error(&slot, err);
+                    true
                 }
             }
         })
@@ -290,6 +336,11 @@ impl PySupervisionOutcome {
 #[pyclass(name = "Supervisor", module = "processkit")]
 pub(crate) struct PySupervisor {
     inner: Option<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>>,
+    /// Shared by this supervisor's `stop_when`/`give_up_when` wrappers: a control
+    /// predicate that raised (or returned non-`bool`) stashes its error here, and
+    /// `run()`/`arun()` re-raises it after the loop halts. Per-instance, so
+    /// concurrent supervisions never cross errors (see [`ErrorSlot`]).
+    error_slot: ErrorSlot,
 }
 
 impl PySupervisor {
@@ -341,6 +392,10 @@ impl PySupervisor {
         capture_on_overflow: Option<&str>,
         runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        // One error sink for this supervisor's control predicates, read back by
+        // `run`/`arun` after the loop halts. Created even when no predicate is
+        // set (harmless: it stays empty) to keep the field unconditional.
+        let error_slot: ErrorSlot = Arc::new(Mutex::new(None));
         let mut supervisor = PkSupervisor::new(command.inner.clone());
         if let Some(policy) = restart {
             supervisor = supervisor.restart(parse_restart_policy(policy)?);
@@ -372,7 +427,7 @@ impl PySupervisor {
             supervisor = supervisor.jitter(enabled);
         }
         if let Some(callback) = stop_when {
-            supervisor = supervisor.stop_when(make_stop_predicate(callback));
+            supervisor = supervisor.stop_when(make_stop_predicate(callback, error_slot.clone()));
         }
         // Permanent-failure classifier (off unless set): consulted for a crash
         // the policy would otherwise restart, ahead of `max_restarts` and the
@@ -380,7 +435,8 @@ impl PySupervisor {
         // `Failed` (spawn) verdict has no result to report and surfaces the
         // classified error directly from `run()`.
         if let Some(callback) = give_up_when {
-            supervisor = supervisor.give_up_when(make_give_up_classifier(callback));
+            supervisor =
+                supervisor.give_up_when(make_give_up_classifier(callback, error_slot.clone()));
         }
         // Failure-storm guard (off unless `storm_pause` is set): once the decaying
         // failure score crosses `failure_threshold`, the supervisor takes one
@@ -440,6 +496,7 @@ impl PySupervisor {
         let supervisor = supervisor.with_runner(runner);
         Ok(Self {
             inner: Some(supervisor),
+            error_slot,
         })
     }
 
@@ -449,7 +506,15 @@ impl PySupervisor {
         // running.rs for why the order matters (consume-then-fail).
         reject_reentrant_runtime()?;
         let supervisor = self.take_supervisor()?;
-        block_on(py, supervisor.run()).map(|outcome| convert_supervision_outcome(&outcome))
+        let result = block_on(py, supervisor.run());
+        // A control predicate (`stop_when`/`give_up_when`) that raised or returned
+        // a non-`bool` halted the loop and stashed its error — re-raise that to the
+        // caller in preference to the (now meaningless) outcome or the mapped crate
+        // error the wrapper's "stop"/"give up" verdict produced.
+        if let Some(err) = take_slot_error(&self.error_slot) {
+            return Err(err);
+        }
+        result.map(|outcome| convert_supervision_outcome(&outcome))
     }
 
     /// Async counterpart of `run()`. Consumes the supervisor.
@@ -465,12 +530,18 @@ impl PySupervisor {
     /// supervision has a defined end rather than restarting forever.
     fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
+        // Cloned before the supervisor is taken, so the awaited future can read the
+        // control-predicate error slot back after the loop halts (see `run`).
+        let error_slot = self.error_slot.clone();
         let supervisor = self.take_supervisor()?;
-        drive_async(py, async move {
-            supervisor
-                .run()
-                .await
+        drive_async_py(py, async move {
+            let result = supervisor.run().await;
+            if let Some(err) = take_slot_error(&error_slot) {
+                return Err(err);
+            }
+            result
                 .map(|outcome| convert_supervision_outcome(&outcome))
+                .map_err(map_err)
         })
     }
 }

@@ -14,8 +14,8 @@ asyncio-native form.
 [![CI](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml)
 [![PyPI](https://img.shields.io/pypi/v/processkit-py.svg)](https://pypi.org/project/processkit-py/)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://github.com/ZelAnton/processkit-py/blob/main/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ZelAnton/processkit-py/blob/main/LICENSE)
 
 ```python
 from processkit import Command
@@ -72,7 +72,8 @@ child.
 > **Stable API.** The public API has been stable since 1.0 and follows
 > [Semantic Versioning](https://semver.org/): breaking changes land only in a new
 > major version, so `1.x` upgrades are backward-compatible. See
-> [CHANGELOG.md](CHANGELOG.md), and [ROADMAP.md](ROADMAP.md) for how it was built.
+> [CHANGELOG.md](https://github.com/ZelAnton/processkit-py/blob/main/CHANGELOG.md), and
+> [ROADMAP.md](https://github.com/ZelAnton/processkit-py/blob/main/ROADMAP.md) for how it was built.
 
 The hard platform work — Job Object containment, cgroup v2, race-free spawn,
 POSIX process groups — runs in a compiled native core, so the Python layer stays
@@ -108,7 +109,7 @@ decides what you get back. Each has an `a`-prefixed asyncio twin
 
 The run-to-completion verbs repeat on the `Runner` and `CliClient` layers too
 (`start` / `astart` live on `Command` and `Runner`).
-*Deeper: [Running commands](docs/commands.md).*
+*Deeper: [Running commands](https://github.com/ZelAnton/processkit-py/blob/main/docs/commands.md).*
 
 ## Quick start
 
@@ -161,31 +162,31 @@ limits from the command line, no code required:
 python -m processkit run --timeout 30 --max-memory 536870912 -- pytest -x
 ```
 
-See [Command-line usage](docs/cli.md) for the full flag list and exit-code
+See [Command-line usage](https://github.com/ZelAnton/processkit-py/blob/main/docs/cli.md) for the full flag list and exit-code
 contract.
 
 ## Documentation
 
-This README is the quick tour. The **[`docs/` guide set](docs/README.md)** goes
+This README is the quick tour. The **[`docs/` guide set](https://github.com/ZelAnton/processkit-py/blob/main/docs/README.md)** goes
 deeper on every capability, with more examples and the platform fine print in one
-place. New here? Skim the [Cookbook](docs/cookbook.md) first — it maps "I want
+place. New here? Skim the [Cookbook](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md) first — it maps "I want
 to …" tasks to working snippets — then read
-[Running commands](docs/commands.md) end to end:
+[Running commands](https://github.com/ZelAnton/processkit-py/blob/main/docs/commands.md) end to end:
 
 | Guide | Covers |
 |---|---|
-| [Cookbook](docs/cookbook.md) | Task → snippet recipes for everything below; the fastest way in |
-| [Coming from subprocess](docs/migrating.md) | Translating your `subprocess` / `asyncio.subprocess` code, and what containment adds |
-| [Running commands](docs/commands.md) | The full `Command` builder and every consuming verb, with error semantics |
-| [Process groups](docs/process-groups.md) | Containment, teardown, signals, suspend/resume, members, limits, stats |
-| [Streaming & interactive I/O](docs/streaming.md) | Line streaming, conversational stdin, readiness probes, per-run profiling |
-| [Pipelines](docs/pipelines.md) | Shell-free `a \| b \| c`, pipefail attribution, chain timeouts |
-| [Timeouts & cancellation](docs/timeouts-and-cancellation.md) | Captured vs raised deadlines, Ctrl+C, asyncio cancellation |
-| [Supervision](docs/supervision.md) | Restart policies, backoff & jitter, stop conditions, outcomes |
-| [Testing your code](docs/testing.md) | The runner seam, scripted/record-replay doubles, `CliClient` |
-| [Platform support](docs/platforms.md) | Mechanisms, all capability matrices, every caveat |
+| [Cookbook](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md) | Task → snippet recipes for everything below; the fastest way in |
+| [Coming from subprocess](https://github.com/ZelAnton/processkit-py/blob/main/docs/migrating.md) | Translating your `subprocess` / `asyncio.subprocess` code, and what containment adds |
+| [Running commands](https://github.com/ZelAnton/processkit-py/blob/main/docs/commands.md) | The full `Command` builder and every consuming verb, with error semantics |
+| [Process groups](https://github.com/ZelAnton/processkit-py/blob/main/docs/process-groups.md) | Containment, teardown, signals, suspend/resume, members, limits, stats |
+| [Streaming & interactive I/O](https://github.com/ZelAnton/processkit-py/blob/main/docs/streaming.md) | Line streaming, conversational stdin, readiness probes, per-run profiling |
+| [Pipelines](https://github.com/ZelAnton/processkit-py/blob/main/docs/pipelines.md) | Shell-free `a \| b \| c`, pipefail attribution, chain timeouts |
+| [Timeouts & cancellation](https://github.com/ZelAnton/processkit-py/blob/main/docs/timeouts-and-cancellation.md) | Captured vs raised deadlines, Ctrl+C, asyncio cancellation |
+| [Supervision](https://github.com/ZelAnton/processkit-py/blob/main/docs/supervision.md) | Restart policies, backoff & jitter, stop conditions, outcomes |
+| [Testing your code](https://github.com/ZelAnton/processkit-py/blob/main/docs/testing.md) | The runner seam, scripted/record-replay doubles, `CliClient` |
+| [Platform support](https://github.com/ZelAnton/processkit-py/blob/main/docs/platforms.md) | Mechanisms, all capability matrices, every caveat |
 
-Prefer whole programs to snippets? The **[`examples/`](examples/)** directory has
+Prefer whole programs to snippets? The **[`examples/`](https://github.com/ZelAnton/processkit-py/tree/main/examples)** directory has
 runnable, self-contained scripts — one per niche (no-orphan teardown, a
 readiness-gated server, supervision, a resource-limited sandbox). Each runs on
 Windows, Linux, and macOS and is exercised in CI.
@@ -213,8 +214,8 @@ with ProcessGroup() as group:
 The `with` / `async with` exit (and ordinary GC) reaps the tree on every
 platform; surviving a hard kill of the Python process itself is a Windows-only
 property. Lean on the context managers, not `__del__` / `atexit`.
-*Deeper: [Process groups](docs/process-groups.md) ·
-[Platform support](docs/platforms.md).*
+*Deeper: [Process groups](https://github.com/ZelAnton/processkit-py/blob/main/docs/process-groups.md) ·
+[Platform support](https://github.com/ZelAnton/processkit-py/blob/main/docs/platforms.md).*
 
 ### Sandboxing with resource limits
 
@@ -237,7 +238,7 @@ with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0)
 Limits need a **Windows Job Object** or a **Linux cgroup-v2 root**; under a
 container, systemd session, or other non-root cgroup the kernel forbids them and
 `ResourceLimit` is raised — never a silently-unbounded group.
-*Deeper: [Process groups → resource limits](docs/process-groups.md).*
+*Deeper: [Process groups → resource limits](https://github.com/ZelAnton/processkit-py/blob/main/docs/process-groups.md).*
 
 ### Signalling and pausing the whole tree
 
@@ -251,7 +252,7 @@ with ProcessGroup() as group:
 
 Signals are POSIX-real; on Windows only `kill` is deliverable (it maps to the
 Job Object terminate) and every other name — including `term` — raises
-`Unsupported`. *Deeper: [Process groups](docs/process-groups.md).*
+`Unsupported`. *Deeper: [Process groups](https://github.com/ZelAnton/processkit-py/blob/main/docs/process-groups.md).*
 
 ### Running many at once
 
@@ -269,7 +270,7 @@ failed = sum(not (isinstance(r, ProcessResult) and r.is_success) for r in result
 It is **collect-all**: each slot is one command's `ProcessResult`, or a
 `ProcessError` for a spawn/I/O failure — a non-zero exit never short-circuits the
 batch. `aoutput_all` / `output_all_bytes` / `aoutput_all_bytes` round out the
-set. *Deeper: [Cookbook → run many at once](docs/cookbook.md).*
+set. *Deeper: [Cookbook → run many at once](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md).*
 
 ### Supervising a long-lived child
 
@@ -289,7 +290,7 @@ outcome = Supervisor(
 print(outcome.restarts, outcome.stopped)
 ```
 
-*Deeper: [Supervision](docs/supervision.md).*
+*Deeper: [Supervision](https://github.com/ZelAnton/processkit-py/blob/main/docs/supervision.md).*
 
 ### Waiting for a child to be ready
 
@@ -308,7 +309,7 @@ await wait_until(lambda: health_check(), timeout=10, interval=0.1)      # any co
 
 A probe that doesn't pass in time raises `WaitTimeout` (`ProcessError`,
 `TimeoutError`) and **does not kill the child** — you decide what happens next.
-*Deeper: [Streaming → readiness probes](docs/streaming.md).*
+*Deeper: [Streaming → readiness probes](https://github.com/ZelAnton/processkit-py/blob/main/docs/streaming.md).*
 
 ### Pipelines without a shell
 
@@ -326,7 +327,7 @@ authors = (
 
 The outcome is **pipefail**: stdout is the last stage's, while the exit code,
 stderr, and reported program come from the first stage that didn't exit cleanly.
-`.timeout(d)` bounds the whole chain. *Deeper: [Pipelines](docs/pipelines.md).*
+`.timeout(d)` bounds the whole chain. *Deeper: [Pipelines](https://github.com/ZelAnton/processkit-py/blob/main/docs/pipelines.md).*
 
 ### Environment and privileges
 
@@ -341,7 +342,7 @@ Command("daemonish").kill_on_parent_death().start()                  # die with 
 `Unsupported` rather than silently skipping a privilege drop. When dropping
 privileges, set **all three** of `gid`/`groups`/`uid` — `uid` alone leaves the
 child holding the parent's (often root's) supplementary groups.
-*Deeper: [Running commands → privileges](docs/commands.md).*
+*Deeper: [Running commands → privileges](https://github.com/ZelAnton/processkit-py/blob/main/docs/commands.md).*
 
 ### Cancelling a run
 
@@ -359,7 +360,7 @@ task.cancel()        # the process tree is reaped; CancelledError propagates
 
 Unlike a timeout — whose expiry is *captured* in the result as `timed_out` —
 cancellation is always terminal.
-*Deeper: [Timeouts & cancellation](docs/timeouts-and-cancellation.md).*
+*Deeper: [Timeouts & cancellation](https://github.com/ZelAnton/processkit-py/blob/main/docs/timeouts-and-cancellation.md).*
 
 ### Async streaming and interactive stdin
 
@@ -375,7 +376,7 @@ print(await anext(proc.stdout_lines()))   # 4
 await stdin.close()
 ```
 
-*Deeper: [Streaming & interactive I/O](docs/streaming.md).*
+*Deeper: [Streaming & interactive I/O](https://github.com/ZelAnton/processkit-py/blob/main/docs/streaming.md).*
 
 ### Wrapping a CLI tool
 
@@ -392,7 +393,7 @@ clean = git.probe(["diff", "--quiet"])
 
 For testable code, pass `runner=` (a `ScriptedRunner` and friends) to
 `CliClient` itself, the same way `Command` accepts an injected runner.
-*Deeper: [Testing your code](docs/testing.md).*
+*Deeper: [Testing your code](https://github.com/ZelAnton/processkit-py/blob/main/docs/testing.md).*
 
 ### Testing without spawning processes
 
@@ -410,7 +411,7 @@ assert scripted.run(Command("git", ["rev-parse", "HEAD"])) == "deadbeef"
 
 `RecordReplayRunner` captures real tool output once and replays it offline, and
 `RecordingRunner` spies on *what* your code ran.
-*Deeper: [Testing your code](docs/testing.md).*
+*Deeper: [Testing your code](https://github.com/ZelAnton/processkit-py/blob/main/docs/testing.md).*
 
 ### Seeing what ran (observability)
 
@@ -430,7 +431,7 @@ Command("git", ["rev-parse", "HEAD"]).run()
 
 Records land on the `processkit` logger (filter it like any other); `argv` and
 `env` are never logged (they routinely carry secrets).
-*Deeper: [the logging recipe](docs/cookbook.md#see-what-processkit-runs-logging).*
+*Deeper: [the logging recipe](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md#see-what-processkit-runs-logging).*
 
 ## Stability
 
@@ -443,7 +444,7 @@ type stubs — is stable: breaking changes land only in a new major version, so
 
 - Python 3.10 or later (abi3 wheel), including CPython 3.14 and the **free-threaded**
   (PEP 703) build 3.14t.
-- See [platform support & caveats](docs/platforms.md) for per-OS behaviour and
+- See [platform support & caveats](https://github.com/ZelAnton/processkit-py/blob/main/docs/platforms.md) for per-OS behaviour and
   the wheel/architecture matrix.
 
 ## Building from source
@@ -452,7 +453,7 @@ type stubs — is stable: breaking changes land only in a new major version, so
 platform with a prebuilt wheel — see the
 [PyPI project page](https://pypi.org/project/processkit-py/) for the current
 release. On a platform without a prebuilt wheel (32-bit targets), build from
-source instead (see [CONTRIBUTING.md](CONTRIBUTING.md) for the build
+source instead (see [CONTRIBUTING.md](https://github.com/ZelAnton/processkit-py/blob/main/CONTRIBUTING.md) for the build
 prerequisites):
 
 ```bash
@@ -463,9 +464,9 @@ pip install .
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test instructions and
-conventions. To report a security issue, follow [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](https://github.com/ZelAnton/processkit-py/blob/main/CONTRIBUTING.md) for build/test instructions and
+conventions. To report a security issue, follow [SECURITY.md](https://github.com/ZelAnton/processkit-py/blob/main/SECURITY.md).
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](https://github.com/ZelAnton/processkit-py/blob/main/LICENSE).

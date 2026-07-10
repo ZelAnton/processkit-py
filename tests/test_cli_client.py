@@ -30,7 +30,7 @@ from processkit import (
     ProcessRunner,
     StreamingRunner,
 )
-from processkit.testing import Reply, ScriptedRunner
+from processkit.testing import RecordingRunner, Reply, ScriptedRunner
 
 from .conftest import NO_SUCH_PROGRAM, PY
 
@@ -233,6 +233,160 @@ def test_cli_client_default_env_fn_rejects_a_non_callable_value() -> None:
 
     # A genuinely callable value still constructs without error.
     CliClient(PY, default_env_fn={"X": lambda: "ok"})
+
+
+# --- default_env_fn failure is fail-closed (T-080) ---------------------------
+#
+# A `default_env_fn` resolver typically supplies a token / password / dynamic
+# config. If it raises or returns a non-`str`, the old binding reported the
+# failure only via the unraisable hook and resolved to an EMPTY string — so the
+# command was spawned with a silently-blank credential (fail-open). It must
+# instead abort the call with the real exception, *before* the runner is
+# reached, so no process is spawned (fail-closed). A `RecordingRunner` proves
+# the inner runner was never invoked (`len(calls()) == 0`) on the error path.
+
+_SYNC_VERBS = ["run", "output", "output_bytes", "exit_code", "probe"]
+_ASYNC_VERBS = ["arun", "aoutput", "aoutput_bytes", "aexit_code", "aprobe"]
+
+
+@pytest.mark.parametrize("verb", _SYNC_VERBS)
+def test_cli_client_default_env_fn_raise_aborts_sync_verb_before_spawn(verb: str) -> None:
+    runner = RecordingRunner.replying(Reply.ok("should-not-run"))
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    # The resolver's own exception reaches the caller unchanged (not swallowed,
+    # not remapped) — its cause is preserved.
+    with pytest.raises(ZeroDivisionError):
+        getattr(client, verb)(["--version"])
+    assert len(runner.calls()) == 0
+
+
+@pytest.mark.parametrize("verb", _ASYNC_VERBS)
+def test_cli_client_default_env_fn_raise_aborts_async_verb_before_spawn(verb: str) -> None:
+    runner = RecordingRunner.replying(Reply.ok("should-not-run"))
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+
+    async def scenario() -> None:
+        with pytest.raises(ZeroDivisionError):
+            await getattr(client, verb)(["--version"])
+
+    asyncio.run(scenario())
+    assert len(runner.calls()) == 0
+
+
+def test_cli_client_default_env_fn_raise_aborts_command_build() -> None:
+    # `command()` applies the client's defaults (resolving every default_env_fn),
+    # so it is on the failing path too — same fail-closed behaviour as the verbs.
+    runner = RecordingRunner.replying(Reply.ok("should-not-run"))
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    with pytest.raises(ZeroDivisionError):
+        client.command(["--version"])
+    assert len(runner.calls()) == 0
+
+
+def test_cli_client_default_env_fn_non_str_result_aborts_before_spawn() -> None:
+    # A non-`str` result is just as fail-closed as a raise: the failed `str`
+    # conversion surfaces as a `TypeError`, before the runner is reached.
+    runner = RecordingRunner.replying(Reply.ok("should-not-run"))
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1}, runner=runner)  # type: ignore[dict-item]  # deliberately non-str to exercise the fail-closed conversion
+    with pytest.raises(TypeError):
+        client.run(["--version"])
+    assert len(runner.calls()) == 0
+
+
+def test_cli_client_default_env_fn_success_resolves_fresh_and_is_recorded() -> None:
+    # The success path is unchanged: a resolver is re-run for each built command,
+    # and the RecordingRunner captures the freshly-resolved value each time.
+    seen = 0
+
+    def resolver() -> str:
+        nonlocal seen
+        seen += 1
+        return f"token-{seen}"
+
+    runner = RecordingRunner.replying(Reply.ok(""))
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": resolver}, runner=runner)
+    client.run(["--version"])
+    client.run(["--version"])
+    recorded = runner.calls()
+    assert len(recorded) == 2
+    assert recorded[0].env_is("PK_TOKEN", "token-1")
+    assert recorded[1].env_is("PK_TOKEN", "token-2")
+
+
+def test_cli_client_default_env_fn_yields_to_explicit_env_recorded() -> None:
+    # An explicit per-command `env()` still wins over the default resolver: the
+    # resolver runs (successfully) at `command()`, but the later `.env()` override
+    # is what the runner actually sees.
+    runner = RecordingRunner.replying(Reply.ok(""))
+    client = CliClient(
+        NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: "from-resolver"}, runner=runner
+    )
+    cmd = client.command(["--version"]).env("PK_TOKEN", "explicit")
+    client.run(cmd)
+    assert runner.only_call().env_is("PK_TOKEN", "explicit")
+
+
+def test_cli_client_default_env_fn_failure_is_skipped_when_key_already_set() -> None:
+    # Fail-closed does not over-trigger: a resolver whose key is already set on a
+    # caller-supplied command never runs (the crate resolves a default_env_fn only
+    # for a still-absent key), so even a *failing* resolver cannot abort a call
+    # whose value it does not supply. The explicit value wins and the runner is
+    # invoked normally.
+    runner = RecordingRunner.replying(Reply.ok(""))
+    client = CliClient(NO_SUCH_PROGRAM, default_env_fn={"PK_TOKEN": lambda: 1 / 0}, runner=runner)
+    cmd = Command(NO_SUCH_PROGRAM, ["--version"]).env("PK_TOKEN", "explicit")
+    client.run(cmd)
+    assert runner.only_call().env_is("PK_TOKEN", "explicit")
+
+
+def test_cli_client_default_env_fn_failure_survives_a_reentrant_nested_build() -> None:
+    # R-01 regression: the fail-closed hand-off must be reentrancy-safe. When one
+    # resolver has already parked a failure and a *later* resolver performs a
+    # NESTED processkit build on the same thread (the classic "fetch a secret via
+    # a child CliClient.run()" pattern), that nested build must not clear the outer
+    # resolver's parked error — otherwise the outer call silently reverts to the
+    # fail-open (blank-credential) behaviour this whole feature exists to prevent.
+    #
+    # `default_env_fn` is extracted into a Rust HashMap, so the *registration*
+    # order of the two resolvers is not deterministic. To pin the "fails first,
+    # nested build second" ordering regardless of registration order, ONE resolver
+    # is shared by both keys and branches on its invocation count: whichever key
+    # the crate resolves first, that call raises (parks the error); the second call
+    # runs the nested build. The crate resolves the keys sequentially on one
+    # thread, so this ordering is exact.
+    inner_runner = RecordingRunner.replying(Reply.ok("secret-token"))
+    vault = CliClient(NO_SUCH_PROGRAM, runner=inner_runner)
+    outer_runner = RecordingRunner.replying(Reply.ok("should-not-run"))
+
+    invocations = 0
+
+    def resolver() -> str:
+        nonlocal invocations
+        invocations += 1
+        if invocations == 1:
+            # Earliest-resolved key: fail, parking the real cause for the outer
+            # build to raise.
+            raise RuntimeError("cannot resolve outer credential")
+        # Later-resolved key: a nested processkit build/run on this same thread,
+        # which re-enters the shared RESOLVER_ERROR slot.
+        return vault.run(["read", "token"])
+
+    client = CliClient(
+        NO_SUCH_PROGRAM,
+        default_env_fn={"OUTER_CRED_A": resolver, "OUTER_CRED_B": resolver},
+        runner=outer_runner,
+    )
+
+    # Fail-closed is preserved: the outer build surfaces the real resolver failure
+    # (its cause intact), not a lost error or a fail-open success.
+    with pytest.raises(RuntimeError, match="cannot resolve outer credential"):
+        client.run(["push"])
+    # The outer command never spawned...
+    assert len(outer_runner.calls()) == 0
+    # ...and the test genuinely exercised the reentrant path: the nested build ran
+    # to completion (its own runner was invoked), yet did not swallow the outer
+    # error.
+    assert len(inner_runner.calls()) == 1
 
 
 # --- default_cancel_on (C7 batch B) ------------------------------------------

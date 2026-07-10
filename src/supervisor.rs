@@ -12,7 +12,7 @@ use processkit::RestartPolicy;
 use processkit::StopReason;
 use processkit::SupervisionOutcome;
 use processkit::Supervisor as PkSupervisor;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
@@ -261,91 +261,27 @@ impl PySupervisionOutcome {
         hasher.finish()
     }
 
-    /// Pickle support: `final_result` is reconstructed via
-    /// `result::scripted_process_result` (see that module's doc); `restarts`/
-    /// `stopped`/`storm_pauses` are plain carried-through values.
-    #[allow(clippy::type_complexity)]
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(
-        Py<PyAny>,
-        (
-            String,
-            String,
-            String,
-            Option<i32>,
-            Option<i32>,
-            bool,
-            bool,
-            u32,
-            String,
-            u32,
-        ),
-    )> {
-        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
-        Ok((
-            factory,
-            (
-                self.final_result.program().to_string(),
-                self.final_result.stdout().to_string(),
-                self.final_result.stderr().to_string(),
-                self.final_result.code(),
-                self.final_result.signal(),
-                self.final_result.timed_out(),
-                self.final_result.is_success(),
-                self.restarts,
-                self.stopped.to_string(),
-                self.storm_pauses,
-            ),
+    /// **Not** picklable: a `SupervisionOutcome`'s identity includes its
+    /// `final_result` (a `ProcessResult`), and that type cannot be faithfully
+    /// reconstructed from a pickle — the crate's `ProcessResult` `PartialEq`
+    /// compares a configured `timeout` and accepted `ok_codes` that `processkit`
+    /// exposes no accessor to read, so a round trip would compare unequal for
+    /// any supervised command that set `.timeout(...)`/`.success_codes(...)`
+    /// (see `result::PyProcessResult::__reduce__` and the `result` module doc).
+    /// Refuse loudly rather than hand back a value that silently breaks the
+    /// pickle invariant; read the fields you need
+    /// (`final_result.stdout`/`.code`, `restarts`, `stopped`, `storm_pauses`),
+    /// or pickle `final_result.outcome` (an `Outcome`, which round-trips
+    /// exactly), before crossing a process boundary.
+    fn __reduce__(&self) -> PyResult<()> {
+        Err(PyTypeError::new_err(
+            "SupervisionOutcome cannot be pickled: its identity includes final_result, a \
+             ProcessResult that processkit cannot faithfully reconstruct from a pickle (its \
+             timeout/success_codes have no accessor to read back), so a round trip would compare \
+             unequal for a supervised command that set .timeout(...) or .success_codes(...); read \
+             the fields you need (final_result.stdout/.code, restarts, stopped, storm_pauses), or \
+             pickle final_result.outcome (an Outcome, which round-trips exactly), instead",
         ))
-    }
-
-    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod
-    /// rather than a module-level function, so it rides along with the class
-    /// in the stub/API-surface checks — see `result::PyProcessResult::_unpickle`.
-    /// `final_result` is reconstructed via `result::scripted_process_result`
-    /// (see that module's doc); `restarts`/`stopped`/`storm_pauses` are plain
-    /// carried-through values.
-    #[staticmethod]
-    #[allow(clippy::too_many_arguments)]
-    fn _unpickle(
-        py: Python<'_>,
-        program: String,
-        stdout: String,
-        stderr: String,
-        code: Option<i32>,
-        signal: Option<i32>,
-        timed_out: bool,
-        is_success: bool,
-        restarts: u32,
-        stopped: String,
-        storm_pauses: u32,
-    ) -> PyResult<Self> {
-        let final_result = crate::result::scripted_process_result(
-            py, program, stdout, stderr, code, signal, timed_out, is_success,
-        )?;
-        Ok(Self {
-            final_result,
-            restarts,
-            stopped: static_stopped(&stopped),
-            storm_pauses,
-        })
-    }
-}
-
-/// Map a `SupervisionOutcome.stopped` string back to the module's `&'static
-/// str` vocabulary — the unpickling counterpart of `stop_reason_str`. An
-/// unrecognized value (should not happen for a value pickled by this same
-/// binding version) degrades to `"unknown"`, the same forward-compat fallback
-/// `stop_reason_str` itself uses for a future crate `StopReason` variant.
-fn static_stopped(value: &str) -> &'static str {
-    match value {
-        "policy_satisfied" => "policy_satisfied",
-        "predicate" => "predicate",
-        "restarts_exhausted" => "restarts_exhausted",
-        "gave_up" => "gave_up",
-        _ => "unknown",
     }
 }
 

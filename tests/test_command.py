@@ -1605,24 +1605,31 @@ def test_cancelled_is_never_retried() -> None:
     asyncio.run(scenario())
 
 
-# --- value semantics: __eq__/__hash__/pickle (T-041) -------------------------
+# --- value semantics: __eq__/__hash__/pickle (T-041, T-079) ------------------
 #
 # Scope decision (documented here + in CHANGELOG.md): `ProcessResult`,
 # `BytesResult`, `Outcome`, `Finished`, and `RunProfile` all get `__eq__`
 # (the crate's own `PartialEq`, not `object`'s identity comparison) and, since
 # none of their fields are stored floats, a consistent `__hash__`.
 #
-# Pickle is narrower. `ProcessResult`/`Outcome`/`Finished` (and
-# `SupervisionOutcome`, tested in test_supervisor.py) support it: the crate has
-# no public constructor for any of these, so unpickling reconstructs one via
-# `testing.ScriptedRunner` (an in-memory, no-subprocess "run") — faithful for
-# every Python-visible field, but a command that customized `success_codes()`/
-# `timeout()` isn't guaranteed `== `after a round trip (those two fields have
-# no Python accessor to reconstruct exactly; see the plain-config case below,
-# which round-trips exactly). `BytesResult` (raw bytes may not be valid UTF-8,
-# and the reconstruction channel is text-only) and `RunProfile` (live OS
-# resource-sampling telemetry has no synthesis path outside a real monitored
-# run) explicitly do not support pickling — both raise `TypeError`.
+# Pickle is narrower, and only for the types that reconstruct *exactly* (T-079).
+# `Outcome` and `Finished` support it: the crate has no public constructor for
+# either, so unpickling reconstructs one via `testing.ScriptedRunner` (an
+# in-memory, no-subprocess "run"), and that is faithful because an `Outcome` is
+# fully determined by its Python-visible `code`/`signal`/`timed_out` and a
+# `Finished` adds only its `stderr` (carried through verbatim).
+#
+# `ProcessResult` and `SupervisionOutcome` (tested in test_supervisor.py) do
+# NOT pickle — they raise `TypeError`. Their equality (the crate's own
+# comparison) also spans a command's configured `timeout` and accepted
+# `success_codes`, two fields the crate exposes through no accessor: a pickle
+# can't read them back, so a result from a command that set `.timeout(...)`/
+# `.success_codes(...)` would unpickle unequal to its original. Rather than a
+# silently-wrong round trip, both refuse loudly — pickle `result.outcome` (an
+# `Outcome`) or persist the fields you need instead. `BytesResult` (raw bytes
+# may not be valid UTF-8, and the reconstruction channel is text-only) and
+# `RunProfile` (live OS resource-sampling telemetry has no synthesis path
+# outside a real monitored run) likewise raise `TypeError`.
 
 
 def test_process_result_eq_and_hash_compare_by_value() -> None:
@@ -1655,27 +1662,41 @@ def test_process_result_is_hashable_in_a_set_and_as_a_dict_key() -> None:
     assert cache[b] == "cached"
 
 
-def test_process_result_pickle_round_trip_preserves_equality() -> None:
-    original = Command(PY, ["-c", "print('roundtrip')"]).output()
-    restored = pickle.loads(pickle.dumps(original))
-    assert restored == original
-    assert restored.stdout == original.stdout
-    assert restored.stderr == original.stderr
-    assert restored.code == original.code
-    assert restored.is_success == original.is_success
-    assert restored.timed_out == original.timed_out
-    assert restored.signal == original.signal
+def test_process_result_pickle_raises_type_error() -> None:
+    # ProcessResult is NOT picklable (T-079): its equality also spans the hidden
+    # timeout/success_codes, which have no accessor to reconstruct, so a round
+    # trip could not preserve `==`. Refuse loudly rather than hand back a value
+    # that silently breaks the pickle invariant — pickle `result.outcome`
+    # (an Outcome) or persist the fields you need instead.
+    result = Command(PY, ["-c", "print('roundtrip')"]).output()
+    with pytest.raises(TypeError, match="ProcessResult cannot be pickled"):
+        pickle.dumps(result)
 
 
-def _run_in_worker_process() -> ProcessResult:
-    # Runs *inside* the `ProcessPoolExecutor` worker — the scenario this task
-    # (T-041) exists for: capture a result in one process, hand it back across
-    # a real process boundary (pickled on the way out, unpickled by the pool),
-    # not just `pickle.dumps`/`loads` round-tripped in a single process.
-    return Command(PY, ["-c", "print('from worker')"]).output()
+def test_process_result_pickle_refusal_is_config_independent() -> None:
+    # The refusal does not depend on whether the command actually customized
+    # timeout/success_codes — a plain command's result is unpicklable too, so
+    # the contract ("ProcessResult is not picklable") is simple and total, not a
+    # per-instance guess that would surprise callers.
+    plain = Command(PY, ["-c", "print('plain')"]).output()
+    customized = (
+        Command(PY, ["-c", "import sys; sys.exit(3)"]).success_codes([0, 3]).output()
+    )
+    for result in (plain, customized):
+        with pytest.raises(TypeError, match="ProcessResult cannot be pickled"):
+            pickle.dumps(result)
 
 
-def test_process_result_round_trips_through_a_real_process_pool_executor() -> None:
+def _summarize_in_worker_process() -> Outcome:
+    # Runs *inside* the `ProcessPoolExecutor` worker: capture a result in one
+    # process and hand its picklable `outcome` back across a real process
+    # boundary (pickled on the way out, unpickled by the pool). This is the
+    # documented migration path now that `ProcessResult` itself is not picklable
+    # (T-079) — the exactly-reconstructable `Outcome` summary crosses the seam.
+    return Command(PY, ["-c", "import sys; sys.exit(0)"]).output().outcome
+
+
+def test_outcome_round_trips_through_a_real_process_pool_executor() -> None:
     # Force "spawn" explicitly rather than relying on the platform default.
     # The Rust extension starts a tokio runtime with background worker
     # threads on import; forking a multi-threaded process is unsafe (only the
@@ -1687,11 +1708,12 @@ def test_process_result_round_trips_through_a_real_process_pool_executor() -> No
     # to spawn-like behavior, which is why the hazard didn't show up there.
     mp_context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=1, mp_context=mp_context) as pool:
-        result = pool.submit(_run_in_worker_process).result(timeout=30)
-    assert isinstance(result, ProcessResult)
-    assert result.stdout.strip() == "from worker"
-    assert result.code == 0
-    assert result.is_success
+        outcome = pool.submit(_summarize_in_worker_process).result(timeout=30)
+    assert isinstance(outcome, Outcome)
+    assert outcome.code == 0
+    assert outcome.exited_zero
+    assert not outcome.timed_out
+    assert outcome.signal is None
 
 
 def test_bytes_result_eq_and_hash_compare_by_value() -> None:
@@ -1730,6 +1752,45 @@ def test_outcome_eq_hash_and_pickle_round_trip() -> None:
     assert restored.signal is None
 
 
+@pytest.mark.parametrize(
+    ("reply", "expect_code", "expect_signal", "expect_timed_out"),
+    [
+        (Reply.ok("done"), 0, None, False),
+        (Reply.fail(3, "boom"), 3, None, False),
+        (Reply.signalled(None), None, None, False),
+        (Reply.signalled(9), None, 9, False),
+        (Reply.timeout(), None, None, True),
+    ],
+    ids=["exited_zero", "exited_nonzero", "signalled_unknown", "signalled_9", "timed_out"],
+)
+def test_outcome_pickle_round_trip_over_every_outcome_kind(
+    reply: Reply,
+    expect_code: int | None,
+    expect_signal: int | None,
+    expect_timed_out: bool,
+) -> None:
+    # An Outcome is fully determined by (code, signal, timed_out), all
+    # Python-visible, so it round-trips exactly for every terminal disposition —
+    # exactly why Outcome pickles while ProcessResult (whose identity also spans
+    # the accessor-less timeout/success_codes) does not. A ScriptedRunner
+    # produces each disposition hermetically (no real process, and cross-platform
+    # — the fake reports Signalled even on Windows).
+    scripted = ScriptedRunner()
+    scripted.fallback(reply)
+    original = scripted.output(Command("tool")).outcome
+    assert isinstance(original, Outcome)
+    assert original.code == expect_code
+    assert original.signal == expect_signal
+    assert original.timed_out == expect_timed_out
+
+    restored = pickle.loads(pickle.dumps(original))
+    assert restored == original
+    assert hash(restored) == hash(original)
+    assert restored.code == expect_code
+    assert restored.signal == expect_signal
+    assert restored.timed_out == expect_timed_out
+
+
 def test_finished_eq_hash_and_pickle_round_trip() -> None:
     async def scenario() -> Finished:
         code = "import sys; print('out'); print('e1', file=sys.stderr)"
@@ -1749,6 +1810,26 @@ def test_finished_eq_hash_and_pickle_round_trip() -> None:
     assert restored == a
     assert restored.code == 0
     assert restored.stderr == a.stderr == "e1"
+
+
+def test_finished_pickle_round_trip_carries_nonzero_outcome_and_stderr() -> None:
+    # Finished reconstructs its outcome via the same exact `scripted_outcome`
+    # path Outcome uses, and carries `stderr` through verbatim — so a non-zero
+    # exit with captured stderr round-trips exactly too.
+    async def scenario() -> Finished:
+        code = "import sys; print('e2', file=sys.stderr); sys.exit(3)"
+        proc = await Command(PY, ["-c", code]).astart()
+        async for _line in proc.stdout_lines():
+            pass
+        return await proc.afinish()
+
+    original = asyncio.run(scenario())
+    restored = pickle.loads(pickle.dumps(original))
+    assert restored == original
+    assert hash(restored) == hash(original)
+    assert restored.code == 3
+    assert not restored.exited_zero
+    assert restored.stderr == original.stderr == "e2"
 
 
 def test_run_profile_eq_is_value_based_not_identity() -> None:

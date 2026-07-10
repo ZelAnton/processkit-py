@@ -2,12 +2,14 @@
 //! take just the per-call arguments. Convenient for wrapping a tool (git, docker)
 //! you call repeatedly with the same defaults.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use processkit::CliClient as PkCliClient;
 use processkit::Command as PkCommand;
+use processkit::IntoCommand;
 use processkit::JobRunner;
 use processkit::ProcessRunner;
 use pyo3::prelude::*;
@@ -15,9 +17,10 @@ use pyo3::prelude::*;
 use crate::cancellation::PyCancellationToken;
 use crate::command::PyCommand;
 use crate::convert::{build_retry_policy, parse_retry_if, positive_duration};
+use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::runner::extract_runner;
-use crate::runtime::{block_on, drive_async};
+use crate::runtime::{block_on, drive_async_py};
 
 /// Either the per-call `args` list, or a fully-customized `Command` built via
 /// `CliClient.command(args)` and further chained (`.timeout(...)`, `.stdin(...)`,
@@ -50,23 +53,96 @@ impl ClientCall {
     }
 }
 
+thread_local! {
+    /// Per-thread hand-off for a `default_env_fn` resolver failure. The crate's
+    /// resolver is infallible (`Fn() -> String`, no `Result`), so a raising or
+    /// non-`str`-returning callback can't signal failure through its return type —
+    /// instead it parks its `PyErr` here, and [`build_command`] (which runs every
+    /// resolver synchronously on this same thread while applying the client's
+    /// defaults) picks it up and raises it, aborting the call before the runner is
+    /// ever reached. Thread-local, not a shared cell on the client: the resolvers
+    /// for one build all run on one thread, so the capture-then-read hand-off can
+    /// never interleave with a concurrent build on *another* thread.
+    ///
+    /// The slot is *not* owned by a single build, though: a resolver may itself
+    /// make a nested processkit call on the same thread (the classic "read a
+    /// secret via a child `CliClient.run()`" pattern), and that nested
+    /// `build_command` re-enters this slot while the outer build's error is still
+    /// parked. To stay correct under that reentrancy, [`build_command`] brackets
+    /// its build with [`ResolverErrorScope`], which saves and clears the slot on
+    /// entry and restores it on exit — so a nested build gets a fresh slot for its
+    /// own resolvers and never observes, consumes, or clobbers the outer build's
+    /// parked error (which would silently revert the outer call to fail-open).
+    /// Empty between top-level builds.
+    static RESOLVER_ERROR: RefCell<Option<PyErr>> = const { RefCell::new(None) };
+}
+
+/// RAII bracket that makes the [`RESOLVER_ERROR`] hand-off reentrancy-safe. A
+/// `default_env_fn` resolver can trigger a *nested* [`build_command`] on the same
+/// thread (e.g. it fetches a secret via a child `CliClient.run()`); without a
+/// bracket, that nested build's entry-clear would wipe an outer build's already-
+/// parked error, so the outer `build_command` would read an empty slot and
+/// silently revert to the fail-open (blank-credential) behaviour this whole
+/// mechanism exists to prevent. On construction the guard *takes* (saves and
+/// clears) whatever the slot holds — an outer build's parked error if this build
+/// is nested, or `None` at the top level — giving this build a fresh, empty slot;
+/// on drop it puts that saved value back, so an outer build still finds its error
+/// waiting. Restoring in `Drop` also keeps the slot consistent if the build
+/// unwinds.
+struct ResolverErrorScope {
+    /// The slot's contents from before this build, restored on drop. Held in an
+    /// `Option` only so `Drop` (which gets `&mut self`) can move the `PyErr` back
+    /// out on restore.
+    outer: Option<PyErr>,
+}
+
+impl ResolverErrorScope {
+    /// Enter a build: save and clear the slot, leaving it empty for this build's
+    /// own resolvers to park into.
+    fn enter() -> Self {
+        Self {
+            outer: RESOLVER_ERROR.with(|slot| slot.borrow_mut().take()),
+        }
+    }
+
+    /// Take this build's own parked resolver error, if any. Leaves the slot empty
+    /// so the `Drop` restore puts the *outer* build's saved error back.
+    fn take_error(&self) -> Option<PyErr> {
+        RESOLVER_ERROR.with(|slot| slot.borrow_mut().take())
+    }
+}
+
+impl Drop for ResolverErrorScope {
+    fn drop(&mut self) {
+        // Restore the outer build's parked error (or `None` at the top level),
+        // undoing the `take` in `enter` — so a nested build leaves the outer
+        // build's slot exactly as it found it.
+        RESOLVER_ERROR.with(|slot| {
+            *slot.borrow_mut() = self.outer.take();
+        });
+    }
+}
+
 /// Wrap a Python zero-arg callable as a `CliClient.default_env_fn` resolver.
-/// The crate's resolver is infallible (`Fn() -> V`, no `Result`) and expected
-/// to fall back internally rather than error — a raising or non-`str`-
-/// returning callback can't honor that contract, so (like
-/// `supervisor::make_stop_predicate`'s `stop_when`) the failure is surfaced via
-/// the unraisable hook (visible on stderr, not silently swallowed) and the
-/// resolved value falls back to an empty string rather than panicking the
-/// command-build path.
+/// The crate's resolver is infallible (`Fn() -> V`, no `Result`), so a raising
+/// or non-`str`-returning callback can't signal failure through its return type.
+/// Rather than fail **open** — the old behaviour: report via the unraisable hook
+/// and resolve to an empty string, which for a token/password/dynamic-config
+/// resolver would spawn the command with a blank credential instead of refusing
+/// — the failure is parked in [`RESOLVER_ERROR`] for [`build_command`] to raise,
+/// aborting the call before the runner (and any real spawn) is reached (fail
+/// **closed**). The sole surviving fallback is a *finalizing* interpreter
+/// (`try_attach` yields `None`): at shutdown there is no live interpreter to
+/// raise into, so the empty string stays there — the same finalization guard as
+/// `logging.rs`'s bridge.
 fn make_env_resolver(callback: Py<PyAny>) -> impl Fn() -> String + Send + Sync + 'static {
     move || {
         // `try_attach`, not `attach`: the crate materializes a command's env on
         // its run path, which can execute on a tokio worker not joined at
         // `Py_Finalize` (the runtime is an immortal singleton). A finalizing
-        // interpreter yields `None` -> fall back to an empty string (the same
-        // safe default as a raising/non-str callback), instead of the panic/crash
-        // a plain `attach` would cause at shutdown. Same finalization guard as
-        // `logging.rs`'s bridge.
+        // interpreter yields `None` -> fall back to an empty string, instead of
+        // the panic/crash a plain `attach` would cause at shutdown. Same
+        // finalization guard as `logging.rs`'s bridge.
         Python::try_attach(|py| {
             match callback
                 .call0(py)
@@ -74,12 +150,61 @@ fn make_env_resolver(callback: Py<PyAny>) -> impl Fn() -> String + Send + Sync +
             {
                 Ok(resolved) => resolved,
                 Err(err) => {
-                    err.write_unraisable(py, Some(callback.bind(py)));
+                    // Park the real exception for `build_command` to raise. Keep
+                    // the FIRST failure if several resolvers fail in one build:
+                    // the crate keeps invoking the remaining resolvers (each still
+                    // returns the empty string below), but the earliest-registered
+                    // failure is the deterministic one to surface. The returned
+                    // empty string is inert — `build_command` aborts before the
+                    // command is ever run, so this value is never observed.
+                    RESOLVER_ERROR.with(|slot| {
+                        let mut slot = slot.borrow_mut();
+                        if slot.is_none() {
+                            *slot = Some(err);
+                        }
+                    });
                     String::new()
                 }
             }
         })
         .unwrap_or_default()
+    }
+}
+
+/// Apply the client's defaults to `call` — running each `default_env_fn`
+/// resolver exactly as the crate would (fresh per build, gap-filled so a
+/// per-command `env()` or a static `default_env` for the same key still wins and
+/// a resolver whose key is already set never runs) — then surface any resolver
+/// failure captured in [`RESOLVER_ERROR`] as the raised `PyErr`. On success the
+/// fully-defaulted `Command` is returned for the caller to run; on failure the
+/// error propagates and the caller never touches the runner, so no process is
+/// spawned. The build is synchronous (no `await` between the resolvers and the
+/// read), so the whole capture-then-read hand-off stays on one thread — the
+/// caller's for the sync verbs and `command()`, the polling worker for the async
+/// verbs — and never interleaves with another build on a *different* thread.
+///
+/// A resolver can, however, re-enter `build_command` on the *same* thread (it
+/// makes a nested processkit call — e.g. reads a secret via a child
+/// `CliClient.run()`). [`ResolverErrorScope`] brackets the build so that nested
+/// build gets its own fresh slot and neither consumes nor clobbers this build's
+/// parked error; without it, the nested build would clear an outer parked error
+/// and the outer call would silently revert to fail-open.
+fn build_command(
+    client: &PkCliClient<Arc<dyn ProcessRunner + Send + Sync>>,
+    call: ClientCall,
+) -> PyResult<PkCommand> {
+    // Save + clear the slot for the duration of this build (restored on drop), so
+    // the capture-then-read hand-off is reentrancy-safe: a nested build triggered
+    // by a resolver on this thread cannot see or wipe an outer build's parked
+    // error. The build itself invokes the resolvers.
+    let scope = ResolverErrorScope::enter();
+    let command = match call {
+        ClientCall::Args(args) => client.command(args),
+        ClientCall::Cmd(cmd) => (*cmd).into_command(client),
+    };
+    match scope.take_error() {
+        Some(err) => Err(err),
+        None => Ok(command),
     }
 }
 
@@ -133,12 +258,14 @@ impl PyCliClient {
     ) -> PyResult<Self> {
         // Reject a non-callable `default_env_fn` value up front, before any
         // other constructor side effect (runner creation, `PkCliClient`
-        // construction): a typo'd `default_env_fn={"X": "not a callback"}`
-        // would otherwise only surface as a silently-empty env var, once per
-        // command build, via `make_env_resolver`'s unraisable-hook fallback
-        // (that fallback stays for genuine runtime failures of a valid
-        // callable — this is strictly an earlier, louder rejection of an
-        // invalid one).
+        // construction): a non-callable is a construction-time mistake, so it
+        // belongs at construction time — a clear `TypeError` naming the key,
+        // rather than a failure deferred to the first command build. (A genuine
+        // *callable* that fails at resolve time — raises, or returns a non-`str`
+        // — is a distinct, per-build runtime failure; `make_env_resolver` /
+        // `build_command` now propagate THAT as the raised exception too, fail-
+        // closed, aborting before any spawn, instead of the old empty-string
+        // fallback.)
         if let Some(resolvers) = &default_env_fn {
             for (key, callback) in resolvers {
                 let bound = callback.bind(py);
@@ -224,66 +351,65 @@ impl PyCliClient {
     /// `run()`/`output()`/… instead of a plain arg list. An explicit setting on
     /// the returned `Command` always wins over the client's default; only the
     /// gaps are filled either way.
-    fn command(&self, args: Vec<PathBuf>) -> PyCommand {
-        PyCommand {
-            inner: self.inner.command(args),
-        }
+    ///
+    /// Applying the defaults resolves every `default_env_fn`; a resolver that
+    /// raises or returns a non-`str` aborts `command()` with that exception,
+    /// same as the run verbs (fail-closed — a broken credential resolver never
+    /// yields a silently-empty env var).
+    fn command(&self, args: Vec<PathBuf>) -> PyResult<PyCommand> {
+        Ok(PyCommand {
+            inner: build_command(&self.inner, ClientCall::Args(args))?,
+        })
     }
 
     /// Run with the given args, or a `Command` from `command()`; require a
     /// zero exit and return trimmed stdout.
     fn run(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<String> {
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => block_on(py, self.inner.run(args)),
-            ClientCall::Cmd(cmd) => block_on(py, self.inner.run(*cmd)),
-        }
+        let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
+        block_on(py, self.inner.run(command))
     }
 
     /// Run with the given args, or a `Command` from `command()`, and capture
     /// output (a non-zero exit is data).
     fn output(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<PyProcessResult> {
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => block_on(py, self.inner.output_string(args)),
-            ClientCall::Cmd(cmd) => block_on(py, self.inner.output_string(*cmd)),
-        }
-        .map(PyProcessResult::from)
+        let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
+        block_on(py, self.inner.output_string(command)).map(PyProcessResult::from)
     }
 
     /// Run with the given args, or a `Command` from `command()`, and capture
     /// raw-bytes stdout.
     fn output_bytes(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<PyBytesResult> {
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => block_on(py, self.inner.output_bytes(args)),
-            ClientCall::Cmd(cmd) => block_on(py, self.inner.output_bytes(*cmd)),
-        }
-        .map(PyBytesResult::from)
+        let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
+        block_on(py, self.inner.output_bytes(command)).map(PyBytesResult::from)
     }
 
     /// Run with the given args, or a `Command` from `command()`, and return
     /// the exit code.
     fn exit_code(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<i32> {
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => block_on(py, self.inner.exit_code(args)),
-            ClientCall::Cmd(cmd) => block_on(py, self.inner.exit_code(*cmd)),
-        }
+        let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
+        block_on(py, self.inner.exit_code(command))
     }
 
     /// Run a predicate call (args, or a `Command` from `command()`) and read
     /// its exit code as a bool.
     fn probe(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<bool> {
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => block_on(py, self.inner.probe(args)),
-            ClientCall::Cmd(cmd) => block_on(py, self.inner.probe(*cmd)),
-        }
+        let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
+        block_on(py, self.inner.probe(command))
     }
 
     /// Async counterpart of `run()`.
+    ///
+    /// The `default_env_fn` resolvers run when the returned awaitable is first
+    /// awaited (fresh per build, like the sync verbs); a resolver that raises or
+    /// returns a non-`str` propagates that exception out of the `await`, before
+    /// the runner is reached, so no process is spawned (fail-closed).
     fn arun<'py>(&self, py: Python<'py>, call: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => drive_async(py, async move { client.run(args).await }),
-            ClientCall::Cmd(cmd) => drive_async(py, async move { client.run(*cmd).await }),
-        }
+        let call = ClientCall::from_py(call)?;
+        drive_async_py(py, async move {
+            let command = build_command(&client, call)?;
+            client.run(command).await.map_err(map_err)
+        })
     }
 
     /// Async counterpart of `output()`.
@@ -293,14 +419,15 @@ impl PyCliClient {
         call: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => drive_async(py, async move {
-                client.output_string(args).await.map(PyProcessResult::from)
-            }),
-            ClientCall::Cmd(cmd) => drive_async(py, async move {
-                client.output_string(*cmd).await.map(PyProcessResult::from)
-            }),
-        }
+        let call = ClientCall::from_py(call)?;
+        drive_async_py(py, async move {
+            let command = build_command(&client, call)?;
+            client
+                .output_string(command)
+                .await
+                .map(PyProcessResult::from)
+                .map_err(map_err)
+        })
     }
 
     /// Async counterpart of `output_bytes()`.
@@ -310,14 +437,15 @@ impl PyCliClient {
         call: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => drive_async(py, async move {
-                client.output_bytes(args).await.map(PyBytesResult::from)
-            }),
-            ClientCall::Cmd(cmd) => drive_async(py, async move {
-                client.output_bytes(*cmd).await.map(PyBytesResult::from)
-            }),
-        }
+        let call = ClientCall::from_py(call)?;
+        drive_async_py(py, async move {
+            let command = build_command(&client, call)?;
+            client
+                .output_bytes(command)
+                .await
+                .map(PyBytesResult::from)
+                .map_err(map_err)
+        })
     }
 
     /// Async counterpart of `exit_code()`.
@@ -327,10 +455,11 @@ impl PyCliClient {
         call: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => drive_async(py, async move { client.exit_code(args).await }),
-            ClientCall::Cmd(cmd) => drive_async(py, async move { client.exit_code(*cmd).await }),
-        }
+        let call = ClientCall::from_py(call)?;
+        drive_async_py(py, async move {
+            let command = build_command(&client, call)?;
+            client.exit_code(command).await.map_err(map_err)
+        })
     }
 
     /// Async counterpart of `probe()`.
@@ -340,10 +469,11 @@ impl PyCliClient {
         call: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
-        match ClientCall::from_py(call)? {
-            ClientCall::Args(args) => drive_async(py, async move { client.probe(args).await }),
-            ClientCall::Cmd(cmd) => drive_async(py, async move { client.probe(*cmd).await }),
-        }
+        let call = ClientCall::from_py(call)?;
+        drive_async_py(py, async move {
+            let command = build_command(&client, call)?;
+            client.probe(command).await.map_err(map_err)
+        })
     }
 
     fn __repr__(&self) -> String {

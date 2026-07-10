@@ -11,10 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Changed
--
+- `ProcessResult` and `SupervisionOutcome` are no longer picklable — pickling
+  either now raises `TypeError` (they were advertised as picklable in 1.2.0).
+  Their equality is the underlying `processkit` crate's own comparison, which
+  also spans a command's configured `timeout` and accepted `success_codes` —
+  two fields the crate exposes through no accessor. A pickle could not read them
+  back to reconstruct them, so a result from a command that set `.timeout(...)`
+  or `.success_codes(...)` unpickled **unequal** to its original (identical
+  visible fields and `hash()`, but `!=`), silently breaking the round-trip
+  invariant a picklable value type promises. Rather than hand back a
+  subtly-wrong value, both refuse loudly, matching `BytesResult`/`RunProfile`.
+  `Outcome` and `Finished` remain picklable and round-trip **exactly** (an
+  `Outcome` is fully determined by its Python-visible `code`/`signal`/
+  `timed_out`; a `Finished` adds only its `stderr`). To move a captured result
+  across a process boundary — e.g. back from a
+  `concurrent.futures.ProcessPoolExecutor` worker — pickle `result.outcome`
+  (an `Outcome`), or persist `result.stdout`/`.stderr`/`.code` yourself.
 
 ### Fixed
--
+- `CliClient` `default_env_fn` resolvers are now fail-closed: a resolver that
+  raises or returns a non-`str` aborts the triggering `command()`/verb with that
+  exception, *before* the runner is reached, so no process is spawned. Previously
+  the failure was only reported via the unraisable hook and the resolved value
+  fell back to an empty string — running the command with a silently-missing
+  credential. Applies uniformly to `command()`, the sync verbs, and the async
+  verbs; a resolver whose key is already set by an explicit per-command `env()`
+  or a static `default_env` still never runs (and so cannot abort the call).
 
 ## [1.2.1] - 2026-07-09
 

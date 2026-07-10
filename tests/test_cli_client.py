@@ -3,16 +3,9 @@ program plus default timeout/env so each verb takes just the per-call args
 (or a customized `Command` from `command()` — the `IntoCommand` path).
 
 Its verbs share *names* with the runner seam (`output`/`run`/`exit_code`/
-`probe`, `a`-prefixed twins) but not the runner seam's *signature* — a plain
-arg list, not a bare `Command` (that only arrives via `command()`'s
-IntoCommand path) — so it is still not interchangeable with the runner seam,
-and has no `start()`/`astart()` at all. Note the asymmetry this creates with
-`isinstance`: `ProcessRunner` (`Protocol`, `@runtime_checkable`) only checks
-method *names* at runtime, not parameter types, so
-`isinstance(CliClient(...), ProcessRunner)` is `True` despite the signature
-mismatch — a well-known `Protocol` limitation, not a bug. `StreamingRunner`
-(which adds `start`/`astart`) correctly reads `False`, since those names are
-genuinely absent.
+`probe`, `a`-prefixed twins) and accept either per-call args or a `Command`, so
+the client structurally satisfies `ProcessRunner`. It has no
+`start()`/`astart()`, so it does not satisfy `StreamingRunner`.
 """
 
 from __future__ import annotations
@@ -427,14 +420,15 @@ def test_cli_client_default_cancel_on_yields_to_an_explicit_per_command_token() 
     assert asyncio.run(scenario()) == "unaffected"
 
 
-def test_cli_client_satisfies_process_runner_by_name_only() -> None:
-    # `ProcessRunner`'s runtime `isinstance` check (via `@runtime_checkable`)
-    # only inspects method *names*, not parameter types — so CliClient (same
-    # verb names, different signature: `args` not `Command`) structurally
-    # satisfies it at runtime despite not being genuinely interchangeable.
-    # This is a documented Python `Protocol` limitation, pinned here so it
-    # doesn't look like an accidental regression later.
-    assert isinstance(CliClient("git"), ProcessRunner)
+def _run_through_process_runner(runner: ProcessRunner, command: Command) -> str:
+    return runner.run(command)
+
+
+def test_cli_client_satisfies_process_runner() -> None:
+    client = CliClient(PY)
+    command = client.command(["-c", "print('through-protocol')"])
+    assert _run_through_process_runner(client, command) == "through-protocol"
+    assert isinstance(client, ProcessRunner)
 
 
 def test_cli_client_is_not_a_streaming_runner() -> None:

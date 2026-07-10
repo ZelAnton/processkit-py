@@ -1088,9 +1088,11 @@ def test_cancellation_token_child_token_reflects_parent_state() -> None:
     # other children) alone.
     other_parent = CancellationToken()
     other_child = other_parent.child_token()
+    sibling = other_parent.child_token()
     other_child.cancel()
     assert other_child.is_cancelled()
     assert not other_parent.is_cancelled()
+    assert not sibling.is_cancelled()
 
 
 def test_cancel_on_tears_down_the_run_and_raises_cancelled() -> None:

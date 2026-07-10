@@ -25,6 +25,7 @@ process tree.
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
+from threading import Lock
 
 from ._aio import WaitTimeout, wait_for_line, wait_for_path, wait_for_port, wait_until
 from ._processkit import (
@@ -74,20 +75,31 @@ from ._types import (
     StrPath,
 )
 
+_VERSION_LOCK = Lock()
+
 
 def __getattr__(name: str) -> str:
     # Lazy `__version__` (PEP 562): `importlib.metadata.version()` scans
     # installed-package metadata, a cost every `import processkit` would
-    # otherwise pay even when nothing reads `__version__`. Computed only on
-    # first access; nothing caches it since a re-scan is cheap once resolved.
+    # otherwise pay even when nothing reads `__version__`. The lock makes the
+    # first lookup single-flight on free-threaded builds; publishing the result
+    # in the module globals makes every later read an ordinary attribute lookup.
     if name == "__version__":
-        try:
-            # Distribution name is `processkit-py` (the bare `processkit` is
-            # taken on PyPI); the import name stays `processkit`. The metadata
-            # lookup keys off the distribution name.
-            return version("processkit-py")
-        except PackageNotFoundError:  # not installed (e.g. running from a source tree)
-            return "unknown"
+        with _VERSION_LOCK:
+            # Another thread may have populated the module while this one was
+            # waiting for the lock after its initial attribute miss.
+            cached = globals().get("__version__")
+            if isinstance(cached, str):
+                return cached
+            try:
+                # Distribution name is `processkit-py` (the bare `processkit` is
+                # taken on PyPI); the import name stays `processkit`. The metadata
+                # lookup keys off the distribution name.
+                resolved = version("processkit-py")
+            except PackageNotFoundError:  # not installed (e.g. running from a source tree)
+                resolved = "unknown"
+            globals()["__version__"] = resolved
+            return resolved
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

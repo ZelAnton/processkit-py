@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (an `Outcome`), or persist `result.stdout`/`.stderr`/`.code` yourself.
 
 ### Fixed
+- `CancellationToken`'s docstring (Rust doc comment and the `.pyi` stub) no
+  longer claims that a `child_token()` shares the same cancellation state as
+  its parent and siblings. The actual, already-tested behavior is
+  parent-to-child only: a parent cancels its children, but cancelling a
+  child never affects the parent or its other children.
+- `processkit.__version__` now matches its own docstring: the first access
+  computes it via `importlib.metadata.version()` and caches the result
+  (including the source-tree `"unknown"` outcome) for every later access,
+  instead of re-scanning package metadata on every read. The first access is
+  single-flight even under concurrent readers on a free-threaded build.
 - `CliClient` `default_env_fn` resolvers are now fail-closed: a resolver that
   raises or returns a non-`str` aborts the triggering `command()`/verb with that
   exception, *before* the runner is reached, so no process is spawned. Previously

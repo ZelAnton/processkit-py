@@ -10,11 +10,15 @@ that wasn't reflected in the stub or the re-exports.
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import inspect
 import pathlib
 import re
+import threading
+import time
 import types
 from collections.abc import Callable
+from importlib.metadata import PackageNotFoundError
 
 import pytest
 
@@ -144,6 +148,59 @@ def test_version_is_exposed() -> None:
     # one place that exercises it actually resolving to a real value.
     assert isinstance(processkit.__version__, str)
     assert processkit.__version__
+
+
+def test_version_is_cached_after_concurrent_first_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Even on a free-threaded build, concurrent first readers perform one
+    # metadata lookup and then use the published module attribute.
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def counting_version(distribution_name: str) -> str:
+        nonlocal calls
+        assert distribution_name == "processkit-py"
+        with calls_lock:
+            calls += 1
+        time.sleep(0.02)  # widen the first-access race
+        return "test-version"
+
+    monkeypatch.setattr(processkit, "version", counting_version)
+    # `monkeypatch.delattr(processkit, "__version__", raising=False)` would
+    # itself call `hasattr`/`getattr` first to decide whether there is
+    # anything to delete — which, on a module whose `__version__` isn't yet a
+    # real cached attribute, resolves it through `__getattr__` (an extra,
+    # order-dependent lookup) only to delete the freshly cached value right
+    # back out. Deleting from `vars(processkit)` directly is a plain dict
+    # operation and never triggers `__getattr__`.
+    monkeypatch.delitem(vars(processkit), "__version__", raising=False)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        resolved = list(pool.map(lambda _: processkit.__version__, range(32)))
+
+    assert resolved == ["test-version"] * 32
+    assert processkit.__version__ == "test-version"
+    assert calls == 1
+
+
+def test_version_unknown_is_also_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The source-tree ("not installed") outcome is cached too, not just the
+    # successful lookup — a repeated access must not re-scan metadata either.
+    calls: list[str] = []
+
+    def raising_version(distribution_name: str) -> str:
+        calls.append(distribution_name)
+        raise PackageNotFoundError(distribution_name)
+
+    monkeypatch.setattr(processkit, "version", raising_version)
+    # See the comment in `test_version_is_cached_after_concurrent_first_access`
+    # on why `delitem` on `vars(processkit)`, not `monkeypatch.delattr`.
+    monkeypatch.delitem(vars(processkit), "__version__", raising=False)
+
+    assert processkit.__version__ == "unknown"
+    assert processkit.__version__ == "unknown"
+    assert len(calls) == 1
 
 
 def test_all_is_sorted_unique_and_importable() -> None:

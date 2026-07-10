@@ -2,6 +2,7 @@
 //! / `RecordingRunner` / `DryRunRunner` test doubles, and the `Reply` builder,
 //! sharing one generic set of run verbs over `ProcessRunner`.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -20,7 +21,90 @@ use crate::convert::nonnegative_duration;
 use crate::errors::{map_err, ProcessError};
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
-use crate::runtime::{block_on, drive_async};
+use crate::runtime::{block_on, drive_async_py};
+
+// A per-call sink for the error a `ScriptedRunner.when` predicate raised (or the
+// `TypeError` a non-`bool` return produced). The crate resolves a reply by
+// calling each rule's predicate `(&Command) -> bool` — infallible from its
+// perspective — so a raising predicate cannot abort the verb by itself. The
+// predicate stashes its error in the innermost active sink and the run verb,
+// wrapped in [`with_when_capture_sync`]/[`with_when_capture_async`], re-raises it
+// instead of returning the reply a fallthrough would have selected.
+//
+// A tokio task-local (not a slot on the shared predicate closure or the runner)
+// gives per-**call** isolation: the sink is scoped around each verb's future, so
+// two concurrent verbs against the same shared `ScriptedRunner` — sync on
+// separate threads, or async tasks interleaved on the runtime — each read and
+// write their own sink and never cross errors, even though they share one
+// predicate closure. Outside any scope (e.g. a `ScriptedRunner` driven inside a
+// `Supervisor`, whose loop does not route through these wrappers) the predicate
+// falls back to the visible-on-stderr unraisable hook, its prior behavior.
+tokio::task_local! {
+    static WHEN_PREDICATE_ERROR: Arc<Mutex<Option<PyErr>>>;
+}
+
+/// Stash a `when` predicate's error in the active per-call sink (first error
+/// wins). Returns `Some(err)` when there is **no** active sink — the predicate
+/// ran outside a wrapped run verb — so the caller can fall back to the unraisable
+/// hook; returns `None` when the error was handed to a sink (or dropped as a
+/// later duplicate within an already-erroring call).
+fn stash_when_error(err: PyErr) -> Option<PyErr> {
+    let mut carry = Some(err);
+    let in_scope = WHEN_PREDICATE_ERROR
+        .try_with(|slot| {
+            let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+            if guard.is_none() {
+                *guard = carry.take();
+            }
+        })
+        .is_ok();
+    // In scope: the error is this call's to re-raise (or a duplicate to drop —
+    // either way `carry` is dropped here). Out of scope: return it for the
+    // unraisable-hook fallback.
+    if in_scope {
+        None
+    } else {
+        carry
+    }
+}
+
+/// Run a runner verb future under a fresh per-call `when`-predicate error sink
+/// (sync). If a `ScriptedRunner.when` predicate raised while the crate resolved
+/// a reply, re-raise that error instead of returning the reply-derived result.
+fn with_when_capture_sync<U>(
+    py: Python<'_>,
+    fut: impl Future<Output = Result<U, processkit::Error>> + Send,
+) -> PyResult<U>
+where
+    U: Send,
+{
+    let sink: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
+    let result = block_on(py, WHEN_PREDICATE_ERROR.scope(sink.clone(), fut));
+    if let Some(err) = sink.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        return Err(err);
+    }
+    result
+}
+
+/// Async counterpart of [`with_when_capture_sync`]: a fresh sink is scoped around
+/// the awaited verb, and a `when`-predicate error takes precedence over the
+/// reply-derived result (or the mapped crate error).
+fn with_when_capture_async<'py, U>(
+    py: Python<'py>,
+    fut: impl Future<Output = Result<U, processkit::Error>> + Send + 'static,
+) -> PyResult<Bound<'py, PyAny>>
+where
+    U: for<'a> IntoPyObject<'a> + Send + 'static,
+{
+    drive_async_py(py, async move {
+        let sink: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
+        let result = WHEN_PREDICATE_ERROR.scope(sink.clone(), fut).await;
+        if let Some(err) = sink.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            return Err(err);
+        }
+        result.map_err(map_err)
+    })
+}
 
 // The run verbs are generic over the crate's `ProcessRunner` so the real
 // `Runner` and the `ScriptedRunner` share one implementation.
@@ -30,7 +114,7 @@ pub(crate) fn runner_output<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyProcessResult> {
-    block_on(py, runner.output_string(&command.inner)).map(PyProcessResult::from)
+    with_when_capture_sync(py, runner.output_string(&command.inner)).map(PyProcessResult::from)
 }
 
 pub(crate) fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
@@ -38,7 +122,7 @@ pub(crate) fn runner_output_bytes<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyBytesResult> {
-    block_on(py, runner.output_bytes(&command.inner)).map(PyBytesResult::from)
+    with_when_capture_sync(py, runner.output_bytes(&command.inner)).map(PyBytesResult::from)
 }
 
 pub(crate) fn runner_run<R: ProcessRunner + Sync + ?Sized>(
@@ -46,7 +130,7 @@ pub(crate) fn runner_run<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<String> {
-    block_on(py, runner.run(&command.inner))
+    with_when_capture_sync(py, runner.run(&command.inner))
 }
 
 pub(crate) fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
@@ -54,7 +138,7 @@ pub(crate) fn runner_exit_code<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<i32> {
-    block_on(py, runner.exit_code(&command.inner))
+    with_when_capture_sync(py, runner.exit_code(&command.inner))
 }
 
 pub(crate) fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
@@ -62,7 +146,7 @@ pub(crate) fn runner_probe<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<bool> {
-    block_on(py, runner.probe(&command.inner))
+    with_when_capture_sync(py, runner.probe(&command.inner))
 }
 
 fn runner_start<R: ProcessRunner + Sync + ?Sized>(
@@ -70,9 +154,10 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
     runner: &R,
     command: &PyCommand,
 ) -> PyResult<PyRunningProcess> {
-    // `start()` is async, so `block_on` provides the runtime context while it
-    // (and its pump spawn) is polled — no `enter()` needed.
-    block_on(py, runner.start(&command.inner)).map(PyRunningProcess::from)
+    // `start()` is async, so `block_on` (inside the capture wrapper) provides the
+    // runtime context while it (and its pump spawn) is polled — no `enter()`
+    // needed.
+    with_when_capture_sync(py, runner.start(&command.inner)).map(PyRunningProcess::from)
 }
 
 // Async run verbs over an owned `Arc<R>` so the future can hold the runner with
@@ -84,7 +169,7 @@ pub(crate) fn runner_aoutput<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    drive_async(py, async move {
+    with_when_capture_async(py, async move {
         runner.output_string(&cmd).await.map(PyProcessResult::from)
     })
 }
@@ -95,7 +180,7 @@ pub(crate) fn runner_aoutput_bytes<'py, R: ProcessRunner + Send + Sync + 'static
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    drive_async(py, async move {
+    with_when_capture_async(py, async move {
         runner.output_bytes(&cmd).await.map(PyBytesResult::from)
     })
 }
@@ -106,7 +191,7 @@ pub(crate) fn runner_arun<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    drive_async(py, async move { runner.run(&cmd).await })
+    with_when_capture_async(py, async move { runner.run(&cmd).await })
 }
 
 pub(crate) fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
@@ -115,7 +200,7 @@ pub(crate) fn runner_aexit_code<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    drive_async(py, async move { runner.exit_code(&cmd).await })
+    with_when_capture_async(py, async move { runner.exit_code(&cmd).await })
 }
 
 pub(crate) fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
@@ -124,7 +209,7 @@ pub(crate) fn runner_aprobe<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    drive_async(py, async move { runner.probe(&cmd).await })
+    with_when_capture_async(py, async move { runner.probe(&cmd).await })
 }
 
 fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
@@ -133,16 +218,26 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
-    drive_async(py, async move {
+    with_when_capture_async(py, async move {
         runner.start(&cmd).await.map(PyRunningProcess::from)
     })
 }
 
 /// Wrap a Python predicate `(Command) -> bool` as a `ScriptedRunner.when`
-/// rule. Mirrors `supervisor::make_stop_predicate`'s infallible-bridge
-/// convention: a raising or non-`bool` predicate reads as "does not match"
-/// rather than panicking across the FFI boundary, with the error surfaced via
-/// the unraisable hook (visible on stderr) instead of silently swallowed.
+/// rule. The crate's rule predicate is infallible (`-> bool`), so a raising or
+/// non-`bool` predicate cannot abort reply resolution by itself. Instead the
+/// error is **stashed in the active per-call sink** ([`WHEN_PREDICATE_ERROR`])
+/// and the wrapper returns `true` (matches) so the crate stops at this rule
+/// rather than falling through to a later rule or the fallback; the enclosing run
+/// verb ([`with_when_capture_sync`]/[`with_when_capture_async`]) then re-raises
+/// the stashed error to the caller. A broken match predicate must surface — not
+/// silently pick a fallback reply that could mask a defect.
+///
+/// Outside any active sink (a predicate run through a path that does not wrap the
+/// verb — e.g. a `ScriptedRunner` driven inside a `Supervisor`) it keeps the
+/// prior behavior: read as "does not match" with the error surfaced via the
+/// unraisable hook (visible on stderr) rather than propagated across the FFI
+/// boundary.
 fn make_command_predicate(
     callback: Py<PyAny>,
 ) -> impl Fn(&processkit::Command) -> bool + Send + Sync + 'static {
@@ -150,9 +245,8 @@ fn make_command_predicate(
         // `try_attach`, not `attach`: a scripted-runner predicate can run on a
         // tokio worker not joined at `Py_Finalize` (the runtime is an immortal
         // singleton). A finalizing interpreter yields `None` -> the safe "does
-        // not match" default (same verdict as a raising/non-bool predicate),
-        // instead of the panic/crash a plain `attach` would cause at shutdown.
-        // Same finalization guard as `logging.rs`'s bridge.
+        // not match" default, instead of the panic/crash a plain `attach` would
+        // cause at shutdown. Same finalization guard as `logging.rs`'s bridge.
         Python::try_attach(|py| {
             let py_command = match Py::new(
                 py,
@@ -161,23 +255,37 @@ fn make_command_predicate(
                 },
             ) {
                 Ok(py_command) => py_command,
-                Err(err) => {
-                    err.write_unraisable(py, None);
-                    return false;
-                }
+                Err(err) => return propagate_when_error(py, err, None),
             };
             match callback
                 .call1(py, (py_command,))
                 .and_then(|value| value.extract::<bool>(py))
             {
                 Ok(matches) => matches,
-                Err(err) => {
-                    err.write_unraisable(py, Some(callback.bind(py)));
-                    false
-                }
+                Err(err) => propagate_when_error(py, err, Some(callback.bind(py))),
             }
         })
         .unwrap_or(false)
+    }
+}
+
+/// Route a `when`-predicate error to the active per-call sink and return the
+/// match verdict the crate should see. In scope: stash it and return `true`, so
+/// reply resolution stops at this rule (no fallthrough) and the run verb
+/// re-raises. Out of scope: fall back to the unraisable hook and read as "does
+/// not match" (`false`), the prior behavior. `hook_target` names the callback in
+/// the unraisable report (`None` for a bridge/argument-build error).
+fn propagate_when_error(
+    py: Python<'_>,
+    err: PyErr,
+    hook_target: Option<&Bound<'_, PyAny>>,
+) -> bool {
+    match stash_when_error(err) {
+        None => true,
+        Some(err) => {
+            err.write_unraisable(py, hook_target);
+            false
+        }
     }
 }
 
@@ -461,11 +569,11 @@ runner_pymethods!(PyScriptedRunner {
 
     /// Reply with `reply` when `predicate(command)` accepts it — for a match
     /// that isn't a plain argv prefix (`on()`), e.g. inspecting `cwd`/`env`/
-    /// flags via `Command`'s own inspection accessors. `predicate` is
-    /// infallible from the crate's perspective: a raising or non-`bool`
-    /// predicate is treated as "does not match" (like
-    /// `Supervisor.stop_when`), with the error surfaced via the unraisable
-    /// hook rather than silently swallowed.
+    /// flags via `Command`'s own inspection accessors. A `predicate` that
+    /// raises or returns a non-`bool` aborts the run verb with that error (like
+    /// `Supervisor.stop_when`) rather than selecting the next rule or the
+    /// fallback — a broken match predicate surfaces instead of silently masking
+    /// a test defect behind a fallback reply.
     fn when(&self, predicate: Py<PyAny>, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.when(make_command_predicate(predicate), reply))

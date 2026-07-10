@@ -356,13 +356,21 @@ class CancellationToken:
     """A cancel switch: fire it to tear down every run wired to it via
     `Command.cancel_on()` / `CliClient`'s `default_cancel_on=` /
     `Pipeline.cancel_on()` — surfacing `Cancelled`. Cheap to clone/share:
-    every clone and every `child_token()` refers to the same underlying
-    cancellation state. A cancelled token stays cancelled forever."""
+    every clone refers to the same underlying state, so cancelling any clone
+    cancels every run wired to it. A cancelled token stays cancelled forever.
+
+    `child_token()` derives a separate, scoped token: it is cancelled
+    automatically when this one is, but cancelling it back does NOT
+    propagate to this token or to its other children — cancellation only
+    flows parent-to-child, never child-to-parent or between siblings."""
 
     def __init__(self) -> None: ...
     def cancel(self) -> None: ...
     def is_cancelled(self) -> bool: ...
-    def child_token(self) -> CancellationToken: ...
+    def child_token(self) -> CancellationToken:
+        """A new token that is cancelled automatically when this one is, but
+        can also be cancelled independently — cancelling the child does not
+        affect this token or its other children."""
     def __repr__(self) -> str: ...
 
 @final
@@ -692,6 +700,10 @@ class Supervisor:
         backoff_factor: float | None = ...,
         max_backoff: float | None = ...,
         jitter: bool | None = ...,
+        # A `stop_when` that raises or returns a non-bool aborts supervision with
+        # that error — it is NOT swallowed into "do not stop" — so a broken
+        # predicate surfaces to the caller (from `run()`/`arun()`) instead of
+        # looping to `max_restarts`. No further restart runs after it.
         stop_when: Callable[[ProcessResult], bool] | None = ...,
         # Classify a permanent failure so supervision gives up instead of
         # restarting a crash forever. Consulted only for a crash the policy would
@@ -703,7 +715,9 @@ class Supervisor:
         # by e.g. `isinstance(attempt, ProcessNotFound)` for a missing binary).
         # A crash verdict stops with `SupervisionOutcome.stopped == "gave_up"`; a
         # launch-failure verdict has no result to report and surfaces the
-        # classified error directly from `run()`/`arun()`.
+        # classified error directly from `run()`/`arun()`. A classifier that
+        # raises or returns a non-bool likewise aborts supervision with that error
+        # rather than being read as "keep restarting".
         give_up_when: Callable[[ProcessResult | ProcessError], bool] | None = ...,
         storm_pause: float | None = ...,
         failure_threshold: float | None = ...,
@@ -763,8 +777,11 @@ class ScriptedRunner(_RunnerVerbs):
     # last one repeats once exhausted. Raises `ValueError` for an empty
     # `replies` sequence.
     def on_sequence(self, prefix: Args, replies: Sequence[Reply]) -> None: ...
-    # `predicate` is infallible from the crate's perspective: a raising or
-    # non-bool predicate reads as "does not match" (see `runner.rs`).
+    # A `predicate` that raises or returns a non-bool aborts the run verb with
+    # that error — it does NOT fall through to the next rule or the fallback — so
+    # a broken match predicate surfaces instead of silently masking a test defect
+    # behind a fallback reply (see `runner.rs`). Concurrent verbs against one
+    # shared runner never cross predicate errors.
     def when(self, predicate: Callable[[Command], bool], reply: Reply) -> None: ...
     def fallback(self, reply: Reply) -> None: ...
     def __repr__(self) -> str: ...

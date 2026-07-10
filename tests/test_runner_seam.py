@@ -609,16 +609,9 @@ def test_scripted_runner_when_matches_by_predicate() -> None:
     assert runner.run(Command("tool", ["--safe"])) == "default"
 
 
-def test_scripted_runner_when_predicate_raising_is_treated_as_no_match() -> None:
-    # A raising predicate is infallible from the crate's perspective — treated
-    # as "does not match" (surfaced via the unraisable hook, not propagated).
-    captured: list[BaseException] = []
-
-    def hook(unraisable: object) -> None:
-        exc = getattr(unraisable, "exc_value", None)
-        if isinstance(exc, BaseException):
-            captured.append(exc)
-
+def test_scripted_runner_when_raising_predicate_aborts_the_verb() -> None:
+    # A raising when() predicate now aborts the run verb with that error instead
+    # of falling through to the fallback (which would silently mask the defect).
     def boom(cmd: Command) -> bool:
         raise ValueError("predicate exploded")
 
@@ -626,14 +619,81 @@ def test_scripted_runner_when_predicate_raising_is_treated_as_no_match() -> None
     runner.when(boom, Reply.ok("matched"))
     runner.fallback(Reply.ok("fallback"))
 
-    old_hook = sys.unraisablehook
-    sys.unraisablehook = hook
-    try:
-        assert runner.run(Command("tool")) == "fallback"
-    finally:
-        sys.unraisablehook = old_hook
-    assert captured
-    assert isinstance(captured[0], ValueError)
+    with pytest.raises(ValueError, match="predicate exploded"):
+        runner.run(Command("tool"))
+
+
+def test_scripted_runner_when_non_bool_predicate_aborts_the_verb() -> None:
+    # A non-bool return is as undecidable as a raise: it must surface a TypeError,
+    # not be coerced to "does not match" and fall through to the fallback.
+    def predicate(cmd: Command) -> bool:
+        return "yes"  # type: ignore[return-value]
+
+    runner = ScriptedRunner()
+    runner.when(predicate, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+
+    with pytest.raises(TypeError):
+        runner.output(Command("tool"))
+
+
+def test_scripted_runner_when_raising_predicate_does_not_select_a_later_rule() -> None:
+    # The verb aborts at the broken predicate — a later rule that WOULD match is
+    # never selected. No silent fallthrough to the next rule (or the fallback).
+    def boom(cmd: Command) -> bool:
+        raise ValueError("boom")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("first"))
+    runner.on(["tool"], Reply.ok("second"))  # matches "tool", but must not be chosen
+    runner.fallback(Reply.ok("fallback"))
+
+    with pytest.raises(ValueError, match="boom"):
+        runner.run(Command("tool"))
+
+
+def test_scripted_runner_awhen_raising_predicate_aborts_the_verb() -> None:
+    # The async run verbs propagate a raising when() predicate just like the sync
+    # ones — the error is not confined to the unraisable hook.
+    def boom(cmd: Command) -> bool:
+        raise ValueError("async predicate exploded")
+
+    async def scenario() -> str:
+        runner = ScriptedRunner()
+        runner.when(boom, Reply.ok("matched"))
+        runner.fallback(Reply.ok("fallback"))
+        return await runner.arun(Command("tool"))
+
+    with pytest.raises(ValueError, match="async predicate exploded"):
+        asyncio.run(scenario())
+
+
+def test_concurrent_scripted_when_calls_share_a_runner_without_mixing_errors() -> None:
+    # One SHARED ScriptedRunner, many concurrent async verbs, a single when()
+    # predicate that raises an error tagged with the command it was handed. Each
+    # call must surface the error for ITS OWN command — proving the per-call
+    # error sink is isolated even though every call runs through the same shared
+    # predicate closure.
+    runner = ScriptedRunner()
+
+    def boom(cmd: Command) -> bool:
+        raise ValueError(cmd.arguments[0])  # tag = this call's own argument
+
+    runner.when(boom, Reply.ok("x"))
+    runner.fallback(Reply.ok("fallback"))
+
+    async def one(tag: str) -> str:
+        try:
+            await runner.arun(Command("tool", [tag]))
+        except ValueError as exc:
+            return str(exc)
+        return "no error"
+
+    async def scenario() -> list[str]:
+        return await asyncio.gather(*(one(f"call-{i}") for i in range(16)))
+
+    results = sorted(asyncio.run(scenario()))
+    assert results == sorted(f"call-{i}" for i in range(16))
 
 
 def test_reply_with_line_delay_spaces_out_stdout_lines() -> None:
@@ -712,9 +772,10 @@ def test_dry_run_runner_on_invocation_echoes_live_and_still_collects() -> None:
 
 
 def test_dry_run_runner_on_invocation_raising_callback_is_swallowed() -> None:
-    # The echo is a fire-and-forget side effect: a raising callback is surfaced
-    # via the unraisable hook (like `ScriptedRunner.when`'s predicate), never
-    # propagated to derail the run it was only observing.
+    # The echo is a fire-and-forget observer (like `on_stdout_line`), not a
+    # control predicate: a raising callback is surfaced via the unraisable hook,
+    # never propagated to derail the run it was only observing. (`ScriptedRunner.
+    # when`, by contrast, IS a control predicate and now aborts the verb.)
     captured: list[BaseException] = []
 
     def hook(unraisable: object) -> None:

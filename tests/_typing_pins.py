@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         ProcessError,
         ProcessNotFound,
         ProcessResult,
+        ProcessRunner,
         Runner,
         RunningProcess,
         RunProfile,
@@ -151,6 +152,10 @@ if TYPE_CHECKING:
     def _cli_client_return_types(client: CliClient) -> None:
         assert_type(client.run(["x"]), str)
         assert_type(client.exit_code(["x"]), int)
+
+    def _cli_client_is_a_process_runner(client: CliClient) -> None:
+        runner: ProcessRunner = client
+        assert_type(runner, ProcessRunner)
 
     def _supervisor_return_type(sup: Supervisor) -> None:
         assert_type(sup.run(), SupervisionOutcome)

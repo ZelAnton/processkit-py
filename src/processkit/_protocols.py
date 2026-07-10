@@ -34,8 +34,10 @@ class ProcessRunner(Protocol):
     Prefer this narrower protocol when your own code only calls these verbs —
     a hand-rolled double then only needs to implement five verbs (times two
     for the async twins), not the full runner surface.
-    (`CliClient` is *not* a `ProcessRunner` — its verbs take per-call args, not
-    a `Command`.)
+    `CliClient` also satisfies `ProcessRunner`: each capture/check verb accepts
+    either per-call `Args` (which it combines with its bound program) or a
+    `Command` (whose explicit settings win over client defaults). It is not a
+    `StreamingRunner`, because it has no `start`/`astart` verbs.
     """
 
     def output(self, command: Command) -> ProcessResult: ...

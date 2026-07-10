@@ -61,8 +61,10 @@ describes the verb surface. `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
 annotation type-checks (strict `mypy`) against any of them. A custom double can implement the capture/check verbs directly; the
 streaming `start`/`astart` verbs must return a `RunningProcess` (no public
 constructor), so reach for `ScriptedRunner` when you need a streaming double rather
-than building one from scratch. (`CliClient` is *not* a `ProcessRunner` — its verbs
-take per-call args, not a `Command`, and it has no `start`/`astart`.)
+than building one from scratch. `CliClient` is also a `ProcessRunner`: its sync
+and async capture/check verbs accept either per-call `Args` (combined with its
+bound program) or a `Command` (whose explicit settings win over client
+defaults). It is not a `StreamingRunner`, because it has no `start`/`astart`.
 
 The sync and async surfaces are twins (`run` ↔ `arun`), so async code injects
 the very same runner objects and awaits the `a`-prefixed verbs.
@@ -437,9 +439,14 @@ structured call record (cwd/env/stdin), use
 
 ## Wrapping a CLI tool: CliClient
 
-`CliClient` binds a program to per-call defaults, so repeated calls pass only
-their args. Its verbs (`run`, `output`, `output_bytes`, `exit_code`, `probe`,
-plus the `a`-prefixed twins) each take just the per-call arguments:
+`CliClient` binds a program to per-call defaults, so repeated calls usually
+pass only their `Args`. Every sync and async capture/check verb (`run`,
+`output`, `output_bytes`, `exit_code`, `probe`, plus the `a`-prefixed twins)
+accepts `Args | Command`: args are combined with the bound program and client
+defaults; a `Command` can carry per-call customization, whose explicit settings
+win over client defaults. This broader input type makes `CliClient` a valid
+`ProcessRunner` implementation. It is not a `StreamingRunner`, because it does
+not provide `start`/`astart`:
 
 ```python
 from processkit import CliClient

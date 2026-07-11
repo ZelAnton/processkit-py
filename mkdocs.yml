@@ -39,6 +39,9 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
 
+extra_css:
+  - overrides/extra.css
+
 nav:
   - Home: README.md
   - Cookbook: cookbook.md
@@ -102,3 +105,4 @@ plugins:
             show_symbol_type_heading: true
             show_symbol_type_toc: true
             signature_crossrefs: false
+

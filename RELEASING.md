@@ -68,11 +68,9 @@ GitHub Release (wheels + sdist + `SHA256SUMS`).
 ## Docs site
 
 The guides in `docs/` render as a [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/)
-site. `docs.yml` builds it (`mkdocs build --strict`) on every docs change as a
-link/anchor check only — this repo does **not** publish the site (no GitHub
-Pages, no `gh-pages` branch, no `mike`, no `DOCS_DEPLOY`). A separate project
-owns docs publishing. **Do not re-add a Pages/mike deploy job here** — if a
-future dependency bump or template sync tries to reintroduce one, undo it.
+site. On a push to `main`, `docs.yml` first validates it with `mkdocs build
+--strict`, then automatically publishes the generated site to GitHub Pages.
+Pull requests run the same strict build as a build-only check and never deploy.
 
 Preview the docs locally with `uv run --group docs mkdocs serve`.
 

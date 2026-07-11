@@ -2,6 +2,7 @@ site_name: processkit
 site_description: >-
   Asyncio-native, kernel-backed, no-orphan child-process toolkit for Python — a
   thin binding to the processkit Rust crate.
+site_url: https://zelanton.github.io/processkit-py/
 repo_url: https://github.com/ZelAnton/processkit-py
 repo_name: ZelAnton/processkit-py
 # The guides live in docs/; this site renders them as-is (docs/README.md is the home).

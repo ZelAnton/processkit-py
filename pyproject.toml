@@ -50,7 +50,7 @@ processkit = "processkit.pytest_plugin"
 [project.urls]
 Homepage = "https://zelanton.github.io/processkit/"
 Repository = "https://github.com/ZelAnton/processkit-py"
-Documentation = "https://github.com/ZelAnton/processkit-py/tree/main/docs"
+Documentation = "https://zelanton.github.io/processkit-py/"
 Changelog = "https://github.com/ZelAnton/processkit-py/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ZelAnton/processkit-py/issues"
 

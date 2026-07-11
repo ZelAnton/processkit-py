@@ -75,10 +75,21 @@
 }
 
 /* Let naturally wide tables retain their columns and scroll within the
-   typeset area instead of clipping at the content edge. */
-.md-typeset table {
+   typeset area instead of clipping at the content edge. The `:not([class])`
+   clause matches Material's own base rule's specificity so `display: block`
+   reliably wins over its default `inline-block` (extra.css loads after the
+   theme stylesheet, so equal-specificity ties resolve in our favor). */
+.md-typeset table:not([class]) {
   display: block;
   max-width: 100%;
   overflow-x: auto;
   width: max-content;
+}
+
+/* Material already keeps link text intact inside table cells
+   (`.md-typeset table:not([class]) a { word-break: normal }`); extend the
+   same treatment to inline code so short identifiers (exception names, field
+   names) don't break mid-word in narrow columns. */
+.md-typeset table:not([class]) code {
+  word-break: normal;
 }

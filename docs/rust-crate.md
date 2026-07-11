@@ -1,6 +1,9 @@
 # Rust crate
 
-**Coming soon.** This entry is a reserved placeholder: `processkit-py` is the
-Python binding of the `processkit` Rust crate, which already exists. A
-dedicated crate-facing documentation link for it will be filled in here once
-it is ready — this page is not a substitute for it yet.
+`processkit-py` is a Python binding for the [`processkit` Rust crate](https://crates.io/crates/processkit).
+
+[Open the Rust crate documentation](https://zelanton.github.io/processkit-rs)
+
+This is the dedicated documentation site for the Rust crate. It is distinct
+from the legacy shared [ProcessKit mdBook site](https://zelanton.github.io/ProcessKit/),
+which is being retired.

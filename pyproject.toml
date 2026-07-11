@@ -7,7 +7,7 @@ build-backend = "maturin"
 # module-name below): `pip install processkit-py` -> `import processkit`.
 [project]
 name = "processkit-py"
-version = "1.2.2"
+version = "1.2.3"
 description = "Python bindings to the processkit Rust crate — asyncio-native, no-orphan process containment"
 readme = "README.md"
 # abi3 wheels (cp310+): Python 3.9 reached EOL October 2025; dev tools (mypy>=2.1) require 3.10+.

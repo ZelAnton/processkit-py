@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 -
 
+## [1.2.3] - 2026-07-11
+
+### Changed
+
+- Bump processkit dependency to 2.2.3
+- Initialize integration workspace for batch B-20260710T121901Z
+- Bump processkit dependency to 2.2.3
+- Initialize integration workspace for batch B-20260710T230508Z
+
+
+### Fixed
+
+- Fix broken repo-relative README links on PyPI
+- Fix broken repo-relative README links for PyPI rendering
+
 ## [1.2.2] - 2026-07-10
 
 ### Added
@@ -908,7 +923,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/ZelAnton/processkit-py/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/ZelAnton/processkit-py/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/ZelAnton/processkit-py/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/ZelAnton/processkit-py/compare/v1.1.1...v1.2.0

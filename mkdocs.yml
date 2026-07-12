@@ -44,8 +44,8 @@ extra_css:
 
 nav:
   - Home: README.md
-  - Rust crate: rust-crate.md
-  - .NET: dotnet.md
+  - Rust crate: https://zelanton.github.io/processkit-rs
+  - .NET version: https://zelanton.github.io/ProcessKit-fSharp
   - Cookbook: cookbook.md
   - Coming from subprocess: migrating.md
   - Running commands: commands.md

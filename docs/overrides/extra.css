@@ -9,12 +9,22 @@
   --processkit-nav-hover-bg: rgb(63 81 181 / 10%);
   --processkit-nav-active-bg: rgb(63 81 181 / 14%);
   --processkit-nav-divider: rgb(0 0 0 / 16%);
+  --processkit-table-border: hsl(0 0% 95%);
+  --processkit-table-header-bg: hsl(0 0% 80%);
+  --processkit-table-alternate-bg: hsl(0 0% 97%);
 }
 
 [data-md-color-scheme="slate"] {
   --processkit-nav-hover-bg: rgb(159 168 218 / 13%);
   --processkit-nav-active-bg: rgb(159 168 218 / 18%);
   --processkit-nav-divider: rgb(255 255 255 / 18%);
+  /* The reference site's own dark palette default is its "navy" mdBook theme
+     (`default_dark_theme = "navy"` in its generated HTML), not "coal" — verified
+     by rendering the reference with each theme forced. Match navy's table
+     variables (`theme/variables.css` `.navy`), not coal's. */
+  --processkit-table-border: hsl(226 23% 16%);
+  --processkit-table-header-bg: hsl(226 23% 31%);
+  --processkit-table-alternate-bg: hsl(226 23% 14%);
 }
 
 /* Keep the project name prominent while Material changes the page topic. */
@@ -94,10 +104,34 @@
    reliably wins over its default `inline-block` (extra.css loads after the
    theme stylesheet, so equal-specificity ties resolve in our favor). */
 .md-typeset table:not([class]) {
+  border: 0;
+  border-collapse: collapse;
+  border-radius: 0;
   display: block;
+  font-size: 16px;
+  margin: 0 auto;
   max-width: 100%;
   overflow-x: auto;
   width: max-content;
+}
+
+/* The generated Material pages contain bare tables, whereas the reference
+   places a native table inside `.table-wrapper`. Mirror the reference table's
+   compact cells, filled heading, and alternating rows on those emitted nodes. */
+.md-typeset table:not([class]) td,
+.md-typeset table:not([class]) th {
+  border: 1px solid var(--processkit-table-border);
+  padding: 3px 20px;
+}
+
+.md-typeset table:not([class]) th { min-width: 0; }
+
+.md-typeset table:not([class]) thead {
+  background-color: var(--processkit-table-header-bg);
+}
+
+.md-typeset table:not([class]) tbody tr:nth-child(even) {
+  background-color: var(--processkit-table-alternate-bg);
 }
 
 /* Material already keeps link text intact inside table cells

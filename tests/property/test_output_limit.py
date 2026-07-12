@@ -69,7 +69,7 @@ def test_output_limit_accepts_any_cap_combination_with_a_known_overflow_label(
 
 @given(
     max_bytes=_CAP_SIZE,
-    on_overflow=st.text(max_size=15).filter(lambda s: s not in _VALID_OVERFLOW),
+    on_overflow=st.text(max_size=15).filter(lambda s: s.lower() not in _VALID_OVERFLOW),
 )
 def test_output_limit_rejects_unknown_overflow_label(max_bytes: int, on_overflow: str) -> None:
     try:

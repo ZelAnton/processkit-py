@@ -60,6 +60,15 @@
   outline-offset: -2px;
 }
 
+/* Keep the Rust and .NET links visually separate from the documentation
+   guides. The direct-child path is Material's primary navigation structure;
+   the fourth item is Cookbook, immediately after the two secondary links. */
+.md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item:nth-child(4) {
+  border-top: 1px solid var(--processkit-nav-divider);
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+}
+
 /* Nested primary-nav entries are Material's section headings. This rule also
    provides a durable divider whenever a future navigation group begins. */
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item--nested:not(:first-child) {

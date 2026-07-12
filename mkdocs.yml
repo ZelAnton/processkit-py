@@ -44,6 +44,8 @@ extra_css:
 
 nav:
   - Home: README.md
+  - Rust crate: rust-crate.md
+  - .NET: dotnet.md
   - Cookbook: cookbook.md
   - Coming from subprocess: migrating.md
   - Running commands: commands.md
@@ -59,8 +61,6 @@ nav:
   - Platform support: platforms.md
   - API reference: api-reference.md
   - Architecture: internals.md
-  - Rust crate: rust-crate.md
-  - .NET: dotnet.md
 
 markdown_extensions:
   - admonition

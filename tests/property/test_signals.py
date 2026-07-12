@@ -12,7 +12,7 @@ through it (no real spawn: `timeout_signal()` only configures the builder).
   deliverable signal (`1..=SIGRTMAX`): `0`, negatives, and out-of-range values
   raise `ValueError`. On Windows a raw number is never deliverable and raises
   `Unsupported` (only the named `"kill"` works there). An `int` wider than `i32`
-  falls through to the `str` branch and fails there too, surfacing as `TypeError`.
+  is rejected with the same `ValueError` range diagnostic as other invalid raw signal numbers.
 - Anything else is a name string — one of `term`/`kill`/`int`/`hup`/`quit`/
   `usr1`/`usr2`, matched case-insensitively with an optional `sig` prefix, or
   `ValueError`.
@@ -108,15 +108,14 @@ def test_timeout_signal_rejects_raw_number_on_windows(raw: int) -> None:
 
 @given(raw=_outside_i32_range)
 def test_timeout_signal_rejects_int_outside_i32_range(raw: int) -> None:
-    # Wider than i32: the int branch declines it and the str branch can't take an
-    # int, so it surfaces as TypeError, not ValueError/Unsupported — on every
-    # platform.
+    # Wider than i32: rejected with the same ValueError range diagnostic as other
+    # invalid raw signal numbers, not TypeError — on every platform.
     try:
         Command("x").timeout_signal(raw)
-    except TypeError:
+    except ValueError:
         pass
     else:
-        raise AssertionError(f"timeout_signal({raw}) should have raised TypeError")
+        raise AssertionError(f"timeout_signal({raw}) should have raised ValueError")
 
 
 @given(name=st.sampled_from(_KNOWN_NAMES), upper=st.booleans(), sig_prefix=st.booleans())

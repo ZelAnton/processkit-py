@@ -1,0 +1,16 @@
+[book]
+title = "processkit"
+description = "Asyncio-native, kernel-backed, no-orphan child-process toolkit for Python — a thin binding to the processkit Rust crate."
+src = "docs"
+language = "en"
+
+[output.html]
+git-repository-url = "https://github.com/ZelAnton/processkit-py"
+edit-url-template = "https://github.com/ZelAnton/processkit-py/edit/main/docs/{path}"
+site-url = "/processkit-py/"
+additional-css = ["theme/custom.css"]
+# nav-links.js upgrades the Rust/Python/.NET reserved draft chapters pinned above
+# Overview into external links and marks the Python entry as the current
+# implementation. mdBook has no native way to point a sidebar entry at an
+# external URL.
+additional-js = ["theme/nav-links.js"]

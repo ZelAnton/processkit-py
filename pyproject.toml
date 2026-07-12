@@ -65,23 +65,12 @@ dev = [
   "pytest-xdist>=3.8.0",
   "pytest-cov>=7.0.0",
   "hypothesis>=6.156.1",
-]
-# The mkdocs toolchain, split out of `dev` so the Docs CI job's `uv run --group
-# docs` rides the locked `uv.lock` tree (reproducible, cached) instead of an
-# unlocked `uvx --with`. `mkdocstrings[python]` renders the API reference from
-# the type stub + docstrings via griffe's *static* (AST) analysis — the Docs CI
-# job builds with `--no-install-project`, so the compiled `_processkit`
-# extension is never importable; `allow_inspection: false` in mkdocs.yml keeps
-# griffe reading `_processkit.pyi` (and the pure-Python shim modules) instead.
-docs = [
-  "mkdocs-material>=9,<10",
-  "mkdocstrings[python]>=0.27,<2",
-  # mkdocstrings renders each callable's signature in a formatted code block
-  # (`separate_signature: true`); it uses Ruff to format it when present. Ruff
-  # is already a `dev` gate here — pinning it into `docs` too keeps the
-  # published API-reference signatures readable (multi-line for the wide
-  # `Supervisor(...)` / `CliClient(...)` constructors) instead of one long line.
-  "ruff>=0.15.20",
+  # `griffe` (distribution `griffelib`) statically analyses the type stub
+  # (`_processkit.pyi`) and the pure-Python shims for scripts/gen_api_reference.py,
+  # which renders docs/api-reference.md as static Markdown. Needed here (not in a
+  # docs-only group) because the drift guard tests/test_api_reference.py runs in
+  # the ordinary `uv run pytest` gate. The mdBook docs build itself uses no Python.
+  "griffelib>=2,<3",
 ]
 # The `benchmarks/` suite (overhead vs `subprocess`/`asyncio.subprocess`,
 # `ProcessGroup` start/exit, line-streaming throughput, `output_all` at

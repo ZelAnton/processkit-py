@@ -4,7 +4,7 @@
 /dist/
 /build/
 /artifacts/
-/site/
+/book/
 *.egg-info/
 __pycache__/
 *.py[cod]

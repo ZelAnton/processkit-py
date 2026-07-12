@@ -736,7 +736,14 @@ class Supervisor:
         # `runner.rs::extract_runner`'s doc comment.
         runner: RunnerLike | None = ...,
     ) -> None: ...
+    # Run supervision to completion and return the `SupervisionOutcome`. Consumes
+    # the supervisor: `run`/`arun` may be called ONCE — a second call (on any
+    # thread, including one re-entered from a `stop_when`/`give_up_when` callback)
+    # raises `ProcessError` ("already been run"), never returns the prior outcome
+    # and never a raw `RuntimeError`.
     def run(self) -> SupervisionOutcome: ...
+    # Async counterpart of `run()`; likewise one-shot — the supervisor is spent
+    # once awaited, and a second `run`/`arun` raises `ProcessError`.
     async def arun(self) -> SupervisionOutcome: ...
 
 @final

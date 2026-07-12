@@ -68,10 +68,28 @@ def test_supervisor_stop_when_predicate() -> None:
 
 
 def test_supervisor_run_is_once() -> None:
+    # `run()` consumes the supervisor: a second call raises the typed
+    # `ProcessError` with its stable message (pinned so the frozen-Mutex rework
+    # in T-100 keeps returning the same clean error, not a raw borrow error).
     sup = Supervisor(Command(PY, ["-c", "pass"]), restart="never")
     sup.run()
-    with pytest.raises(ProcessError):
+    with pytest.raises(ProcessError, match="already been run"):
         sup.run()
+
+
+def test_supervisor_arun_is_once() -> None:
+    # `arun()` is one-shot exactly like `run()`: awaiting once spends the
+    # supervisor, and any later `arun()`/`run()` raises the same typed error.
+    async def scenario() -> None:
+        sup = Supervisor(Command(PY, ["-c", "pass"]), restart="never")
+        await sup.arun()
+        with pytest.raises(ProcessError, match="already been run"):
+            await sup.arun()
+        # A cross-verb second call (sync after async) is spent just the same.
+        with pytest.raises(ProcessError, match="already been run"):
+            sup.run()
+
+    asyncio.run(scenario())
 
 
 def test_sync_verb_in_stop_when_surfaces_clear_error() -> None:

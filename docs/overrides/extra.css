@@ -80,7 +80,9 @@
 .md-sidebar--primary .md-nav__item--nested > label.md-nav__link {
   font-size: 0.8rem;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
+  opacity: 0.75;
+  text-transform: uppercase;
 }
 
 /* Let naturally wide tables retain their columns and scroll within the

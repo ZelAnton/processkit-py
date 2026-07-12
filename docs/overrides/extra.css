@@ -18,9 +18,13 @@
   --processkit-nav-hover-bg: rgb(159 168 218 / 13%);
   --processkit-nav-active-bg: rgb(159 168 218 / 18%);
   --processkit-nav-divider: rgb(255 255 255 / 18%);
-  --processkit-table-border: hsl(200 7% 13%);
-  --processkit-table-header-bg: hsl(200 7% 28%);
-  --processkit-table-alternate-bg: hsl(200 7% 11%);
+  /* The reference site's own dark palette default is its "navy" mdBook theme
+     (`default_dark_theme = "navy"` in its generated HTML), not "coal" — verified
+     by rendering the reference with each theme forced. Match navy's table
+     variables (`theme/variables.css` `.navy`), not coal's. */
+  --processkit-table-border: hsl(226 23% 16%);
+  --processkit-table-header-bg: hsl(226 23% 31%);
+  --processkit-table-alternate-bg: hsl(226 23% 14%);
 }
 
 /* Keep the project name prominent while Material changes the page topic. */

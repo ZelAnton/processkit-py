@@ -49,7 +49,10 @@
 }
 
 .md-sidebar--primary a.md-nav__link--active,
-.md-sidebar--primary a.md-nav__link[aria-current="page"] {
+.md-sidebar--primary a.md-nav__link[aria-current="page"],
+/* The second top-level item is this documentation site. Keep it visibly
+   selected while the two adjacent implementation links remain ordinary links. */
+.md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item:nth-child(2) > a.md-nav__link {
   background-color: var(--processkit-nav-active-bg);
   border-left-color: var(--processkit-nav-accent);
   font-weight: 600;
@@ -60,9 +63,9 @@
   outline-offset: -2px;
 }
 
-/* Keep the Rust and .NET links visually separate from the documentation
-   guides. The direct-child path is Material's primary navigation structure;
-   the fourth item is Cookbook, immediately after the two secondary links. */
+/* Keep the implementation switcher visually separate from this site's
+   documentation. The direct-child path is Material's primary navigation
+   structure; after Rust, Python, and .NET, the fourth item is Home. */
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item:nth-child(4) {
   border-top: 1px solid var(--processkit-nav-divider);
   margin-top: 0.55rem;

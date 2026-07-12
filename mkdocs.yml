@@ -43,9 +43,10 @@ extra_css:
   - overrides/extra.css
 
 nav:
-  - Home: README.md
-  - Rust crate: https://zelanton.github.io/processkit-rs
+  - Rust version: https://zelanton.github.io/processkit-rs
+  - Python wrapper: python-wrapper.md
   - .NET version: https://zelanton.github.io/ProcessKit-fSharp
+  - Home: README.md
   - Cookbook: cookbook.md
   - Coming from subprocess: migrating.md
   - Running commands: commands.md

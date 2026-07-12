@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "processkit-py"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "libc",
  "processkit",

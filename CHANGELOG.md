@@ -16,6 +16,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 -
 
+## [1.2.4] - 2026-07-12
+
+### Added
+
+- Add Open Graph and Twitter Card metadata to the docs site
+- Add Open Graph and Twitter Card metadata to the docs site
+- Add real Rust crate and .NET documentation links
+- Add real Rust crate and .NET documentation links
+- Add table border, header fill, and row striping to match the reference site
+
+
+### Changed
+
+- Publish documentation site to GitHub Pages
+- Pin GitHub Pages deploy actions to commit SHA
+- Initialize integration workspace for batch B-20260711T155830Z
+- Publish documentation site to GitHub Pages on push to main
+- Initialize integration workspace for batch B-20260711T171812Z
+- Reserve navigation placeholders for the Rust crate and .NET variant
+- Initialize integration workspace for batch B-20260711T181214Z
+- Reserve navigation placeholders for the Rust crate and .NET variant
+- 
+- Restyle the docs site navigation and tables to match the ProcessKit look
+- Move Rust crate and .NET nav entries right after Home
+- Initialize integration workspace for batch B-20260711T234535Z
+- Move Rust crate and .NET nav entries right after Home
+- Link the Rust crate and .NET nav entries directly to their docs sites
+- Match the reference's pinned nav-group title styling more closely
+- Initialize integration workspace for batch B-20260712T014055Z
+- Match the reference site's typography and CSS styling more closely
+- Link the Rust crate and .NET nav entries directly to their docs sites
+- Move the implementation switcher above Home in the docs nav
+- Move the Rust/Python/.NET version switcher above Overview in nav
+- Match the reference site's actual dark-theme table colors (navy, not coal)
+- Match reference site's table borders, header fill, row striping, and dark-theme colors
+- Rebuild the docs site with mdBook to match the ProcessKit family
+- Render API-reference signatures as text, fix generator griffe types
+- Give a clear diagnostic for parse_signal with out-of-range ints and floats
+- Convert Supervisor to the frozen + Mutex<Option<...>> pattern
+- Open integration workspace for batch B-20260712T150224Z
+- Convert Supervisor to the frozen + Mutex<Option<...>> pattern
+- Give a clear diagnostic for parse_signal with out-of-range ints and floats
+- Align property test with the corrected out-of-i32-range signal diagnostic
+- Unify named-preset parsers on case-insensitive matching
+- Case-normalize the rejection filters in preset property tests
+- Open integration workspace for batch B-20260712T164130Z
+- Unify case-insensitivity across named-preset parsers
+- Bump processkit dependency to 2.2.4
+- Open integration workspace for batch B-20260712T184717Z
+- Bump processkit dependency to 2.2.4
+
+
+### Fixed
+
+- Fix wide-table scrolling specificity and code word-breaking
+- Fix doc comment list-bullet misparse and reformat long test line
+
+
+### Removed
+
+- Drop the external crates.io link from the Rust crate placeholder
+- Remove stray trailing blank line from mkdocs.yml
+
 ## [1.2.3] - 2026-07-11
 
 ### Changed
@@ -923,7 +986,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/ZelAnton/processkit-py/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/ZelAnton/processkit-py/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/ZelAnton/processkit-py/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/ZelAnton/processkit-py/compare/v1.2.0...v1.2.1

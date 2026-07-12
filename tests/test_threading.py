@@ -39,12 +39,13 @@ from processkit import (
     NonZeroExit,
     ProcessError,
     ProcessGroup,
+    Supervisor,
     Unsupported,
 )
 from processkit.testing import RecordReplayRunner, Reply, ScriptedRunner
 
 from ._liveness import wait_dead
-from .conftest import PY
+from .conftest import NO_SUCH_PROGRAM, PY
 
 # See `test_hardening.py`'s `_stress_scale` for the rationale (kept small here
 # on purpose, duplicated rather than imported — test modules don't reach into
@@ -358,6 +359,62 @@ def test_running_process_teardown_races_with_getters_are_hardened() -> None:
 
     assert not raw_errors, f"a concurrent getter saw a raw borrow error: {raw_errors!r}"
     assert wait_dead(pid, timeout=15.0), "the process survived its graceful shutdown"
+
+
+# --- a Supervisor under a concurrent second run() ---------------------------
+
+
+def test_supervisor_concurrent_run_never_raises_a_raw_borrow_error() -> None:
+    # Regression for T-100, the `Supervisor` half of the T-052 family: `run()`
+    # used to take a `&mut self` PyO3 borrow and hold it across the whole
+    # (GIL-released) supervision loop, so a second `run()` from another thread
+    # while one is in flight raced the per-object borrow flag and surfaced a raw
+    # `RuntimeError("Already borrowed")`. Now `Supervisor` is frozen + interior
+    # `Mutex`: the concurrent call resolves to the library's own typed
+    # `ProcessError` ("already been run") — never a raw borrow error. Driven
+    # through a `ScriptedRunner` so no real process spawns. There is deliberately
+    # no `except RuntimeError` that hides the bug: a raw borrow error propagates
+    # and fails the test.
+    mid_run = threading.Event()
+    release = threading.Event()
+
+    def stop(_result: object) -> bool:
+        # Runs on the tokio supervision worker while the main thread is parked in
+        # `block_on`: signal that a `run()` is genuinely mid-flight, then hold
+        # here until the second thread has made its concurrent call, so the race
+        # window is real rather than assumed.
+        mid_run.set()
+        release.wait(timeout=30)
+        return True  # stop after the first incarnation
+
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("x"))
+    sup = Supervisor(Command(NO_SUCH_PROGRAM), restart="always", stop_when=stop, runner=runner)
+
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def second_run() -> None:
+        mid_run.wait(timeout=30)  # only call once the first run() is mid-flight
+        try:
+            sup.run()
+            outcome = "ran-twice"  # a supervisor must never run a second time
+        except ProcessError:
+            outcome = "typed"  # the expected, clean rejection
+        except RuntimeError as exc:  # the bug this test guards against
+            outcome = f"raw:{exc}"
+        finally:
+            release.set()  # let the first run's predicate return and finish
+        with lock:
+            outcomes.append(outcome)
+
+    t = threading.Thread(target=second_run)
+    t.start()
+    first = sup.run()
+    t.join(timeout=30)
+
+    assert first.stopped == "predicate"
+    assert outcomes == ["typed"], f"a concurrent run() did not reject cleanly: {outcomes!r}"
 
 
 # --- a shared CliClient under concurrent calls ------------------------------

@@ -333,9 +333,21 @@ impl PySupervisionOutcome {
 
 /// Keep a command alive: restart it per policy with backoff until a stop
 /// condition is met. Configure with keyword arguments, then `run()` / `arun()`.
-#[pyclass(name = "Supervisor", module = "processkit")]
+// `frozen` so `run()`/`arun()` take `&self`: they release the GIL for the entire
+// supervision loop (`block_on`/the awaited future), so an exclusive `&mut self`
+// PyO3 borrow held across that window made any concurrent `&self` call from
+// another thread — a second `run()`, or a `run()` re-entered from a
+// `stop_when`/`give_up_when` callback thread — race PyO3's per-object borrow flag
+// and surface a raw `RuntimeError("Already borrowed")` instead of the typed
+// "already been run" `ProcessError`. The interior `Mutex<Option<...>>` serializes
+// that access instead (the same T-052 fix as `RunningProcess`/`ProcessGroup`);
+// the guard is always released (via `take_supervisor` below) *before* any
+// `block_on`/await, so a consumed supervisor reads back cleanly as `None` and the
+// supervision wait is never held under the lock.
+#[pyclass(name = "Supervisor", module = "processkit", frozen)]
 pub(crate) struct PySupervisor {
-    inner: Option<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>>,
+    // `None` after `run()`/`arun()` has taken ownership of the supervisor.
+    inner: Mutex<Option<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>>>,
     /// Shared by this supervisor's `stop_when`/`give_up_when` wrappers: a control
     /// predicate that raised (or returned non-`bool`) stashes its error here, and
     /// `run()`/`arun()` re-raises it after the loop halts. Per-instance, so
@@ -344,8 +356,14 @@ pub(crate) struct PySupervisor {
 }
 
 impl PySupervisor {
-    fn take_supervisor(&mut self) -> PyResult<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>> {
+    /// Take the supervisor out for a consuming `run()`/`arun()`, erroring if it
+    /// was already run. Like `RunningProcess::take_running`, the lock is released
+    /// before this returns, so the subsequent `block_on`/await never holds it
+    /// across the (GIL-released) supervision wait.
+    fn take_supervisor(&self) -> PyResult<PkSupervisor<Arc<dyn ProcessRunner + Send + Sync>>> {
         self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(|| ProcessError::new_err("this Supervisor has already been run"))
     }
@@ -495,13 +513,13 @@ impl PySupervisor {
         };
         let supervisor = supervisor.with_runner(runner);
         Ok(Self {
-            inner: Some(supervisor),
+            inner: Mutex::new(Some(supervisor)),
             error_slot,
         })
     }
 
     /// Run supervision to completion (sync). Consumes the supervisor.
-    fn run(&mut self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
+    fn run(&self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
         // Checked before taking: see the comment on `require_event_loop` in
         // running.rs for why the order matters (consume-then-fail).
         reject_reentrant_runtime()?;
@@ -528,7 +546,7 @@ impl PySupervisor {
     /// instead of pinning them for the life of the interpreter. Still give an
     /// awaited `restart="always"` a `max_restarts=` or `stop_when=` so
     /// supervision has a defined end rather than restarting forever.
-    fn arun<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         // Cloned before the supervisor is taken, so the awaited future can read the
         // control-predicate error slot back after the loop halts (see `run`).

@@ -398,6 +398,21 @@ def test_group_signal_rejects_bool() -> None:
             group.signal(False)
 
 
+def test_group_signal_rejects_int_outside_i32_range() -> None:
+    # This must be a value/range error before the platform-specific delivery
+    # backend is consulted; Python integers are arbitrary precision but raw
+    # process signals are represented by a signed 32-bit value in the binding.
+    with ProcessGroup() as group, pytest.raises(ValueError, match="invalid signal number"):
+        group.signal(2**35)
+
+
+def test_group_signal_rejects_float_with_signal_type_diagnostic() -> None:
+    with ProcessGroup() as group, pytest.raises(TypeError) as excinfo:
+        group.signal(15.0)  # type: ignore[arg-type]  # invalid on purpose
+    assert "str" in str(excinfo.value)
+    assert "int" in str(excinfo.value)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")
 def test_group_signal_rejects_invalid_raw_number_on_posix() -> None:
     # 0 (the existence probe), negatives, and out-of-range numbers would be

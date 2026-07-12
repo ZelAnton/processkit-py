@@ -17,9 +17,9 @@ use processkit::Priority;
 use processkit::RetryPolicy;
 use processkit::Signal as PkSignal;
 use processkit::StdioMode;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyBool;
+use pyo3::types::{PyBool, PyInt};
 use tokio::io::AsyncWrite;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -516,20 +516,36 @@ fn max_deliverable_signal() -> i32 {
 /// than reaching the backend as a silent no-op (the process-group mechanism
 /// swallows the `EINVAL` a bad number would raise).
 #[cfg(unix)]
+fn raw_signal_range_error(raw: impl std::fmt::Display) -> PyErr {
+    let max = max_deliverable_signal();
+    PyValueError::new_err(format!(
+        "invalid signal number {raw}: a raw signal must be a real, deliverable \
+         signal in 1..={max} on this platform. 0 is the POSIX existence probe \
+         (kill(pid, 0)) that delivers nothing, and an out-of-range number is \
+         silently dropped by the process-group backend instead of erroring — \
+         either way the send would be a no-op. Pass a valid signal number, or \
+         a portable name: term, kill, int, hup, quit, usr1, usr2."
+    ))
+}
+
+#[cfg(unix)]
 fn validate_raw_signal(raw: i32) -> PyResult<PkSignal> {
     let max = max_deliverable_signal();
     if (1..=max).contains(&raw) {
         Ok(PkSignal::Other(raw))
     } else {
-        Err(PyValueError::new_err(format!(
-            "invalid signal number {raw}: a raw signal must be a real, deliverable \
-             signal in 1..={max} on this platform. 0 is the POSIX existence probe \
-             (kill(pid, 0)) that delivers nothing, and an out-of-range number is \
-             silently dropped by the process-group backend instead of erroring — \
-             either way the send would be a no-op. Pass a valid signal number, or \
-             a portable name: term, kill, int, hup, quit, usr1, usr2."
-        )))
+        Err(raw_signal_range_error(raw))
     }
+}
+
+/// A Python `int` that cannot fit the crate's `i32` representation still gets
+/// a value/range error instead of falling through to the string parser.
+#[cfg(not(unix))]
+fn raw_signal_range_error(raw: impl std::fmt::Display) -> PyErr {
+    PyValueError::new_err(format!(
+        "invalid signal number {raw}: a raw signal number must fit in the signed \
+         32-bit integer range (-2147483648..=2147483647)."
+    ))
 }
 
 /// On Windows a Job Object has no POSIX signals, so a raw number can never be
@@ -551,8 +567,8 @@ fn validate_raw_signal(raw: i32) -> PyResult<PkSignal> {
 /// `parse_signal_name`) or a raw platform signal number — the crate's
 /// `Signal::Other(i32)` escape hatch (Unix only; a raw number is `Unsupported`
 /// on Windows like every non-`Kill` signal). An `int` takes the raw-number path
-/// (validated by [`validate_raw_signal`]); anything else is extracted as a name
-/// string.
+/// (validated by [`validate_raw_signal`]); a `str` takes the name path. Other
+/// types are rejected explicitly rather than being coerced to a string.
 ///
 /// `bool` is rejected **before** the number path: it is a Python `int` subtype,
 /// so `True`/`False` would otherwise slip through as raw signals `1`/`0` — and
@@ -568,10 +584,22 @@ pub(crate) fn parse_signal(obj: &Bound<'_, PyAny>) -> PyResult<PkSignal> {
              or a portable name (term, kill, int, hup, quit, usr1, usr2).",
         ));
     }
-    if let Ok(raw) = obj.extract::<i32>() {
-        return validate_raw_signal(raw);
+    if obj.is_instance_of::<PyInt>() {
+        return match obj.extract::<i32>() {
+            Ok(raw) => validate_raw_signal(raw),
+            Err(error) if error.is_instance_of::<PyOverflowError>(obj.py()) => {
+                let raw = obj.str()?.to_str()?.to_owned();
+                Err(raw_signal_range_error(raw))
+            }
+            Err(error) => Err(error),
+        };
     }
-    parse_signal_name(&obj.extract::<String>()?)
+    if let Ok(name) = obj.extract::<String>() {
+        return parse_signal_name(&name);
+    }
+    Err(PyTypeError::new_err(
+        "signal must be a signal name (str) or a whole-number signal value (int)",
+    ))
 }
 
 fn is_transient_classifier(error: &PkError) -> bool {
@@ -640,7 +668,7 @@ pub(crate) fn build_retry_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyo3::types::{PyBool, PyInt, PyString};
+    use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
 
     // --- positive_duration / nonnegative_duration --------------------------
 
@@ -842,6 +870,36 @@ mod tests {
             assert!(parse_signal(&true_obj).is_err());
             let false_obj = PyBool::new(py, false).to_owned().into_any();
             assert!(parse_signal(&false_obj).is_err());
+        });
+    }
+
+    #[test]
+    fn parse_signal_reports_outside_i32_int_as_a_range_error() {
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyInt::new(py, 1i64 << 35).into_any();
+            let error = parse_signal(&obj).unwrap_err();
+            assert!(error.is_instance_of::<PyValueError>(py));
+            assert!(error
+                .to_string()
+                .contains("invalid signal number 34359738368"));
+            #[cfg(unix)]
+            assert!(error.to_string().contains("1..="));
+            #[cfg(not(unix))]
+            assert!(error.to_string().contains("32-bit integer range"));
+        });
+    }
+
+    #[test]
+    fn parse_signal_rejects_float_with_accepted_type_diagnostic() {
+        ensure_python_initialized();
+        Python::attach(|py| {
+            let obj = PyFloat::new(py, 15.0).into_any();
+            let error = parse_signal(&obj).unwrap_err();
+            assert!(error.is_instance_of::<PyTypeError>(py));
+            let message = error.to_string();
+            assert!(message.contains("str"));
+            assert!(message.contains("int"));
         });
     }
 

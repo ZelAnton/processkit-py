@@ -1042,6 +1042,14 @@ def test_timeout_signal_rejects_bool() -> None:
         Command("x").timeout_signal(False)
 
 
+def test_timeout_signal_rejects_int_outside_i32_range() -> None:
+    # `timeout_signal` shares the same converter as `ProcessGroup.signal`; the
+    # arbitrary-precision Python int must be diagnosed as an invalid raw value,
+    # not as a failed conversion to a signal-name string.
+    with pytest.raises(ValueError, match="invalid signal number"):
+        Command("x").timeout_signal(1 << 40)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="raw signal numbers are POSIX-only")
 def test_timeout_signal_rejects_zero_negative_and_out_of_range_on_posix() -> None:
     # Signal 0 is the POSIX existence probe (`kill(pid, 0)`) — it delivers

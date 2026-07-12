@@ -636,10 +636,10 @@ fn is_transient_or_timeout_classifier(error: &PkError) -> bool {
 /// composition (`Command::retry`'s doc example: `e.is_transient() ||
 /// e.is_timeout()`). A named preset over the 1.2.0 accessors, not an arbitrary
 /// Python callable: plain (non-capturing) `fn` pointers, not closures, so both
-/// arms share one concrete return type and trivially satisfy `Fn(&Error) -> bool
-/// + Send + Sync + 'static` with no boxing. Named presets are
-/// ASCII-case-insensitive so this fixed vocabulary follows the same contract as
-/// every other named preset parser.
+/// arms share one concrete return type and trivially satisfy
+/// `Fn(&Error) -> bool + Send + Sync + 'static` with no boxing. Named presets
+/// are ASCII-case-insensitive so this fixed vocabulary follows the same
+/// contract as every other named preset parser.
 pub(crate) fn parse_retry_if(name: &str) -> PyResult<fn(&PkError) -> bool> {
     let key = normalize_named_preset(name);
     match key.as_str() {

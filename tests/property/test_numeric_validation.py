@@ -92,7 +92,11 @@ def test_retry_initial_backoff_rejects_negative_nonfinite_or_overflowing(seconds
         raise AssertionError(f"retry(initial_backoff={seconds!r}) should have raised ValueError")
 
 
-@given(name=st.text(max_size=15).filter(lambda s: s.lower() not in ("transient", "transient_or_timeout")))
+@given(
+    name=st.text(max_size=15).filter(
+        lambda s: s.lower() not in ("transient", "transient_or_timeout")
+    )
+)
 def test_retry_rejects_unknown_retry_if_preset(name: str) -> None:
     try:
         Command("x").retry(name)  # type: ignore[arg-type]

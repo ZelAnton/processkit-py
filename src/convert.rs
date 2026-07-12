@@ -339,9 +339,21 @@ impl AsyncWrite for PyWriterSink {
     }
 }
 
-/// Map a Python stdio-mode label to the crate `StdioMode`.
+/// Normalize a named preset's ASCII case before its fixed-vocabulary lookup.
+///
+/// Named preset parsers are deliberately ASCII-case-insensitive so equivalent
+/// values do not behave differently across Python API parameters. Their
+/// canonical spellings remain lowercase in errors and static type stubs.
+pub(crate) fn normalize_named_preset(value: &str) -> String {
+    value.to_ascii_lowercase()
+}
+
+/// Map a Python stdio-mode label to the crate `StdioMode`. Named presets are
+/// ASCII-case-insensitive so this fixed vocabulary follows the same contract as
+/// every other named preset parser.
 pub(crate) fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
-    match mode {
+    let key = normalize_named_preset(mode);
+    match key.as_str() {
         "pipe" | "piped" => Ok(StdioMode::Piped),
         "inherit" => Ok(StdioMode::Inherit),
         "null" | "discard" => Ok(StdioMode::Null),
@@ -356,10 +368,12 @@ pub(crate) fn parse_stdio_mode(mode: &str) -> PyResult<StdioMode> {
 /// `"idle"`, `BelowNormal` -> `"below_normal"`, `Normal` -> `"normal"`,
 /// `AboveNormal` -> `"above_normal"`, `High` -> `"high"`). The crate's
 /// `Priority` is `#[non_exhaustive]`, so this match keeps a `_ =>` fallback
-/// (unreachable today) rather than assuming these five variants are
-/// exhaustive forever.
+/// (unreachable today) rather than assuming these five variants are exhaustive
+/// forever. Named presets are ASCII-case-insensitive so this fixed vocabulary
+/// follows the same contract as every other named preset parser.
 pub(crate) fn parse_priority(level: &str) -> PyResult<Priority> {
-    match level {
+    let key = normalize_named_preset(level);
+    match key.as_str() {
         "idle" => Ok(Priority::Idle),
         "below_normal" => Ok(Priority::BelowNormal),
         "normal" => Ok(Priority::Normal),
@@ -372,8 +386,11 @@ pub(crate) fn parse_priority(level: &str) -> PyResult<Priority> {
 }
 
 /// Map an `output_limit(on_overflow=...)` label to the crate `OverflowMode`.
+/// Named presets are ASCII-case-insensitive so this fixed vocabulary follows the
+/// same contract as every other named preset parser.
 pub(crate) fn parse_overflow_mode(on_overflow: &str) -> PyResult<OverflowMode> {
-    match on_overflow {
+    let key = normalize_named_preset(on_overflow);
+    match key.as_str() {
         "drop_oldest" => Ok(OverflowMode::DropOldest),
         "drop_newest" => Ok(OverflowMode::DropNewest),
         "error" => Ok(OverflowMode::Error),
@@ -391,9 +408,12 @@ pub(crate) fn parse_overflow_mode(on_overflow: &str) -> PyResult<OverflowMode> {
 /// additionally treats a bare `\r` (one not immediately followed by `\n`) as
 /// a frame terminator, delivered live — the mode `curl`/`pip`/`apt`-style
 /// `\r`-redrawn progress bars need to stream one frame at a time instead of
-/// piling up into a single line that only surfaces at EOF.
+/// piling up into a single line that only surfaces at EOF. Named presets are
+/// ASCII-case-insensitive so this fixed vocabulary follows the same contract as
+/// every other named preset parser.
 pub(crate) fn parse_line_terminator(mode: &str) -> PyResult<LineTerminator> {
-    match mode {
+    let key = normalize_named_preset(mode);
+    match key.as_str() {
         "newline" | "lf" => Ok(LineTerminator::Newline),
         "carriage_return" | "cr" => Ok(LineTerminator::CarriageReturn),
         other => Err(PyValueError::new_err(format!(
@@ -470,8 +490,10 @@ pub(crate) fn parse_encoding(label: &str) -> PyResult<&'static Encoding> {
 
 /// Parse a signal name (`"term"`, `"kill"`, `"int"`, `"hup"`, `"quit"`,
 /// `"usr1"`, `"usr2"`; a `"sig"` prefix is accepted) into a crate `Signal`.
+/// Named presets are ASCII-case-insensitive so this fixed vocabulary follows the
+/// same contract as every other named preset parser.
 fn parse_signal_name(name: &str) -> PyResult<PkSignal> {
-    let key = name.to_ascii_lowercase();
+    let key = normalize_named_preset(name);
     let key = key.strip_prefix("sig").unwrap_or(&key);
     match key {
         "term" => Ok(PkSignal::Term),
@@ -614,10 +636,13 @@ fn is_transient_or_timeout_classifier(error: &PkError) -> bool {
 /// composition (`Command::retry`'s doc example: `e.is_transient() ||
 /// e.is_timeout()`). A named preset over the 1.2.0 accessors, not an arbitrary
 /// Python callable: plain (non-capturing) `fn` pointers, not closures, so both
-/// arms share one concrete return type and trivially satisfy `Fn(&Error) ->
-/// bool + Send + Sync + 'static` with no boxing.
+/// arms share one concrete return type and trivially satisfy `Fn(&Error) -> bool
+/// + Send + Sync + 'static` with no boxing. Named presets are
+/// ASCII-case-insensitive so this fixed vocabulary follows the same contract as
+/// every other named preset parser.
 pub(crate) fn parse_retry_if(name: &str) -> PyResult<fn(&PkError) -> bool> {
-    match name {
+    let key = normalize_named_preset(name);
+    match key.as_str() {
         "transient" => Ok(is_transient_classifier as fn(&PkError) -> bool),
         "transient_or_timeout" => Ok(is_transient_or_timeout_classifier as fn(&PkError) -> bool),
         other => Err(PyValueError::new_err(format!(
@@ -777,10 +802,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_signal_name_is_case_insensitive() {
+    fn parse_signal_name_remains_case_insensitive() {
         assert_eq!(parse_signal_name("TERM").unwrap(), PkSignal::Term);
         assert_eq!(parse_signal_name("SigTerm").unwrap(), PkSignal::Term);
         assert_eq!(parse_signal_name("SIGKILL").unwrap(), PkSignal::Kill);
+        assert_eq!(parse_signal_name("sIgUsR1").unwrap(), PkSignal::Usr1);
     }
 
     #[test]
@@ -921,6 +947,33 @@ mod tests {
         });
     }
 
+    // --- parse_stdio_mode ----------------------------------------------------
+
+    #[test]
+    fn parse_stdio_mode_accepts_every_variant_and_alias() {
+        let cases = [
+            ("pipe", StdioMode::Piped),
+            ("piped", StdioMode::Piped),
+            ("inherit", StdioMode::Inherit),
+            ("null", StdioMode::Null),
+            ("discard", StdioMode::Null),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(parse_stdio_mode(name).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn parse_stdio_mode_is_case_insensitive() {
+        assert_eq!(parse_stdio_mode("PIPE").unwrap(), StdioMode::Piped);
+        assert_eq!(parse_stdio_mode("InHeRiT").unwrap(), StdioMode::Inherit);
+    }
+
+    #[test]
+    fn parse_stdio_mode_rejects_unknown_mode() {
+        assert!(parse_stdio_mode("bogus").is_err());
+    }
+
     // --- parse_priority ------------------------------------------------------
 
     #[test]
@@ -935,6 +988,15 @@ mod tests {
         for (name, expected) in cases {
             assert_eq!(parse_priority(name).unwrap(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn parse_priority_is_case_insensitive() {
+        assert_eq!(parse_priority("HIGH").unwrap(), Priority::High);
+        assert_eq!(
+            parse_priority("Below_Normal").unwrap(),
+            Priority::BelowNormal
+        );
     }
 
     #[test]
@@ -954,6 +1016,18 @@ mod tests {
         for (name, expected) in cases {
             assert_eq!(parse_overflow_mode(name).unwrap(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn parse_overflow_mode_is_case_insensitive() {
+        assert_eq!(
+            parse_overflow_mode("DROP_OLDEST").unwrap(),
+            OverflowMode::DropOldest
+        );
+        assert_eq!(
+            parse_overflow_mode("Drop_Newest").unwrap(),
+            OverflowMode::DropNewest
+        );
     }
 
     #[test]
@@ -977,8 +1051,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_line_terminator_is_case_insensitive() {
+        assert_eq!(
+            parse_line_terminator("NEWLINE").unwrap(),
+            LineTerminator::Newline
+        );
+        assert_eq!(
+            parse_line_terminator("Carriage_Return").unwrap(),
+            LineTerminator::CarriageReturn
+        );
+    }
+
+    #[test]
     fn parse_line_terminator_rejects_unknown_mode() {
         assert!(parse_line_terminator("bogus").is_err());
+    }
+
+    // --- parse_retry_if ------------------------------------------------------
+
+    #[test]
+    fn parse_retry_if_accepts_every_variant() {
+        assert!(parse_retry_if("transient").is_ok());
+        assert!(parse_retry_if("transient_or_timeout").is_ok());
+    }
+
+    #[test]
+    fn parse_retry_if_is_case_insensitive() {
+        assert!(parse_retry_if("TRANSIENT").is_ok());
+        assert!(parse_retry_if("Transient_Or_Timeout").is_ok());
+    }
+
+    #[test]
+    fn parse_retry_if_rejects_unknown_name() {
+        assert!(parse_retry_if("bogus").is_err());
     }
 
     // --- build_output_buffer_policy ------------------------------------------

@@ -16,7 +16,9 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
-use crate::convert::{build_output_buffer_policy, nonnegative_duration, positive_duration};
+use crate::convert::{
+    build_output_buffer_policy, nonnegative_duration, normalize_named_preset, positive_duration,
+};
 use crate::errors::{map_err, map_err_ref, ProcessError};
 use crate::result::PyProcessResult;
 use crate::runner::extract_runner;
@@ -52,9 +54,12 @@ fn take_slot_error(slot: &ErrorSlot) -> Option<PyErr> {
 }
 
 /// Parse a restart policy name into a crate `RestartPolicy` — supervisor-only,
-/// so it lives here rather than in the general `convert.rs` grab-bag.
+/// so it lives here rather than in the general `convert.rs` grab-bag. Named
+/// presets are ASCII-case-insensitive so this fixed vocabulary follows the same
+/// contract as every other named preset parser.
 fn parse_restart_policy(name: &str) -> PyResult<RestartPolicy> {
-    match name.to_ascii_lowercase().as_str() {
+    let key = normalize_named_preset(name);
+    match key.as_str() {
         "always" => Ok(RestartPolicy::Always),
         "never" => Ok(RestartPolicy::Never),
         "on_crash" | "on-crash" | "oncrash" => Ok(RestartPolicy::OnCrash),
@@ -595,13 +600,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_restart_policy_is_case_insensitive() {
+    fn parse_restart_policy_remains_case_insensitive() {
         assert_eq!(
             parse_restart_policy("ALWAYS").unwrap(),
             RestartPolicy::Always
         );
         assert_eq!(
             parse_restart_policy("On_Crash").unwrap(),
+            RestartPolicy::OnCrash
+        );
+        assert_eq!(
+            parse_restart_policy("ON-CRASH").unwrap(),
             RestartPolicy::OnCrash
         );
     }

@@ -17,7 +17,7 @@ Construct a command and run it — capturing everything, or checking for success
 
 ### `Command`
 
-```python
+```text
 Command(program: StrPath, args: Args | None = ...)
 ```
 
@@ -25,25 +25,25 @@ A command builder. Builder methods return a new `Command`.
 
 #### `arg`
 
-```python
+```text
 def arg(arg: StrPath) -> Command
 ```
 
 #### `args`
 
-```python
+```text
 def args(args: Args) -> Command
 ```
 
 #### `cwd`
 
-```python
+```text
 def cwd(path: StrPath) -> Command
 ```
 
 #### `prefer_local`
 
-```python
+```text
 def prefer_local(dir: StrPath) -> Command
 ```
 
@@ -53,73 +53,73 @@ programs are unchanged, and the child's own ``PATH`` is not rewritten.
 
 #### `env`
 
-```python
+```text
 def env(key: str, value: str) -> Command
 ```
 
 #### `envs`
 
-```python
+```text
 def envs(vars: Mapping[str, str]) -> Command
 ```
 
 #### `env_remove`
 
-```python
+```text
 def env_remove(key: str) -> Command
 ```
 
 #### `env_clear`
 
-```python
+```text
 def env_clear() -> Command
 ```
 
 #### `inherit_env`
 
-```python
+```text
 def inherit_env(names: Sequence[str]) -> Command
 ```
 
 #### `stdin_bytes`
 
-```python
+```text
 def stdin_bytes(data: ReadableBuffer) -> Command
 ```
 
 #### `stdin_text`
 
-```python
+```text
 def stdin_text(text: str) -> Command
 ```
 
 #### `stdin_file`
 
-```python
+```text
 def stdin_file(path: StrPath) -> Command
 ```
 
 #### `keep_stdin_open`
 
-```python
+```text
 def keep_stdin_open() -> Command
 ```
 
 #### `timeout`
 
-```python
+```text
 def timeout(seconds: float) -> Command
 ```
 
 #### `timeout_grace`
 
-```python
+```text
 def timeout_grace(seconds: float) -> Command
 ```
 
 #### `timeout_signal`
 
-```python
+```text
 def timeout_signal(name: SignalName | int) -> Command
 ```
 
@@ -135,31 +135,31 @@ an ``int`` subtype that would otherwise silently become raw signal
 
 #### `no_timeout`
 
-```python
+```text
 def no_timeout() -> Command
 ```
 
 #### `timeout_opt`
 
-```python
+```text
 def timeout_opt(seconds: float | None) -> Command
 ```
 
 #### `cancel_on`
 
-```python
+```text
 def cancel_on(token: CancellationToken) -> Command
 ```
 
 #### `success_codes`
 
-```python
+```text
 def success_codes(codes: Sequence[int]) -> Command
 ```
 
 #### `retry`
 
-```python
+```text
 def retry(
     retry_if: RetryIf,
     *,
@@ -173,43 +173,43 @@ def retry(
 
 #### `retry_never`
 
-```python
+```text
 def retry_never() -> Command
 ```
 
 #### `stdout`
 
-```python
+```text
 def stdout(mode: Literal['pipe', 'inherit', 'null']) -> Command
 ```
 
 #### `stderr`
 
-```python
+```text
 def stderr(mode: Literal['pipe', 'inherit', 'null']) -> Command
 ```
 
 #### `encoding`
 
-```python
+```text
 def encoding(label: str) -> Command
 ```
 
 #### `stdout_encoding`
 
-```python
+```text
 def stdout_encoding(label: str) -> Command
 ```
 
 #### `stderr_encoding`
 
-```python
+```text
 def stderr_encoding(label: str) -> Command
 ```
 
 #### `line_terminator`
 
-```python
+```text
 def line_terminator(mode: LineTerminatorName) -> Command
 ```
 
@@ -227,7 +227,7 @@ preset raises ``ValueError``.
 
 #### `stdout_line_terminator`
 
-```python
+```text
 def stdout_line_terminator(mode: LineTerminatorName) -> Command
 ```
 
@@ -236,7 +236,7 @@ Choose where the line pump splits **stdout** into lines (see
 
 #### `stderr_line_terminator`
 
-```python
+```text
 def stderr_line_terminator(mode: LineTerminatorName) -> Command
 ```
 
@@ -246,7 +246,7 @@ progress output lands on stderr while stdout stays newline-structured.
 
 #### `stdout_tee`
 
-```python
+```text
 def stdout_tee(sink: StrPath | SupportsWrite, *, append: bool = ...) -> Command
 ```
 
@@ -281,7 +281,7 @@ and under ``output_bytes()`` (raw capture).
 
 #### `stderr_tee`
 
-```python
+```text
 def stderr_tee(sink: StrPath | SupportsWrite, *, append: bool = ...) -> Command
 ```
 
@@ -294,7 +294,7 @@ stderr is piped through the line pump.
 
 #### `on_stdout_line`
 
-```python
+```text
 def on_stdout_line(callback: Callable[[str], None]) -> Command
 ```
 
@@ -319,7 +319,7 @@ the line pump).
 
 #### `on_stderr_line`
 
-```python
+```text
 def on_stderr_line(callback: Callable[[str], None]) -> Command
 ```
 
@@ -337,55 +337,55 @@ stderr still decodes through the line pump exactly as under
 
 #### `kill_on_parent_death`
 
-```python
+```text
 def kill_on_parent_death() -> Command
 ```
 
 #### `create_no_window`
 
-```python
+```text
 def create_no_window() -> Command
 ```
 
 #### `uid`
 
-```python
+```text
 def uid(uid: int) -> Command
 ```
 
 #### `gid`
 
-```python
+```text
 def gid(gid: int) -> Command
 ```
 
 #### `groups`
 
-```python
+```text
 def groups(gids: Sequence[int]) -> Command
 ```
 
 #### `setsid`
 
-```python
+```text
 def setsid() -> Command
 ```
 
 #### `umask`
 
-```python
+```text
 def umask(mask: int) -> Command
 ```
 
 #### `priority`
 
-```python
+```text
 def priority(level: Priority) -> Command
 ```
 
 #### `output_limit`
 
-```python
+```text
 def output_limit(
     *,
     max_bytes: int | None = ...,
@@ -396,109 +396,109 @@ def output_limit(
 
 #### `output`
 
-```python
+```text
 def output() -> ProcessResult
 ```
 
 #### `output_bytes`
 
-```python
+```text
 def output_bytes() -> BytesResult
 ```
 
 #### `run`
 
-```python
+```text
 def run() -> str
 ```
 
 #### `exit_code`
 
-```python
+```text
 def exit_code() -> int
 ```
 
 #### `probe`
 
-```python
+```text
 def probe() -> bool
 ```
 
 #### `aoutput`
 
-```python
+```text
 async def aoutput() -> ProcessResult
 ```
 
 #### `aoutput_bytes`
 
-```python
+```text
 async def aoutput_bytes() -> BytesResult
 ```
 
 #### `arun`
 
-```python
+```text
 async def arun() -> str
 ```
 
 #### `aexit_code`
 
-```python
+```text
 async def aexit_code() -> int
 ```
 
 #### `aprobe`
 
-```python
+```text
 async def aprobe() -> bool
 ```
 
 #### `start`
 
-```python
+```text
 def start() -> RunningProcess
 ```
 
 #### `astart`
 
-```python
+```text
 async def astart() -> RunningProcess
 ```
 
 #### `unchecked_in_pipe`
 
-```python
+```text
 def unchecked_in_pipe() -> Command
 ```
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `arguments`
 
-```python
+```text
 arguments: list[str]
 ```
 
 #### `command_line`
 
-```python
+```text
 def command_line() -> str
 ```
 
 #### `pipe`
 
-```python
+```text
 def pipe(other: Command) -> Pipeline
 ```
 
 ### `CliClient`
 
-```python
+```text
 CliClient(
     program: StrPath,
     *,
@@ -524,7 +524,7 @@ per-call arguments.
 
 #### `command`
 
-```python
+```text
 def command(args: Args) -> Command
 ```
 
@@ -534,67 +534,67 @@ arg list. An explicit setting on it always wins over the default.
 
 #### `run`
 
-```python
+```text
 def run(call: Args | Command) -> str
 ```
 
 #### `output`
 
-```python
+```text
 def output(call: Args | Command) -> ProcessResult
 ```
 
 #### `output_bytes`
 
-```python
+```text
 def output_bytes(call: Args | Command) -> BytesResult
 ```
 
 #### `exit_code`
 
-```python
+```text
 def exit_code(call: Args | Command) -> int
 ```
 
 #### `probe`
 
-```python
+```text
 def probe(call: Args | Command) -> bool
 ```
 
 #### `arun`
 
-```python
+```text
 async def arun(call: Args | Command) -> str
 ```
 
 #### `aoutput`
 
-```python
+```text
 async def aoutput(call: Args | Command) -> ProcessResult
 ```
 
 #### `aoutput_bytes`
 
-```python
+```text
 async def aoutput_bytes(call: Args | Command) -> BytesResult
 ```
 
 #### `aexit_code`
 
-```python
+```text
 async def aexit_code(call: Args | Command) -> int
 ```
 
 #### `aprobe`
 
-```python
+```text
 async def aprobe(call: Args | Command) -> bool
 ```
 
 ### `Pipeline`
 
-```python
+```text
 class Pipeline
 ```
 
@@ -607,85 +607,85 @@ one `Command` directly instead.
 
 #### `pipe`
 
-```python
+```text
 def pipe(other: Command) -> Pipeline
 ```
 
 #### `timeout`
 
-```python
+```text
 def timeout(seconds: float) -> Pipeline
 ```
 
 #### `cancel_on`
 
-```python
+```text
 def cancel_on(token: CancellationToken) -> Pipeline
 ```
 
 #### `output`
 
-```python
+```text
 def output() -> ProcessResult
 ```
 
 #### `output_bytes`
 
-```python
+```text
 def output_bytes() -> BytesResult
 ```
 
 #### `run`
 
-```python
+```text
 def run() -> str
 ```
 
 #### `exit_code`
 
-```python
+```text
 def exit_code() -> int
 ```
 
 #### `probe`
 
-```python
+```text
 def probe() -> bool
 ```
 
 #### `aoutput`
 
-```python
+```text
 async def aoutput() -> ProcessResult
 ```
 
 #### `aoutput_bytes`
 
-```python
+```text
 async def aoutput_bytes() -> BytesResult
 ```
 
 #### `arun`
 
-```python
+```text
 async def arun() -> str
 ```
 
 #### `aexit_code`
 
-```python
+```text
 async def aexit_code() -> int
 ```
 
 #### `aprobe`
 
-```python
+```text
 async def aprobe() -> bool
 ```
 
 ### `RunningProcess`
 
-```python
+```text
 class RunningProcess
 ```
 
@@ -710,61 +710,61 @@ matches your calling code, regardless of whether the handle came from
 
 #### `pid`
 
-```python
+```text
 pid: int | None
 ```
 
 #### `elapsed_seconds`
 
-```python
+```text
 elapsed_seconds: float | None
 ```
 
 #### `cpu_time_seconds`
 
-```python
+```text
 cpu_time_seconds: float | None
 ```
 
 #### `peak_memory_bytes`
 
-```python
+```text
 peak_memory_bytes: int | None
 ```
 
 #### `stdout_line_count`
 
-```python
+```text
 stdout_line_count: int | None
 ```
 
 #### `stderr_line_count`
 
-```python
+```text
 stderr_line_count: int | None
 ```
 
 #### `owns_group`
 
-```python
+```text
 owns_group: bool | None
 ```
 
 #### `stdout_lines`
 
-```python
+```text
 def stdout_lines() -> StdoutLines
 ```
 
 #### `output_events`
 
-```python
+```text
 def output_events() -> OutputEvents
 ```
 
 #### `take_stdin`
 
-```python
+```text
 def take_stdin() -> ProcessStdin
 ```
 
@@ -774,7 +774,7 @@ taken — so a missing setup fails here, not with a later `AttributeError`.
 
 #### `kill`
 
-```python
+```text
 def kill() -> None
 ```
 
@@ -783,67 +783,67 @@ Begin tearing the tree down without waiting (like
 
 #### `outcome`
 
-```python
+```text
 def outcome() -> Outcome
 ```
 
 #### `aoutcome`
 
-```python
+```text
 async def aoutcome() -> Outcome
 ```
 
 #### `finish`
 
-```python
+```text
 def finish() -> Finished
 ```
 
 #### `afinish`
 
-```python
+```text
 async def afinish() -> Finished
 ```
 
 #### `output`
 
-```python
+```text
 def output() -> ProcessResult
 ```
 
 #### `aoutput`
 
-```python
+```text
 async def aoutput() -> ProcessResult
 ```
 
 #### `output_bytes`
 
-```python
+```text
 def output_bytes() -> BytesResult
 ```
 
 #### `aoutput_bytes`
 
-```python
+```text
 async def aoutput_bytes() -> BytesResult
 ```
 
 #### `profile`
 
-```python
+```text
 def profile(every_seconds: float) -> RunProfile
 ```
 
 #### `aprofile`
 
-```python
+```text
 async def aprofile(every_seconds: float) -> RunProfile
 ```
 
 #### `shutdown`
 
-```python
+```text
 def shutdown(grace_seconds: float) -> Outcome
 ```
 
@@ -855,7 +855,7 @@ Named to match ``ProcessGroup.shutdown()``/``ashutdown()``.
 
 #### `ashutdown`
 
-```python
+```text
 async def ashutdown(grace_seconds: float) -> Outcome
 ```
 
@@ -867,7 +867,7 @@ What a finished (or streamed) run reports back. A non-zero exit, a timeout, and 
 
 ### `ProcessResult`
 
-```python
+```text
 class ProcessResult
 ```
 
@@ -887,67 +887,67 @@ round-trips exactly — e.g. to return it from a
 
 #### `stdout`
 
-```python
+```text
 stdout: str
 ```
 
 #### `stderr`
 
-```python
+```text
 stderr: str
 ```
 
 #### `code`
 
-```python
+```text
 code: int | None
 ```
 
 #### `is_success`
 
-```python
+```text
 is_success: bool
 ```
 
 #### `timed_out`
 
-```python
+```text
 timed_out: bool
 ```
 
 #### `signal`
 
-```python
+```text
 signal: int | None
 ```
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `duration_seconds`
 
-```python
+```text
 duration_seconds: float
 ```
 
 #### `truncated`
 
-```python
+```text
 truncated: bool
 ```
 
 #### `combined`
 
-```python
+```text
 combined: str
 ```
 
 #### `diagnostic`
 
-```python
+```text
 diagnostic: str | None
 ```
 
@@ -957,7 +957,7 @@ order as ``NonZeroExit``/``Timeout``/``Signalled.diagnostic``.
 
 #### `outcome`
 
-```python
+```text
 outcome: Outcome
 ```
 
@@ -967,7 +967,7 @@ expose.
 
 #### `ensure_success`
 
-```python
+```text
 def ensure_success() -> ProcessResult
 ```
 
@@ -977,7 +977,7 @@ so it composes: ``cmd.output().ensure_success().stdout``.
 
 ### `BytesResult`
 
-```python
+```text
 class BytesResult
 ```
 
@@ -993,55 +993,55 @@ or persist the fields you need yourself.
 
 #### `stdout`
 
-```python
+```text
 stdout: bytes
 ```
 
 #### `stderr`
 
-```python
+```text
 stderr: str
 ```
 
 #### `code`
 
-```python
+```text
 code: int | None
 ```
 
 #### `is_success`
 
-```python
+```text
 is_success: bool
 ```
 
 #### `timed_out`
 
-```python
+```text
 timed_out: bool
 ```
 
 #### `signal`
 
-```python
+```text
 signal: int | None
 ```
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `duration_seconds`
 
-```python
+```text
 duration_seconds: float
 ```
 
 #### `truncated`
 
-```python
+```text
 truncated: bool
 ```
 
@@ -1053,7 +1053,7 @@ bounds it to a head/tail. A ``max_lines`` cap never truncates raw stdout
 
 #### `diagnostic`
 
-```python
+```text
 diagnostic: str | None
 ```
 
@@ -1062,7 +1062,7 @@ text for this message when stderr is blank.
 
 #### `outcome`
 
-```python
+```text
 outcome: Outcome
 ```
 
@@ -1070,7 +1070,7 @@ See ``ProcessResult.outcome``.
 
 #### `ensure_success`
 
-```python
+```text
 def ensure_success() -> BytesResult
 ```
 
@@ -1078,7 +1078,7 @@ See ``ProcessResult.ensure_success()``.
 
 ### `Outcome`
 
-```python
+```text
 class Outcome
 ```
 
@@ -1094,31 +1094,31 @@ Value semantics: `==`/`hash()` compare `code`/`signal`/`timed_out`
 
 #### `code`
 
-```python
+```text
 code: int | None
 ```
 
 #### `signal`
 
-```python
+```text
 signal: int | None
 ```
 
 #### `timed_out`
 
-```python
+```text
 timed_out: bool
 ```
 
 #### `exited_zero`
 
-```python
+```text
 exited_zero: bool
 ```
 
 ### `Finished`
 
-```python
+```text
 class Finished
 ```
 
@@ -1134,43 +1134,43 @@ Value semantics: `==`/`hash()` compare `outcome`/`stderr`; picklable.
 
 #### `outcome`
 
-```python
+```text
 outcome: Outcome
 ```
 
 #### `stderr`
 
-```python
+```text
 stderr: str
 ```
 
 #### `code`
 
-```python
+```text
 code: int | None
 ```
 
 #### `exited_zero`
 
-```python
+```text
 exited_zero: bool
 ```
 
 #### `timed_out`
 
-```python
+```text
 timed_out: bool
 ```
 
 #### `signal`
 
-```python
+```text
 signal: int | None
 ```
 
 ### `RunProfile`
 
-```python
+```text
 class RunProfile
 ```
 
@@ -1186,55 +1186,55 @@ has no way to reconstruct outside an actual monitored run; pickling raises
 
 #### `code`
 
-```python
+```text
 code: int | None
 ```
 
 #### `signal`
 
-```python
+```text
 signal: int | None
 ```
 
 #### `timed_out`
 
-```python
+```text
 timed_out: bool
 ```
 
 #### `outcome`
 
-```python
+```text
 outcome: Outcome
 ```
 
 #### `duration_seconds`
 
-```python
+```text
 duration_seconds: float
 ```
 
 #### `cpu_time_seconds`
 
-```python
+```text
 cpu_time_seconds: float | None
 ```
 
 #### `peak_memory_bytes`
 
-```python
+```text
 peak_memory_bytes: int | None
 ```
 
 #### `samples`
 
-```python
+```text
 samples: int
 ```
 
 #### `avg_cpu_cores`
 
-```python
+```text
 avg_cpu_cores: float | None
 ```
 
@@ -1244,7 +1244,7 @@ The live handles a started `RunningProcess` hands out: async iterators over its 
 
 ### `StdoutLines`
 
-```python
+```text
 class StdoutLines
 ```
 
@@ -1252,7 +1252,7 @@ Async iterator over a process's stdout, line by line.
 
 ### `OutputEvents`
 
-```python
+```text
 class OutputEvents
 ```
 
@@ -1260,7 +1260,7 @@ Async iterator over stdout + stderr as interleaved `OutputEvent`s.
 
 ### `OutputEvent`
 
-```python
+```text
 class OutputEvent
 ```
 
@@ -1268,25 +1268,25 @@ One captured line and the stream it came from.
 
 #### `stream`
 
-```python
+```text
 stream: Literal['stdout', 'stderr']
 ```
 
 #### `is_stderr`
 
-```python
+```text
 is_stderr: bool
 ```
 
 #### `text`
 
-```python
+```text
 text: str
 ```
 
 ### `ProcessStdin`
 
-```python
+```text
 class ProcessStdin
 ```
 
@@ -1294,19 +1294,19 @@ A writable handle to a running process's stdin (all methods awaitable).
 
 #### `write`
 
-```python
+```text
 async def write(data: ReadableBuffer) -> None
 ```
 
 #### `write_line`
 
-```python
+```text
 async def write_line(line: str) -> None
 ```
 
 #### `send_control`
 
-```python
+```text
 async def send_control(control: str) -> None
 ```
 
@@ -1317,13 +1317,13 @@ real SIGINT/SIGTSTP delivery requires a pseudoterminal.
 
 #### `flush`
 
-```python
+```text
 async def flush() -> None
 ```
 
 #### `close`
 
-```python
+```text
 async def close() -> None
 ```
 
@@ -1333,7 +1333,7 @@ Kill-on-drop containment for a whole process tree — start children into it, si
 
 ### `ProcessGroup`
 
-```python
+```text
 ProcessGroup(
     *,
     max_memory: int | None = ...,
@@ -1352,19 +1352,19 @@ expose (not an `extract_runner` target, though — see `runner.rs`).
 
 #### `mechanism`
 
-```python
+```text
 mechanism: Literal['job_object', 'cgroup_v2', 'process_group', 'unknown']
 ```
 
 #### `members`
 
-```python
+```text
 def members() -> list[int]
 ```
 
 #### `signal`
 
-```python
+```text
 def signal(name: SignalName | int) -> None
 ```
 
@@ -1379,43 +1379,43 @@ and a ``bool`` raises ``TypeError``.
 
 #### `suspend`
 
-```python
+```text
 def suspend() -> None
 ```
 
 #### `resume`
 
-```python
+```text
 def resume() -> None
 ```
 
 #### `kill_all`
 
-```python
+```text
 def kill_all() -> None
 ```
 
 #### `stats`
 
-```python
+```text
 def stats() -> ProcessGroupStats
 ```
 
 #### `shutdown`
 
-```python
+```text
 def shutdown() -> None
 ```
 
 #### `ashutdown`
 
-```python
+```text
 async def ashutdown() -> None
 ```
 
 ### `ProcessGroupStats`
 
-```python
+```text
 class ProcessGroupStats
 ```
 
@@ -1423,19 +1423,19 @@ A snapshot of a `ProcessGroup`'s resource usage.
 
 #### `active_process_count`
 
-```python
+```text
 active_process_count: int
 ```
 
 #### `peak_memory_bytes`
 
-```python
+```text
 peak_memory_bytes: int | None
 ```
 
 #### `total_cpu_time_seconds`
 
-```python
+```text
 total_cpu_time_seconds: float | None
 ```
 
@@ -1445,7 +1445,7 @@ Keep a command alive: restart it per a policy, with backoff and jitter, until a 
 
 ### `Supervisor`
 
-```python
+```text
 Supervisor(
     command: Command,
     *,
@@ -1471,19 +1471,19 @@ Keep a command alive: restart per policy with backoff until a stop condition.
 
 #### `run`
 
-```python
+```text
 def run() -> SupervisionOutcome
 ```
 
 #### `arun`
 
-```python
+```text
 async def arun() -> SupervisionOutcome
 ```
 
 ### `SupervisionOutcome`
 
-```python
+```text
 class SupervisionOutcome
 ```
 
@@ -1499,25 +1499,25 @@ which cannot be faithfully reconstructed from a pickle (its `timeout`/
 
 #### `final_result`
 
-```python
+```text
 final_result: ProcessResult
 ```
 
 #### `restarts`
 
-```python
+```text
 restarts: int
 ```
 
 #### `stopped`
 
-```python
+```text
 stopped: Literal['policy_satisfied', 'predicate', 'restarts_exhausted', 'gave_up', 'unknown']
 ```
 
 #### `storm_pauses`
 
-```python
+```text
 storm_pauses: int
 ```
 
@@ -1527,7 +1527,7 @@ A portable cancel switch, wired into a run via `Command.cancel_on()`, `Pipeline.
 
 ### `CancellationToken`
 
-```python
+```text
 class CancellationToken
 ```
 
@@ -1544,19 +1544,19 @@ flows parent-to-child, never child-to-parent or between siblings.
 
 #### `cancel`
 
-```python
+```text
 def cancel() -> None
 ```
 
 #### `is_cancelled`
 
-```python
+```text
 def is_cancelled() -> bool
 ```
 
 #### `child_token`
 
-```python
+```text
 def child_token() -> CancellationToken
 ```
 
@@ -1570,7 +1570,7 @@ Run many commands with bounded concurrency, returning each result — or a `Proc
 
 ### `output_all`
 
-```python
+```text
 def output_all(
     commands: Sequence[Command],
     *,
@@ -1581,7 +1581,7 @@ def output_all(
 
 ### `output_all_bytes`
 
-```python
+```text
 def output_all_bytes(
     commands: Sequence[Command],
     *,
@@ -1592,7 +1592,7 @@ def output_all_bytes(
 
 ### `aoutput_all`
 
-```python
+```text
 async def aoutput_all(
     commands: Sequence[Command],
     *,
@@ -1603,7 +1603,7 @@ async def aoutput_all(
 
 ### `aoutput_all_bytes`
 
-```python
+```text
 async def aoutput_all_bytes(
     commands: Sequence[Command],
     *,
@@ -1618,7 +1618,7 @@ Asyncio helpers that wait for a condition — a matching output line, an open TC
 
 ### `wait_until`
 
-```python
+```text
 async def wait_until(
     predicate: Callable[[], bool | Awaitable[bool]],
     *,
@@ -1650,7 +1650,7 @@ outright — raises `ValueError`, same as NaN — rather than being treated as
 
 ### `wait_for_line`
 
-```python
+```text
 async def wait_for_line(
     lines: AsyncIterator[Any],
     predicate: str | Callable[[Any], bool],
@@ -1687,7 +1687,7 @@ treated as "expired" or silently accepted.
 
 ### `wait_for_port`
 
-```python
+```text
 async def wait_for_port(
     host: str,
     port: int,
@@ -1719,7 +1719,7 @@ as NaN — rather than being treated as "expired" or silently accepted.
 
 ### `wait_for_path`
 
-```python
+```text
 async def wait_for_path(
     path: StrPath,
     *,
@@ -1748,7 +1748,7 @@ being treated as "expired" or silently accepted.
 
 ### `WaitTimeout`
 
-```python
+```text
 WaitTimeout(
     message: str,
     *,
@@ -1771,25 +1771,25 @@ attempt's exception as `__cause__` (`wait_for_port` only).
 
 #### `timeout_seconds`
 
-```python
+```text
 timeout_seconds = timeout_seconds
 ```
 
 #### `host`
 
-```python
+```text
 host = host
 ```
 
 #### `port`
 
-```python
+```text
 port = port
 ```
 
 #### `path`
 
-```python
+```text
 path = path
 ```
 
@@ -1799,7 +1799,7 @@ Opt-in bridging of the core's per-run `tracing` events to Python `logging`.
 
 ### `enable_logging`
 
-```python
+```text
 def enable_logging() -> bool
 ```
 
@@ -1809,7 +1809,7 @@ The dependency-injection seam: annotate your code against a protocol, inject the
 
 ### `ProcessRunner`
 
-```python
+```text
 class ProcessRunner
 ```
 
@@ -1827,67 +1827,67 @@ either per-call `Args` (which it combines with its bound program) or a
 
 #### `output`
 
-```python
+```text
 def output(command: Command) -> ProcessResult
 ```
 
 #### `output_bytes`
 
-```python
+```text
 def output_bytes(command: Command) -> BytesResult
 ```
 
 #### `run`
 
-```python
+```text
 def run(command: Command) -> str
 ```
 
 #### `exit_code`
 
-```python
+```text
 def exit_code(command: Command) -> int
 ```
 
 #### `probe`
 
-```python
+```text
 def probe(command: Command) -> bool
 ```
 
 #### `aoutput`
 
-```python
+```text
 async def aoutput(command: Command) -> ProcessResult
 ```
 
 #### `aoutput_bytes`
 
-```python
+```text
 async def aoutput_bytes(command: Command) -> BytesResult
 ```
 
 #### `arun`
 
-```python
+```text
 async def arun(command: Command) -> str
 ```
 
 #### `aexit_code`
 
-```python
+```text
 async def aexit_code(command: Command) -> int
 ```
 
 #### `aprobe`
 
-```python
+```text
 async def aprobe(command: Command) -> bool
 ```
 
 ### `StreamingRunner`
 
-```python
+```text
 class StreamingRunner
 ```
 
@@ -1904,19 +1904,19 @@ doubles).
 
 #### `start`
 
-```python
+```text
 def start(command: Command) -> RunningProcess
 ```
 
 #### `astart`
 
-```python
+```text
 async def astart(command: Command) -> RunningProcess
 ```
 
 ### `Runner`
 
-```python
+```text
 class Runner
 ```
 
@@ -1928,7 +1928,7 @@ Every error raised by the package descends from `ProcessError`, so a single `exc
 
 ### `ProcessError`
 
-```python
+```text
 class ProcessError
 ```
 
@@ -1936,7 +1936,7 @@ Base class for every error raised by this package.
 
 ### `NonZeroExit`
 
-```python
+```text
 class NonZeroExit
 ```
 
@@ -1944,43 +1944,43 @@ class NonZeroExit
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `code`
 
-```python
+```text
 code: int
 ```
 
 #### `stdout`
 
-```python
+```text
 stdout: str
 ```
 
 #### `stderr`
 
-```python
+```text
 stderr: str
 ```
 
 #### `stdout_bytes`
 
-```python
+```text
 stdout_bytes: bytes | None
 ```
 
 #### `diagnostic`
 
-```python
+```text
 diagnostic: str | None
 ```
 
 ### `Timeout`
 
-```python
+```text
 class Timeout
 ```
 
@@ -1995,43 +1995,43 @@ exceptions are transitively `OSError`).
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `timeout_seconds`
 
-```python
+```text
 timeout_seconds: float | None
 ```
 
 #### `stdout`
 
-```python
+```text
 stdout: str
 ```
 
 #### `stderr`
 
-```python
+```text
 stderr: str
 ```
 
 #### `stdout_bytes`
 
-```python
+```text
 stdout_bytes: bytes | None
 ```
 
 #### `diagnostic`
 
-```python
+```text
 diagnostic: str | None
 ```
 
 ### `Signalled`
 
-```python
+```text
 class Signalled
 ```
 
@@ -2039,43 +2039,43 @@ A run was killed by a signal.
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `signal`
 
-```python
+```text
 signal: int | None
 ```
 
 #### `stdout`
 
-```python
+```text
 stdout: str
 ```
 
 #### `stderr`
 
-```python
+```text
 stderr: str
 ```
 
 #### `stdout_bytes`
 
-```python
+```text
 stdout_bytes: bytes | None
 ```
 
 #### `diagnostic`
 
-```python
+```text
 diagnostic: str | None
 ```
 
 ### `ProcessNotFound`
 
-```python
+```text
 class ProcessNotFound
 ```
 
@@ -2086,19 +2086,19 @@ Also a builtin `FileNotFoundError` (what `subprocess` raises), so
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `searched`
 
-```python
+```text
 searched: str | None
 ```
 
 ### `PermissionDenied`
 
-```python
+```text
 class PermissionDenied
 ```
 
@@ -2110,13 +2110,13 @@ Also a builtin `PermissionError`, so `except PermissionError` catches it too.
 
 #### `program`
 
-```python
+```text
 program: str | None
 ```
 
 ### `ResourceLimit`
 
-```python
+```text
 class ResourceLimit
 ```
 
@@ -2126,7 +2126,7 @@ message (``str(exc)``); it carries no extra structured field.
 
 ### `Unsupported`
 
-```python
+```text
 class Unsupported
 ```
 
@@ -2134,13 +2134,13 @@ The operation is not supported on this platform.
 
 #### `operation`
 
-```python
+```text
 operation: str
 ```
 
 ### `OutputTooLarge`
 
-```python
+```text
 class OutputTooLarge
 ```
 
@@ -2148,37 +2148,37 @@ Captured output hit an `output_limit(..., on_overflow="error")` ceiling.
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `max_lines`
 
-```python
+```text
 max_lines: int | None
 ```
 
 #### `max_bytes`
 
-```python
+```text
 max_bytes: int | None
 ```
 
 #### `total_lines`
 
-```python
+```text
 total_lines: int
 ```
 
 #### `total_bytes`
 
-```python
+```text
 total_bytes: int
 ```
 
 ### `Cancelled`
 
-```python
+```text
 class Cancelled
 ```
 
@@ -2190,7 +2190,7 @@ attempt could only fail the same way).
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
@@ -2200,43 +2200,43 @@ Exported so your own wrappers can annotate against the same types the API accept
 
 ### `Args`
 
-```python
+```text
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
 ```
 
 ### `LineTerminatorName`
 
-```python
+```text
 LineTerminatorName = Literal['newline', 'carriage_return']
 ```
 
 ### `Priority`
 
-```python
+```text
 Priority = Literal['idle', 'below_normal', 'normal', 'above_normal', 'high']
 ```
 
 ### `ReadableBuffer`
 
-```python
+```text
 ReadableBuffer = bytes | bytearray | memoryview
 ```
 
 ### `RetryIf`
 
-```python
+```text
 RetryIf = Literal['transient', 'transient_or_timeout']
 ```
 
 ### `SignalName`
 
-```python
+```text
 SignalName = Literal['term', 'kill', 'int', 'hup', 'quit', 'usr1', 'usr2']
 ```
 
 ### `StrPath`
 
-```python
+```text
 StrPath = str | os.PathLike[str]
 ```
 
@@ -2246,7 +2246,7 @@ Runner test doubles, in the `processkit.testing` submodule. Inject one in tests 
 
 ### `ScriptedRunner`
 
-```python
+```text
 class ScriptedRunner
 ```
 
@@ -2254,31 +2254,31 @@ A scripted test double for `Runner`.
 
 #### `on`
 
-```python
+```text
 def on(prefix: Args, reply: Reply) -> None
 ```
 
 #### `on_sequence`
 
-```python
+```text
 def on_sequence(prefix: Args, replies: Sequence[Reply]) -> None
 ```
 
 #### `when`
 
-```python
+```text
 def when(predicate: Callable[[Command], bool], reply: Reply) -> None
 ```
 
 #### `fallback`
 
-```python
+```text
 def fallback(reply: Reply) -> None
 ```
 
 ### `RecordReplayRunner`
 
-```python
+```text
 class RecordReplayRunner
 ```
 
@@ -2287,25 +2287,25 @@ spawning (`replay`); shares the `Runner` run-verb surface.
 
 #### `record`
 
-```python
+```text
 def record(path: StrPath) -> RecordReplayRunner
 ```
 
 #### `replay`
 
-```python
+```text
 def replay(path: StrPath) -> RecordReplayRunner
 ```
 
 #### `save`
 
-```python
+```text
 def save() -> None
 ```
 
 ### `RecordingRunner`
 
-```python
+```text
 class RecordingRunner
 ```
 
@@ -2315,31 +2315,31 @@ and records each call, so a test can assert on what its code ran. Shares the
 
 #### `replying`
 
-```python
+```text
 def replying(reply: Reply) -> RecordingRunner
 ```
 
 #### `new`
 
-```python
+```text
 def new(inner: RunnerLike) -> RecordingRunner
 ```
 
 #### `calls`
 
-```python
+```text
 def calls() -> list[Invocation]
 ```
 
 #### `only_call`
 
-```python
+```text
 def only_call() -> Invocation
 ```
 
 ### `DryRunRunner`
 
-```python
+```text
 class DryRunRunner
 ```
 
@@ -2352,25 +2352,25 @@ with `on_invocation()`.
 
 #### `on_invocation`
 
-```python
+```text
 def on_invocation(callback: Callable[[str], None]) -> None
 ```
 
 #### `commands`
 
-```python
+```text
 def commands() -> list[str]
 ```
 
 #### `only_command`
 
-```python
+```text
 def only_command() -> str
 ```
 
 ### `Reply`
 
-```python
+```text
 class Reply
 ```
 
@@ -2378,61 +2378,61 @@ A canned reply for a `ScriptedRunner` rule.
 
 #### `ok`
 
-```python
+```text
 def ok(stdout: str) -> Reply
 ```
 
 #### `fail`
 
-```python
+```text
 def fail(code: int, stderr: str) -> Reply
 ```
 
 #### `timeout`
 
-```python
+```text
 def timeout() -> Reply
 ```
 
 #### `signalled`
 
-```python
+```text
 def signalled(signal: int | None = ...) -> Reply
 ```
 
 #### `pending`
 
-```python
+```text
 def pending() -> Reply
 ```
 
 #### `lines`
 
-```python
+```text
 def lines(lines: Sequence[str]) -> Reply
 ```
 
 #### `with_stdout`
 
-```python
+```text
 def with_stdout(stdout: str) -> Reply
 ```
 
 #### `with_stderr`
 
-```python
+```text
 def with_stderr(stderr: str) -> Reply
 ```
 
 #### `with_line_delay`
 
-```python
+```text
 def with_line_delay(seconds: float) -> Reply
 ```
 
 ### `Invocation`
 
-```python
+```text
 class Invocation
 ```
 
@@ -2443,48 +2443,48 @@ has_stdin — never argv or env values).
 
 #### `program`
 
-```python
+```text
 program: str
 ```
 
 #### `args`
 
-```python
+```text
 args: list[str]
 ```
 
 #### `cwd`
 
-```python
+```text
 cwd: str | None
 ```
 
 #### `env`
 
-```python
+```text
 env: dict[str, str | None]
 ```
 
 #### `env_is`
 
-```python
+```text
 def env_is(name: str, value: str) -> bool
 ```
 
 #### `has_env`
 
-```python
+```text
 def has_env(name: str) -> bool
 ```
 
 #### `has_stdin`
 
-```python
+```text
 has_stdin: bool
 ```
 
 #### `has_flag`
 
-```python
+```text
 def has_flag(flag: str) -> bool
 ```

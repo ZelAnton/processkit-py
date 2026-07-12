@@ -36,9 +36,16 @@ import pathlib
 import sys
 import textwrap
 from dataclasses import dataclass
+from typing import cast
 
 import griffe
-from griffe import Kind, Object, ParameterKind
+from griffe import Alias, Function, Kind, Object, ParameterKind
+
+# A documented node: a concrete griffe object (`Function`, `Class`, `Attribute`,
+# `Module`) or an `Alias` that transparently proxies attribute access to the
+# object it re-exports. Names read from `__all__` are frequently such aliases, so
+# the render helpers take the union and narrow on `.kind` before casting.
+Doc = Object | Alias
 
 # griffe emits INFO/WARNING logging (unresolved aliases, etc.) to stderr while it
 # walks the sources; keep the generator's own output clean.
@@ -271,7 +278,7 @@ def _validate_sections(top: set[str], testing: set[str]) -> None:
 # ── Static rendering (griffe model → Markdown) ─────────────────────────────────
 
 
-def _load_modules(src: pathlib.Path = _SRC) -> dict[str, Object]:
+def _load_modules(src: pathlib.Path = _SRC) -> dict[str, Doc]:
     """Load the two documented modules with griffe's static (AST) analysis.
 
     `allow_inspection=False` forbids importing the compiled `_processkit`
@@ -289,11 +296,11 @@ def _annotation(obj: object) -> str | None:
     return None if obj is None else str(obj)
 
 
-def _is_async(func: Object) -> bool:
+def _is_async(func: Function) -> bool:
     return "async" in (func.labels or set())
 
 
-def _param_tokens(func: Object) -> list[str]:
+def _param_tokens(func: Function) -> list[str]:
     """The parameter list of `func` as source tokens, with `self`/`cls` dropped
     and the `/` (positional-only) and bare `*` (keyword-only) separators emitted
     where Python requires them. `**kwargs` / `*args` carry their own stars."""
@@ -346,28 +353,28 @@ def _render_signature(head: str, tokens: list[str], tail: str) -> str:
     return f"{head}(\n{body}){tail}"
 
 
-def _callable_signature(name: str, func: Object) -> str:
+def _callable_signature(name: str, func: Function) -> str:
     keyword = "async def " if _is_async(func) else "def "
     returns = _annotation(func.returns)
     tail = f" -> {returns}" if returns is not None else ""
     return _render_signature(f"{keyword}{name}", _param_tokens(func), tail)
 
 
-def _class_signature(name: str, cls: Object) -> str:
+def _class_signature(name: str, cls: Doc) -> str:
     """A class's construction signature (`Name(...)` from `__init__`), or a bare
     `class Name` for a Rust-backed type whose stub declares no `__init__`."""
     init = cls.members.get("__init__")
     if init is None or init.kind is not Kind.FUNCTION:
         return f"class {name}"
-    tokens = _param_tokens(init)
+    tokens = _param_tokens(cast(Function, init))
     if not tokens:
         return f"class {name}"
     return _render_signature(name, tokens, "")
 
 
-def _attribute_signature(name: str, attr: Object) -> str:
+def _attribute_signature(name: str, attr: Doc) -> str:
     value = _annotation(getattr(attr, "value", None))
-    annotation = _annotation(attr.annotation)
+    annotation = _annotation(getattr(attr, "annotation", None))
     if value is not None:
         return f"{name} = {value}"
     if annotation is not None:
@@ -375,17 +382,21 @@ def _attribute_signature(name: str, attr: Object) -> str:
     return name
 
 
-def _docstring(obj: Object) -> str:
+def _docstring(obj: Doc) -> str:
     if obj.docstring is None:
         return ""
     return textwrap.dedent(obj.docstring.value).strip()
 
 
 def _fence(code: str) -> list[str]:
-    return ["```python", code, "```"]
+    # A signature is a display of a shape, not a runnable program: fence it as
+    # `text`, not `python`, so it renders as plain monospace AND stays out of the
+    # `tests/test_docs_snippets.py` guard (which compiles + type-checks every
+    # ```python / ```py block, and a bodyless `def ...` signature is neither).
+    return ["```text", code, "```"]
 
 
-def _is_documented_member(name: str, obj: Object) -> bool:
+def _is_documented_member(name: str, obj: Doc) -> bool:
     """Public members only: drop dunders and single-underscore privates. The
     constructor is folded into the class signature, never listed separately."""
     if name.startswith("_"):
@@ -393,10 +404,10 @@ def _is_documented_member(name: str, obj: Object) -> bool:
     return obj.kind in (Kind.FUNCTION, Kind.ATTRIBUTE)
 
 
-def _render_member(name: str, obj: Object) -> list[str]:
+def _render_member(name: str, obj: Doc) -> list[str]:
     lines = [f"#### `{name}`", ""]
     if obj.kind is Kind.FUNCTION:
-        lines += _fence(_callable_signature(name, obj))
+        lines += _fence(_callable_signature(name, cast(Function, obj)))
     else:  # ATTRIBUTE — a property or a plain field.
         lines += _fence(_attribute_signature(name, obj))
     doc = _docstring(obj)
@@ -405,13 +416,13 @@ def _render_member(name: str, obj: Object) -> list[str]:
     return lines
 
 
-def _render_symbol(name: str, obj: Object) -> str:
+def _render_symbol(name: str, obj: Doc) -> str:
     lines = [f"### `{name}`", ""]
 
     if obj.kind is Kind.CLASS:
         lines += _fence(_class_signature(name, obj))
     elif obj.kind is Kind.FUNCTION:
-        lines += _fence(_callable_signature(name, obj))
+        lines += _fence(_callable_signature(name, cast(Function, obj)))
     else:  # ATTRIBUTE — a type alias.
         lines += _fence(_attribute_signature(name, obj))
 

@@ -253,9 +253,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(own_argv)
 
     # "run" is the only subparser registered above, and `required=True` means
-    # `parse_args` itself already rejected anything else.
+    # `parse_args` itself already rejected anything else — so `run` is
+    # guaranteed parsed by now, and this late validation error reports
+    # against the `run` usage line, not the top-level one.
     if not child_argv:
-        parser.error("run: missing command to execute after '--'")
+        run_parser.error("run: missing command to execute after '--'")
     return _run(run_parser, args, child_argv)
 
 

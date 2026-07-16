@@ -258,6 +258,50 @@ jobs:
           tests/test_process_group.py::test_group_cpu_quota_kwarg_accepted
           tests/test_process_group.py::test_group_reports_a_mechanism
 
+  test-musl:
+    name: test (musl / Alpine, full suite)
+    runs-on: ubuntu-latest
+    # Run the REAL (real-subprocess) pytest suite against a musl build inside an
+    # Alpine container -- not just the import smoke test (scripts/smoke.py) the
+    # published musllinux wheels get. The project builds and ships musllinux
+    # wheels (build-musllinux above + the release matrix) and Alpine/musl is a
+    # very common CI/container base, but until now the full suite only ever ran
+    # on glibc (the `test` matrix / `test-privileged`) -- so a musl-specific
+    # divergence in the syscall / signal / privilege-drop layer (which differs
+    # from glibc) could ship in a wheel while every green check was glibc-only.
+    # The sibling processkit-rs crate added its own `test-musl` lane for exactly
+    # this reason; this is the binding's equivalent.
+    #
+    # Kept in this PR-gating workflow (not nightly-hardening.yml) on purpose: musl
+    # is a *shipped* platform, so a regression should block the merge that
+    # introduces it, not surface a night later in a workflow that gates nothing.
+    # The cost is bounded and not a new category for this gate -- CI jobs run
+    # concurrently (the PR-gate wall-clock is the slowest job, not the sum), and
+    # this workflow already runs a docker-compose Linux suite on every PR
+    # (test-privileged) plus a full musl Rust compile on every PR (build-musllinux
+    # via cibuildwheel); a debug `maturin develop` build + pytest is the same
+    # shape and no slower than those.
+    #
+    # Runs via `docker compose run` from the host (like test-privileged), NOT a
+    # job-level `container:`: GitHub injects a glibc `node` into job containers to
+    # run JS actions (checkout / setup-uv), and that binary does not execute on a
+    # musl Alpine container -- so a container-per-job posture is fragile here,
+    # while the host-driven compose harness keeps checkout on the glibc runner and
+    # confines musl to the container.
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run the full suite on musl (Alpine)
+        # `--build` compiles the musl extension, then the image's default CMD
+        # (`uv run pytest`) runs the full suite as root inside the Alpine
+        # container. Root (Docker's default container user) means os.geteuid()==0,
+        # so the privilege-drop test runs on musl here too; cgroup enforcement
+        # falls back to `process_group` (unprivileged container), which the
+        # resource-limit tests tolerate -- see the `test-musl` service in
+        # compose.yaml.
+        run: docker compose run --build --rm test-musl
+
   event-loops:
     # Dedicated job for tests/test_event_loops.py: turns docs/event-loops.md's
     # "uvloop and anyio-on-asyncio are fully supported / works today" claim

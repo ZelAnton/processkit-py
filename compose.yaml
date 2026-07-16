@@ -47,3 +47,24 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     init: true
+
+  # musl (Alpine) counterpart of the `test-root` service above: root, but
+  # deliberately NOT privileged, running the full pytest suite built against
+  # **musl** (docker/Dockerfile.musl instead of the glibc docker/Dockerfile).
+  # It closes the gap between the musllinux wheels this project ships and the
+  # libc its tests run on — before this the wheels were only import-smoke-tested
+  # on musl (scripts/smoke.py), never run through the real (real-subprocess)
+  # suite. Used by the CI `test-musl` job (.github/workflows/ci.yml). Root
+  # (Docker's default container user) so the privilege-drop path
+  # (test_privilege_drop_args_actually_drop_privilege) is exercised on musl too;
+  # unprivileged so `/sys/fs/cgroup` stays read-only and `ProcessGroup` falls
+  # back to the POSIX `process_group` mechanism (the resource-limit tests
+  # tolerate that fallback) — the fragile delegated-cgroup-v2 lane is left to the
+  # glibc `test-privileged` job, not duplicated on musl. A real init reaps the
+  # short-lived processes the teardown tests spawn, like the services above.
+  test-musl:
+    image: processkit-py-test-musl
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.musl
+    init: true

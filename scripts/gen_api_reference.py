@@ -109,8 +109,9 @@ SECTIONS: tuple[Section, ...] = (
         "Process groups",
         "Kill-on-drop containment for a whole process tree — start children into "
         "it, signal or suspend the group, and reap the entire tree "
-        "(grandchildren included) on exit.",
-        ("ProcessGroup", "ProcessGroupStats"),
+        "(grandchildren included) on exit. `sample_stats` turns a one-shot "
+        "`stats()` snapshot into a periodic async series for live monitoring.",
+        ("ProcessGroup", "ProcessGroupStats", "sample_stats"),
     ),
     Section(
         "Supervision",

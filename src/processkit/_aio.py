@@ -1,12 +1,20 @@
-"""Pure-Python asyncio readiness helpers.
+"""Pure-Python asyncio helpers layered on top of the compiled extension.
 
-These compose on top of the compiled async surface (a `StdoutLines` iterator, a
-plain TCP connect) rather than bridging the Rust crate's borrowing probe methods
-— simpler, fully composable, and they work against any server, not only one this
-package started. (The `processkit` crate's 1.1.0 made its probes `Send`-bridgeable,
-but these Python helpers are kept deliberately: a free `wait_for_line(iterator)` /
-`wait_for_port(host, port)` is more composable than methods bound to one started
-`RunningProcess`.)
+Two families live here:
+
+- **Readiness helpers** (`wait_until` / `wait_for_line` / `wait_for_port` /
+  `wait_for_path`) compose on top of the compiled async surface (a
+  `StdoutLines` iterator, a plain TCP connect) rather than bridging the Rust
+  crate's borrowing probe methods — simpler, fully composable, and they work
+  against any server, not only one this package started. (The `processkit`
+  crate's 1.1.0 made its probes `Send`-bridgeable, but these Python helpers are
+  kept deliberately: a free `wait_for_line(iterator)` / `wait_for_port(host,
+  port)` is more composable than methods bound to one started
+  `RunningProcess`.)
+- **`sample_stats`** — a periodic `ProcessGroupStats` series, for the same
+  reason: the crate's `StatsSampler` borrows the group by lifetime and has no
+  FFI-safe equivalent, so this is plain Python built directly on the already
+  -public `ProcessGroup.stats()`.
 """
 
 from __future__ import annotations
@@ -18,11 +26,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any, TypeVar, overload
 
-from ._processkit import ProcessError
+from ._processkit import ProcessError, ProcessGroup, ProcessGroupStats
 from ._types import StrPath
 
 __all__ = [
     "WaitTimeout",
+    "sample_stats",
     "wait_for_line",
     "wait_for_path",
     "wait_for_port",
@@ -434,3 +443,57 @@ async def wait_for_line(
             return task.result()
         raise WaitTimeout(f"no matching line within {timeout}s", timeout_seconds=timeout) from None
     return task.result()
+
+
+# --- live monitoring (sample_stats) ------------------------------------------
+
+
+def _check_every(every: float) -> None:
+    if math.isnan(every):
+        raise ValueError("every must not be NaN")
+    if every < 0:
+        raise ValueError("every must not be negative")
+
+
+async def sample_stats(group: ProcessGroup, every: float) -> AsyncIterator[ProcessGroupStats]:
+    """Sample ``group.stats()`` on an interval, forever, as an async series of
+    `ProcessGroupStats` snapshots — a pure-Python analogue of the crate's
+    `ProcessGroup::sample_stats` (its `StatsSampler` borrows the group by
+    lifetime and has no FFI-safe equivalent here; this is plain Python built
+    directly on the already-public `group.stats()`, living alongside the
+    readiness helpers above for the same reason).
+
+    ``async for snapshot in sample_stats(group, every): ...`` — the first
+    snapshot is taken immediately (no initial sleep), then one every ``every``
+    seconds, for as long as you keep consuming. There is no overall deadline;
+    stop by ``break``ing out of the loop or otherwise abandoning/closing the
+    generator yourself.
+
+    **Fused, and louder than the crate's stream.** The crate's `StatsSampler`
+    swallows the error on the first failed sample and just ends the series
+    silently — a caller has to separately call `stats()` to learn why. This
+    generator instead lets `group.stats()`'s own exception (a `ProcessError` —
+    e.g. "ProcessGroup is already closed" once the group has torn down, or an
+    `Unsupported`/OS-error-derived failure from the platform's resource query)
+    propagate out of the ``async for`` untouched — the underlying cause is
+    never hidden behind a quiet end-of-series. That still fuses the series:
+    once this generator function raises, it is exhausted by Python's own
+    async-generator protocol, so a further ``__anext__`` (another loop
+    iteration, a second ``async for`` over the same object) raises
+    `StopAsyncIteration` rather than calling `group.stats()` again or
+    replaying the same error. If the group is already closed/invalid *before
+    the first snapshot* (e.g. iteration starts only after `group.shutdown()`
+    already ran), that same exception surfaces on the very first ``async
+    for`` step, not silently as an empty series.
+
+    ``every`` is validated up front: NaN and negative values raise
+    `ValueError` (the shared convention with the readiness helpers'
+    ``timeout``/``interval``). Unlike the crate — which clamps a zero period
+    to 1 ms because `tokio` panics on a zero-duration interval — ``every=0``
+    is accepted here as-is: `asyncio.sleep(0)` has no such restriction, so it
+    means "sample as fast as the event loop allows," with no artificial floor.
+    """
+    _check_every(every)
+    while True:
+        yield group.stats()
+        await asyncio.sleep(every)

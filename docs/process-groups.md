@@ -24,6 +24,7 @@ member listing, resource limits, and stats.
 - [Inspecting members](#inspecting-members)
 - [Resource limits: the sandbox](#resource-limits-the-sandbox)
 - [Stats](#stats)
+- [Live monitoring](#live-monitoring)
 
 ## Creating a group and the mechanism
 
@@ -293,9 +294,43 @@ with ProcessGroup() as group:
 whole tree (Windows, Linux cgroup); on the process-group backends they stay
 `None` and only the count is reported.
 
-There is no stats *series* — `stats()` is a snapshot you poll yourself. For a
-single run's end-to-end resource profile, use `RunningProcess.profile()`,
+For a single run's end-to-end resource profile, use `RunningProcess.profile()`,
 covered in [Streaming & interactive I/O](streaming.md).
+
+## Live monitoring
+
+`stats()` alone is a snapshot you poll yourself. `sample_stats(group, every)`
+turns that into a periodic series — a pure-Python async generator (no
+`ProcessGroup` verb of its own) built directly on `stats()`, for a dashboard,
+adaptive throttling, or an alert as the tree approaches a resource cap:
+
+```python
+from processkit import Command, ProcessGroup, sample_stats
+
+async with ProcessGroup(max_memory=512 * 1024 * 1024) as group:
+    await group.astart(Command("untrusted-tool"))
+    async for snap in sample_stats(group, every=1.0):
+        print(snap.active_process_count, snap.peak_memory_bytes)
+        if snap.active_process_count == 0:
+            break
+```
+
+The first snapshot is taken immediately, then one every `every` seconds, for as
+long as you keep consuming — there is no overall deadline; `break` out of the
+loop (or otherwise stop iterating) when you're done.
+
+**Fused, and louder than the crate's stream.** The crate's `StatsSampler`
+swallows the error on the first failed sample and the series just ends
+silently. This generator instead lets `stats()`'s own exception (e.g.
+`ProcessError` — "ProcessGroup is already closed" — once the group has torn
+down) propagate out of the `async for` untouched, so you learn *why* the
+series stopped instead of just that it did. That failure still ends the
+series for good: the exception is never retried, and — because it is an
+ordinary Python async generator — a further iteration attempt afterwards
+raises `StopAsyncIteration` rather than calling `stats()` again. If the group
+is already closed/invalid before you ever start iterating, that same
+exception surfaces on the very first `async for` step, not as a silently
+empty series.
 
 *Deeper: testing code that drives a group without spawning is
 [Testing your code](testing.md).*

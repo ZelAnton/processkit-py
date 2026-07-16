@@ -1,0 +1,82 @@
+# syntax=docker/dockerfile:1
+#
+# musl (Alpine) test environment for processkit-py — the musl counterpart of
+# docker/Dockerfile (which is glibc/Debian, `rust:1-bookworm`). It builds the
+# PyO3 extension against **musl** with a real Rust toolchain + uv and runs the
+# full pytest suite, so the syscall / signal / privilege-drop paths are exercised
+# on musl — not just import-smoke-tested (scripts/smoke.py) like the published
+# musllinux wheels. This closes the gap between the musllinux wheels the project
+# ships and the libc its tests actually run against (glibc only, before this).
+#
+# Use it through compose from the repo root (see compose.yaml):
+#
+#   docker compose run --build --rm test-musl                 # full suite on musl
+#   docker compose run --build --rm test-musl uv run pytest -q tests/test_async.py
+#
+# The CI `test-musl` job (.github/workflows/ci.yml) runs exactly the first form.
+# `--build` rebuilds the image so it picks up your latest source; BuildKit cache
+# mounts keep the Rust/uv caches warm so rebuilds are incremental.
+
+FROM rust:1-alpine
+
+# `rust:1-alpine` is a minimal Alpine base (unlike the glibc `rust:1-bookworm`,
+# which derives from buildpack-deps and already bundles a full toolchain), so the
+# pieces the build + suite need are installed explicitly here — matching what the
+# glibc harness gets for free:
+#   * build-base — gcc + musl-dev + binutils, so cargo/maturin can compile AND
+#     link the cdylib extension against musl (the CRT objects Scrt1.o/crti.o and
+#     the C linker driver maturin shells out to for the final link step).
+#   * curl + ca-certificates — to fetch the uv installer over https.
+#   * bash — a couple of tests write `#!/bin/sh` probe scripts; keep a real bash
+#     available too, matching the glibc image, so nothing depends on the
+#     busybox-ash the base image ships as `/bin/sh`.
+#   * procps — Alpine's default `ps` is busybox, which does not support the
+#     `ps -o lstart= -p <pid>` form the teardown-liveness helper uses
+#     (tests/_liveness.py::_process_start_key) to correlate a PID against a
+#     possible recycle. Without procps-ng that read returns nothing and the
+#     helper silently degrades to a raw PID-liveness check on musl only;
+#     installing it keeps the correlation path running here exactly as it does on
+#     glibc, so this lane exercises the same behavior rather than a quietly
+#     weaker one.
+RUN apk add --no-cache build-base curl ca-certificates bash procps
+
+# uv provisions the pinned Python (a musl python-build-standalone build on
+# Alpine), the virtualenv, dependencies, and the build.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+WORKDIR /app
+COPY . .
+
+# Front-load the rust-toolchain.toml resolution (channel = stable + the rustfmt
+# and clippy components it pins) on a clean, sequential step, before maturin
+# first drives cargo. The release `build-musllinux` path installs those same
+# components up front for the same reason (see the before-all hook in
+# pyproject.toml [tool.cibuildwheel.linux]): resolving them mid-build has
+# intermittently raced into a `bin/cargo-fmt` install conflict specifically in
+# the musl container. The build itself never runs fmt/clippy.
+RUN rustup component add rustfmt clippy
+
+# Build the abi3 extension against musl and install it into the venv. maturin
+# builds for the host triple — `x86_64-unknown-linux-musl` on `rust:1-alpine` —
+# and disables `crt-static` for the cdylib so it links as a real shared object
+# (the same musl cdylib handling the release `build-musllinux` job relies on).
+# Cache mounts persist the cargo registry, the build target, and uv's download
+# cache across rebuilds (they are not baked into the image, keeping it lean).
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/root/.cache/uv \
+    uv run maturin develop
+
+# Same `/root` traversal fix as the glibc Dockerfile. The container runs as root,
+# so the privilege-drop test
+# (tests/test_command.py::test_privilege_drop_args_actually_drop_privilege) runs
+# here too: it execs the uv-provisioned interpreter AFTER dropping to an
+# unprivileged uid, so that uid must be able to traverse `/root` (grant `+x` only,
+# no `+r` — the directory listing stays private) and read+execute the provisioned
+# Python tree (which holds no secrets). Without this the drop-privilege exec fails
+# with EACCES before the privilege-drop logic itself is exercised at all.
+RUN chmod o+x /root && chmod -R o+rX /root/.local/share/uv/python
+
+# Default to the full suite; override the command to scope it (see header).
+CMD ["uv", "run", "pytest"]

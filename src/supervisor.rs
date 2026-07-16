@@ -21,7 +21,7 @@ use crate::convert::{
 };
 use crate::errors::{map_err, map_err_ref, ProcessError};
 use crate::result::PyProcessResult;
-use crate::runner::extract_runner;
+use crate::runner::{extract_runner, new_when_sink, scope_when, take_when_error};
 use crate::runtime::{block_on, drive_async_py, reject_reentrant_runtime, require_event_loop};
 
 /// A one-shot sink for the error a control-predicate (`stop_when` /
@@ -529,7 +529,22 @@ impl PySupervisor {
         // running.rs for why the order matters (consume-then-fail).
         reject_reentrant_runtime()?;
         let supervisor = self.take_supervisor()?;
-        let result = block_on(py, supervisor.run());
+        // Scope the whole supervision loop under a fresh `when`-predicate error
+        // sink (see `runner.rs`): an injected `ScriptedRunner` whose `when`
+        // predicate raises then aborts supervision with that error instead of
+        // silently masking it behind a fallback reply and (possibly) looping on.
+        // The loop drives the runner inline on THIS task (`supervisor.run()`'s
+        // `self.runner.output_string(...).await`, no `tokio::spawn`), so a single
+        // scope reaches every incarnation's predicate.
+        let when_sink = new_when_sink();
+        let result = block_on(py, scope_when(when_sink.clone(), supervisor.run()));
+        // Precedence: the runner's `when`-predicate error is the earliest, most
+        // fundamental defect — it undermines the very reply a control predicate
+        // then examined — so it wins over a `stop_when`/`give_up_when` error,
+        // which in turn beats the (now meaningless) outcome or mapped crate error.
+        if let Some(err) = take_when_error(&when_sink) {
+            return Err(err);
+        }
         // A control predicate (`stop_when`/`give_up_when`) that raised or returned
         // a non-`bool` halted the loop and stashed its error — re-raise that to the
         // caller in preference to the (now meaningless) outcome or the mapped crate
@@ -556,9 +571,16 @@ impl PySupervisor {
         // Cloned before the supervisor is taken, so the awaited future can read the
         // control-predicate error slot back after the loop halts (see `run`).
         let error_slot = self.error_slot.clone();
+        // Fresh `when`-predicate error sink scoped around the awaited supervision
+        // loop, mirroring the sync `run` (same precedence: runner `when` error, then
+        // control-predicate error, then the outcome/mapped crate error).
+        let when_sink = new_when_sink();
         let supervisor = self.take_supervisor()?;
         drive_async_py(py, async move {
-            let result = supervisor.run().await;
+            let result = scope_when(when_sink.clone(), supervisor.run()).await;
+            if let Some(err) = take_when_error(&when_sink) {
+                return Err(err);
+            }
             if let Some(err) = take_slot_error(&error_slot) {
                 return Err(err);
             }

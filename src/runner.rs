@@ -4,6 +4,8 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use processkit::testing::{
@@ -11,6 +13,7 @@ use processkit::testing::{
     RecordingRunner as PkRecordingRunner, Reply as PkReply, ScriptedRunner as PkScriptedRunner,
 };
 use processkit::JobRunner;
+use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
 use processkit::ProcessRunnerExt;
 use pyo3::prelude::*;
@@ -28,17 +31,27 @@ use crate::runtime::{block_on, drive_async_py};
 // calling each rule's predicate `(&Command) -> bool` — infallible from its
 // perspective — so a raising predicate cannot abort the verb by itself. The
 // predicate stashes its error in the innermost active sink and the run verb,
-// wrapped in [`with_when_capture_sync`]/[`with_when_capture_async`], re-raises it
-// instead of returning the reply a fallthrough would have selected.
+// wrapped in a `when`-capture scope, re-raises it instead of returning the reply
+// a fallthrough would have selected.
 //
 // A tokio task-local (not a slot on the shared predicate closure or the runner)
 // gives per-**call** isolation: the sink is scoped around each verb's future, so
 // two concurrent verbs against the same shared `ScriptedRunner` — sync on
 // separate threads, or async tasks interleaved on the runtime — each read and
 // write their own sink and never cross errors, even though they share one
-// predicate closure. Outside any scope (e.g. a `ScriptedRunner` driven inside a
-// `Supervisor`, whose loop does not route through these wrappers) the predicate
-// falls back to the visible-on-stderr unraisable hook, its prior behavior.
+// predicate closure.
+//
+// Every Python path that drives a `ScriptedRunner` opens this scope, so the
+// contract holds uniformly rather than only for the runner's own verbs: the
+// runner's 12 verbs ([`with_when_capture_sync`]/[`with_when_capture_async`]), an
+// injected runner under a `CliClient` (`cli.rs`) or a `Supervisor`
+// (`supervisor.rs`), and each command of a batch (`batch.rs`, via
+// [`WhenCaptureRunner`] — one fresh sink *per command*, since the crate's batch
+// driver polls every command on ONE task and a single shared scope would cross
+// their errors and keep only the first). Outside any scope the predicate falls
+// back to the visible-on-stderr unraisable hook — its prior behavior, now
+// reached only when no live scope can catch it, e.g. a predicate firing during
+// interpreter finalization (`try_attach` yields `None`).
 tokio::task_local! {
     static WHEN_PREDICATE_ERROR: Arc<Mutex<Option<PyErr>>>;
 }
@@ -68,19 +81,66 @@ fn stash_when_error(err: PyErr) -> Option<PyErr> {
     }
 }
 
+/// A per-call `when`-predicate error sink (see [`WHEN_PREDICATE_ERROR`]): holds
+/// the first error a rule predicate raised for one run verb, read back once the
+/// verb's future resolves. Shared by every path that drives a `ScriptedRunner`
+/// (the runner's own verbs here, plus `cli.rs`/`supervisor.rs`/`batch.rs`), so
+/// the abort-on-broken-predicate contract holds uniformly.
+pub(crate) type WhenSink = Arc<Mutex<Option<PyErr>>>;
+
+/// A fresh, empty [`WhenSink`].
+pub(crate) fn new_when_sink() -> WhenSink {
+    Arc::new(Mutex::new(None))
+}
+
+/// Take a sink's stashed predicate error, if any, once its scoped future has
+/// resolved.
+pub(crate) fn take_when_error(sink: &WhenSink) -> Option<PyErr> {
+    sink.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Run `fut` with `sink` installed as the active `when`-predicate error sink for
+/// the duration of the future (same task; a nested scope shadows an outer one so
+/// each verb reads its own). The caller reads `sink` with [`take_when_error`]
+/// after the future resolves. This is the single point that touches the
+/// [`WHEN_PREDICATE_ERROR`] task-local, so every consumer (this module,
+/// `cli.rs`, `supervisor.rs`, `batch.rs`) goes through one door.
+pub(crate) fn scope_when<F: Future>(sink: WhenSink, fut: F) -> impl Future<Output = F::Output> {
+    WHEN_PREDICATE_ERROR.scope(sink, fut)
+}
+
+/// Scope `fut` (which already yields a `PyResult`) under a fresh sink and, once
+/// it resolves, re-raise a stashed `when`-predicate error in preference to
+/// `fut`'s own outcome. The async building block the `CliClient` async verbs use
+/// (their future runs `build_command` + the runner call, both of which belong
+/// inside the scope). For a future that yields a raw crate error, use
+/// [`with_when_capture_async`] instead.
+pub(crate) async fn scope_when_capture<T>(
+    fut: impl Future<Output = PyResult<T>> + Send,
+) -> PyResult<T> {
+    let sink = new_when_sink();
+    let result = scope_when(sink.clone(), fut).await;
+    match take_when_error(&sink) {
+        Some(err) => Err(err),
+        None => result,
+    }
+}
+
 /// Run a runner verb future under a fresh per-call `when`-predicate error sink
 /// (sync). If a `ScriptedRunner.when` predicate raised while the crate resolved
 /// a reply, re-raise that error instead of returning the reply-derived result.
-fn with_when_capture_sync<U>(
+/// `pub(crate)` so the `CliClient` sync verbs (`cli.rs`) and the `Supervisor`
+/// sync run (`supervisor.rs`) share the same scope as the runner's own verbs.
+pub(crate) fn with_when_capture_sync<U>(
     py: Python<'_>,
     fut: impl Future<Output = Result<U, processkit::Error>> + Send,
 ) -> PyResult<U>
 where
     U: Send,
 {
-    let sink: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
-    let result = block_on(py, WHEN_PREDICATE_ERROR.scope(sink.clone(), fut));
-    if let Some(err) = sink.lock().unwrap_or_else(PoisonError::into_inner).take() {
+    let sink = new_when_sink();
+    let result = block_on(py, scope_when(sink.clone(), fut));
+    if let Some(err) = take_when_error(&sink) {
         return Err(err);
     }
     result
@@ -97,13 +157,127 @@ where
     U: for<'a> IntoPyObject<'a> + Send + 'static,
 {
     drive_async_py(py, async move {
-        let sink: Arc<Mutex<Option<PyErr>>> = Arc::new(Mutex::new(None));
-        let result = WHEN_PREDICATE_ERROR.scope(sink.clone(), fut).await;
-        if let Some(err) = sink.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        let sink = new_when_sink();
+        let result = scope_when(sink.clone(), fut).await;
+        if let Some(err) = take_when_error(&sink) {
             return Err(err);
         }
         result.map_err(map_err)
     })
+}
+
+/// A batch-only `ProcessRunner` wrapper that gives each command its own
+/// `when`-predicate error sink.
+///
+/// The [`WHEN_PREDICATE_ERROR`] task-local is per-task, and the crate's batch
+/// driver ([`processkit::output_all`]) polls every command's verb future on ONE
+/// task — a `poll_fn` with a bounded active list, **not** `tokio::spawn` — so a
+/// single scope around the whole batch would share one sink across every command
+/// and lose per-command attribution (keeping only the first error). This wrapper
+/// instead opens a fresh sink around each command's `output_string`/
+/// `output_bytes` future, so a raising `when` predicate surfaces in exactly that
+/// command's result slot — the batch analogue of a direct `runner.output(cmd)`
+/// aborting.
+///
+/// Slot correlation: the driver invokes the verb (`output_string`/`output_bytes`)
+/// for input command 0, 1, 2, … in strictly increasing order. The slot index is
+/// therefore taken at **call time** — the synchronous head of the verb, before
+/// the returned future is polled — so it maps 1:1 to the input index no matter
+/// how the driver later interleaves or completes the futures. (Taking it inside
+/// the future instead would tie it to first-poll order, which the driver's
+/// `swap_remove` reorders the instant a scripted verb completes synchronously,
+/// misattributing errors to the wrong slot.) `batch.rs` pre-sizes `errors` to
+/// the command count and, after the batch, reads slot i to override command i's
+/// result with its predicate error when present.
+///
+/// The `ProcessRunner` trait is `#[async_trait]` (each verb returns a boxed
+/// future); this is the same desugaring written by hand, so the `fetch_add` can
+/// run in the synchronous head before `Box::pin`. `start` is left to the trait
+/// default — the batch driver only ever calls `output_string`/`output_bytes`.
+pub(crate) struct WhenCaptureRunner {
+    inner: Arc<dyn ProcessRunner + Send + Sync>,
+    /// One slot per input command, indexed by call order (== input index).
+    errors: Mutex<Vec<Option<PyErr>>>,
+    /// The next slot index to hand out, bumped once at the synchronous head of
+    /// each verb call.
+    next: AtomicUsize,
+}
+
+impl WhenCaptureRunner {
+    /// Wrap `inner`, pre-sizing the per-command error log to `count` commands.
+    pub(crate) fn new(inner: Arc<dyn ProcessRunner + Send + Sync>, count: usize) -> Self {
+        Self {
+            inner,
+            errors: Mutex::new((0..count).map(|_| None).collect()),
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    /// Take the per-command predicate errors after the batch has finished; slot
+    /// `i` is input command `i` (see the type doc). Must be called only once the
+    /// driving future has resolved, so no verb future is still writing.
+    pub(crate) fn take_errors(&self) -> Vec<Option<PyErr>> {
+        std::mem::take(&mut self.errors.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Record command `idx`'s predicate error (first write wins within a command).
+    /// An out-of-range `idx` — impossible for a correctly pre-sized log — is
+    /// dropped defensively rather than panicking across the batch's FFI boundary.
+    fn record(&self, idx: usize, err: PyErr) {
+        let mut errors = self.errors.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = errors.get_mut(idx) {
+            if slot.is_none() {
+                *slot = Some(err);
+            }
+        }
+    }
+}
+
+/// The boxed-future type a hand-written `#[async_trait]` verb returns.
+type VerbFuture<'a, T> = Pin<Box<dyn Future<Output = processkit::Result<T>> + Send + 'a>>;
+
+impl ProcessRunner for WhenCaptureRunner {
+    fn output_string<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        command: &'life1 processkit::Command,
+    ) -> VerbFuture<'async_trait, PkProcessResult<String>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        // Take the slot index in the synchronous head (see the type doc), then run
+        // the inner verb under a fresh per-command `when`-predicate sink.
+        let idx = self.next.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            let sink = new_when_sink();
+            let result = scope_when(sink.clone(), self.inner.output_string(command)).await;
+            if let Some(err) = take_when_error(&sink) {
+                self.record(idx, err);
+            }
+            result
+        })
+    }
+
+    fn output_bytes<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        command: &'life1 processkit::Command,
+    ) -> VerbFuture<'async_trait, PkProcessResult<Vec<u8>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            let sink = new_when_sink();
+            let result = scope_when(sink.clone(), self.inner.output_bytes(command)).await;
+            if let Some(err) = take_when_error(&sink) {
+                self.record(idx, err);
+            }
+            result
+        })
+    }
 }
 
 // The run verbs are generic over the crate's `ProcessRunner` so the real
@@ -233,11 +407,13 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
 /// the stashed error to the caller. A broken match predicate must surface — not
 /// silently pick a fallback reply that could mask a defect.
 ///
-/// Outside any active sink (a predicate run through a path that does not wrap the
-/// verb — e.g. a `ScriptedRunner` driven inside a `Supervisor`) it keeps the
-/// prior behavior: read as "does not match" with the error surfaced via the
-/// unraisable hook (visible on stderr) rather than propagated across the FFI
-/// boundary.
+/// Outside any active sink it keeps the prior behavior: read as "does not match"
+/// with the error surfaced via the unraisable hook (visible on stderr) rather
+/// than propagated across the FFI boundary. Every Python path that drives a
+/// `ScriptedRunner` now opens a sink — the runner's own verbs, an injected runner
+/// under a `CliClient`/`Supervisor`, and each command of a batch — so this
+/// fallback is reached only when no live scope can catch it (e.g. a predicate
+/// firing during interpreter finalization).
 fn make_command_predicate(
     callback: Py<PyAny>,
 ) -> impl Fn(&processkit::Command) -> bool + Send + Sync + 'static {
@@ -573,7 +749,10 @@ runner_pymethods!(PyScriptedRunner {
     /// raises or returns a non-`bool` aborts the run verb with that error (like
     /// `Supervisor.stop_when`) rather than selecting the next rule or the
     /// fallback — a broken match predicate surfaces instead of silently masking
-    /// a test defect behind a fallback reply.
+    /// a test defect behind a fallback reply. This holds on every path the runner
+    /// can be driven from: its own verbs, an injected runner under a `CliClient`
+    /// or a `Supervisor`, and each command of a batch (`output_all`/…) — where
+    /// the error surfaces in that command's own result slot.
     fn when(&self, predicate: Py<PyAny>, reply: &PyReply) -> PyResult<()> {
         let reply = reply.inner.clone();
         self.reconfigure(move |runner| runner.when(make_command_predicate(predicate), reply))

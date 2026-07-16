@@ -203,6 +203,98 @@ def test_output_all_rejects_unsupported_runner_object() -> None:
         output_all([Command(PY, ["-c", "pass"])], runner=object())  # type: ignore[arg-type]
 
 
+# --- injected-runner when() predicate errors surface per command (T-104) ------
+
+
+def test_output_all_when_raising_predicate_surfaces_in_that_slot() -> None:
+    # Regression (T-104): a batch command whose injected when() predicate raises
+    # used to fall through to the fallback reply silently (the error lost to the
+    # unraisable hook). It must now surface in THAT command's own result slot — the
+    # batch analogue of a direct verb aborting — without short-circuiting the rest.
+    def boom(cmd: Command) -> bool:
+        raise ValueError("batch predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    results = output_all([Command(NO_SUCH_PROGRAM)], runner=runner)
+    assert len(results) == 1
+    first = results[0]
+    assert isinstance(first, ValueError)
+    assert str(first) == "batch predicate exploded"
+
+
+def test_output_all_when_predicate_errors_map_to_their_own_slots() -> None:
+    # Per-command attribution (T-104): several commands, each tagged with its
+    # index; a predicate that raises that tag only for the odd-indexed ones. Every
+    # error must land in its OWN slot and the even commands must proceed normally
+    # — proving the per-command sink isolates errors even though the batch driver
+    # polls every command on one shared task through one shared predicate closure.
+    def boom_on_odd(cmd: Command) -> bool:
+        tag = cmd.arguments[0]
+        if tag.startswith("odd-"):
+            raise ValueError(tag)
+        return False  # even commands: decline, so the fallback reply applies
+
+    runner = ScriptedRunner()
+    runner.when(boom_on_odd, Reply.ok("matched"))
+    runner.fallback(Reply.ok("even-ok"))
+    commands = [Command(NO_SUCH_PROGRAM, [f"{'odd' if i % 2 else 'even'}-{i}"]) for i in range(8)]
+    results = output_all(commands, runner=runner)
+    for i, r in enumerate(results):
+        if i % 2:
+            assert isinstance(r, ValueError), f"slot {i}: {r!r}"
+            assert str(r) == f"odd-{i}"
+        else:
+            assert isinstance(r, ProcessResult), f"slot {i}: {r!r}"
+            assert r.stdout == "even-ok"
+
+
+def test_output_all_bytes_when_raising_predicate_surfaces_in_that_slot() -> None:
+    def boom(cmd: Command) -> bool:
+        raise ValueError("bytes batch predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    results = output_all_bytes([Command(NO_SUCH_PROGRAM)], runner=runner)
+    first = results[0]
+    assert isinstance(first, ValueError)
+    assert str(first) == "bytes batch predicate exploded"
+
+
+def test_aoutput_all_when_raising_predicate_surfaces_in_that_slot() -> None:
+    def boom(cmd: Command) -> bool:
+        raise ValueError("async batch predicate exploded")
+
+    async def scenario() -> list[ProcessResult | ProcessError]:
+        runner = ScriptedRunner()
+        runner.when(boom, Reply.ok("matched"))
+        runner.fallback(Reply.ok("fallback"))
+        return await aoutput_all([Command(NO_SUCH_PROGRAM)], runner=runner)
+
+    results = asyncio.run(scenario())
+    first = results[0]
+    assert isinstance(first, ValueError)
+    assert str(first) == "async batch predicate exploded"
+
+
+def test_aoutput_all_bytes_when_raising_predicate_surfaces_in_that_slot() -> None:
+    def boom(cmd: Command) -> bool:
+        raise ValueError("async bytes batch predicate exploded")
+
+    async def scenario() -> list[BytesResult | ProcessError]:
+        runner = ScriptedRunner()
+        runner.when(boom, Reply.ok("matched"))
+        runner.fallback(Reply.ok("fallback"))
+        return await aoutput_all_bytes([Command(NO_SUCH_PROGRAM)], runner=runner)
+
+    results = asyncio.run(scenario())
+    first = results[0]
+    assert isinstance(first, ValueError)
+    assert str(first) == "async bytes batch predicate exploded"
+
+
 # --- no-orphan teardown + in-flight cancellation -----------------------------
 
 

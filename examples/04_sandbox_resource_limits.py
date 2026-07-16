@@ -27,8 +27,11 @@ _MiB = 1024 * 1024
 
 # Two short-lived stand-ins for the tool calls an agent might make in a row: a
 # quick one and a slower one, both inside the same sandboxed group. The sleeps
-# keep each alive long enough for the stats() snapshot to actually catch it
-# running, and comfortably inside the per-call timeout below.
+# are just there to make each call take a visibly non-zero amount of time,
+# comfortably inside the per-call timeout below — group.output() blocks until
+# each call finishes, so by the time stats() is checked below every call has
+# already completed (active_process_count is 0 at that point; peak_memory
+# still reflects the tree's usage accumulated over the whole session).
 _TOOL_CALLS = [
     ("quick tool call", "import time; time.sleep(0.2)"),
     ("slow tool call", "import time; time.sleep(2)"),

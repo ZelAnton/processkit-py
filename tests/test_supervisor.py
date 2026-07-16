@@ -543,3 +543,57 @@ def test_supervision_outcome_pickle_raises_type_error() -> None:
     restored = pickle.loads(pickle.dumps(outcome.final_result.outcome))
     assert restored == outcome.final_result.outcome
     assert restored.exited_zero
+
+
+# --- injected-runner when() predicate errors abort supervision (T-104) --------
+
+
+def test_supervisor_when_raising_predicate_aborts_run() -> None:
+    # Regression (T-104): a Supervisor driving an injected ScriptedRunner whose
+    # when() predicate raises used to swallow the error into the unraisable hook,
+    # read the predicate as "no match", and quietly return a fallback-driven
+    # outcome. It must now abort supervision with that error, surfaced from run().
+    # restart="never" keeps the loop to a single incarnation so the error surfaces
+    # promptly (a bounded loop surfaces it once it halts).
+    def boom(cmd: Command) -> bool:
+        raise ValueError("supervisor predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    sup = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner)
+
+    with pytest.raises(ValueError, match="supervisor predicate exploded"):
+        sup.run()
+
+
+def test_supervisor_awhen_raising_predicate_aborts_run() -> None:
+    # The async supervision path (arun) propagates a raising when() predicate too
+    # (T-104), with the same precedence as the sync run.
+    def boom(cmd: Command) -> bool:
+        raise ValueError("async supervisor predicate exploded")
+
+    async def scenario() -> SupervisionOutcome:
+        runner = ScriptedRunner()
+        runner.when(boom, Reply.ok("matched"))
+        runner.fallback(Reply.ok("fallback"))
+        sup = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner)
+        return await sup.arun()
+
+    with pytest.raises(ValueError, match="async supervisor predicate exploded"):
+        asyncio.run(scenario())
+
+
+def test_supervisor_when_non_bool_predicate_aborts_run() -> None:
+    # A non-bool return is as undecidable as a raise: surface a TypeError rather
+    # than reading it as "no match" and looping/returning a fallback outcome.
+    def predicate(cmd: Command) -> bool:
+        return "yes"  # type: ignore[return-value]
+
+    runner = ScriptedRunner()
+    runner.when(predicate, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    sup = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner)
+
+    with pytest.raises(TypeError):
+        sup.run()

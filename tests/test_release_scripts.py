@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import subprocess
 from unittest import mock
 
@@ -18,11 +19,111 @@ from scripts.release.changelog import (
     _cmd_autofill,
     _cmd_extract_notes,
     _cmd_promote,
+    dedupe_generated_changes,
     extract_release_notes,
     insert_unreleased_body,
     promote_unreleased,
     unreleased_has_bullets,
 )
+
+CLIFF_TOML = pathlib.Path(__file__).resolve().parents[1] / "cliff.toml"
+
+_PARSER_ENTRY_RE = re.compile(
+    r'\{\s*message\s*=\s*"((?:[^"\\]|\\.)*)"\s*,\s*(skip\s*=\s*true|group\s*=\s*"[^"]*")\s*\}'
+)
+
+
+def _cliff_commit_parsers() -> list[tuple[str, bool]]:
+    """`(regex, is_skip)` pairs from `cliff.toml`'s `commit_parsers`, in file
+    order. A deliberately tiny TOML reader (just enough for this one array of
+    inline tables) — `tomllib` is 3.11+ and the floor is 3.10, same reasoning
+    as `test_api_surface._section_version`. Un-escapes TOML's doubled
+    backslashes (`\\\\d` -> `\\d`) back into a plain regex pattern.
+    """
+    text = CLIFF_TOML.read_text(encoding="utf-8")
+    return [
+        (re.sub(r"\\(.)", r"\1", raw_message), tail.strip().startswith("skip"))
+        for raw_message, tail in _PARSER_ENTRY_RE.findall(text)
+    ]
+
+
+# --- cliff.toml: commit_parsers skip rules ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Initialize integration workspace for batch B-20260711T155830Z",
+        "Open integration workspace for batch B-20260712T150224Z",
+        "Initialize integration workspace",
+        "Initialize integration workspace at batch base",
+    ],
+)
+def test_cliff_toml_skips_integration_workspace_bookkeeping_commits(message: str) -> None:
+    parsers = _cliff_commit_parsers()
+    assert any(is_skip and re.match(pattern, message) for pattern, is_skip in parsers)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Add a new feature",
+        "Fix a parsing bug",
+        "Refactor the retry helper",
+    ],
+)
+def test_cliff_toml_does_not_skip_user_facing_commits(message: str) -> None:
+    parsers = _cliff_commit_parsers()
+    matched_skip = any(is_skip and re.match(pattern, message) for pattern, is_skip in parsers)
+    assert not matched_skip
+
+
+# --- changelog: dedupe_generated_changes ------------------------------------
+
+
+def test_dedupe_generated_changes_collapses_duplicate_bullets_in_a_section() -> None:
+    generated = (
+        "### Changed\n"
+        "- Publish documentation site to GitHub Pages\n"
+        "- Bump processkit dependency to 2.2.4\n"
+        "- Bump processkit dependency to 2.2.4\n"
+        "- Bump processkit dependency to 2.2.4\n"
+    )
+    result = dedupe_generated_changes(generated)
+    assert result.count("Bump processkit dependency to 2.2.4") == 1
+    assert "Publish documentation site to GitHub Pages" in result
+
+
+def test_dedupe_generated_changes_drops_empty_bullets() -> None:
+    generated = "### Changed\n- a real change\n- \n-\n"
+    result = dedupe_generated_changes(generated)
+    assert result == "### Changed\n- a real change"
+
+
+def test_dedupe_generated_changes_drops_a_section_left_with_no_bullets() -> None:
+    # A group whose only commits were bookkeeping/blank ends up empty after
+    # per-line filtering; its now-content-free header should not survive as
+    # a bare "### Changed" with nothing under it.
+    generated = "### Added\n- a new thing\n\n### Changed\n-\n\n### Fixed\n- a bugfix\n"
+    result = dedupe_generated_changes(generated)
+    assert "### Changed" not in result
+    assert "### Added\n- a new thing" in result
+    assert "### Fixed\n- a bugfix" in result
+
+
+def test_dedupe_generated_changes_preserves_order_and_distinct_bullets() -> None:
+    generated = "### Added\n- first thing\n- second thing\n- third thing\n"
+    result = dedupe_generated_changes(generated)
+    assert result == generated.strip()
+
+
+def test_dedupe_generated_changes_dedupes_independently_per_section() -> None:
+    # The same wording repeated in two different groups is not a duplicate
+    # across sections — only within one.
+    generated = "### Added\n- shared wording\n\n### Fixed\n- shared wording\n"
+    result = dedupe_generated_changes(generated)
+    assert result.count("shared wording") == 2
+
 
 # --- changelog: unreleased_has_bullets --------------------------------------
 
@@ -257,6 +358,34 @@ def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.P
     written = changelog.read_bytes()
     assert b"\r\n" not in written
     assert "café".encode() in written
+
+
+def test_cmd_autofill_dedupes_git_cliffs_generated_body(tmp_path: pathlib.Path) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n\n## [1.0.0] - 2026-01-01\n")
+    args = argparse.Namespace(
+        changelog=str(changelog),
+        cliff_config="cliff.toml",
+        prev_tag="v0.9.0",
+    )
+    generated_stdout = (
+        "### Changed\n"
+        "- Bump processkit dependency to 2.2.4\n"
+        "- Bump processkit dependency to 2.2.4\n"
+        "\n"
+        "### Fixed\n"
+        "-\n"
+    )
+    completed = subprocess.CompletedProcess(
+        args=["git-cliff"], returncode=0, stdout=generated_stdout
+    )
+
+    with mock.patch("scripts.release.changelog.subprocess.run", return_value=completed):
+        _cmd_autofill(args)
+
+    written = changelog.read_text(encoding="utf-8")
+    assert written.count("Bump processkit dependency to 2.2.4") == 1
+    assert "### Fixed" not in written
 
 
 def test_cmd_autofill_surfaces_git_cliff_stderr_on_failure(

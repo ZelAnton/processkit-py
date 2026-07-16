@@ -19,6 +19,52 @@ import sys
 from datetime import datetime, timezone
 
 UNRELEASED_RE = re.compile(r"^## \[Unreleased\]\s*\n(.*?)(?=^## \[|\Z)", re.M | re.S)
+GENERATED_HEADER_RE = re.compile(r"^### .+$")
+GENERATED_BULLET_RE = re.compile(r"^-\s*(.*)$")
+
+
+def dedupe_generated_changes(generated: str) -> str:
+    """Post-process git-cliff's generated body (one or more `### Group`
+    sections of `- bullet` lines): collapse bullets that repeat verbatim
+    within the same section, and drop a `### Group` header that ends up with
+    no surviving bullets. A single logical change can land through several
+    merge/bookkeeping commits in the same integration batch, producing the
+    same bullet text 2-3 times; that requires state carried across commits,
+    which is not expressible as a single Tera filter chain in `cliff.toml`
+    (unlike the blank-first-line bullet filtering, which is genuinely
+    per-commit and lives in the template instead), so it is handled here.
+    """
+    blocks: list[tuple[str, list[str]]] = []
+    header: str | None = None
+    bullets: list[str] = []
+    seen: set[str] = set()
+
+    def flush() -> None:
+        if header is not None:
+            blocks.append((header, bullets[:]))
+
+    for line in generated.splitlines():
+        if GENERATED_HEADER_RE.match(line):
+            flush()
+            header = line
+            bullets = []
+            seen = set()
+            continue
+        m = GENERATED_BULLET_RE.match(line)
+        if m is None:
+            continue
+        bullet = m.group(1).strip()
+        if bullet and bullet not in seen:
+            seen.add(bullet)
+            bullets.append(bullet)
+    flush()
+
+    sections = [
+        header + "\n" + "\n".join(f"- {b}" for b in group_bullets)
+        for header, group_bullets in blocks
+        if group_bullets
+    ]
+    return "\n\n".join(sections)
 
 
 def unreleased_has_bullets(text: str) -> bool:
@@ -151,7 +197,7 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
             message += f"\nstdout:\n{stdout}"
         _fail(message)
         return  # unreachable (_fail raises); satisfies type-checkers
-    generated = result.stdout.strip()
+    generated = dedupe_generated_changes(result.stdout.strip())
     if not generated:
         _fail(
             f"No release-worthy commits found between {args.prev_tag} and HEAD. "

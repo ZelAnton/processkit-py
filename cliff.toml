@@ -10,9 +10,16 @@
 #   refactor..., update..., change..., rename..., perf..., ci..., ...    -> Changed
 #   doc..., chore..., test..., style...                                  -> skipped
 #   Release v..., Merge ...                                              -> skipped
+#   Open/Initialize ... integration workspace ...                        -> skipped
 #   anything else                                                        -> Changed (fallback)
 #
-# Only the first line of each commit message is used.
+# Only the first line of each commit message is used. A commit whose first
+# line is blank (message is empty, or its first line is empty and the real
+# text sits in the body — both happen with jj-authored bookkeeping commits)
+# is dropped rather than emitted as a bare "- " bullet; this is per-commit
+# formatting, so it lives here as a Tera condition rather than in
+# scripts/release/changelog.py's postprocessing (which handles the
+# cross-commit case: deduplication, see there).
 
 [changelog]
 header = ""
@@ -20,7 +27,10 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group }}
 {% for commit in commits %}
-- {{ commit.message | split(pat="\n") | first | trim }}
+{%- set first_line = commit.message | split(pat="\n") | first | trim -%}
+{%- if first_line | length > 0 %}
+- {{ first_line }}
+{%- endif -%}
 {%- endfor %}
 
 {% endfor %}
@@ -37,6 +47,7 @@ commit_parsers = [
 	{ message = "^[Rr]elease v?\\d", skip = true },
 	{ message = "^[Mm]erge ", skip = true },
 	{ message = "(?i)^(doc|docs|chore|test|tests|style)\\b", skip = true },
+	{ message = "(?i)^(open|initialize)\\s+integration workspace\\b", skip = true },
 	{ message = "(?i)^(feat|add)\\b", group = "Added" },
 	{ message = "(?i)^(fix|bug)\\b", group = "Fixed" },
 	{ message = "(?i)^(remove|delete|drop)\\b", group = "Removed" },

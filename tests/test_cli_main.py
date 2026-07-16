@@ -91,6 +91,12 @@ def test_missing_command_after_run_is_a_usage_error() -> None:
     result = _run_cli("run", "--timeout", "1")
     assert result.returncode == 2
     assert "missing command" in result.stderr
+    # Must be the `run` subparser's usage line (mentions its own flags), not
+    # the top-level `usage: python -m processkit [-h] {run} ...` — regression
+    # guard for reporting via `run_parser.error(...)` instead of `parser.error(...)`.
+    assert "usage: python -m processkit run" in result.stderr
+    assert "--timeout" in result.stderr
+    assert "usage: python -m processkit [-h]" not in result.stderr
 
 
 def test_fallback_process_group_failure_is_reported_not_raised() -> None:

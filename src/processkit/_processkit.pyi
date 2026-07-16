@@ -787,8 +787,12 @@ class ScriptedRunner(_RunnerVerbs):
     # A `predicate` that raises or returns a non-bool aborts the run verb with
     # that error — it does NOT fall through to the next rule or the fallback — so
     # a broken match predicate surfaces instead of silently masking a test defect
-    # behind a fallback reply (see `runner.rs`). Concurrent verbs against one
-    # shared runner never cross predicate errors.
+    # behind a fallback reply (see `runner.rs`). This holds however the runner is
+    # driven: its own verbs, an injected runner under a `CliClient` or a
+    # `Supervisor`, and every command of a batch (`output_all`/`output_all_bytes`
+    # and their async twins) — for a batch, the error surfaces in that command's
+    # own result slot. Concurrent verbs against one shared runner never cross
+    # predicate errors.
     def when(self, predicate: Callable[[Command], bool], reply: Reply) -> None: ...
     def fallback(self, reply: Reply) -> None: ...
     def __repr__(self) -> str: ...

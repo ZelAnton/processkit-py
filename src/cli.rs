@@ -19,8 +19,8 @@ use crate::command::PyCommand;
 use crate::convert::{build_retry_policy, parse_retry_if, positive_duration};
 use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
-use crate::runner::extract_runner;
-use crate::runtime::{block_on, drive_async_py};
+use crate::runner::{extract_runner, scope_when_capture, with_when_capture_sync};
+use crate::runtime::drive_async_py;
 
 /// Either the per-call `args` list, or a fully-customized `Command` built via
 /// `CliClient.command(args)` and further chained (`.timeout(...)`, `.stdin(...)`,
@@ -364,37 +364,43 @@ impl PyCliClient {
 
     /// Run with the given args, or a `Command` from `command()`; require a
     /// zero exit and return trimmed stdout.
+    ///
+    /// Runs through the same `when`-capture scope as `Runner`'s own verbs (see
+    /// `runner.rs`), so an injected `ScriptedRunner` whose `when` predicate raises
+    /// aborts the call with that error instead of silently falling through to a
+    /// fallback reply. (`build_command` runs the client's `default_env_fn`
+    /// resolvers, not `when` predicates, so it stays outside the scope.)
     fn run(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<String> {
         let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
-        block_on(py, self.inner.run(command))
+        with_when_capture_sync(py, self.inner.run(command))
     }
 
     /// Run with the given args, or a `Command` from `command()`, and capture
     /// output (a non-zero exit is data).
     fn output(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<PyProcessResult> {
         let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
-        block_on(py, self.inner.output_string(command)).map(PyProcessResult::from)
+        with_when_capture_sync(py, self.inner.output_string(command)).map(PyProcessResult::from)
     }
 
     /// Run with the given args, or a `Command` from `command()`, and capture
     /// raw-bytes stdout.
     fn output_bytes(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<PyBytesResult> {
         let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
-        block_on(py, self.inner.output_bytes(command)).map(PyBytesResult::from)
+        with_when_capture_sync(py, self.inner.output_bytes(command)).map(PyBytesResult::from)
     }
 
     /// Run with the given args, or a `Command` from `command()`, and return
     /// the exit code.
     fn exit_code(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<i32> {
         let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
-        block_on(py, self.inner.exit_code(command))
+        with_when_capture_sync(py, self.inner.exit_code(command))
     }
 
     /// Run a predicate call (args, or a `Command` from `command()`) and read
     /// its exit code as a bool.
     fn probe(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<bool> {
         let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
-        block_on(py, self.inner.probe(command))
+        with_when_capture_sync(py, self.inner.probe(command))
     }
 
     /// Async counterpart of `run()`.
@@ -402,14 +408,19 @@ impl PyCliClient {
     /// The `default_env_fn` resolvers run when the returned awaitable is first
     /// awaited (fresh per build, like the sync verbs); a resolver that raises or
     /// returns a non-`str` propagates that exception out of the `await`, before
-    /// the runner is reached, so no process is spawned (fail-closed).
+    /// the runner is reached, so no process is spawned (fail-closed). An injected
+    /// `ScriptedRunner`'s raising `when` predicate likewise aborts the awaited
+    /// call (via `scope_when_capture`), matching the sync verbs.
     fn arun<'py>(&self, py: Python<'py>, call: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
         let call = ClientCall::from_py(call)?;
-        drive_async_py(py, async move {
-            let command = build_command(&client, call)?;
-            client.run(command).await.map_err(map_err)
-        })
+        drive_async_py(
+            py,
+            scope_when_capture(async move {
+                let command = build_command(&client, call)?;
+                client.run(command).await.map_err(map_err)
+            }),
+        )
     }
 
     /// Async counterpart of `output()`.
@@ -420,14 +431,17 @@ impl PyCliClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
         let call = ClientCall::from_py(call)?;
-        drive_async_py(py, async move {
-            let command = build_command(&client, call)?;
-            client
-                .output_string(command)
-                .await
-                .map(PyProcessResult::from)
-                .map_err(map_err)
-        })
+        drive_async_py(
+            py,
+            scope_when_capture(async move {
+                let command = build_command(&client, call)?;
+                client
+                    .output_string(command)
+                    .await
+                    .map(PyProcessResult::from)
+                    .map_err(map_err)
+            }),
+        )
     }
 
     /// Async counterpart of `output_bytes()`.
@@ -438,14 +452,17 @@ impl PyCliClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
         let call = ClientCall::from_py(call)?;
-        drive_async_py(py, async move {
-            let command = build_command(&client, call)?;
-            client
-                .output_bytes(command)
-                .await
-                .map(PyBytesResult::from)
-                .map_err(map_err)
-        })
+        drive_async_py(
+            py,
+            scope_when_capture(async move {
+                let command = build_command(&client, call)?;
+                client
+                    .output_bytes(command)
+                    .await
+                    .map(PyBytesResult::from)
+                    .map_err(map_err)
+            }),
+        )
     }
 
     /// Async counterpart of `exit_code()`.
@@ -456,10 +473,13 @@ impl PyCliClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
         let call = ClientCall::from_py(call)?;
-        drive_async_py(py, async move {
-            let command = build_command(&client, call)?;
-            client.exit_code(command).await.map_err(map_err)
-        })
+        drive_async_py(
+            py,
+            scope_when_capture(async move {
+                let command = build_command(&client, call)?;
+                client.exit_code(command).await.map_err(map_err)
+            }),
+        )
     }
 
     /// Async counterpart of `probe()`.
@@ -470,10 +490,13 @@ impl PyCliClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
         let call = ClientCall::from_py(call)?;
-        drive_async_py(py, async move {
-            let command = build_command(&client, call)?;
-            client.probe(command).await.map_err(map_err)
-        })
+        drive_async_py(
+            py,
+            scope_when_capture(async move {
+                let command = build_command(&client, call)?;
+                client.probe(command).await.map_err(map_err)
+            }),
+        )
     }
 
     fn __repr__(&self) -> String {

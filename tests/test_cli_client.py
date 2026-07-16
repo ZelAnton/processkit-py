@@ -454,3 +454,60 @@ def test_cli_client_accepts_injected_runner() -> None:
 def test_cli_client_rejects_unsupported_runner_object() -> None:
     with pytest.raises(TypeError):
         CliClient(PY, runner=object())  # type: ignore[arg-type]
+
+
+# --- injected-runner when() predicate errors abort the verb (T-104) -----------
+
+
+def test_cli_client_when_raising_predicate_aborts_the_verb() -> None:
+    # Regression (T-104): an injected ScriptedRunner whose when() predicate raises
+    # used to fail SILENTLY through a CliClient — the error went to
+    # sys.unraisablehook, the predicate read as "no match", and the client quietly
+    # returned the fallback reply, masking the test defect. It must now abort the
+    # verb with that error, exactly like a direct runner.output(cmd).
+    def boom(cmd: Command) -> bool:
+        raise ValueError("cli predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    client = CliClient(NO_SUCH_PROGRAM, runner=runner)
+
+    with pytest.raises(ValueError, match="cli predicate exploded"):
+        client.run(["--version"])
+    with pytest.raises(ValueError, match="cli predicate exploded"):
+        client.output(["--version"])
+    with pytest.raises(ValueError, match="cli predicate exploded"):
+        client.probe(["--version"])
+
+
+def test_cli_client_awhen_raising_predicate_aborts_the_verb() -> None:
+    # The async client verbs propagate a raising when() predicate too — the error
+    # is not confined to the unraisable hook (T-104).
+    def boom(cmd: Command) -> bool:
+        raise ValueError("async cli predicate exploded")
+
+    async def scenario() -> str:
+        runner = ScriptedRunner()
+        runner.when(boom, Reply.ok("matched"))
+        runner.fallback(Reply.ok("fallback"))
+        client = CliClient(NO_SUCH_PROGRAM, runner=runner)
+        return await client.arun(["--version"])
+
+    with pytest.raises(ValueError, match="async cli predicate exploded"):
+        asyncio.run(scenario())
+
+
+def test_cli_client_when_non_bool_predicate_aborts_the_verb() -> None:
+    # A non-bool return is as undecidable as a raise: surface a TypeError rather
+    # than coercing to "no match" and returning the fallback (T-104).
+    def predicate(cmd: Command) -> bool:
+        return "yes"  # type: ignore[return-value]
+
+    runner = ScriptedRunner()
+    runner.when(predicate, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    client = CliClient(NO_SUCH_PROGRAM, runner=runner)
+
+    with pytest.raises(TypeError):
+        client.exit_code(["--version"])

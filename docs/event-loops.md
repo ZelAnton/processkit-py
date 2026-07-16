@@ -134,6 +134,10 @@ particular `wait_for_line` consumes a `RunningProcess` stream, which is itself
 asyncio-bridged — so there is no configuration in which the streaming surface is
 asyncio-only while the helpers are not.
 
+`sample_stats` (see [Process groups](process-groups.md#live-monitoring)) is the
+same story: pure Python built on `asyncio.sleep`, needing the same running
+asyncio loop as everything else here.
+
 ---
 
 Next: [Timeouts & cancellation](timeouts-and-cancellation.md) ·

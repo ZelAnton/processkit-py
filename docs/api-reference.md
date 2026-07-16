@@ -1329,7 +1329,7 @@ async def close() -> None
 
 ## Process groups
 
-Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit.
+Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring.
 
 ### `ProcessGroup`
 
@@ -1438,6 +1438,52 @@ peak_memory_bytes: int | None
 ```text
 total_cpu_time_seconds: float | None
 ```
+
+### `sample_stats`
+
+```text
+async def sample_stats(
+    group: ProcessGroup,
+    every: float,
+) -> AsyncIterator[ProcessGroupStats]
+```
+
+Sample ``group.stats()`` on an interval, forever, as an async series of
+`ProcessGroupStats` snapshots — a pure-Python analogue of the crate's
+`ProcessGroup::sample_stats` (its `StatsSampler` borrows the group by
+lifetime and has no FFI-safe equivalent here; this is plain Python built
+directly on the already-public `group.stats()`, living alongside the
+readiness helpers above for the same reason).
+
+``async for snapshot in sample_stats(group, every): ...`` — the first
+snapshot is taken immediately (no initial sleep), then one every ``every``
+seconds, for as long as you keep consuming. There is no overall deadline;
+stop by ``break``ing out of the loop or otherwise abandoning/closing the
+generator yourself.
+
+**Fused, and louder than the crate's stream.** The crate's `StatsSampler`
+swallows the error on the first failed sample and just ends the series
+silently — a caller has to separately call `stats()` to learn why. This
+generator instead lets `group.stats()`'s own exception (a `ProcessError` —
+e.g. "ProcessGroup is already closed" once the group has torn down, or an
+`Unsupported`/OS-error-derived failure from the platform's resource query)
+propagate out of the ``async for`` untouched — the underlying cause is
+never hidden behind a quiet end-of-series. That still fuses the series:
+once this generator function raises, it is exhausted by Python's own
+async-generator protocol, so a further ``__anext__`` (another loop
+iteration, a second ``async for`` over the same object) raises
+`StopAsyncIteration` rather than calling `group.stats()` again or
+replaying the same error. If the group is already closed/invalid *before
+the first snapshot* (e.g. iteration starts only after `group.shutdown()`
+already ran), that same exception surfaces on the very first ``async
+for`` step, not silently as an empty series.
+
+``every`` is validated up front: NaN and negative values raise
+`ValueError` (the shared convention with the readiness helpers'
+``timeout``/``interval``). Unlike the crate — which clamps a zero period
+to 1 ms because `tokio` panics on a zero-duration interval — ``every=0``
+is accepted here as-is: `asyncio.sleep(0)` has no such restriction, so it
+means "sample as fast as the event loop allows," with no artificial floor.
 
 ## Supervision
 

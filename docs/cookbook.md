@@ -458,6 +458,25 @@ sandbox escape. Always clear/replace the supplementary groups with `groups([...]
 builders make the **run raise `Unsupported` on Windows** (a privilege drop is
 never silently skipped), so apply them only when targeting POSIX.
 
+## Watch a group's resource usage live (async)
+
+`sample_stats(group, every)` turns `group.stats()` into a periodic series — no
+self-rolled polling loop:
+
+```python
+from processkit import Command, ProcessGroup, sample_stats
+
+async with ProcessGroup(max_memory=512 * 1024 * 1024) as group:
+    await group.astart(Command("untrusted-tool"))
+    async for snap in sample_stats(group, every=1.0):
+        print(snap.active_process_count, snap.peak_memory_bytes)
+```
+
+The series is **fused**: the first failed sample (e.g. the group has since been
+torn down) ends it for good, and that failure's own exception propagates out of
+the `async for` rather than the series just quietly stopping — `break` out of
+the loop yourself once you have what you need.
+
 ## Signal, suspend, or resume a tree
 
 ```python

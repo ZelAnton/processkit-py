@@ -197,7 +197,11 @@ Python composes on top of it rather than adding more Rust surface:
   already-compiled async surface (a `StdoutLines` iterator, a plain TCP
   connect) instead of bridging the crate's own probing methods, which keeps
   them simpler and usable against *any* server, not only one this package
-  started.
+  started. It also holds `sample_stats(group, every)`, a periodic
+  `ProcessGroupStats` series built directly on `ProcessGroup.stats()` — the
+  crate's own `StatsSampler` borrows the group by lifetime and has no
+  FFI-safe equivalent, so this is plain Python for the same reason as the
+  readiness helpers.
 - **`_protocols.py`** — the `ProcessRunner` / `StreamingRunner` `Protocol`
   classes: the typed dependency-injection seam that lets code written against
   "a runner" accept the real `Runner`, any of the test doubles, or a

@@ -29,6 +29,7 @@ from processkit import (
     ResourceLimit,
     StreamingRunner,
     Unsupported,
+    sample_stats,
 )
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
@@ -443,6 +444,96 @@ def test_group_stats() -> None:
         assert stats.active_process_count >= 1
         assert stats.peak_memory_bytes is None or stats.peak_memory_bytes >= 0
         assert stats.total_cpu_time_seconds is None or stats.total_cpu_time_seconds >= 0.0
+
+
+# --- sample_stats (live monitoring) ------------------------------------------
+
+
+def test_sample_stats_delivers_periodic_snapshots() -> None:
+    unsupported = False
+
+    async def scenario() -> int:
+        nonlocal unsupported
+        async with ProcessGroup() as group:
+            await group.astart(Command(PY, ["-c", "import time; time.sleep(5)"]))
+            count = 0
+            try:
+                async for snap in sample_stats(group, every=0.02):
+                    assert snap.active_process_count >= 1
+                    count += 1
+                    if count >= 3:
+                        break
+            except Unsupported:
+                unsupported = True
+            return count
+
+    count = asyncio.run(scenario())
+    if unsupported:
+        pytest.skip("stats unsupported on this platform")
+    assert count >= 3
+
+
+def test_sample_stats_fuses_on_error_after_group_closes() -> None:
+    # The first failure (the group closing mid-stream) must propagate its OWN
+    # exception through the `async for` -- unlike the crate's `StatsSampler`,
+    # which swallows the error and just ends the series silently -- and that
+    # failure must fuse the series for good: a further `__anext__()` afterwards
+    # must not retry `stats()` or replay the same exception, just raise
+    # `StopAsyncIteration` (an ordinary exhausted async generator).
+    unsupported = False
+
+    async def scenario() -> None:
+        nonlocal unsupported
+        group = ProcessGroup()
+        await group.astart(Command(PY, ["-c", "import time; time.sleep(5)"]))
+        gen = sample_stats(group, every=0.02)
+        try:
+            snap = await gen.__anext__()
+        except Unsupported:
+            unsupported = True
+            return
+        assert snap.active_process_count >= 1
+
+        await group.ashutdown()
+
+        with pytest.raises(ProcessError, match="already closed"):
+            await gen.__anext__()
+
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+
+    asyncio.run(scenario())
+    if unsupported:
+        pytest.skip("stats unsupported on this platform")
+
+
+def test_sample_stats_raises_immediately_when_group_already_closed() -> None:
+    # A group that is already closed/invalid before the FIRST snapshot must
+    # surface that failure on the very first `async for` step, not silently as
+    # an empty series.
+    async def scenario() -> None:
+        group = ProcessGroup()
+        await group.ashutdown()  # closed before sample_stats ever samples it
+        gen = sample_stats(group, every=0.05)
+        with pytest.raises(ProcessError, match="already closed"):
+            await gen.__anext__()
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+
+    asyncio.run(scenario())
+
+
+def test_sample_stats_rejects_nan_or_negative_every() -> None:
+    async def scenario() -> None:
+        with ProcessGroup() as group:
+            with pytest.raises(ValueError, match="NaN"):
+                async for _snap in sample_stats(group, every=float("nan")):
+                    break
+            with pytest.raises(ValueError, match="negative"):
+                async for _snap in sample_stats(group, every=-1.0):
+                    break
+
+    asyncio.run(scenario())
 
 
 # --- ProcessGroup as a ProcessRunner (C7 batch B) ----------------------------

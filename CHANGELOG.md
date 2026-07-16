@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- Add `sample_stats(group, every)`, a pure-Python async generator for live
+  `ProcessGroup` monitoring: a fused, periodic series of `ProcessGroupStats`
+  snapshots built on top of `ProcessGroup.stats()`
 
 ### Changed
 -

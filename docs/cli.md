@@ -50,10 +50,16 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--max-memory BYTES` | `ProcessGroup(max_memory=...)` | Whole-tree memory cap. |
 | `--max-processes N` | `ProcessGroup(max_processes=...)` | Fork-bomb ceiling for the tree. |
 | `--cpu-quota FLOAT` | `ProcessGroup(cpu_quota=...)` | Fraction of a **single** core (`0.5` = half, `2.0` = two cores). |
+| `--env-clear` | `Command.env_clear()` | Start the child with an empty environment. |
+| `--inherit-env NAME` | `Command.inherit_env([...])` | Allow-list a parent variable through (implies `--env-clear`). Repeatable. |
+| `--env KEY=VALUE` | `Command.env(key, value)` | Set/override a child environment variable. Repeatable. A value without `=` is a usage error. |
+| `--cwd DIR` | `Command.cwd(dir)` | Run the child with `DIR` as its working directory. |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
-`docs/commands.md` for what each underlying builder method does in full.
+`docs/commands.md` for what each underlying builder method does in full —
+including how the environment builders (`env_clear` / `inherit_env` / `env`)
+compose regardless of call order.
 
 ## Exit codes
 
@@ -99,9 +105,8 @@ directly for anything beyond it: piping several commands together
 ([Pipelines](pipelines.md)), restart-on-crash supervision
 ([Supervision](supervision.md)), interactive stdin, line-by-line streaming
 ([Streaming & interactive I/O](streaming.md)), or running a batch of commands
-concurrently (`output_all` / `aoutput_all`). There is also no shorthand for
-env-var sandboxing (`env_clear()` / `inherit_env(...)`) or a `--dry-run` mode
-yet — both plausible follow-ups, not implemented today. There is also no
+concurrently (`output_all` / `aoutput_all`). There is also no `--dry-run`
+mode yet — a plausible follow-up, not implemented today. There is also no
 `--output-limit` flag: stdio here is always inherited straight through to
 your terminal, so there is no captured-output buffer for
 `Command.output_limit(...)` to bound in the first place — that method only

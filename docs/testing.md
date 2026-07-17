@@ -123,7 +123,7 @@ option (a relative path resolves against the rootdir) to a committed fixtures
 directory to **keep** cassettes across runs. Its name is derived deterministically
 from the test's node id, so each test gets its own. If replay reports that the
 cassette is absent, see
-[Troubleshooting](troubleshooting.md#a-record_replay_runner-cassette-is-not-found).
+[Troubleshooting](troubleshooting.md#record_replay_runner-cassette-not-found).
 
 The workflow is the usual vcr one — *record once, replay forever*:
 

@@ -9,8 +9,9 @@ the *first* one is treated as the separator). The child is started inside a
 just the direct child — even for this single command, so a build tool's
 grandchildren or a script's background jobs can never survive past this
 process. Stdio is inherited straight through to the terminal
-(`stdout("inherit")` / `stderr("inherit")`): the child's output streams live,
-the same as running it directly, never buffered up and dumped at the end.
+(`inherit_stdin()` / `stdout("inherit")` / `stderr("inherit")`): the child
+reads from the same stdin and its output streams live, the same as running it
+directly, never buffered up and dumped at the end.
 
 Exit code contract:
 
@@ -327,7 +328,7 @@ def _run(
     env_pairs = _parse_env_flags(run_parser, args.env)
 
     program, *rest = child_argv
-    command = Command(program, rest).stdout("inherit").stderr("inherit")
+    command = Command(program, rest).inherit_stdin().stdout("inherit").stderr("inherit")
     # Environment builders compose in a fixed order at spawn regardless of
     # call order (docs/commands.md#environment-and-sandboxing), but this is
     # still the natural reading order: clear/allow-list the base environment

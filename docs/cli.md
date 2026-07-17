@@ -34,8 +34,9 @@ python -m processkit run -- git log -- README.md
 
 The child runs inside a `ProcessGroup`: even for one command, its whole
 process tree — every grandchild it forks — is torn down when this wrapper
-exits, and its stdout/stderr are inherited straight through to your terminal
-(live, not buffered up and dumped at the end).
+exits, and its stdin/stdout/stderr are inherited straight through to your
+terminal: the child reads from the same stdin and its output is live, not
+buffered up and dumped at the end.
 
 ```bash
 # Bound the whole run to 30 seconds.
@@ -164,12 +165,12 @@ of the codes below:
 This is a v1, deliberately minimal wrapper — reach for the Python API
 directly for anything beyond it: piping several commands together
 ([Pipelines](pipelines.md)), restart-on-crash supervision
-([Supervision](supervision.md)), interactive stdin, line-by-line streaming
-([Streaming & interactive I/O](streaming.md)), or running a batch of commands
-concurrently (`output_all` / `aoutput_all`). There is also no `--dry-run`
-mode yet — a plausible follow-up, not implemented today. There is also no
-`--output-limit` flag: stdio here is always inherited straight through to
-your terminal, so there is no captured-output buffer for
+([Supervision](supervision.md)), line-by-line streaming ([Streaming &
+interactive I/O](streaming.md)), or running a batch of commands concurrently
+(`output_all` / `aoutput_all`). There is also no `--dry-run` mode yet — a
+plausible follow-up, not implemented today. There is also no `--output-limit`
+flag: stdio here is always inherited straight through to your terminal, so
+there is no captured-output buffer for
 `Command.output_limit(...)` to bound in the first place — that method only
 matters when a caller captures output via the Python API instead.
 

@@ -23,7 +23,9 @@ from .conftest import NO_SUCH_PROGRAM, PY
 _SUBPROCESS_TIMEOUT = 30
 
 
-def _run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    *args: str, env: dict[str, str] | None = None, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [PY, "-m", "processkit", *args],
         capture_output=True,
@@ -31,6 +33,7 @@ def _run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Comple
         timeout=_SUBPROCESS_TIMEOUT,
         check=False,
         env=env,
+        input=input,
     )
 
 
@@ -62,6 +65,21 @@ def test_successful_run_exits_zero_and_streams_stdout() -> None:
     result = _run_cli("run", "--", PY, "-c", "print('hello from child')")
     assert result.returncode == 0
     assert "hello from child" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_run_passes_piped_stdin_to_the_child() -> None:
+    payload = "first line\nsecond line\n"
+    result = _run_cli(
+        "run",
+        "--",
+        PY,
+        "-c",
+        "import sys; print(sys.stdin.read(), end='')",
+        input=payload,
+    )
+    assert result.returncode == 0
+    assert result.stdout == payload
     assert "Traceback (most recent call last)" not in result.stderr
 
 

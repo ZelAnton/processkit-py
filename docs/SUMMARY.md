@@ -29,6 +29,7 @@
 - [Supervision](supervision.md)
 - [Testing your code](testing.md)
 - [Command-line usage](cli.md)
+- [Performance & overhead](performance.md)
 - [Async runtimes & event loops](event-loops.md)
 - [Platform support](platforms.md)
 - [Troubleshooting](troubleshooting.md)

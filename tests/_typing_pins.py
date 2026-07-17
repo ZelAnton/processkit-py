@@ -168,6 +168,7 @@ if TYPE_CHECKING:
         # `a`-verbs return the runtime's custom awaitable, not a native coroutine.
         # The ignores are required: strict mypy fails if the contract regresses.
         coro: Coroutine[object, object, ProcessResult] = cmd.aoutput()  # type: ignore[assignment]
+        del coro
         asyncio.run(cmd.aoutput())  # type: ignore[arg-type]
         loop.create_task(cmd.aoutput())  # type: ignore[arg-type]
         assert_type(asyncio.ensure_future(cmd.aoutput()), asyncio.Task[ProcessResult])

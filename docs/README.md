@@ -55,6 +55,7 @@ handy before you ship: it collects every per-OS caveat in one place.
 | [Command-line usage](cli.md) | `python -m processkit run -- ...`: containment and resource limits for a shell command with no Python to write, flags, exit codes |
 | [Async runtimes & event loops](event-loops.md) | Which event loops the asyncio-native surface runs on — asyncio and uvloop (yes), anyio-on-asyncio (yes), native trio / anyio-on-trio / curio (no) — and why |
 | [Platform support](platforms.md) | The containment mechanisms, every per-feature support matrix in one place, and the caveats worth knowing before you ship |
+| [Troubleshooting](troubleshooting.md) | A symptom-to-guide map for resource-limit, signaling, event-loop, cassette, privilege-drop, and teardown errors |
 
 ## Packaging
 

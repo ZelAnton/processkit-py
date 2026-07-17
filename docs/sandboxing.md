@@ -183,7 +183,9 @@ Full treatment: [Tearing down](process-groups.md#tearing-down).
       [Privileges and spawn flags](commands.md#privileges-and-spawn-flags).
 - [ ] (POSIX only, if running as a privileged user) privileges dropped with
       all three of `uid` / `gid` / `groups([...])` set together — `uid` alone
-      leaves the child holding the parent's supplementary groups.
+      leaves the child holding the parent's supplementary groups. For this
+      incomplete-drop symptom, see
+      [Troubleshooting](troubleshooting.md#privilege-drop-sets-uid-but-not-gid-and-groups).
 - [ ] Read [the threat model](#the-threat-model) above — this checklist buys
       resource and lifetime containment, not syscall/filesystem/network
       isolation.

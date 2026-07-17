@@ -92,7 +92,8 @@ Native [trio] (and anyio's trio backend, and curio) are **not supported**. A
 trio program runs trio's own scheduler, not an asyncio loop, so the awaitables
 processkit hands back — `asyncio.Future`s produced by the asyncio-wired bridge —
 aren't trio-awaitable, and the binding refuses with a clear "no running asyncio
-event loop" error anyway.
+event loop" error anyway. For a quick symptom-to-solution map, see
+[Troubleshooting](troubleshooting.md#a-prefixed-verbs-report-no-running-asyncio-event-loop).
 
 If you're on trio and need processkit, the pragmatic bridge is
 [`trio-asyncio`], which runs an asyncio loop inside a trio program; processkit's

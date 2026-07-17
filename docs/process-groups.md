@@ -158,7 +158,8 @@ hostile code uses to outlive a sandbox; an ordinary double-fork that never
 calls `setsid()`/`setpgid()` stays in the group and is reaped normally. The
 Windows Job Object and the Linux cgroup-v2 backend have no such escape —
 membership there is kernel-tracked, not session-based, so a descendant
-cannot opt itself out.
+cannot opt itself out. If a child appears to have escaped, see
+[Troubleshooting](troubleshooting.md#a-child-escaped-a-posix-process-group-with-setsid).
 
 *Deeper: keeping a service alive across crashes is [Supervision](supervision.md).*
 
@@ -274,7 +275,9 @@ session/scope/service, or any non-root cgroup — so an ordinary container fails
 too. macOS/BSD and the Linux process-group fallback have **no** whole-tree
 limits at all. The prerequisites live in [Platform support](platforms.md); pair
 limits with a locked-down `Command` (`env_clear().inherit_env(["PATH"])`,
-`output_limit(...)`) per the [Cookbook](cookbook.md).
+`output_limit(...)`) per the [Cookbook](cookbook.md). For a quick diagnosis of a
+`ResourceLimit` failure in those environments, see
+[Troubleshooting](troubleshooting.md#resourcelimit-under-docker-systemd-or-a-non-root-cgroup).
 
 ## Stats
 

@@ -32,7 +32,8 @@ tears it down.
 
 If you need limits inside a container, run the process at the container's cgroup
 root (the create-leaf / migrate-self / enable-controllers dance), or use a
-runtime that grants cgroup delegation.
+runtime that grants cgroup delegation. For the symptom-first version of this
+failure, see [Troubleshooting](troubleshooting.md#resourcelimit-under-docker-systemd-or-a-non-root-cgroup).
 
 ## Signals, suspend/resume, stats
 

@@ -11,6 +11,7 @@ the client structurally satisfies `ProcessRunner`. It has no
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 
 import pytest
@@ -20,6 +21,7 @@ from processkit import (
     Cancelled,
     CliClient,
     Command,
+    ProcessNotFound,
     ProcessRunner,
     StreamingRunner,
 )
@@ -90,6 +92,41 @@ def test_cli_client_default_env_remove_wins_over_default_env_same_key() -> None:
     client = CliClient(PY, default_env={"PK_CLI_BOTH": "set"}, default_env_remove=["PK_CLI_BOTH"])
     out = client.run(["-c", "import os; print(os.environ.get('PK_CLI_BOTH', 'GONE'))"])
     assert out == "GONE"
+
+
+# --- spawn-free program resolution: resolve_program() (T-109) ----------------
+
+
+def test_cli_client_resolve_program_returns_the_resolved_path() -> None:
+    # `sys.executable` is an absolute path-form program, probed directly — a
+    # portable success case, no real spawn.
+    resolved = CliClient(PY).resolve_program()
+    assert os.path.isabs(resolved)
+    assert pathlib.Path(resolved).samefile(PY)
+
+
+def test_cli_client_resolve_program_missing_raises_process_not_found() -> None:
+    with pytest.raises(ProcessNotFound):
+        CliClient(NO_SUCH_PROGRAM).resolve_program()
+
+
+def test_cli_client_resolve_program_honors_default_env_path() -> None:
+    # A `default_env` that relocates PATH is honored at preflight exactly as it is
+    # at launch: resolving the interpreter by its bare name against a PATH set to
+    # just its own directory finds it — no assumption about the ambient PATH.
+    bare = os.path.basename(PY)
+    client = CliClient(bare, default_env={"PATH": os.path.dirname(PY)})
+    resolved = client.resolve_program()
+    assert pathlib.Path(resolved).samefile(PY)
+
+
+def test_cli_client_resolve_program_default_env_fn_failure_is_fail_closed() -> None:
+    # `resolve_program()` applies the client's defaults (resolving every
+    # default_env_fn), so a resolver that raises aborts it fail-closed with the
+    # real exception — the same hand-off the run verbs use — before any lookup.
+    client = CliClient(PY, default_env_fn={"PK_TOKEN": lambda: 1 / 0})  # type: ignore[dict-item, return-value]  # deliberately raising to exercise the fail-closed abort
+    with pytest.raises(ZeroDivisionError):
+        client.resolve_program()
 
 
 # --- retry (C2) --------------------------------------------------------------

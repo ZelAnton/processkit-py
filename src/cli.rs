@@ -403,6 +403,37 @@ impl PyCliClient {
         with_when_capture_sync(py, self.inner.probe(command))
     }
 
+    /// Resolve this client's `program` to a concrete executable path **without
+    /// spawning it** — the client-level preflight ("is this tool installed?"),
+    /// with no side effects (no process is started).
+    ///
+    /// Builds a command for the client's program with the client's defaults
+    /// applied — so a `default_env` (or a `default_env_fn`) that relocates
+    /// `PATH` is honored exactly as it would be at launch — then resolves it via
+    /// `Command.resolve_program()`, reusing the **same** internal
+    /// PATH/PATHEXT/execute-bit logic the real spawn uses. The preflight
+    /// therefore never disagrees with what an actual run of this client would
+    /// find, and returns the resolved **absolute** path as a `str`.
+    ///
+    /// Applying the defaults resolves every `default_env_fn` (fresh, like the run
+    /// verbs and `command()`); a resolver that raises or returns a non-`str`
+    /// aborts `resolve_program()` with that exception (fail-closed), before any
+    /// filesystem lookup. Synchronous and cheap (a few `stat`s); no tokio runtime
+    /// is required. On a miss raises `ProcessNotFound` (also a
+    /// `FileNotFoundError`) — see `Command.resolve_program` for the full contract
+    /// (`searched` diagnostic). There is deliberately no `a`-prefixed async twin.
+    fn resolve_program(&self) -> PyResult<String> {
+        // Go through `build_command` (not the crate's `CliClient::resolve_program`
+        // directly) so a failing `default_env_fn` resolver is surfaced fail-closed
+        // via `RESOLVER_ERROR`, exactly like the run verbs — the crate's own
+        // resolver seam is infallible and would otherwise swallow the failure.
+        let command = build_command(&self.inner, ClientCall::Args(Vec::new()))?;
+        command
+            .resolve_program()
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(map_err)
+    }
+
     /// Async counterpart of `run()`.
     ///
     /// The `default_env_fn` resolvers run when the returned awaitable is first

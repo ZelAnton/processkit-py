@@ -438,10 +438,7 @@ def _doctor() -> int:
     except OSError as exc:
         print(f"  containment mechanism : error probing ({exc})")
         print("  resource limits        : unknown (mechanism probe failed)")
-        print(
-            "  verdict: ERROR - could not determine containment availability "
-            "(exit 4)"
-        )
+        print("  verdict: ERROR - could not determine containment availability (exit 4)")
         return EXIT_DOCTOR_PROBE_ERROR
 
     mechanism = plain_group.mechanism
@@ -467,10 +464,7 @@ def _doctor() -> int:
         if unavailable:
             print(f"  resource limits        : also unavailable {'; '.join(unavailable)}")
         _print_doctor_caveat()
-        print(
-            "  verdict: ERROR - could not determine resource-limit availability "
-            "(exit 4)"
-        )
+        print("  verdict: ERROR - could not determine resource-limit availability (exit 4)")
         return EXIT_DOCTOR_PROBE_ERROR
 
     if unavailable:

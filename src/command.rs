@@ -15,6 +15,7 @@ use crate::convert::{
     open_tee_sink, parse_encoding, parse_line_terminator, parse_priority, parse_retry_if,
     parse_signal, parse_stdio_mode, positive_duration, PyWriterSink,
 };
+use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
 use crate::runtime::{block_on, drive_async};
@@ -720,6 +721,35 @@ impl PyCommand {
         block_on(py, self.inner.probe())
     }
 
+    /// Resolve this command's `program` to a concrete executable path **without
+    /// launching it** — a spawn-free preflight ("is this tool installed?") with
+    /// no side effects. Unlike `probe()` (which actually runs the tool), this
+    /// only *locates* it: no process is ever started.
+    ///
+    /// Resolution reuses the crate's own launch-path logic — not a second copy —
+    /// so it is byte-for-byte what a real run of this same command would spawn: a
+    /// bare name is searched in this command's `prefer_local()` directories first
+    /// (in priority order), then the effective `PATH`, honoring PATHEXT on
+    /// Windows and the execute bit on Unix; a path-form program (`"./tool"`, an
+    /// absolute path) is probed directly. When the command has relocated the
+    /// child's `PATH` (`env()`/`env_remove()` of `PATH`, `env_clear()`,
+    /// `inherit_env()`), the lookup runs against that *effective child* `PATH`,
+    /// so the preflight never disagrees with what the spawn would actually find.
+    ///
+    /// Returns the resolved **absolute** path as a `str`. Synchronous and cheap
+    /// (a few `stat`s); no tokio runtime is required, so — unlike the run verbs —
+    /// it takes no `py` handle. On a miss raises `ProcessNotFound` (also a
+    /// `FileNotFoundError`), whose `searched` field lists the directories checked
+    /// (`prefer_local` first, then `PATH`) — the same error, with the same
+    /// diagnostic, a real run would raise. There is deliberately no
+    /// `a`-prefixed async twin: the probe is synchronous and needs no runtime.
+    fn resolve_program(&self) -> PyResult<String> {
+        self.inner
+            .resolve_program()
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(map_err)
+    }
+
     /// Async counterpart of `output()`. Awaitable under asyncio; cancelling the
     /// awaiting task tears down the process tree (the run's transient job is
     /// dropped) and raises `asyncio.CancelledError`.
@@ -950,9 +980,38 @@ impl PyPipeline {
     }
 }
 
-/// Register this module's pyclasses (`Command`, `Pipeline`) on `_processkit`.
+/// Resolve `program` to a concrete executable path **without launching it** — a
+/// spawn-free, side-effect-free preflight ("is this tool installed?"), the
+/// module-level shim over `Command(program).resolve_program()`.
+///
+/// A bare name is looked up on `PATH`, honoring PATHEXT on Windows and the
+/// execute bit on Unix; a path-form `program` (`"./tool"`, an absolute path) is
+/// probed directly. The lookup reuses the crate's own launch-path logic, so a
+/// hit is exactly what a real run would spawn and a miss is exactly the
+/// `ProcessNotFound` (also a `FileNotFoundError`) a real run would raise, with
+/// the same `searched` diagnostic. Returns the resolved **absolute** path as a
+/// `str`.
+///
+/// This module function searches only the process `PATH`. To honor a
+/// `prefer_local()` directory or a relocated child `PATH`, build a `Command`
+/// (or a `CliClient`) and call its `resolve_program()` instead. Synchronous and
+/// cheap (a few `stat`s); no tokio runtime is required.
+#[pyfunction]
+fn which(program: PathBuf) -> PyResult<String> {
+    // Fully-qualified `processkit::which` (not a `use`) to avoid clashing with
+    // this local `#[pyfunction] which`. `PathBuf` satisfies the crate's
+    // `impl AsRef<OsStr>`, and accepts a `str` or any `os.PathLike[str]` from
+    // Python, matching `Command`'s own program argument.
+    processkit::which(program)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(map_err)
+}
+
+/// Register this module's pyclasses (`Command`, `Pipeline`) and the module-level
+/// `which` function on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
     m.add_class::<PyPipeline>()?;
+    m.add_function(pyo3::wrap_pyfunction!(which, m)?)?;
     Ok(())
 }

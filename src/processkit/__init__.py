@@ -63,6 +63,7 @@ from ._processkit import (
     enable_logging,
     output_all,
     output_all_bytes,
+    which,
 )
 from ._protocols import ProcessRunner, StreamingRunner
 from ._types import (
@@ -153,4 +154,5 @@ __all__ = [
     "wait_for_path",
     "wait_for_port",
     "wait_until",
+    "which",
 ]

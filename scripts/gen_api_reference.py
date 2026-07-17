@@ -92,6 +92,17 @@ SECTIONS: tuple[Section, ...] = (
         ("Command", "CliClient", "Pipeline", "RunningProcess"),
     ),
     Section(
+        "Program resolution",
+        "Resolve a program to its concrete executable path *without* launching it "
+        '— a spawn-free preflight ("is this tool installed?") that reuses the '
+        "same PATH/PATHEXT/execute-bit lookup a real run performs, so it never "
+        "disagrees with what a spawn would find. The module-level `which` searches "
+        "the process `PATH`; `Command.resolve_program()` and "
+        "`CliClient.resolve_program()` additionally honor a `prefer_local` "
+        "directory and a relocated child `PATH`. A miss raises `ProcessNotFound`.",
+        ("which",),
+    ),
+    Section(
         "Results & outcomes",
         "What a finished (or streamed) run reports back. A non-zero exit, a "
         "timeout, and a signal-kill are all *data* on these types — never raised "

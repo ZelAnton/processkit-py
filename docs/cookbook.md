@@ -389,6 +389,33 @@ For testable code, pass `runner=` (a `ScriptedRunner` and friends from
 `processkit.testing`) to drive every verb through a double instead of the real
 runner — see [Testing your code](testing.md#wrapping-a-cli-tool-cliclient).
 
+## Check a tool is installed before running it
+
+Fail early with a friendly message instead of a spawn error deep in a workflow.
+`resolve_program()` (or the module-level `which()`) locates the executable a run
+*would* start — reusing the same `PATH`/`PATHEXT`/execute-bit lookup — without
+starting any process:
+
+```python
+from processkit import CliClient, ProcessNotFound
+
+git = CliClient("git")
+try:
+    git.resolve_program()
+except ProcessNotFound as exc:
+    raise SystemExit(f"git is required but was not found (searched: {exc.searched})")
+
+head = git.run(["rev-parse", "HEAD"])
+print(head)
+```
+
+`which("tool")` is the shorthand for a one-off check against the process `PATH`;
+`Command(...).resolve_program()` and `CliClient(...).resolve_program()`
+additionally honor a `prefer_local` directory and a relocated child `PATH`. All
+three are synchronous and side-effect-free (a few `stat`s, no spawn), and raise
+`ProcessNotFound` (also a `FileNotFoundError`) with a `searched` diagnostic on a
+miss — the exact error a real run would raise.
+
 ## Keep a service alive (supervision)
 
 ```python

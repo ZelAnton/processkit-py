@@ -6,12 +6,16 @@ Most of this package's value lives behind Python code — but sometimes the
 caller is a shell script or a CI step, not a Python program. `python -m
 processkit run` is a thin CLI wrapper over `Command` / `ProcessGroup` for
 exactly that case: kill-on-exit containment and resource limits for a single
-shell command, with no Python to write.
+shell command, with no Python to write. `python -m processkit doctor` is its
+read-only companion: a preflight diagnosis of what this environment's kernel
+actually grants, without running anything (see
+[below](#doctor-preflight-diagnose-the-environment)).
 
 - [Basic usage](#basic-usage)
 - [Flags](#flags)
 - [Exit codes](#exit-codes)
 - [Resource limits: hard cap or best effort?](#resource-limits-hard-cap-or-best-effort)
+- [`doctor`: preflight-diagnose the environment](#doctor-preflight-diagnose-the-environment)
 - [What you don't get here](#what-you-dont-get-here)
 
 ## Basic usage
@@ -97,6 +101,63 @@ fallback `examples/04_sandbox_resource_limits.py` uses. The no-orphan
 containment guarantee still applies either way; only the specific numeric
 caps are dropped. If your script depends on the cap actually being enforced,
 check stderr for that warning rather than assuming it always held.
+
+## `doctor`: preflight-diagnose the environment
+
+`--max-memory`/`--max-processes`/`--cpu-quota` depend on kernel primitives
+that are not guaranteed to be there (see above) — until now, the only way to
+find out was to run `run` for real and read a warning on stderr, or catch
+`ResourceLimit`/`Unsupported` from the Python API. `python -m processkit
+doctor` answers the same question up front, without running anything:
+
+```bash
+python -m processkit doctor
+```
+
+```text
+processkit doctor
+  containment mechanism : cgroup_v2
+  resource limits        : available
+  verdict: OK - containment and resource limits are both available (exit 0)
+```
+
+Degraded (containment holds, but the kernel refuses at least one resource
+limit — the typical container / systemd user session / non-root cgroup /
+macOS case; `--max-memory`, `--max-processes`, and `--cpu-quota` are probed
+**independently**, since on Linux cgroup-v2 they are separate controllers
+that can be unavailable one without the others):
+
+```text
+processkit doctor
+  containment mechanism : process_group
+  resource limits        : unavailable --max-memory (ResourceLimit: cgroup v2 root required)
+  note: --max-memory/--max-processes/--cpu-quota need a Windows Job Object or
+  a Linux cgroup-v2 root; the kernel typically refuses them inside
+  containers, systemd user sessions, and non-root cgroups, and always on
+  macOS (docs/cli.md#resource-limits-hard-cap-or-best-effort).
+  verdict: DEGRADED - containment is enforced, but resource limits are not (exit 1)
+```
+
+It never spawns a child process — only constructs (and immediately drops) a
+few throwaway `ProcessGroup` instances to see what the kernel actually
+grants (one for the containment mechanism, one per resource-limit
+controller). `doctor` has its own exit-code namespace, deliberately disjoint
+from `run`'s codes above (`124`/`125`/`126`/`127`/`128 + signal`) *and* from
+argparse's own usage-error code `2` (the same code `run` itself uses for a
+bad invocation) — `doctor` never returns `2` as a diagnostic verdict, so a
+CI gate can always read `2` as "you called this wrong", unambiguous from any
+of the codes below:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Resource limits are available (containment *and* all three caps hold). |
+| `1` | Containment is enforced, but at least one resource limit is not — the same "contained, but uncapped" gap `run` degrades around. |
+| `2` | *(not returned by `doctor` itself)* — a usage error, e.g. an unknown flag or `doctor`'s disallowed trailing command; reserved to keep it unambiguous from a real diagnostic result. |
+| `3` | Containment itself is unavailable (should not happen on any supported platform). |
+| `4` | A probe raised an unexpected operational error (`OSError`/`PermissionError`, e.g. failing to read cgroup state) rather than a definitive result — the environment's actual availability could not be determined. |
+
+`doctor` takes no flags beyond `-h`/`--help` — in particular, no trailing
+`-- PROGRAM ...` (it is diagnostic-only and never runs a command).
 
 ## What you don't get here
 

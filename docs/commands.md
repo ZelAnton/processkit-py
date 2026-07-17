@@ -203,6 +203,56 @@ with tempfile.TemporaryDirectory() as tmp:
     print(out)
 ```
 
+## Preflight: is a program installed?
+
+Sometimes you want to check that a tool is present *before* you run it — a
+"doctor" subcommand, or a friendlier error than a spawn failure surfacing deep
+in a workflow. `resolve_program()` locates the executable a run *would* spawn,
+**without starting any process**:
+
+```python
+from processkit import Command, ProcessNotFound
+
+try:
+    path = Command("ruff").resolve_program()
+    print(f"ruff is installed at {path}")
+except ProcessNotFound as exc:
+    print(f"ruff is not installed (searched: {exc.searched})")
+```
+
+The lookup reuses the **same** resolution the real launch performs — a bare name
+against any `prefer_local()` directories first, then `PATH`, honoring `PATHEXT`
+on Windows and the execute bit on Unix; a path-form program (`"./tool"`, an
+absolute path) probed directly. So a hit is exactly what a spawn of the same
+command would run, and a miss is exactly the `ProcessNotFound` it would raise —
+`searched` diagnostic included. It also honors a relocated child `PATH`
+(`env()` / `env_clear()` / `inherit_env()`), so the preflight never disagrees
+with the actual spawn. It is synchronous and cheap (a few `stat`s); there is no
+`a`-prefixed async twin, because no runtime is involved.
+
+For a one-off check against the process `PATH`, the module-level `which()` is
+shorthand for `Command(program).resolve_program()`:
+
+```python
+import processkit
+
+interpreter = processkit.which("python3")   # absolute path, or raises ProcessNotFound
+print(interpreter)
+```
+
+A `CliClient` offers the same preflight for the tool it wraps, with the client's
+defaults (including a `default_env` that relocates `PATH`) applied:
+
+```python
+from processkit import CliClient, ProcessNotFound
+
+client = CliClient("git")
+try:
+    client.resolve_program()   # is git installed, per this client's config?
+except ProcessNotFound:
+    raise SystemExit("git is required but was not found")
+```
+
 ## Environment and sandboxing
 
 The environment builders compose, applied in a fixed order at spawn:

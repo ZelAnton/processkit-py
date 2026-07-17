@@ -312,6 +312,20 @@ class Command:
     def run(self) -> str: ...
     def exit_code(self) -> int: ...
     def probe(self) -> bool: ...
+    def resolve_program(self) -> str:
+        """Resolve this command's ``program`` to a concrete executable path
+        **without launching it** — a spawn-free, side-effect-free preflight
+        ("is this tool installed?"). Reuses the same PATH/PATHEXT/execute-bit
+        lookup a real run performs — a bare name against this command's
+        ``prefer_local()`` directories (priority order) then the effective
+        ``PATH``, a path-form program directly — honoring a relocated child
+        ``PATH`` (``env()``/``env_remove()``/``env_clear()``/``inherit_env()``),
+        so the result is exactly what a spawn of this same command would find.
+        Returns the resolved **absolute** path; raises ``ProcessNotFound`` (also
+        a ``FileNotFoundError``, with a ``searched`` diagnostic) on a miss. No
+        ``a``-prefixed async twin — the probe is synchronous and needs no
+        runtime."""
+
     def aoutput(self) -> Awaitable[ProcessResult]: ...
     def aoutput_bytes(self) -> Awaitable[BytesResult]: ...
     def arun(self) -> Awaitable[str]: ...
@@ -957,6 +971,18 @@ class CliClient:
     def output_bytes(self, call: Args | Command) -> BytesResult: ...
     def exit_code(self, call: Args | Command) -> int: ...
     def probe(self, call: Args | Command) -> bool: ...
+    def resolve_program(self) -> str:
+        """Resolve this client's ``program`` to a concrete executable path
+        **without spawning it** — the client-level preflight ("is this tool
+        installed?"), with no side effects. Applies the client's defaults (so a
+        ``default_env``/``default_env_fn`` that relocates ``PATH`` is honored
+        as at launch), then resolves via the same PATH/PATHEXT/execute-bit logic
+        a real run uses. Returns the resolved **absolute** path; a
+        ``default_env_fn`` that raises or returns a non-``str`` aborts it
+        fail-closed (like the run verbs), and a miss raises ``ProcessNotFound``
+        (also a ``FileNotFoundError``, with a ``searched`` diagnostic). No
+        ``a``-prefixed async twin — the probe is synchronous."""
+
     def arun(self, call: Args | Command) -> Awaitable[str]: ...
     def aoutput(self, call: Args | Command) -> Awaitable[ProcessResult]: ...
     def aoutput_bytes(self, call: Args | Command) -> Awaitable[BytesResult]: ...
@@ -1076,6 +1102,16 @@ class Cancelled(ProcessError):
     attempt could only fail the same way)."""
 
     program: str
+
+# Program resolution: resolve a program to its concrete executable path *without*
+# launching it — a spawn-free, side-effect-free preflight ("is this tool
+# installed?"). Reuses the same PATH/PATHEXT/execute-bit lookup a real run
+# performs, so a hit is exactly what a spawn would find and a miss is exactly the
+# `ProcessNotFound` (also a `FileNotFoundError`, with a `searched` diagnostic) a
+# run would raise. This module function searches only the process `PATH`; for a
+# `prefer_local` directory or a relocated child `PATH`, use `Command.resolve_program`
+# / `CliClient.resolve_program`. Synchronous — no async runtime is required.
+def which(program: StrPath) -> str: ...
 
 # Batch execution: run many commands with bounded concurrency, in input order.
 # A command that failed (a spawn or I/O error) appears as a `ProcessError` in its

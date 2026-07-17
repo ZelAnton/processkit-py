@@ -23,6 +23,10 @@ Command(program: StrPath, args: Args | None = ...)
 
 A command builder. Builder methods return a new `Command`.
 
+Its `a`-verbs return custom awaitables, rather than coroutine objects:
+await them directly, or pass one to ``asyncio.ensure_future(...)`` when a
+Task/Future is required.
+
 #### `arg`
 
 ```text
@@ -427,31 +431,31 @@ def probe() -> bool
 #### `aoutput`
 
 ```text
-async def aoutput() -> ProcessResult
+def aoutput() -> Awaitable[ProcessResult]
 ```
 
 #### `aoutput_bytes`
 
 ```text
-async def aoutput_bytes() -> BytesResult
+def aoutput_bytes() -> Awaitable[BytesResult]
 ```
 
 #### `arun`
 
 ```text
-async def arun() -> str
+def arun() -> Awaitable[str]
 ```
 
 #### `aexit_code`
 
 ```text
-async def aexit_code() -> int
+def aexit_code() -> Awaitable[int]
 ```
 
 #### `aprobe`
 
 ```text
-async def aprobe() -> bool
+def aprobe() -> Awaitable[bool]
 ```
 
 #### `start`
@@ -463,7 +467,7 @@ def start() -> RunningProcess
 #### `astart`
 
 ```text
-async def astart() -> RunningProcess
+def astart() -> Awaitable[RunningProcess]
 ```
 
 #### `unchecked_in_pipe`
@@ -565,31 +569,31 @@ def probe(call: Args | Command) -> bool
 #### `arun`
 
 ```text
-async def arun(call: Args | Command) -> str
+def arun(call: Args | Command) -> Awaitable[str]
 ```
 
 #### `aoutput`
 
 ```text
-async def aoutput(call: Args | Command) -> ProcessResult
+def aoutput(call: Args | Command) -> Awaitable[ProcessResult]
 ```
 
 #### `aoutput_bytes`
 
 ```text
-async def aoutput_bytes(call: Args | Command) -> BytesResult
+def aoutput_bytes(call: Args | Command) -> Awaitable[BytesResult]
 ```
 
 #### `aexit_code`
 
 ```text
-async def aexit_code(call: Args | Command) -> int
+def aexit_code(call: Args | Command) -> Awaitable[int]
 ```
 
 #### `aprobe`
 
 ```text
-async def aprobe(call: Args | Command) -> bool
+def aprobe(call: Args | Command) -> Awaitable[bool]
 ```
 
 ### `Pipeline`
@@ -656,31 +660,31 @@ def probe() -> bool
 #### `aoutput`
 
 ```text
-async def aoutput() -> ProcessResult
+def aoutput() -> Awaitable[ProcessResult]
 ```
 
 #### `aoutput_bytes`
 
 ```text
-async def aoutput_bytes() -> BytesResult
+def aoutput_bytes() -> Awaitable[BytesResult]
 ```
 
 #### `arun`
 
 ```text
-async def arun() -> str
+def arun() -> Awaitable[str]
 ```
 
 #### `aexit_code`
 
 ```text
-async def aexit_code() -> int
+def aexit_code() -> Awaitable[int]
 ```
 
 #### `aprobe`
 
 ```text
-async def aprobe() -> bool
+def aprobe() -> Awaitable[bool]
 ```
 
 ### `RunningProcess`
@@ -790,7 +794,7 @@ def outcome() -> Outcome
 #### `aoutcome`
 
 ```text
-async def aoutcome() -> Outcome
+def aoutcome() -> Awaitable[Outcome]
 ```
 
 #### `finish`
@@ -802,7 +806,7 @@ def finish() -> Finished
 #### `afinish`
 
 ```text
-async def afinish() -> Finished
+def afinish() -> Awaitable[Finished]
 ```
 
 #### `output`
@@ -814,7 +818,7 @@ def output() -> ProcessResult
 #### `aoutput`
 
 ```text
-async def aoutput() -> ProcessResult
+def aoutput() -> Awaitable[ProcessResult]
 ```
 
 #### `output_bytes`
@@ -826,7 +830,7 @@ def output_bytes() -> BytesResult
 #### `aoutput_bytes`
 
 ```text
-async def aoutput_bytes() -> BytesResult
+def aoutput_bytes() -> Awaitable[BytesResult]
 ```
 
 #### `profile`
@@ -838,7 +842,7 @@ def profile(every_seconds: float) -> RunProfile
 #### `aprofile`
 
 ```text
-async def aprofile(every_seconds: float) -> RunProfile
+def aprofile(every_seconds: float) -> Awaitable[RunProfile]
 ```
 
 #### `shutdown`
@@ -856,7 +860,7 @@ Named to match ``ProcessGroup.shutdown()``/``ashutdown()``.
 #### `ashutdown`
 
 ```text
-async def ashutdown(grace_seconds: float) -> Outcome
+def ashutdown(grace_seconds: float) -> Awaitable[Outcome]
 ```
 
 Async counterpart of `shutdown`.
@@ -1410,7 +1414,7 @@ def shutdown() -> None
 #### `ashutdown`
 
 ```text
-async def ashutdown() -> None
+def ashutdown() -> Awaitable[None]
 ```
 
 ### `ProcessGroupStats`
@@ -1524,7 +1528,7 @@ def run() -> SupervisionOutcome
 #### `arun`
 
 ```text
-async def arun() -> SupervisionOutcome
+def arun() -> Awaitable[SupervisionOutcome]
 ```
 
 ### `SupervisionOutcome`
@@ -1639,23 +1643,23 @@ def output_all_bytes(
 ### `aoutput_all`
 
 ```text
-async def aoutput_all(
+def aoutput_all(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
     runner: RunnerLike | None = ...,
-) -> list[ProcessResult | ProcessError]
+) -> Awaitable[list[ProcessResult | ProcessError]]
 ```
 
 ### `aoutput_all_bytes`
 
 ```text
-async def aoutput_all_bytes(
+def aoutput_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
     runner: RunnerLike | None = ...,
-) -> list[BytesResult | ProcessError]
+) -> Awaitable[list[BytesResult | ProcessError]]
 ```
 
 ## Readiness helpers
@@ -1904,31 +1908,31 @@ def probe(command: Command) -> bool
 #### `aoutput`
 
 ```text
-async def aoutput(command: Command) -> ProcessResult
+def aoutput(command: Command) -> Awaitable[ProcessResult]
 ```
 
 #### `aoutput_bytes`
 
 ```text
-async def aoutput_bytes(command: Command) -> BytesResult
+def aoutput_bytes(command: Command) -> Awaitable[BytesResult]
 ```
 
 #### `arun`
 
 ```text
-async def arun(command: Command) -> str
+def arun(command: Command) -> Awaitable[str]
 ```
 
 #### `aexit_code`
 
 ```text
-async def aexit_code(command: Command) -> int
+def aexit_code(command: Command) -> Awaitable[int]
 ```
 
 #### `aprobe`
 
 ```text
-async def aprobe(command: Command) -> bool
+def aprobe(command: Command) -> Awaitable[bool]
 ```
 
 ### `StreamingRunner`
@@ -1957,7 +1961,7 @@ def start(command: Command) -> RunningProcess
 #### `astart`
 
 ```text
-async def astart(command: Command) -> RunningProcess
+def astart(command: Command) -> Awaitable[RunningProcess]
 ```
 
 ### `Runner`

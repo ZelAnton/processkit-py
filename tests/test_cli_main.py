@@ -10,7 +10,10 @@ trip does).
 
 from __future__ import annotations
 
+import os
+import pathlib
 import subprocess
+import sys
 
 from .conftest import NO_SUCH_PROGRAM, PY
 
@@ -20,14 +23,24 @@ from .conftest import NO_SUCH_PROGRAM, PY
 _SUBPROCESS_TIMEOUT = 30
 
 
-def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [PY, "-m", "processkit", *args],
         capture_output=True,
         text=True,
         timeout=_SUBPROCESS_TIMEOUT,
         check=False,
+        env=env,
     )
+
+
+def _parent_env_with(**extra: str) -> dict[str, str]:
+    """This test process's own environment, plus marker variables — the
+    "parent" environment the CLI subprocess (and, in turn, its own child) is
+    launched with, for the `--env-clear`/`--inherit-env` tests below."""
+    env = os.environ.copy()
+    env.update(extra)
+    return env
 
 
 def test_top_level_help_does_not_raise() -> None:
@@ -142,3 +155,76 @@ def test_double_dash_inside_child_argv_is_passed_through_verbatim() -> None:
     )
     assert result.returncode == 0
     assert "['--', 'foo']" in result.stdout
+
+
+# --- environment and cwd flags -----------------------------------------------
+
+
+def test_env_clear_strips_the_parent_environment() -> None:
+    # The marker is set on the CLI subprocess's own environment (its
+    # "parent", from the child's point of view) so a real --env-clear must
+    # make it disappear from the grandchild's environment.
+    parent_env = _parent_env_with(PK_CLI_MARKER="present")
+    args = ["run", "--env-clear"]
+    if sys.platform == "win32":
+        # The interpreter needs SystemRoot to spawn at all on Windows
+        # (env var names are case-insensitive there); re-add just that.
+        systemroot = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        args += ["--env", f"SYSTEMROOT={systemroot}"]
+    args += ["--", PY, "-c", "import os; print(os.environ.get('PK_CLI_MARKER', 'GONE'))"]
+    result = _run_cli(*args, env=parent_env)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "GONE"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_inherit_env_allowlists_only_the_named_variable() -> None:
+    parent_env = _parent_env_with(PK_CLI_KEEP="kept", PK_CLI_DROP="dropped")
+    args = ["run", "--inherit-env", "PK_CLI_KEEP"]
+    if sys.platform == "win32":
+        args += ["--inherit-env", "SYSTEMROOT"]
+    code = (
+        "import os; print(os.environ.get('PK_CLI_KEEP', '-'), os.environ.get('PK_CLI_DROP', '-'))"
+    )
+    args += ["--", PY, "-c", code]
+    result = _run_cli(*args, env=parent_env)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "kept -"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_env_flag_sets_a_child_variable() -> None:
+    result = _run_cli(
+        "run",
+        "--env",
+        "PK_CLI_ENV=applied",
+        "--",
+        PY,
+        "-c",
+        "import os; print(os.environ.get('PK_CLI_ENV', 'unset'))",
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "applied"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_env_flag_without_equals_is_a_usage_error() -> None:
+    result = _run_cli("run", "--env", "NOEQUALSHERE", "--", PY, "-c", "print(1)")
+    assert result.returncode == 2
+    assert "--env" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_cwd_flag_changes_the_child_working_directory(tmp_path: pathlib.Path) -> None:
+    result = _run_cli(
+        "run",
+        "--cwd",
+        str(tmp_path),
+        "--",
+        PY,
+        "-c",
+        "import os; print(os.getcwd())",
+    )
+    assert result.returncode == 0
+    assert os.path.realpath(result.stdout.strip()) == os.path.realpath(str(tmp_path))
+    assert "Traceback (most recent call last)" not in result.stderr

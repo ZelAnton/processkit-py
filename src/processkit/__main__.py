@@ -155,6 +155,38 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
             "cores; needs a real container)."
         ),
     )
+    run_parser.add_argument(
+        "--env-clear",
+        dest="env_clear",
+        action="store_true",
+        help="Start the child with an empty environment (Command.env_clear()).",
+    )
+    run_parser.add_argument(
+        "--inherit-env",
+        dest="inherit_env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Allow-list a parent environment variable through to the child "
+            "(Command.inherit_env(...); implies --env-clear). Repeatable."
+        ),
+    )
+    run_parser.add_argument(
+        "--env",
+        dest="env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Set/override a child environment variable (Command.env(...)). Repeatable.",
+    )
+    run_parser.add_argument(
+        "--cwd",
+        dest="cwd",
+        default=None,
+        metavar="DIR",
+        help="Run the child with DIR as its working directory (Command.cwd(...)).",
+    )
     return parser, run_parser
 
 
@@ -173,14 +205,43 @@ def _fail(message: str) -> None:
     print(f"processkit: {message}", file=sys.stderr)
 
 
+def _parse_env_flags(
+    run_parser: argparse.ArgumentParser, raw_pairs: list[str]
+) -> list[tuple[str, str]]:
+    """Parse repeated ``--env KEY=VALUE`` values, reporting a missing ``=`` as
+    a usage error (via `run_parser.error`, which itself exits) rather than
+    letting it surface as an unhandled `ValueError`/traceback."""
+    pairs: list[tuple[str, str]] = []
+    for raw in raw_pairs:
+        if "=" not in raw:
+            run_parser.error(f"--env {raw!r}: expected KEY=VALUE")
+        key, _, value = raw.partition("=")
+        pairs.append((key, value))
+    return pairs
+
+
 def _run(
     run_parser: argparse.ArgumentParser, args: argparse.Namespace, child_argv: list[str]
 ) -> int:
     if args.timeout_grace is not None and args.timeout is None:
         run_parser.error("--timeout-grace requires --timeout")
 
+    env_pairs = _parse_env_flags(run_parser, args.env)
+
     program, *rest = child_argv
     command = Command(program, rest).stdout("inherit").stderr("inherit")
+    # Environment builders compose in a fixed order at spawn regardless of
+    # call order (docs/commands.md#environment-and-sandboxing), but this is
+    # still the natural reading order: clear/allow-list the base environment
+    # first, then layer explicit overrides and the working directory on top.
+    if args.env_clear:
+        command = command.env_clear()
+    if args.inherit_env:
+        command = command.inherit_env(args.inherit_env)
+    for key, value in env_pairs:
+        command = command.env(key, value)
+    if args.cwd is not None:
+        command = command.cwd(args.cwd)
     if args.timeout is not None:
         command = command.timeout(args.timeout)
         if args.timeout_grace is not None:

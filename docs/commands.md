@@ -310,6 +310,30 @@ For a conversational, request/response exchange — write a line, read the answe
 repeat — call `keep_stdin_open()` and drive the process through the streaming API
 instead. *Deeper: [Streaming & interactive I/O](streaming.md).*
 
+To let the child read the parent's **own** stdin directly — the real terminal, a
+file, or a pipe this process was launched with — call `inherit_stdin()`. It is
+the stdin counterpart of `stdout("inherit")`: the child *shares* the parent's
+stream instead of the crate mediating it. Use it when the child must reach the
+real terminal — `git commit` opening `$EDITOR`, a tool prompting for a password
+or a yes/no confirmation, or forwarding a shell pipeline's stdin straight
+through:
+
+```python
+# The editor opens on the real terminal; the crate doesn't touch stdin.
+Command("git", ["commit"]).inherit_stdin().run()
+```
+
+The crate neither feeds nor captures that input, so there is no writer to
+`take_stdin()` — but stdout/stderr are untouched, so `run()` / `output()` still
+return the child's captured stdout as usual. `inherit_stdin()` is **mutually
+exclusive** with any *mediated* stdin: a `stdin_bytes()` / `stdin_text()` /
+`stdin_file()` source, or `keep_stdin_open()`. A child either reads the parent's
+stdin or has its stdin driven by the crate, not both. Building the conflicting
+combination does not raise; the contradiction is rejected as a `ProcessError`
+from the run/output verb when the command actually **launches**, not when you
+build the `Command` (the same guard fires on the test doubles too — see
+[Interactive stdin](streaming.md#interactive-stdin)).
+
 ## Redirecting stdout and stderr
 
 Each stream defaults to `"pipe"` (captured). You can also `"inherit"` the

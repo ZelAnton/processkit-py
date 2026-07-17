@@ -1417,6 +1417,84 @@ def test_stdin_bytes_overrides_earlier_stdin_file(tmp_path: pathlib.Path) -> Non
     assert result == "FROM-BYTES"
 
 
+# --- inherit_stdin — child reads the parent's real stdin (T-110) -------------
+
+
+def test_inherit_stdin_builds_without_conflicting_settings() -> None:
+    # A plain inherit_stdin() (no mediated source, no keep_stdin_open) is a valid
+    # build — the conflict guard fires only at launch, never here.
+    cmd = Command(PY, ["-c", "pass"]).inherit_stdin()
+    assert isinstance(cmd, Command)
+
+
+def test_inherit_stdin_alone_runs_and_still_captures_stdout() -> None:
+    # A child that inherits the parent's stdin but never reads it runs normally;
+    # only stdin is shared, so stdout stays piped and is captured as usual.
+    result = Command(PY, ["-c", "print('inherited')"]).inherit_stdin().run()
+    assert result == "inherited"
+
+
+def _mk_stdin_file(tmp_path: pathlib.Path) -> pathlib.Path:
+    src = tmp_path / "in.txt"
+    src.write_text("x\n", encoding="utf-8")
+    return src
+
+
+# Each factory builds a Command that combines inherit_stdin() with a mediated
+# stdin knob — both call orders, for every mediated source and keep_stdin_open().
+_INHERIT_STDIN_CONFLICTS = [
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).inherit_stdin().stdin_bytes(b"x"),
+        id="inherit-then-stdin_bytes",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).stdin_bytes(b"x").inherit_stdin(),
+        id="stdin_bytes-then-inherit",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).inherit_stdin().stdin_text("x"),
+        id="inherit-then-stdin_text",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).stdin_text("x").inherit_stdin(),
+        id="stdin_text-then-inherit",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).inherit_stdin().stdin_file(_mk_stdin_file(tp)),
+        id="inherit-then-stdin_file",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).stdin_file(_mk_stdin_file(tp)).inherit_stdin(),
+        id="stdin_file-then-inherit",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).inherit_stdin().keep_stdin_open(),
+        id="inherit-then-keep_stdin_open",
+    ),
+    pytest.param(
+        lambda tp: Command(PY, ["-c", "pass"]).keep_stdin_open().inherit_stdin(),
+        id="keep_stdin_open-then-inherit",
+    ),
+]
+
+
+@pytest.mark.parametrize("build", _INHERIT_STDIN_CONFLICTS)
+@pytest.mark.parametrize("verb", ["run", "output"])
+def test_inherit_stdin_conflict_raises_at_run_not_build(
+    build: object, verb: str, tmp_path: pathlib.Path
+) -> None:
+    # inherit_stdin() cannot be combined with a mediated stdin (a configured
+    # source, or keep_stdin_open()'s interactive pipe): a child either reads the
+    # parent's stdin or has its stdin driven by the crate, not both. Building the
+    # combination never raises — the crate rejects the contradiction at the launch
+    # seam, surfaced as ProcessError from the run/output verb (before any spawn),
+    # not at build time. Both call orders and both verbs are covered.
+    cmd = build(tmp_path)  # type: ignore[operator]
+    assert isinstance(cmd, Command)  # the conflicting build itself is inert
+    with pytest.raises(ProcessError):
+        getattr(cmd, verb)()
+
+
 def test_stdout_tee_is_inert_under_stdout_null(tmp_path: pathlib.Path) -> None:
     # stdout("null") runs no capture pump — the tee is inert (empty file). null is
     # non-capturing, so the run goes through start() + outcome() (the capture verbs

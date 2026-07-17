@@ -307,6 +307,18 @@ does not provide yet.
 `keep_stdin_open()` or the writer was already taken — so a missing setup fails
 right here, not later on a `None`.
 
+**Not the same as `inherit_stdin()`.** `keep_stdin_open()` + `take_stdin()` hands
+you a **crate-managed pipe** you write to from Python — the crate mediates every
+byte. [`inherit_stdin()`](commands.md#standard-input) is the opposite: it gives
+the child the parent's **real** stdin (the actual terminal / file / pipe this
+process was launched with), so the crate touches nothing and there is no writer
+to take (`take_stdin()` returns nothing there, exactly as for a run that never
+kept stdin open). Reach for `inherit_stdin()` when a child must talk to the real
+terminal — `git commit` opening `$EDITOR`, a password prompt — and for the
+byte-by-byte conversational exchange above, `keep_stdin_open()`. The two are
+**mutually exclusive**: setting both is rejected as a `ProcessError` at launch
+(not when you build the `Command`).
+
 **Avoid the full-duplex deadlock.** A child's stdout pipe has a finite OS
 buffer; once it fills, the child blocks *writing* stdout until something reads
 it. The `bc` exchange above is safe because it interleaves one small write with

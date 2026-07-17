@@ -195,6 +195,41 @@ impl PyCommand {
         }
     }
 
+    /// Give the child this process's **own** stdin — it reads directly from
+    /// whatever the parent's stdin is connected to (a terminal, a file, a pipe)
+    /// instead of a crate-managed pipe. The stdin counterpart of
+    /// `stdout("inherit")`/`stderr("inherit")`: the child *shares* the parent's
+    /// stream rather than the crate mediating it.
+    ///
+    /// Reach for it when a child must talk to the real terminal —
+    /// `git commit` opening `$EDITOR`, a tool prompting for a password or a
+    /// yes/no confirmation, or simply forwarding the parent's piped stdin
+    /// straight through. Because the child reads the parent's stdin directly,
+    /// the crate neither feeds nor captures that input and there is no writer to
+    /// `RunningProcess.take_stdin()` (it raises, as for a non-`keep_stdin_open`
+    /// run). stdout/stderr are unaffected — capturing and streaming the child's
+    /// output keep working exactly as before, so `run()`/`output()` still return
+    /// its stdout.
+    ///
+    /// **Mutually exclusive with a mediated stdin.** Inheriting the parent's
+    /// stdin cannot be combined with either way the crate would otherwise
+    /// *drive* stdin — a configured source (`stdin_bytes()`/`stdin_text()`/
+    /// `stdin_file()`) or `keep_stdin_open()`'s interactive pipe. Setting
+    /// `inherit_stdin()` **and** one of those is a contradiction (feed the child
+    /// a source *and* let it read the terminal?), so it is rejected as a
+    /// `ProcessError`. The rejection happens at the **launch boundary, not when
+    /// you build the `Command`**: building the conflicting combination never
+    /// raises — the error surfaces from the run/output verb (`run`/`output`/
+    /// `exit_code`/etc.) when the command actually launches. The same guard fires
+    /// identically on the live `Runner` and the test doubles (`ScriptedRunner`),
+    /// since every runner routes stdin through one shared launch seam. Drop the
+    /// other stdin knob to resolve it.
+    fn inherit_stdin(&self) -> Self {
+        Self {
+            inner: self.inner.clone().inherit_stdin(),
+        }
+    }
+
     /// Set a wall-clock timeout. On expiry the whole tree is killed; `output()`
     /// reports it as `timed_out`, while `run()` / `exit_code()` raise `Timeout`.
     fn timeout(&self, seconds: f64) -> PyResult<Self> {

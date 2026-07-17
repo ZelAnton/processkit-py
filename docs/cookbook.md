@@ -104,6 +104,22 @@ Command("psql", ["mydb"]).stdin_file("dump.sql").run()
 Command("tar", ["-xf", "-"]).stdin_file("archive.tar").cwd("/tmp/extract").run()
 ```
 
+## Let a child read the parent's real stdin
+
+```python
+# The child inherits *this* process's stdin — the real terminal, file, or pipe —
+# instead of a crate-managed pipe. Its $EDITOR opens on the actual terminal.
+Command("git", ["commit"]).inherit_stdin().run()
+
+# Forward a shell pipeline's stdin straight through to the child:
+#   cat notes.txt | python -m your_tool
+Command("less").inherit_stdin().run()
+```
+
+`inherit_stdin()` is mutually exclusive with a mediated stdin source
+(`stdin_bytes()` / `stdin_text()` / `stdin_file()`) or `keep_stdin_open()`;
+combining them raises `ProcessError` at launch, not when you build the command.
+
 ## Set the working directory and environment
 
 ```python

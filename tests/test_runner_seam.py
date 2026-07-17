@@ -595,6 +595,56 @@ def test_scripted_runner_on_sequence_rejects_empty_replies() -> None:
         runner.on_sequence(["deploy"], [])
 
 
+# --- inherit_stdin conflict parity: fake rejects like a live run (T-110) -----
+
+
+def test_scripted_runner_rejects_inherit_stdin_conflicts_like_a_live_run() -> None:
+    # Parity with the crate's own `fake_rejects_inherit_stdin_conflicts_like_a_live_run`
+    # (doubles.rs): the ScriptedRunner routes stdin through the SAME launch seam
+    # (`runner::take_stdin_for_run`) the live launch does, so an incompatible
+    # inherit_stdin combination is rejected on the double exactly as it is live —
+    # never a silent divergence where the fake accepts a setup a real spawn refuses.
+    # This pins the already-shared crate behavior reaching the binding; it does not
+    # require (nor add) any conflict validation in the binding's own runner.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("done"))
+
+    conflicts = [
+        Command("tool").inherit_stdin().keep_stdin_open(),
+        Command("tool").keep_stdin_open().inherit_stdin(),
+        Command("tool").inherit_stdin().stdin_bytes(b"payload"),
+        Command("tool").stdin_bytes(b"payload").inherit_stdin(),
+        Command("tool").inherit_stdin().stdin_text("payload"),
+        Command("tool").stdin_text("payload").inherit_stdin(),
+    ]
+    for bad in conflicts:
+        with pytest.raises(ProcessError):
+            runner.output(bad)  # bulk verb
+        with pytest.raises(ProcessError):
+            runner.run(bad)  # checking verb
+        with pytest.raises(ProcessError):
+            runner.start(bad)  # streaming verb — same seam, same rejection
+
+
+def test_scripted_runner_runs_a_plain_inherit_stdin() -> None:
+    # A plain inherit_stdin() (no conflict) runs on the fake like any other
+    # command — the double has no real stdin to route, so it just returns its
+    # canned reply. Mirrors the crate's own "runs on the fake" assertion.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("done"))
+    assert runner.output(Command("tool").inherit_stdin()).stdout == "done"
+    assert runner.run(Command("tool").inherit_stdin()) == "done"
+
+
+def test_live_runner_rejects_inherit_stdin_conflict_matching_the_scripted_double() -> None:
+    # The other half of the parity: the real Runner rejects the same conflict the
+    # ScriptedRunner does — both share the crate's one launch seam — so the double's
+    # rejection above is faithful to production, not a fake-only artifact. The
+    # contradiction is caught before any spawn, so the placeholder program never runs.
+    with pytest.raises(ProcessError):
+        Runner().run(Command(PY, ["-c", "pass"]).inherit_stdin().keep_stdin_open())
+
+
 # --- when() / with_line_delay (C7 batch B) -----------------------------------
 
 

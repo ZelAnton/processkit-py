@@ -167,6 +167,22 @@ class Command:
     def stdin_text(self, text: str) -> Command: ...
     def stdin_file(self, path: StrPath) -> Command: ...
     def keep_stdin_open(self) -> Command: ...
+    def inherit_stdin(self) -> Command:
+        """Give the child this process's **own** stdin — it reads directly from
+        whatever the parent's stdin is connected to (a terminal, a file, a pipe)
+        instead of a crate-managed pipe. The stdin counterpart of
+        ``stdout("inherit")``: the child *shares* the parent's stream. Reach for
+        it when a child must talk to the real terminal — ``git commit`` opening
+        ``$EDITOR``, a tool prompting for a password/confirmation, or forwarding
+        the parent's piped stdin straight through. There is no writer to
+        ``RunningProcess.take_stdin()`` (it raises, as for a non-kept-open run);
+        stdout/stderr are unaffected, so ``run()``/``output()`` still return the
+        child's stdout. Mutually exclusive with a *mediated* stdin — a configured
+        ``stdin_bytes()``/``stdin_text()``/``stdin_file()`` source or
+        ``keep_stdin_open()``: the conflict is rejected as a ``ProcessError`` at
+        **launch** (from the run/output verb), not when you build the ``Command``;
+        the live ``Runner`` and the test doubles reject it identically. Drop the
+        other stdin knob to resolve it."""
     def timeout(self, seconds: float) -> Command: ...
     def timeout_grace(self, seconds: float) -> Command: ...
     def timeout_signal(self, name: SignalName | int) -> Command:

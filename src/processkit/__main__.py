@@ -57,14 +57,31 @@ actually enforceable — the same platform gap `run` degrades around above
 (containers, systemd user sessions, non-root cgroups, and always on macOS
 lack the Windows Job Object / Linux cgroup-v2 root those caps need).
 
-`doctor`'s exit code is machine-readable and lives in its own reserved range,
-deliberately disjoint from `run`'s codes above (124/125/126/127/128+signal):
+`doctor` probes each of the three resource-limit controllers
+(``--max-memory`` / ``--max-processes`` / ``--cpu-quota``) **independently** —
+on Linux cgroup-v2 these are separate controllers (``memory.max``,
+``pids.max``, ``cpu.max``) that can be unavailable one without the others —
+so "resource limits are available" means *all three* probed successfully,
+not just the first one tried.
 
-- **0** — resource limits are available (containment *and* caps both hold).
-- **1** — containment is enforced, but resource limits are not (the
-  "contained, but uncapped" gap).
-- **2** — containment itself is unavailable (should not happen on any
+`doctor`'s exit code is machine-readable and lives in its own reserved range,
+deliberately disjoint from `run`'s codes above (124/125/126/127/128+signal)
+*and* from argparse's own usage-error code (`2` — the same code `run` itself
+uses for a bad invocation, e.g. a missing `--`-terminated command): `doctor`
+never returns `2` as a diagnostic verdict, so a caller can always read `2` as
+"you called this wrong", unambiguous from any of the codes below:
+
+- **0** — resource limits are available (containment *and* all three caps
+  hold).
+- **1** — containment is enforced, but at least one resource limit is not
+  (the "contained, but uncapped" gap).
+- **3** — containment itself is unavailable (should not happen on any
   supported platform).
+- **4** — a probe raised an unexpected operational error (e.g. `OSError` /
+  `PermissionError` reading cgroup state) rather than a definitive
+  `ResourceLimit`/`Unsupported` answer — the environment's actual
+  availability could not be determined, so this is deliberately distinct
+  from both `1` and `3` rather than guessing which one it is.
 """
 
 from __future__ import annotations
@@ -72,7 +89,7 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from processkit import (
     Command,
@@ -97,22 +114,51 @@ EXIT_NOT_FOUND = 127
 #: this wrapper itself is interrupted — the same convention a POSIX shell uses.
 EXIT_SIGNAL_BASE = 128
 
-#: `doctor`: containment mechanism *and* resource limits are both available.
+#: `doctor`: containment mechanism *and* all three resource limits are
+#: available.
 EXIT_DOCTOR_OK = 0
-#: `doctor`: containment is enforced, but resource limits (`--max-memory` /
-#: `--max-processes` / `--cpu-quota`) are not — the same "contained, but
+#: `doctor`: containment is enforced, but at least one of `--max-memory` /
+#: `--max-processes` / `--cpu-quota` is not — the same "contained, but
 #: uncapped" gap `run` degrades around. Deliberately distinct from `run`'s
 #: reserved codes above (124-127, 128+signal): `doctor` has its own
 #: exit-code namespace, not a shared one.
 EXIT_DOCTOR_LIMITS_UNAVAILABLE = 1
+#: Deliberately *not* assigned to a `doctor` verdict: this is argparse's own
+#: usage-error code (shared with `run`'s usage errors, e.g. a missing `--`
+#: command). Reserving it here — rather than reusing it for a diagnostic
+#: outcome as an earlier revision did — keeps "you called this wrong"
+#: unambiguous from any real diagnostic result (see R-2 in review history).
+EXIT_DOCTOR_USAGE_ERROR = 2
 #: `doctor`: containment itself is unavailable in this environment (should
 #: not happen on any supported platform).
-EXIT_DOCTOR_NO_CONTAINMENT = 2
+EXIT_DOCTOR_NO_CONTAINMENT = 3
+#: `doctor`: a probe (containment mechanism or an individual resource limit)
+#: raised an unexpected operational error (`OSError`/`PermissionError`, e.g.
+#: failing to read cgroup state) rather than a definitive
+#: `ResourceLimit`/`Unsupported` answer. This is not a reliable diagnostic
+#: result — the true availability could not be determined — so it is
+#: deliberately its own code, distinct from both the "unavailable" verdicts
+#: above and from an unhandled traceback.
+EXIT_DOCTOR_PROBE_ERROR = 4
 
-#: A deliberately tiny cap for `doctor`'s resource-limit probe — small enough
-#: to be a meaningful "would a real cap be granted at all" test, but nothing
-#: is ever started in the probed group, so the actual number never matters.
+#: Deliberately tiny probe values for `doctor`'s three independent
+#: resource-limit checks — small enough to be a meaningful "would a real cap
+#: be granted at all" test, but nothing is ever started in any probed group,
+#: so the actual numbers never matter.
 _DOCTOR_PROBE_MAX_MEMORY = 1024 * 1024
+_DOCTOR_PROBE_MAX_PROCESSES = 1
+_DOCTOR_PROBE_CPU_QUOTA = 0.1
+#: Each entry is ``(flag name, constructor)``; probed independently because
+#: on Linux cgroup-v2 these map to separate controllers (``memory.max`` /
+#: ``pids.max`` / ``cpu.max``) that can be unavailable one without the
+#: others (see R-1 in review history). Plain no-arg callables (rather than a
+#: shared ``ProcessGroup(**{kwarg: value})``) keep each call's keyword typed
+#: precisely for the type checker.
+_DOCTOR_LIMIT_PROBES: tuple[tuple[str, Callable[[], ProcessGroup]], ...] = (
+    ("--max-memory", lambda: ProcessGroup(max_memory=_DOCTOR_PROBE_MAX_MEMORY)),
+    ("--max-processes", lambda: ProcessGroup(max_processes=_DOCTOR_PROBE_MAX_PROCESSES)),
+    ("--cpu-quota", lambda: ProcessGroup(cpu_quota=_DOCTOR_PROBE_CPU_QUOTA)),
+)
 
 
 def _positive_int(value: str) -> int:
@@ -371,7 +417,15 @@ def _doctor() -> int:
     """Read-only preflight probe: never spawns anything, only constructs (and
     immediately drops) throwaway `ProcessGroup` instances to see what the
     kernel actually grants in this environment. See the module docstring for
-    the exit-code contract this implements."""
+    the exit-code contract this implements.
+
+    Unexpected operational errors (`OSError`/`PermissionError` — e.g. failing
+    to read cgroup state) are caught and reported distinctly from a
+    definitive `ResourceLimit`/`Unsupported` answer (exit
+    `EXIT_DOCTOR_PROBE_ERROR`, never a traceback); a truly unexpected
+    programming error (anything else) is deliberately left to propagate as a
+    traceback rather than being misreported as one of the diagnostic
+    verdicts above."""
     print("processkit doctor")
     try:
         plain_group = ProcessGroup()
@@ -379,17 +433,48 @@ def _doctor() -> int:
         print(f"  containment mechanism : unavailable ({exc})")
         print("  resource limits        : unavailable (no containment mechanism to test)")
         _print_doctor_caveat()
-        print("  verdict: UNAVAILABLE - no containment mechanism in this environment (exit 2)")
+        print("  verdict: UNAVAILABLE - no containment mechanism in this environment (exit 3)")
         return EXIT_DOCTOR_NO_CONTAINMENT
+    except OSError as exc:
+        print(f"  containment mechanism : error probing ({exc})")
+        print("  resource limits        : unknown (mechanism probe failed)")
+        print(
+            "  verdict: ERROR - could not determine containment availability "
+            "(exit 4)"
+        )
+        return EXIT_DOCTOR_PROBE_ERROR
 
     mechanism = plain_group.mechanism
     print(f"  containment mechanism : {mechanism}")
-    del plain_group  # drop the throwaway probe before the (separate) limits probe
+    del plain_group  # drop the throwaway probe before the (separate) limits probes
 
-    try:
-        ProcessGroup(max_memory=_DOCTOR_PROBE_MAX_MEMORY)
-    except (ResourceLimit, Unsupported) as exc:
-        print(f"  resource limits        : unavailable ({exc})")
+    # Probe each of the three resource-limit controllers independently: on
+    # Linux cgroup-v2 they are separate controllers that can be unavailable
+    # one without the others, so "available" must mean all three, not just
+    # the first one tried.
+    unavailable: list[str] = []
+    probe_errors: list[str] = []
+    for flag, construct in _DOCTOR_LIMIT_PROBES:
+        try:
+            construct()
+        except (ResourceLimit, Unsupported) as exc:
+            unavailable.append(f"{flag} ({exc})")
+        except OSError as exc:
+            probe_errors.append(f"{flag} ({exc})")
+
+    if probe_errors:
+        print(f"  resource limits        : error probing {'; '.join(probe_errors)}")
+        if unavailable:
+            print(f"  resource limits        : also unavailable {'; '.join(unavailable)}")
+        _print_doctor_caveat()
+        print(
+            "  verdict: ERROR - could not determine resource-limit availability "
+            "(exit 4)"
+        )
+        return EXIT_DOCTOR_PROBE_ERROR
+
+    if unavailable:
+        print(f"  resource limits        : unavailable {'; '.join(unavailable)}")
         _print_doctor_caveat()
         print("  verdict: DEGRADED - containment is enforced, but resource limits are not (exit 1)")
         return EXIT_DOCTOR_LIMITS_UNAVAILABLE

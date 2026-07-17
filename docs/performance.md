@@ -5,9 +5,9 @@ is fundamentally *syscall-bound* — `fork`/`exec`/`posix_spawn` on POSIX,
 `CreateProcess` plus Job Object setup on Windows — and that OS-side cost
 dominates the total wall-clock time of a run by a wide margin. The PyO3 glue
 between Python and the `processkit` Rust crate (argument marshaling, the
-async-runtime hop for the asyncio surface, error mapping) adds microseconds on
-top of a syscall path that already costs low-single-digit milliseconds. This
-page explains what "no silly overhead" means concretely, points at the
+async-runtime hop for the asyncio surface, error mapping) adds a small,
+constant-time cost on top of a syscall path that already dominates the total.
+This page explains what "no silly overhead" means concretely, points at the
 benchmark suite that backs the claim with a real number instead of a loose
 pass/fail bound, and shows how to reproduce it yourself.
 
@@ -25,11 +25,13 @@ where the binding crate's thin glue ends and the `processkit` crate's platform
 logic begins; the binding layer never reimplements any OS mechanism, so it
 never becomes a bottleneck.
 
-Because process creation is what dominates, a per-call overhead of a few
-microseconds in the Python↔Rust boundary is lost in the noise next to a
-kernel-side operation costing orders of magnitude more. That is the whole
-argument behind "no silly overhead": not that the bridge is free, but that its
-cost is negligible relative to the workload it wraps.
+Because process creation is what dominates, the per-call overhead in the
+Python↔Rust boundary is lost in the noise next to a kernel-side operation
+costing orders of magnitude more — see [What each benchmark
+measures](#what-each-benchmark-measures) below for the harness that turns
+this into a reproducible number instead of a fixed figure here. That is the
+whole argument behind "no silly overhead": not that the bridge is free, but
+that its cost is negligible relative to the workload it wraps.
 
 ## What each benchmark measures
 

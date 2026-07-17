@@ -428,6 +428,25 @@ def exit_code() -> int
 def probe() -> bool
 ```
 
+#### `resolve_program`
+
+```text
+def resolve_program() -> str
+```
+
+Resolve this command's ``program`` to a concrete executable path
+**without launching it** — a spawn-free, side-effect-free preflight
+("is this tool installed?"). Reuses the same PATH/PATHEXT/execute-bit
+lookup a real run performs — a bare name against this command's
+``prefer_local()`` directories (priority order) then the effective
+``PATH``, a path-form program directly — honoring a relocated child
+``PATH`` (``env()``/``env_remove()``/``env_clear()``/``inherit_env()``),
+so the result is exactly what a spawn of this same command would find.
+Returns the resolved **absolute** path; raises ``ProcessNotFound`` (also
+a ``FileNotFoundError``, with a ``searched`` diagnostic) on a miss. No
+``a``-prefixed async twin — the probe is synchronous and needs no
+runtime.
+
 #### `aoutput`
 
 ```text
@@ -565,6 +584,23 @@ def exit_code(call: Args | Command) -> int
 ```text
 def probe(call: Args | Command) -> bool
 ```
+
+#### `resolve_program`
+
+```text
+def resolve_program() -> str
+```
+
+Resolve this client's ``program`` to a concrete executable path
+**without spawning it** — the client-level preflight ("is this tool
+installed?"), with no side effects. Applies the client's defaults (so a
+``default_env``/``default_env_fn`` that relocates ``PATH`` is honored
+as at launch), then resolves via the same PATH/PATHEXT/execute-bit logic
+a real run uses. Returns the resolved **absolute** path; a
+``default_env_fn`` that raises or returns a non-``str`` aborts it
+fail-closed (like the run verbs), and a miss raises ``ProcessNotFound``
+(also a ``FileNotFoundError``, with a ``searched`` diagnostic). No
+``a``-prefixed async twin — the probe is synchronous.
 
 #### `arun`
 
@@ -864,6 +900,16 @@ def ashutdown(grace_seconds: float) -> Awaitable[Outcome]
 ```
 
 Async counterpart of `shutdown`.
+
+## Program resolution
+
+Resolve a program to its concrete executable path *without* launching it — a spawn-free preflight ("is this tool installed?") that reuses the same PATH/PATHEXT/execute-bit lookup a real run performs, so it never disagrees with what a spawn would find. The module-level `which` searches the process `PATH`; `Command.resolve_program()` and `CliClient.resolve_program()` additionally honor a `prefer_local` directory and a relocated child `PATH`. A miss raises `ProcessNotFound`.
+
+### `which`
+
+```text
+def which(program: StrPath) -> str
+```
 
 ## Results & outcomes
 

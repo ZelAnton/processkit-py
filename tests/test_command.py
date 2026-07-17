@@ -22,6 +22,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import pytest
 
+import processkit
 from processkit import (
     BytesResult,
     CancellationToken,
@@ -161,6 +162,132 @@ def test_prefer_local_failure_diagnostics_include_preferred_dirs(
     assert searched is not None
     assert str(first_dir) in searched
     assert str(second_dir) in searched
+
+
+# --- spawn-free program resolution: which() / resolve_program() (T-109) -------
+
+
+def test_which_resolves_a_path_form_program() -> None:
+    # `sys.executable` is an absolute path-form program, probed directly — a
+    # portable success case with no assumption about any system binary.
+    resolved = processkit.which(PY)
+    assert os.path.isabs(resolved)
+    assert pathlib.Path(resolved).samefile(PY)
+
+
+def test_which_resolves_a_bare_name_on_path(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    tool = _make_executable_command(path_dir, "pk-tool", "hi")
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    resolved = processkit.which("pk-tool")
+    assert os.path.isabs(resolved)
+    assert pathlib.Path(resolved).samefile(tool)
+
+
+def test_which_missing_program_raises_process_not_found() -> None:
+    with pytest.raises(ProcessNotFound):
+        processkit.which(NO_SUCH_PROGRAM)
+
+
+def test_which_matches_command_resolve_program(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `which(x)` is the module-level shim over `Command(x).resolve_program()` —
+    # they must resolve the identical path.
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    _make_executable_command(path_dir, "pk-tool", "hi")
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    assert processkit.which("pk-tool") == Command("pk-tool").resolve_program()
+
+
+def test_resolve_program_returns_the_resolved_absolute_path() -> None:
+    resolved = Command(PY).resolve_program()
+    assert os.path.isabs(resolved)
+    assert pathlib.Path(resolved).samefile(PY)
+
+
+def test_resolve_program_finds_a_bare_name_on_path(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    tool = _make_executable_command(path_dir, "pk-tool", "hi")
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    assert pathlib.Path(Command("pk-tool").resolve_program()).samefile(tool)
+
+
+def test_resolve_program_honors_prefer_local(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local_dir = tmp_path / "local-bin"
+    path_dir = tmp_path / "path-bin"
+    local_dir.mkdir()
+    path_dir.mkdir()
+    local_tool = _make_executable_command(local_dir, "pk-tool", "local")
+    _make_executable_command(path_dir, "pk-tool", "path")
+    monkeypatch.setenv("PATH", str(path_dir))
+
+    # The preferred directory wins over PATH, exactly as it would at spawn.
+    resolved = Command("pk-tool").prefer_local(local_dir).resolve_program()
+    assert pathlib.Path(resolved).samefile(local_tool)
+
+
+def test_resolve_program_honors_a_relocated_child_path(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When the command relocates the child's PATH (here: env_clear() + an explicit
+    # env("PATH", ...)), resolution runs against that *effective child* PATH — the
+    # same one the spawn would search — not the parent's.
+    tool_dir = tmp_path / "child-bin"
+    empty_dir = tmp_path / "empty"
+    tool_dir.mkdir()
+    empty_dir.mkdir()
+    tool = _make_executable_command(tool_dir, "pk-tool", "child")
+    # Parent PATH holds only an empty directory — the bare name is not on it.
+    monkeypatch.setenv("PATH", str(empty_dir))
+
+    resolved = Command("pk-tool").env_clear().env("PATH", str(tool_dir)).resolve_program()
+    assert pathlib.Path(resolved).samefile(tool)
+
+    # Without the relocation the bare name is not found (the parent PATH has no
+    # pk-tool) — proving the child env, not some ambient PATH, located it.
+    with pytest.raises(ProcessNotFound):
+        Command("pk-tool").resolve_program()
+
+
+def test_resolve_program_missing_diagnostics_match_a_real_run(tmp_path: pathlib.Path) -> None:
+    # The whole point of the preflight: a miss is the same ProcessNotFound a real
+    # run of the same command would raise — down to the `searched` diagnostic.
+    # Build ONE command, resolve it and run it, and compare the two failures.
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    command = Command(NO_SUCH_PROGRAM).prefer_local(first_dir).prefer_local(second_dir)
+
+    with pytest.raises(ProcessNotFound) as preflight:
+        command.resolve_program()
+    with pytest.raises(ProcessNotFound) as real_run:
+        command.output()
+
+    assert preflight.value.searched is not None
+    assert preflight.value.searched == real_run.value.searched
+    assert str(first_dir) in preflight.value.searched
+    assert str(second_dir) in preflight.value.searched
+
+
+def test_resolve_program_has_no_async_twin() -> None:
+    # The preflight is deliberately synchronous only (a few stats, no runtime), so
+    # there is intentionally no `aresolve_program` — pin that so an accidental
+    # async twin (or its removal from the no-twin decision) is caught.
+    assert not hasattr(Command(PY), "aresolve_program")
 
 
 def test_timeout_is_captured_by_output() -> None:

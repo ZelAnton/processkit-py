@@ -43,6 +43,28 @@ treated as the exit-125 internal failure above — and so is the (also
 shouldn't-happen) case where the requested cap was rejected *and* the plain,
 uncapped fallback still fails: containment is unavailable outright, not
 merely the specific cap.
+
+    python -m processkit doctor
+
+A read-only preflight diagnosis of the containment environment, for CI gates
+and wrapper scripts that want to know "will my caps actually hold here"
+*before* running any untrusted workload, instead of parsing a `run` warning
+on stderr after the fact. Nothing is spawned: it only constructs (and
+immediately drops) throwaway `ProcessGroup` instances to see what the kernel
+grants. Prints the active mechanism (`ProcessGroup().mechanism`) and whether
+resource limits (`--max-memory` / `--max-processes` / `--cpu-quota`) are
+actually enforceable — the same platform gap `run` degrades around above
+(containers, systemd user sessions, non-root cgroups, and always on macOS
+lack the Windows Job Object / Linux cgroup-v2 root those caps need).
+
+`doctor`'s exit code is machine-readable and lives in its own reserved range,
+deliberately disjoint from `run`'s codes above (124/125/126/127/128+signal):
+
+- **0** — resource limits are available (containment *and* caps both hold).
+- **1** — containment is enforced, but resource limits are not (the
+  "contained, but uncapped" gap).
+- **2** — containment itself is unavailable (should not happen on any
+  supported platform).
 """
 
 from __future__ import annotations
@@ -75,6 +97,23 @@ EXIT_NOT_FOUND = 127
 #: this wrapper itself is interrupted — the same convention a POSIX shell uses.
 EXIT_SIGNAL_BASE = 128
 
+#: `doctor`: containment mechanism *and* resource limits are both available.
+EXIT_DOCTOR_OK = 0
+#: `doctor`: containment is enforced, but resource limits (`--max-memory` /
+#: `--max-processes` / `--cpu-quota`) are not — the same "contained, but
+#: uncapped" gap `run` degrades around. Deliberately distinct from `run`'s
+#: reserved codes above (124-127, 128+signal): `doctor` has its own
+#: exit-code namespace, not a shared one.
+EXIT_DOCTOR_LIMITS_UNAVAILABLE = 1
+#: `doctor`: containment itself is unavailable in this environment (should
+#: not happen on any supported platform).
+EXIT_DOCTOR_NO_CONTAINMENT = 2
+
+#: A deliberately tiny cap for `doctor`'s resource-limit probe — small enough
+#: to be a meaningful "would a real cap be granted at all" test, but nothing
+#: is ever started in the probed group, so the actual number never matters.
+_DOCTOR_PROBE_MAX_MEMORY = 1024 * 1024
+
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -90,12 +129,15 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
-def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
-    """The top-level parser plus the ``run`` subparser (returned separately so
-    a validation error found only after parsing — e.g. ``--timeout-grace``
-    without ``--timeout`` — can still report against the `run` usage line via
-    `argparse.ArgumentParser.error`, without reaching into `argparse`'s
-    private `_subparsers` bookkeeping to look it back up)."""
+def _build_parser() -> tuple[
+    argparse.ArgumentParser, argparse.ArgumentParser, argparse.ArgumentParser
+]:
+    """The top-level parser plus the ``run`` and ``doctor`` subparsers
+    (returned separately so a validation error found only after parsing —
+    e.g. ``--timeout-grace`` without ``--timeout``, or a trailing command
+    after ``doctor`` — can still report against the right subcommand's usage
+    line via `argparse.ArgumentParser.error`, without reaching into
+    `argparse`'s private `_subparsers` bookkeeping to look it back up)."""
     parser = argparse.ArgumentParser(
         prog="python -m processkit",
         description="Run a command under processkit's kernel-backed no-orphan containment.",
@@ -187,7 +229,17 @@ def _build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         metavar="DIR",
         help="Run the child with DIR as its working directory (Command.cwd(...)).",
     )
-    return parser, run_parser
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Diagnose the containment environment without running anything",
+        description=(
+            "Report the active containment mechanism and whether resource limits "
+            "(--max-memory/--max-processes/--cpu-quota) are actually available here, "
+            "before running any untrusted workload. Read-only: nothing is spawned."
+        ),
+        epilog="Example: python -m processkit doctor",
+    )
+    return parser, run_parser, doctor_parser
 
 
 def _split_child_argv(argv: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -306,15 +358,61 @@ def _run(
     return outcome.code
 
 
+def _print_doctor_caveat() -> None:
+    print(
+        "  note: --max-memory/--max-processes/--cpu-quota need a Windows Job "
+        "Object or a Linux cgroup-v2 root; the kernel typically refuses them "
+        "inside containers, systemd user sessions, and non-root cgroups, and "
+        "always on macOS (docs/cli.md#resource-limits-hard-cap-or-best-effort)."
+    )
+
+
+def _doctor() -> int:
+    """Read-only preflight probe: never spawns anything, only constructs (and
+    immediately drops) throwaway `ProcessGroup` instances to see what the
+    kernel actually grants in this environment. See the module docstring for
+    the exit-code contract this implements."""
+    print("processkit doctor")
+    try:
+        plain_group = ProcessGroup()
+    except (ResourceLimit, Unsupported) as exc:
+        print(f"  containment mechanism : unavailable ({exc})")
+        print("  resource limits        : unavailable (no containment mechanism to test)")
+        _print_doctor_caveat()
+        print("  verdict: UNAVAILABLE - no containment mechanism in this environment (exit 2)")
+        return EXIT_DOCTOR_NO_CONTAINMENT
+
+    mechanism = plain_group.mechanism
+    print(f"  containment mechanism : {mechanism}")
+    del plain_group  # drop the throwaway probe before the (separate) limits probe
+
+    try:
+        ProcessGroup(max_memory=_DOCTOR_PROBE_MAX_MEMORY)
+    except (ResourceLimit, Unsupported) as exc:
+        print(f"  resource limits        : unavailable ({exc})")
+        _print_doctor_caveat()
+        print("  verdict: DEGRADED - containment is enforced, but resource limits are not (exit 1)")
+        return EXIT_DOCTOR_LIMITS_UNAVAILABLE
+
+    print("  resource limits        : available")
+    print("  verdict: OK - containment and resource limits are both available (exit 0)")
+    return EXIT_DOCTOR_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     own_argv, child_argv = _split_child_argv(raw_argv)
 
-    parser, run_parser = _build_parser()
+    parser, run_parser, doctor_parser = _build_parser()
     args = parser.parse_args(own_argv)
 
-    # "run" is the only subparser registered above, and `required=True` means
-    # `parse_args` itself already rejected anything else — so `run` is
+    if args.subcommand == "doctor":
+        if child_argv:
+            doctor_parser.error("doctor: does not take a trailing command (no '--' needed)")
+        return _doctor()
+
+    # "run" is the only other subparser registered above, and `required=True`
+    # means `parse_args` itself already rejected anything else — so `run` is
     # guaranteed parsed by now, and this late validation error reports
     # against the `run` usage line, not the top-level one.
     if not child_argv:

@@ -6,12 +6,16 @@ Most of this package's value lives behind Python code — but sometimes the
 caller is a shell script or a CI step, not a Python program. `python -m
 processkit run` is a thin CLI wrapper over `Command` / `ProcessGroup` for
 exactly that case: kill-on-exit containment and resource limits for a single
-shell command, with no Python to write.
+shell command, with no Python to write. `python -m processkit doctor` is its
+read-only companion: a preflight diagnosis of what this environment's kernel
+actually grants, without running anything (see
+[below](#doctor-preflight-diagnose-the-environment)).
 
 - [Basic usage](#basic-usage)
 - [Flags](#flags)
 - [Exit codes](#exit-codes)
 - [Resource limits: hard cap or best effort?](#resource-limits-hard-cap-or-best-effort)
+- [`doctor`: preflight-diagnose the environment](#doctor-preflight-diagnose-the-environment)
 - [What you don't get here](#what-you-dont-get-here)
 
 ## Basic usage
@@ -97,6 +101,54 @@ fallback `examples/04_sandbox_resource_limits.py` uses. The no-orphan
 containment guarantee still applies either way; only the specific numeric
 caps are dropped. If your script depends on the cap actually being enforced,
 check stderr for that warning rather than assuming it always held.
+
+## `doctor`: preflight-diagnose the environment
+
+`--max-memory`/`--max-processes`/`--cpu-quota` depend on kernel primitives
+that are not guaranteed to be there (see above) — until now, the only way to
+find out was to run `run` for real and read a warning on stderr, or catch
+`ResourceLimit`/`Unsupported` from the Python API. `python -m processkit
+doctor` answers the same question up front, without running anything:
+
+```bash
+python -m processkit doctor
+```
+
+```text
+processkit doctor
+  containment mechanism : cgroup_v2
+  resource limits        : available
+  verdict: OK - containment and resource limits are both available (exit 0)
+```
+
+Degraded (containment holds, but the kernel refuses resource limits — the
+typical container / systemd user session / non-root cgroup / macOS case):
+
+```text
+processkit doctor
+  containment mechanism : process_group
+  resource limits        : unavailable (ResourceLimit: cgroup v2 root required)
+  note: --max-memory/--max-processes/--cpu-quota need a Windows Job Object or
+  a Linux cgroup-v2 root; the kernel typically refuses them inside
+  containers, systemd user sessions, and non-root cgroups, and always on
+  macOS (docs/cli.md#resource-limits-hard-cap-or-best-effort).
+  verdict: DEGRADED - containment is enforced, but resource limits are not (exit 1)
+```
+
+It never spawns a child process — only constructs (and immediately drops) a
+couple of throwaway `ProcessGroup` instances to see what the kernel actually
+grants. `doctor` has its own exit-code namespace, deliberately disjoint from
+`run`'s codes above (`124`/`125`/`126`/`127`/`128 + signal`), so a CI gate can
+check it directly:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Resource limits are available (containment *and* caps both hold). |
+| `1` | Containment is enforced, but resource limits are not — the same "contained, but uncapped" gap `run` degrades around. |
+| `2` | Containment itself is unavailable (should not happen on any supported platform). |
+
+`doctor` takes no flags beyond `-h`/`--help` — in particular, no trailing
+`-- PROGRAM ...` (it is diagnostic-only and never runs a command).
 
 ## What you don't get here
 

@@ -228,3 +228,100 @@ def test_cwd_flag_changes_the_child_working_directory(tmp_path: pathlib.Path) ->
     assert result.returncode == 0
     assert os.path.realpath(result.stdout.strip()) == os.path.realpath(str(tmp_path))
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+# --- doctor -------------------------------------------------------------
+
+
+def test_doctor_help_does_not_raise() -> None:
+    result = _run_cli("doctor", "--help")
+    assert result.returncode == 0
+    assert "usage" in result.stdout.lower()
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_doctor_rejects_a_trailing_command() -> None:
+    # "doctor" is read-only and diagnostic-only — it never takes a "--
+    # PROGRAM ..." tail the way "run" does.
+    result = _run_cli("doctor", "--", PY, "-c", "print(1)")
+    assert result.returncode == 2
+    assert "does not take a trailing command" in result.stderr
+    assert "usage: python -m processkit doctor" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_doctor_prints_a_report_and_exits_with_one_of_the_documented_codes() -> None:
+    # A real, unmocked run: the actual verdict depends on what this CI
+    # runner's kernel grants (see the deterministic mapping tests below for
+    # the runner-independent exit-code contract itself), but the shape of the
+    # report and the exit-code range are not environment-dependent.
+    result = _run_cli("doctor")
+    assert result.returncode in (0, 1, 2)
+    assert "containment mechanism" in result.stdout
+    assert "verdict:" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def _run_doctor_with_mocked_process_group(mock_class_body: str) -> subprocess.CompletedProcess[str]:
+    """Run `main(["doctor"])` in-process with `processkit.__main__.ProcessGroup`
+    monkeypatched to `mock_class_body` (a `class _MockGroup: ...` definition,
+    verbatim) — the same technique
+    `test_fallback_process_group_failure_is_reported_not_raised` already uses
+    for `run`, needed here because the live probe's outcome depends on
+    whatever container primitives (or lack thereof) this CI runner's kernel
+    actually grants."""
+    script = (
+        "import sys\n"
+        "import processkit\n"
+        "import processkit.__main__ as m\n"
+        f"{mock_class_body}\n"
+        "m.ProcessGroup = _MockGroup\n"
+        "sys.exit(m.main(['doctor']))\n"
+    )
+    return subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+
+
+def test_doctor_exits_zero_when_resource_limits_are_available() -> None:
+    result = _run_doctor_with_mocked_process_group(
+        "class _MockGroup:\n"
+        "    def __init__(self, *, max_memory=None, **kwargs):\n"
+        "        self.mechanism = 'cgroup_v2'\n"
+    )
+    assert result.returncode == 0
+    assert "cgroup_v2" in result.stdout
+    assert "resource limits        : available" in result.stdout
+    assert "verdict: OK" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_doctor_exits_one_when_containment_available_but_limits_are_not() -> None:
+    result = _run_doctor_with_mocked_process_group(
+        "class _MockGroup:\n"
+        "    def __init__(self, *, max_memory=None, **kwargs):\n"
+        "        if max_memory is not None:\n"
+        "            raise processkit.ResourceLimit('cgroup-v2 root required')\n"
+        "        self.mechanism = 'process_group'\n"
+    )
+    assert result.returncode == 1
+    assert "process_group" in result.stdout
+    assert "resource limits        : unavailable" in result.stdout
+    assert "verdict: DEGRADED" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_doctor_exits_two_when_containment_itself_is_unavailable() -> None:
+    result = _run_doctor_with_mocked_process_group(
+        "class _MockGroup:\n"
+        "    def __init__(self, *a, **k):\n"
+        "        raise processkit.Unsupported('containment is unavailable')\n"
+    )
+    assert result.returncode == 2
+    assert "containment mechanism : unavailable" in result.stdout
+    assert "verdict: UNAVAILABLE" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr

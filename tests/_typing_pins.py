@@ -18,10 +18,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import asyncio
     import io
     import os
     import pathlib
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable, Coroutine
     from typing import assert_type
 
     from processkit import (
@@ -49,6 +50,8 @@ if TYPE_CHECKING:
         Supervisor,
         Timeout,
         Unsupported,
+        aoutput_all,
+        aoutput_all_bytes,
         enable_logging,
         output_all,
         output_all_bytes,
@@ -139,9 +142,41 @@ if TYPE_CHECKING:
         assert_type(await cmd.arun(), str)
         assert_type(await cmd.aoutput_bytes(), BytesResult)
 
+    def _a_verb_return_types(
+        cmd: Command,
+        pipe: Pipeline,
+        runner: Runner,
+        proc: RunningProcess,
+        sup: Supervisor,
+        client: CliClient,
+    ) -> None:
+        assert_type(cmd.aoutput(), Awaitable[ProcessResult])
+        assert_type(cmd.aoutput_bytes(), Awaitable[BytesResult])
+        assert_type(cmd.arun(), Awaitable[str])
+        assert_type(cmd.aexit_code(), Awaitable[int])
+        assert_type(cmd.aprobe(), Awaitable[bool])
+        assert_type(cmd.astart(), Awaitable[RunningProcess])
+        assert_type(pipe.aoutput(), Awaitable[ProcessResult])
+        assert_type(runner.aoutput(cmd), Awaitable[ProcessResult])
+        assert_type(proc.aoutcome(), Awaitable[Outcome])
+        assert_type(proc.afinish(), Awaitable[Finished])
+        assert_type(proc.aoutput(), Awaitable[ProcessResult])
+        assert_type(sup.arun(), Awaitable[SupervisionOutcome])
+        assert_type(client.aoutput(["x"]), Awaitable[ProcessResult])
+
+    def _a_verbs_are_not_coroutines(cmd: Command, loop: asyncio.AbstractEventLoop) -> None:
+        # `a`-verbs return the runtime's custom awaitable, not a native coroutine.
+        # The ignores are required: strict mypy fails if the contract regresses.
+        coro: Coroutine[object, object, ProcessResult] = cmd.aoutput()  # type: ignore[assignment]
+        asyncio.run(cmd.aoutput())  # type: ignore[arg-type]
+        loop.create_task(cmd.aoutput())  # type: ignore[arg-type]
+        assert_type(asyncio.ensure_future(cmd.aoutput()), asyncio.Task[ProcessResult])
+
     def _batch_return_types(cmds: list[Command]) -> None:
         assert_type(output_all(cmds), list[ProcessResult | ProcessError])
         assert_type(output_all_bytes(cmds), list[BytesResult | ProcessError])
+        assert_type(aoutput_all(cmds), Awaitable[list[ProcessResult | ProcessError]])
+        assert_type(aoutput_all_bytes(cmds), Awaitable[list[BytesResult | ProcessError]])
         assert_type(enable_logging(), bool)
 
     def _pipeline_and_runner_return_types(pipe: Pipeline, runner: Runner, cmd: Command) -> None:

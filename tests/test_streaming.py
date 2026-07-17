@@ -353,7 +353,7 @@ def test_async_verb_without_running_loop_leaves_handle_usable() -> None:
     with pytest.raises(ProcessError):
         # No running event loop: raises synchronously, before any await is
         # even reachable -- that's the point of this test, not a missing await.
-        proc.aoutcome()  # type: ignore[unused-coroutine]
+        proc.aoutcome()
     assert proc.pid == pid, "the handle must not be consumed by the failed call"
     assert is_alive(pid), "the process must still be alive after the failed call"
 

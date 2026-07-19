@@ -61,6 +61,24 @@ def test_cassette_name_distinguishes_distinct_nodeids() -> None:
     assert pytest_plugin._cassette_name("m.py::t1") != pytest_plugin._cassette_name("m.py::t2")
 
 
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("test_y[a/b]", "test_y[a b]"),
+        ("test_y[a_b]", "test_y[a/b]"),
+        ("test_y[a::b]", "test_y[a/b]"),
+    ],
+    ids=("slash-versus-space", "underscore-versus-slash", "double-colon-versus-slash"),
+)
+def test_cassette_name_distinguishes_nodeids_with_the_same_safe_stem(
+    left: str, right: str
+) -> None:
+    assert pytest_plugin._UNSAFE_NAME.sub("_", left).strip("_") == (
+        pytest_plugin._UNSAFE_NAME.sub("_", right).strip("_")
+    )
+    assert pytest_plugin._cassette_name(left) != pytest_plugin._cassette_name(right)
+
+
 def test_record_mode_cli_flag_wins() -> None:
     # The CLI flag forces record mode regardless of the ini default.
     assert _record_mode(cli=True, ini=False) is True

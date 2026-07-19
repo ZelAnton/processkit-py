@@ -130,15 +130,22 @@ impl PyCommand {
 
     /// Start from an empty environment instead of inheriting the parent's; add
     /// back only what `env()` / `envs()` set. Use for reproducible or locked-down
-    /// (sandboxed) children.
+    /// (sandboxed) children. `inherit_env()` already implies this, so pairing the
+    /// two is only needed for its one extra effect: it also disables gap-filling
+    /// non-allow-listed keys from the client's `default_env` / `default_env_fn`
+    /// (see `inherit_env()`).
     fn env_clear(&self) -> Self {
         Self {
             inner: self.inner.clone().env_clear(),
         }
     }
 
-    /// Inherit only the named variables from the parent's environment — pair with
-    /// `env_clear()` to build a locked-down allowlist for a sandboxed child.
+    /// Inherit only the named variables from the parent's environment — this is
+    /// an allow-list on top of an *implied* `env_clear()`, so a locked-down
+    /// sandboxed child needs no separate `env_clear()` call. Pairing an explicit
+    /// `env_clear()` with this has exactly one remaining effect: it also stops
+    /// the `CliClient`'s `default_env` / `default_env_fn` from gap-filling
+    /// non-allow-listed keys, which `inherit_env()` alone does not disable.
     fn inherit_env(&self, names: Vec<String>) -> Self {
         Self {
             inner: self.inner.clone().inherit_env(names),

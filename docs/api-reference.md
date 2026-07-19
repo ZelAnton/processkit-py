@@ -1367,19 +1367,19 @@ A writable handle to a running process's stdin (all methods awaitable).
 #### `write`
 
 ```text
-async def write(data: ReadableBuffer) -> None
+def write(data: ReadableBuffer) -> Awaitable[None]
 ```
 
 #### `write_line`
 
 ```text
-async def write_line(line: str) -> None
+def write_line(line: str) -> Awaitable[None]
 ```
 
 #### `send_control`
 
 ```text
-async def send_control(control: str) -> None
+def send_control(control: str) -> Awaitable[None]
 ```
 
 Write one mapped control byte, e.g. ``"c"`` -> Ctrl-C (``\x03``).
@@ -1390,13 +1390,13 @@ real SIGINT/SIGTSTP delivery requires a pseudoterminal.
 #### `flush`
 
 ```text
-async def flush() -> None
+def flush() -> Awaitable[None]
 ```
 
 #### `close`
 
 ```text
-async def close() -> None
+def close() -> Awaitable[None]
 ```
 
 ## Process groups

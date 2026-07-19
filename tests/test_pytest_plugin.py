@@ -70,9 +70,7 @@ def test_cassette_name_distinguishes_distinct_nodeids() -> None:
     ],
     ids=("slash-versus-space", "underscore-versus-slash", "double-colon-versus-slash"),
 )
-def test_cassette_name_distinguishes_nodeids_with_the_same_safe_stem(
-    left: str, right: str
-) -> None:
+def test_cassette_name_distinguishes_nodeids_with_the_same_safe_stem(left: str, right: str) -> None:
     assert pytest_plugin._UNSAFE_NAME.sub("_", left).strip("_") == (
         pytest_plugin._UNSAFE_NAME.sub("_", right).strip("_")
     )

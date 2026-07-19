@@ -660,8 +660,8 @@ mod tests {
             "processkit Supervisor default backoff_base must match binding default {DEFAULT_BACKOFF_INITIAL:?}; Debug output was: {debug}"
         );
         assert!(
-            debug.contains(&format!("backoff_factor: {DEFAULT_BACKOFF_FACTOR}")),
-            "processkit Supervisor default backoff_factor must match binding default {DEFAULT_BACKOFF_FACTOR}; Debug output was: {debug}"
+            debug.contains(&format!("backoff_factor: {DEFAULT_BACKOFF_FACTOR:?}")),
+            "processkit Supervisor default backoff_factor must match binding default {DEFAULT_BACKOFF_FACTOR:?}; Debug output was: {debug}"
         );
     }
 

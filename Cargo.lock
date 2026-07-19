@@ -137,6 +137,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mutants"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "add0ac067452ff1aca8c5002111bd6b1c895baee6e45fcbc44e0193aea17be56"
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -165,13 +171,14 @@ dependencies = [
 
 [[package]]
 name = "processkit"
-version = "2.2.5"
+version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2391c479e77063c255aa4549f33bdcc12c0aab3300db786bc46ed893979dc4fa"
+checksum = "3f349d41985aaaa9abe6f9be86e931b21edaccc1a25fcb523c3dd4ef6989c673"
 dependencies = [
  "async-trait",
  "encoding_rs",
  "libc",
+ "mutants",
  "serde",
  "serde_json",
  "thiserror",

@@ -33,10 +33,10 @@ pyo3 = { version = "0.29", features = ["abi3-py310"] }
 # runtime we reuse for BOTH the sync surface (`block_on`) and the async surface
 # (`future_into_py`), so the binding owns exactly one runtime. Tracks pyo3 0.29.
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
-# The Rust core. Compatible-version requirement `2.2` (>=2.2.0, <3.0.0) — the
+# The Rust core. Compatible-version requirement `2.3` (>=2.3.0, <3.0.0) — the
 # binding tracks API/behaviour churn deliberately, not transitively. 1.3.0 (a
 # semver-broken minor) and 2.0.0 (a mistaken publish) were yanked upstream, so
-# 2.2.0 is the floor; the requirement stays within the 2.x major on purpose.
+# 2.3.0 is the floor; the requirement stays within the 2.x major on purpose.
 #
 # Features are listed EXPLICITLY with `default-features = false`, so a change to
 # the crate's default set can never silently alter our public surface:
@@ -52,7 +52,7 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # tests; it has no Python value (the Python test doubles come from the crate's
 # always-on `doubles` surface — ScriptedRunner / RecordingRunner — plus the
 # `record`-gated cassette RecordReplayRunner enabled above).
-processkit = { version = "2.2", default-features = false, features = [
+processkit = { version = "2.3", default-features = false, features = [
   "process-control",
   "limits",
   "record",

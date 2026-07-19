@@ -24,6 +24,9 @@ use crate::result::PyProcessResult;
 use crate::runner::{extract_runner, new_when_sink, scope_when, take_when_error};
 use crate::runtime::{block_on, drive_async_py, reject_reentrant_runtime, require_event_loop};
 
+const DEFAULT_BACKOFF_INITIAL: Duration = Duration::from_millis(200);
+const DEFAULT_BACKOFF_FACTOR: f64 = 2.0;
+
 /// A one-shot sink for the error a control-predicate (`stop_when` /
 /// `give_up_when`) raised — or the `TypeError` a non-`bool` return produced.
 ///
@@ -433,9 +436,9 @@ impl PySupervisor {
         if backoff_initial.is_some() || backoff_factor.is_some() {
             let initial = match backoff_initial {
                 Some(seconds) => positive_duration(seconds, "backoff_initial")?,
-                None => Duration::from_millis(200),
+                None => DEFAULT_BACKOFF_INITIAL,
             };
-            let factor = backoff_factor.unwrap_or(2.0);
+            let factor = backoff_factor.unwrap_or(DEFAULT_BACKOFF_FACTOR);
             if !factor.is_finite() || factor < 1.0 {
                 return Err(PyValueError::new_err(
                     "backoff_factor must be a finite number >= 1.0",
@@ -640,6 +643,26 @@ mod tests {
     #[test]
     fn parse_restart_policy_rejects_unknown_name() {
         assert!(parse_restart_policy("sometimes").is_err());
+    }
+
+    // `PySupervisor::new` uses these constants when one backoff option is omitted.
+    // Keep them aligned with the crate defaults so a processkit upgrade cannot silently
+    // desynchronize the binding's partial-backoff behavior.
+    #[test]
+    fn binding_partial_backoff_defaults_match_processkit_defaults() {
+        let debug = format!(
+            "{:?}",
+            PkSupervisor::new(processkit::Command::new("ignored"))
+        );
+
+        assert!(
+            debug.contains(&format!("backoff_base: {:?}", DEFAULT_BACKOFF_INITIAL)),
+            "processkit Supervisor default backoff_base must match binding default {DEFAULT_BACKOFF_INITIAL:?}; Debug output was: {debug}"
+        );
+        assert!(
+            debug.contains(&format!("backoff_factor: {DEFAULT_BACKOFF_FACTOR}")),
+            "processkit Supervisor default backoff_factor must match binding default {DEFAULT_BACKOFF_FACTOR}; Debug output was: {debug}"
+        );
     }
 
     // --- stop_reason_str -------------------------------------------------

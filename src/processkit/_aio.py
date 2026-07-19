@@ -314,34 +314,60 @@ async def wait_for_port(
                 host=host,
                 port=port,
             ) from last_exc
+        # A short fixed tick (never unbounded/`None`) floors ONLY the first
+        # attempt's connect window. Two things it fixes:
+        #  * at ``remaining <= 0`` (e.g. ``timeout=0``, deadline already
+        #    passed) passing the non-positive ``remaining`` straight through
+        #    would hit `asyncio.wait_for`'s own ``timeout<=0`` fast-cancel,
+        #    which cancels the connect before it ever runs and rejects an
+        #    already-ready port before a connection was even attempted; a prior
+        #    version passed `None` (no cap) instead, which let an
+        #    unresolvable/blackhole address block on the OS's own (much longer,
+        #    or absent) timeout — the bounded tick is real enough to let an
+        #    already-listening local port answer, short enough never to scale
+        #    with a caller-supplied retry interval.
+        #  * flooring with ``max(...)`` — rather than switching on
+        #    ``remaining <= 0`` — keeps the first window MONOTONE in ``timeout``:
+        #    a tiny positive ``timeout`` (e.g. ``0.001``) must never give the
+        #    first attempt a SMALLER window than ``timeout=0`` does, or an
+        #    already-ready local port could pass at ``timeout=0`` yet fail at
+        #    ``timeout=0.001``. The floor is ``min(interval, tick)`` so it never
+        #    scales past a smaller caller interval, and is strictly positive so
+        #    `wait_for`'s fast-cancel path never re-triggers.
+        # Every later attempt is bounded by the real ``remaining`` (kept
+        # positive by the deadline guard above).
+        if first_attempt:
+            connect_timeout = max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
+        else:
+            connect_timeout = remaining
         first_attempt = False
         # Own the connect as a task: if a timeout or a cancellation races a
         # successful connect, `asyncio.wait_for` can drop the established transport
-        # on the floor (a known leak). Owning the task lets us close it instead.
+        # on the floor (a known leak). Owning the task lets us close it — or, when
+        # the connect actually completed in that same tick, honor the success.
         conn = asyncio.ensure_future(asyncio.open_connection(host, port))
         try:
-            # A short fixed tick (never unbounded/`None`) only on this — the
-            # first — attempt, and only when the deadline has already passed
-            # (``remaining <= 0``, e.g. at ``timeout=0``):
-            # `asyncio.wait_for(fut, timeout<=0)` cancels ``fut`` before it
-            # ever runs, which would reject an already-ready port before a
-            # connection was ever attempted, so we can't just pass
-            # ``remaining`` (non-positive) through unchanged either. A prior
-            # version passed `None` (no cap) here instead, which let a
-            # connection attempt against an unresolvable/blackhole address
-            # block on the OS's own (much longer, or absent) timeout — a
-            # regression this bounded tick fixes: real enough to let an
-            # already-listening local port answer, short enough to never scale
-            # with a caller-supplied retry interval. Preserve intervals smaller
-            # than the cap; the guard above ensures the result stays positive,
-            # so this never re-triggers `wait_for`'s own ``timeout<=0``
-            # fast-cancel path. Every later attempt is still bounded by the
-            # real ``remaining``.
-            connect_timeout = (
-                min(interval, _ZERO_TIMEOUT_CONNECT_TICK) if remaining <= 0 else remaining
-            )
             _reader, writer = await asyncio.wait_for(conn, timeout=connect_timeout)
         except (OSError, asyncio.TimeoutError) as exc:
+            if (
+                isinstance(exc, asyncio.TimeoutError)
+                and conn.done()
+                and not conn.cancelled()
+                and conn.exception() is None
+            ):
+                # Same-tick race: the connect actually established in the very
+                # tick the deadline cancelled it (the classic `wait_for` leak,
+                # where a met success is reported as a timeout). Sibling helpers
+                # `wait_until` / `wait_for_line` already resolve this exact race
+                # in favor of the success ("honor it rather than discarding a
+                # met condition"); keep `wait_for_port` consistent — succeed on
+                # the proven-ready port instead of closing the live transport
+                # and raising `WaitTimeout`.
+                _reader, writer = conn.result()
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+                return
             _close_pending_connection(conn)
             last_exc = exc
             remaining = deadline - loop.time()

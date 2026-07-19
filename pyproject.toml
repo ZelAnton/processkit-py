@@ -59,6 +59,16 @@ dev = [
   "maturin>=1.14.1,<2.0",
   "pytest>=9.1.1",
   "mypy>=2.1.0",
+  # Second typechecker gate (see `[tool.pyright]` below and the `pyright`
+  # job in ci.yml), alongside mypy: pyright is what most consumers actually
+  # see (VS Code/Pylance), and it disagrees with mypy often enough on
+  # overloads/Literal/protocols/Awaitable patterns that a green mypy alone
+  # doesn't guarantee a clean IDE experience. Pinned here (floor-pin, like
+  # the other dev-group tools above) rather than via `uvx` in the CI step,
+  # so the exact version is locked in `uv.lock` and reproducible offline —
+  # matching how mypy itself is pinned, not the `uvx 'yamllint>=1,<2' .`
+  # style used by the standalone `yaml-lint` job.
+  "pyright>=1.1.411",
   "ruff>=0.15.20",
   "pre-commit>=4.0.0",
   "pytest-timeout>=2.4.0",
@@ -145,6 +155,28 @@ files = ["src", "tests", "scripts", "examples"]
 mypy_path = "src"
 explicit_package_bases = true
 namespace_packages = true
+
+# Second typechecker gate (see the `pyright` job in ci.yml and the dev-group
+# comment above): pyright disagrees with mypy often enough on
+# overloads/Literal/protocols/Awaitable patterns that a green mypy alone
+# doesn't guarantee a clean experience for the majority of consumers who
+# actually see the API through pyright (VS Code/Pylance). Scoped to the
+# *public typing surface* rather than mypy's broader `files` above — the
+# compiled-extension stub, the rest of the `processkit` package (which
+# defines/re-exports the same public names), the type-pin file, and the
+# examples — not the wider internal test suite / release scripts mypy also
+# covers, which are implementation detail rather than surface a consumer's
+# own pyright run would ever type-check against.
+[tool.pyright]
+include = ["src/processkit", "tests/_typing_pins.py", "examples"]
+pythonVersion = "3.12"
+# `basic` (pyright's own default) is the deliberate starting strictness: a
+# fresh second tool on an existing, mypy-`strict`-clean surface should not
+# also have to clear pyright's full `strict` bar (which turns on stricter
+# checks mypy's strict mode does not require, e.g. reportMissingTypeStubs /
+# reportUnknownMemberType) in the same task that first wires it up. Revisit
+# once this gate has run for a while.
+typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
 # `-n auto` (pytest-xdist): the suite is dominated by sequential interpreter

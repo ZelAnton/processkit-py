@@ -54,6 +54,15 @@ def test_passing_testcase_with_system_out_and_properties_is_not_flagged(
     assert exit_code == 0
 
 
+def test_class_based_node_id_uses_classname_and_final_test_name() -> None:
+    assert guard.node_id_to_classname_name(
+        "tests/test_command.py::TestMyClass::test_something"
+    ) == ("tests.test_command.TestMyClass", "test_something")
+    assert guard.node_id_to_classname_name(
+        "tests/test_command.py::Outer::Inner::test_something"
+    ) == ("tests.test_command.Outer.Inner", "test_something")
+
+
 def test_skipped_testcase_is_still_flagged(tmp_path: Path) -> None:
     junit_path = _write_junit(tmp_path, '<skipped message="skipped for a reason"/>')
     exit_code = guard.main(

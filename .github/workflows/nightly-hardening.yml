@@ -125,3 +125,53 @@ jobs:
                   f"| {stats['rounds']} |"
               )
           EOF
+
+  mutmut:
+    # Mutation testing for the pure-Python binding layer -- see `[tool.mutmut]` in
+    # pyproject.toml for the exact scope (deadlines/cancellation in `_aio.py`,
+    # cassette-mode/naming in `pytest_plugin.py`, exit-code mapping in
+    # `__main__.py`, the release helper scripts) and the reasoning for keeping it
+    # narrow (the compiled `_processkit` extension is native code coverage.py-style
+    # tools can't instrument; the sibling `processkit` Rust crate already runs
+    # cargo-mutants over that logic in its own repository). Line-coverage (the
+    # `test` job's `--cov`) only proves
+    # code ran, not that a test would actually notice it behaving differently --
+    # mutmut proves the latter for this subset. A single ubuntu runner, like
+    # `bench` above: mutmut's mutant-execution model is `os.fork()`-based (POSIX
+    # only, no native Windows support), so there is no OS matrix here. Never gates
+    # a PR -- same `schedule`/`workflow_dispatch`-only triggers as the jobs above;
+    # a surviving mutant is expected, ordinary output (see the summary step below),
+    # not a job failure -- `mutmut run` itself only exits non-zero for a genuine
+    # setup/environment problem (e.g. the baseline test run failing outright).
+    name: mutmut
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Run mutation testing
+        run: uv run mutmut run
+      - name: Publish surviving mutants to the job summary
+        shell: bash
+        run: |
+          {
+            echo '## Mutation testing (mutmut)'
+            echo 'Scope: `src/processkit/_aio.py`, `pytest_plugin.py`, `__main__.py`, `scripts/release/*.py` -- see `[tool.mutmut]` in pyproject.toml. Killed mutants are omitted; only surviving/no-tests/timeout/etc. are listed below (empty output means every mutant was killed).'
+            echo '```'
+            uv run mutmut results
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Export mutation stats
+        run: uv run mutmut export_cicd_stats
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutmut-cicd-stats
+          path: mutants/mutmut-cicd-stats.json
+          if-no-files-found: error

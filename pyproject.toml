@@ -71,6 +71,11 @@ dev = [
   # docs-only group) because the drift guard tests/test_api_reference.py runs in
   # the ordinary `uv run pytest` gate. The mdBook docs build itself uses no Python.
   "griffelib>=2,<3",
+  # Mutation testing for the pure-Python binding layer (nightly-hardening.yml's
+  # `mutmut` job only; not run in the ordinary PR-gate `test` job). Requires a
+  # POSIX host (`os.fork()`-based worker model) -- no native Windows support, see
+  # `[tool.mutmut]` below for the exact scope.
+  "mutmut>=3.6.0,<4",
 ]
 # The `benchmarks/` suite (overhead vs `subprocess`/`asyncio.subprocess`,
 # `ProcessGroup` start/exit, line-streaming throughput, `output_all` at
@@ -218,6 +223,36 @@ exclude_lines = [
 
 [tool.coverage.html]
 directory = "htmlcov"
+
+[tool.mutmut]
+# Scoped deliberately narrow: the compiled `_processkit` extension is native code
+# mutmut cannot instrument (the sibling `processkit` Rust crate runs cargo-mutants
+# over that logic in its own repository), and `*.pyi`/tests are not mutation
+# targets. `source_paths` must list whole
+# directories (mutmut copies the tree verbatim to build the sandboxed `mutants/`
+# tree the mutated modules import their siblings from -- e.g.
+# `pytest_plugin.py`'s `from .testing import ...` and every module's
+# `from ._processkit import ...` need the rest of `src/processkit/` present,
+# just unmutated) -- `only_mutate` is the actual scope filter: everything under
+# `source_paths` is copied unmodified, but only paths matching one of these glob
+# patterns is actually mutated. This is the tightest scope mutmut's config model
+# supports for a subset of a package: deadlines/cancellation/races in `_aio.py`,
+# cassette-mode/naming logic in `pytest_plugin.py`, exit-code mapping in
+# `__main__.py`, and the release helper scripts.
+source_paths = ["src", "scripts/release"]
+only_mutate = [
+  "src/processkit/_aio.py",
+  "src/processkit/pytest_plugin.py",
+  "src/processkit/__main__.py",
+  "scripts/release/*.py",
+]
+# The root conftest.py (not under tests/) registers `pytest_plugins = ["pytester"]`,
+# needed by tests/test_pytest_plugin.py (which exercises `pytest_plugin.py`, one of
+# the mutated modules, via pytester-driven inner pytest sessions) -- without it
+# copied alongside the default `tests/`/`pyproject.toml` also-copy set, those tests
+# would fail to collect inside the sandboxed `mutants/` tree mutmut runs pytest
+# from, for a reason unrelated to any mutation.
+also_copy = ["conftest.py"]
 
 [tool.cibuildwheel]
 # Two wheel families per OS/arch:

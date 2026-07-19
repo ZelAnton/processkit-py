@@ -439,6 +439,83 @@ def test_wait_for_port_zero_timeout_with_large_interval(
     asyncio.run(scenario())
 
 
+def test_wait_for_port_first_attempt_window_is_monotonic_in_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression (Пункт 1): the first connection attempt's window must never
+    # SHRINK as `timeout` grows from 0. It used to: at timeout=0 the first
+    # attempt was floored to a fixed tick (~0.05s), but a tiny positive timeout
+    # (0.001) fell through to `connect_timeout = remaining ≈ 0.001` — a LARGER
+    # requested timeout yielding a SMALLER first window than timeout=0, so an
+    # already-ready local port could pass at timeout=0 yet fail at timeout=0.001.
+    # Capture the actual `connect_timeout` handed to `asyncio.wait_for` on the
+    # first attempt for a rising sequence of timeouts and assert it is
+    # non-decreasing — deterministic, no wall-clock or real race.
+    windows: list[float] = []
+
+    async def recording_wait_for(
+        fut: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
+        timeout: float,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        windows.append(timeout)
+        # Mimic real wait_for's timeout path: cancel and drain the pending
+        # connect so no task is left dangling, then report the deadline.
+        fut.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await fut
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
+
+    async def first_window_for(timeout: float) -> float:
+        windows.clear()
+        with contextlib.suppress(WaitTimeout):
+            await wait_for_port("127.0.0.1", 1, timeout=timeout)
+        return windows[0]
+
+    async def scenario() -> None:
+        prev = -1.0
+        for timeout in (0.0, 0.001, 0.01, 0.1):
+            window = await first_window_for(timeout)
+            assert window >= prev, (
+                f"first-attempt window shrank at timeout={timeout}: {window} < {prev}"
+            )
+            prev = window
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_port_honors_success_that_raced_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression (Пункт 2): if the connect actually established in the same tick
+    # the deadline cancelled it, wait_for_port must honor that met success —
+    # exactly as its siblings `wait_until` / `wait_for_line` already do for their
+    # equivalent race ("honor it rather than discarding a met condition") —
+    # instead of closing the live transport and raising WaitTimeout. Before the
+    # fix the two related helpers gave two different answers to the same race.
+    # Deterministic: a patched `asyncio.wait_for` drives the connect to a genuine
+    # success and *then* reports a timeout, mocking the race rather than
+    # depending on real scheduling.
+    async def racing_wait_for(
+        fut: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
+        timeout: float,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        await fut  # the connect completes successfully (its result is set)...
+        raise asyncio.TimeoutError  # ...but the deadline "fires" in the same tick
+
+    async def scenario() -> None:
+        port = free_port()
+        server = await asyncio.start_server(lambda _r, w: w.close(), "127.0.0.1", port)
+        async with server:
+            monkeypatch.setattr(asyncio, "wait_for", racing_wait_for)
+            # Must return normally: the raced-but-established connection wins.
+            # Before the fix this discarded the success and raised WaitTimeout.
+            await wait_for_port("127.0.0.1", port, timeout=0.5)
+
+    asyncio.run(scenario())
+
+
 def test_wait_for_port_chains_last_connection_error() -> None:
     # A typo'd/unresolvable hostname must not have its evidence (the DNS
     # failure) silently discarded — it survives as the TimeoutError's cause.

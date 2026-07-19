@@ -47,6 +47,7 @@ registered in ``pytest_configure`` so it passes ``--strict-markers``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 import re
@@ -71,9 +72,12 @@ _NO_SPAWN_MARKER = "no_real_spawn"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-# Node ids ("tests/test_x.py::test_y[param]") mapped to a filesystem-safe cassette
-# file name: collapse every run of unsafe characters to a single underscore.
+# Node ids ("tests/test_x.py::test_y[param]") map to filesystem-safe cassette
+# file names by collapsing every run of unsafe characters to one underscore and
+# appending a digest of the original node id. The digest keeps distinct node ids
+# distinct even when their safe stems collide.
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+_CASSETTE_NAME_HASH_LENGTH = 12
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -163,9 +167,11 @@ def _cassette_dir(config: pytest.Config, tmp_path: pathlib.Path) -> pathlib.Path
 
 def _cassette_name(nodeid: str) -> str:
     """A filesystem-safe cassette file name deterministically derived from a test
-    node id (``tests/test_x.py::test_y[param]`` → ``tests_test_x.py_test_y_param_.json``)."""
+    node id (``tests/test_x.py::test_y[param]`` →
+    ``tests_test_x.py_test_y_param-<hash>.json``)."""
     safe = _UNSAFE_NAME.sub("_", nodeid).strip("_")
-    return f"{safe or 'cassette'}.json"
+    digest = hashlib.sha256(nodeid.encode("utf-8")).hexdigest()[:_CASSETTE_NAME_HASH_LENGTH]
+    return f"{safe or 'cassette'}-{digest}.json"
 
 
 @pytest.fixture
@@ -176,7 +182,7 @@ def record_replay_runner(
     cassette. In replay mode (the default) it serves the recorded run offline —
     no spawn; in record mode (see the module docstring's switch) it captures real
     runs and saves the cassette to disk on teardown. The cassette path is
-    ``<processkit_cassette_dir or tmp_path>/<node-id>.json``."""
+    ``<processkit_cassette_dir or tmp_path>/<safe-node-id>-<hash>.json``."""
     config = request.config
     cassette = _cassette_dir(config, tmp_path) / _cassette_name(request.node.nodeid)
     if _is_record_mode(config):

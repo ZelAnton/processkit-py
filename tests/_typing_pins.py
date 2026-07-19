@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import os
     import pathlib
     from collections.abc import Awaitable, Callable, Coroutine
-    from typing import assert_type
+    from typing import Literal, assert_type
 
     from processkit import (
         Args,
@@ -33,18 +33,23 @@ if TYPE_CHECKING:
         Finished,
         NonZeroExit,
         Outcome,
+        OutputEvent,
+        OutputEvents,
         OutputTooLarge,
         PermissionDenied,
         Pipeline,
         ProcessError,
+        ProcessGroup,
         ProcessNotFound,
         ProcessResult,
         ProcessRunner,
+        ProcessStdin,
         Runner,
         RunningProcess,
         RunProfile,
         Signalled,
         SignalName,
+        StdoutLines,
         StrPath,
         SupervisionOutcome,
         Supervisor,
@@ -172,6 +177,48 @@ if TYPE_CHECKING:
         asyncio.run(cmd.aoutput())  # type: ignore[arg-type]
         loop.create_task(cmd.aoutput())  # type: ignore[arg-type]
         assert_type(asyncio.ensure_future(cmd.aoutput()), asyncio.Task[ProcessResult])
+
+    def _streaming_awaitable_return_types(
+        stdin: ProcessStdin, lines: StdoutLines, events: OutputEvents
+    ) -> None:
+        assert_type(stdin.write(b"data"), Awaitable[None])
+        assert_type(stdin.write_line("line"), Awaitable[None])
+        assert_type(stdin.send_control("c"), Awaitable[None])
+        assert_type(stdin.flush(), Awaitable[None])
+        assert_type(stdin.close(), Awaitable[None])
+        assert_type(lines.__anext__(), Awaitable[str])
+        assert_type(events.__anext__(), Awaitable[OutputEvent])
+
+    def _streaming_awaitables_are_not_coroutines(
+        stdin: ProcessStdin,
+        lines: StdoutLines,
+        events: OutputEvents,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        # The ignores are required: the runtime returns PyLazyFuture, not a coroutine.
+        stdin_coro: Coroutine[object, object, None] = stdin.write(  # type: ignore[assignment]
+            b"data"
+        )
+        line_coro: Coroutine[object, object, str] = lines.__anext__()  # type: ignore[assignment]
+        event_coro: Coroutine[object, object, OutputEvent] = events.__anext__()  # type: ignore[assignment]
+        del stdin_coro, line_coro, event_coro
+        asyncio.run(stdin.flush())  # type: ignore[arg-type]
+        loop.create_task(lines.__anext__())  # type: ignore[arg-type]
+        assert_type(asyncio.ensure_future(events.__anext__()), asyncio.Task[OutputEvent])
+
+    def _async_context_manager_return_types(proc: RunningProcess, group: ProcessGroup) -> None:
+        assert_type(proc.__aenter__(), Awaitable[RunningProcess])
+        assert_type(proc.__aexit__(None, None, None), Awaitable[Literal[False]])
+        assert_type(group.__aenter__(), Awaitable[ProcessGroup])
+        assert_type(group.__aexit__(None, None, None), Awaitable[Literal[False]])
+
+    async def _async_context_manager_protocol_types(
+        proc: RunningProcess, group: ProcessGroup
+    ) -> None:
+        async with proc as entered_proc:
+            assert_type(entered_proc, RunningProcess)
+        async with group as entered_group:
+            assert_type(entered_group, ProcessGroup)
 
     def _batch_return_types(cmds: list[Command]) -> None:
         assert_type(output_all(cmds), list[ProcessResult | ProcessError])

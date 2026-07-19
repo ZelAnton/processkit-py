@@ -28,10 +28,15 @@ def node_id_to_classname_name(node_id: str) -> tuple[str, str]:
 
     ``tests/test_command.py::test_foo`` -> ``("tests.test_command", "test_foo")``.
     """
-    path, _, name = node_id.partition("::")
-    if not name:
+    segments = node_id.split("::")
+    if len(segments) < 2 or not segments[-1]:
         raise ValueError(f"not a module-qualified test id (missing '::'): {node_id!r}")
+    path, *class_segments, name = segments
     classname = path.removesuffix(".py").replace("/", ".").replace("\\", ".")
+    # Support class-based tests because pytest writes every enclosing class in
+    # junitxml's classname, while the final node-id segment is the test name.
+    if class_segments:
+        classname = ".".join((classname, *class_segments))
     return classname, name
 
 

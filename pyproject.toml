@@ -237,8 +237,12 @@ directory = "htmlcov"
 # `source_paths` is copied unmodified, but only paths matching one of these glob
 # patterns is actually mutated. This is the tightest scope mutmut's config model
 # supports for a subset of a package: deadlines/cancellation/races in `_aio.py`,
-# cassette-mode/naming logic in `pytest_plugin.py`, exit-code mapping in
-# `__main__.py`, and the release helper scripts. `scripts` (the whole directory,
+# exit-code mapping in `__main__.py`, and the release helper scripts.
+# (`pytest_plugin.py` would be a prime target too -- its cassette-mode/naming
+# logic -- but is deliberately left OUT of `only_mutate`; see the note inside that
+# list below for why mutmut's mutation trampoline is structurally incompatible
+# with the pytester-driven inner sessions in `tests/test_pytest_plugin.py`.)
+# `scripts` (the whole directory,
 # not just `scripts/release`) is likewise a `source_paths` entry rather than an
 # `also_copy` one: `tests/test_api_reference.py` does `from scripts import
 # gen_api_reference` and `tests/test_ci_privileged_guard.py` loads
@@ -248,7 +252,25 @@ directory = "htmlcov"
 source_paths = ["src", "scripts"]
 only_mutate = [
   "src/processkit/_aio.py",
-  "src/processkit/pytest_plugin.py",
+  # `src/processkit/pytest_plugin.py` is deliberately NOT mutated, despite its
+  # cassette-naming / record-mode logic being an ideal mutation target. The
+  # module is autoloaded (the `pytest11` entry point) into *every* pytest
+  # session, including the *inner* sessions `tests/test_pytest_plugin.py` spins
+  # up via the `pytester` fixture. mutmut wraps each mutated function in a
+  # "trampoline" that, during its stats-collection pass (`MUTANT_UNDER_TEST=
+  # stats`), calls `record_trampoline_hit`, which eagerly evaluates
+  # `[p.resolve(strict=True) for p in Config.source_paths]` on *every* hit.
+  # `source_paths` are stored relative ("src"/"scripts") and `Path.resolve` is
+  # cwd-relative -- but `pytester` chdirs each inner session into its own tmp
+  # dir, where no `src/` exists, so the mutated plugin's hooks/fixtures firing
+  # inside an inner session raise `FileNotFoundError: 'src'`. That aborts the
+  # whole stats pass (it surfaces as pytester's "terminal summary report not
+  # found"), so mutating this one file breaks the entire mutmut run. This is
+  # structural, not a config bug: mutmut resolves `source_paths` lazily against
+  # cwd while pytester owns the inner cwd, and mutmut's scope filter is file- not
+  # function-granular, so the whole module must be excluded. Only the *mutation*
+  # coverage is given up -- the pure helpers (`_cassette_name`, `_is_record_mode`,
+  # `_cassette_dir`) stay directly unit-tested in `tests/test_pytest_plugin.py`.
   "src/processkit/__main__.py",
   "scripts/release/*.py",
 ]

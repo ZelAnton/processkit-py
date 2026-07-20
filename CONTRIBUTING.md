@@ -15,26 +15,37 @@ parity), and how the stub/runtime/`__all__` drift guard works.
 - [uv](https://docs.astral.sh/uv/) on your PATH — run `scripts/check-env.sh`
   (or `scripts/check-env.ps1`) to confirm.
 - A Rust toolchain — install via [rustup](https://rustup.rs/).
+- [`just`](https://github.com/casey/just#installation) — the dev task runner
+  used below (`cargo install just`, `uv tool install rust-just`,
+  `winget install --id Casey.Just`, or `brew install just` all work).
 
 ## Build and test
 
+The [`justfile`](justfile) is the single canonical entry point for every dev-cycle
+command below; run `just --list` for the full, up-to-date list with descriptions.
+
 ```sh
-uv run maturin develop              # build the Rust extension and install it in-place
-uv run pytest                       # run the tests (requires maturin develop first)
-cargo test --all-targets            # Rust unit tests (Linux/macOS)
-pwsh ./scripts/cargo-test-windows.ps1  # Rust unit tests (Windows; after maturin develop)
-uv run ruff format --check .        # formatting must be clean
-uv run ruff check .                 # lint
-uv run mypy                         # type-check (strict)
-uv run maturin build --release --out dist  # build a release abi3 wheel
+just build              # build the Rust extension and install it in-place
+just test               # run the tests (requires `just build` first)
+just rust-test          # Rust unit tests (Linux/macOS)
+just rust-test-windows  # Rust unit tests (Windows; after `just build`)
+just fmt                # apply ruff formatting
+just lint               # ruff format --check + ruff check
+just typecheck          # mypy --strict, then stubtest against the compiled extension
+just docs               # build the mdBook site
+just api-ref            # regenerate docs/api-reference.md
+just bench              # run the benchmark suite
 ```
+
+For a release wheel, use `uv run maturin build --release --out dist` directly (not
+part of the day-to-day dev cycle, so it has no `just` recipe).
 
 `ruff check`, `mypy --strict`, and `pytest` (with warnings promoted to errors)
 are the gates CI enforces, so run them locally before opening a pull request.
 CI additionally runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and
-the Rust unit tests. On Windows, the script obtains uv's selected Python base
-prefix programmatically and adds it to `PATH`, allowing the Cargo test binary
-to find the base Python DLL without a machine-specific path.
+the Rust unit tests. On Windows, `just rust-test-windows` obtains uv's selected
+Python base prefix programmatically and adds it to `PATH`, allowing the Cargo
+test binary to find the base Python DLL without a machine-specific path.
 
 ## Pre-commit (optional but recommended)
 
@@ -60,8 +71,9 @@ exercise them from a Windows (or any) host, run the suite in a container:
 docker compose run --build --rm test
 ```
 
-This builds the PyO3 extension with a real Rust toolchain + uv and runs `pytest`
-on Linux. The container is `privileged` so the crate selects the `cgroup_v2`
+(`just docker-test` wraps the same command.) This builds the PyO3 extension
+with a real Rust toolchain + uv and runs `pytest` on Linux. The container is
+`privileged` so the crate selects the `cgroup_v2`
 mechanism — the same path CI's Linux runner uses; drop `privileged` in
 [`compose.yaml`](compose.yaml) to test the `process_group` fallback instead.
 Append a command to scope the run:
@@ -77,8 +89,8 @@ native `uv run pytest`, which is faster for day-to-day work.
 ## Conventions
 
 - **Formatting and linting** are governed by [`ruff`](https://docs.astral.sh/ruff/)
-  (config in [`pyproject.toml`](pyproject.toml)). Run `uv run ruff format .` to
-  apply formatting; don't reformat code you are not changing.
+  (config in [`pyproject.toml`](pyproject.toml)). Run `just fmt` to apply
+  formatting; don't reformat code you are not changing.
 - **Dependencies** are declared in `pyproject.toml` and pinned in `uv.lock`
   (commit the lockfile). Add them with `uv add`, not by hand.
 - The authoritative bar is simply what CI enforces — `ruff`, `mypy --strict`, and

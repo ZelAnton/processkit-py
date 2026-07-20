@@ -269,7 +269,10 @@ directory = "htmlcov"
 # `source_paths` is copied unmodified, but only paths matching one of these glob
 # patterns is actually mutated. This is the tightest scope mutmut's config model
 # supports for a subset of a package: deadlines/cancellation/races in `_aio.py`,
-# exit-code mapping in `__main__.py`, and the release helper scripts.
+# exit-code mapping in the `_cli/` package (argument parsing, the `run`/`doctor`
+# subcommands, and the shared exit-code constants -- see `only_mutate` below;
+# `__main__.py` itself is now just a two-line `sys.exit(main())` shim delegating
+# into `_cli`), and the release helper scripts.
 # (`pytest_plugin.py` would be a prime target too -- its cassette-mode/naming
 # logic -- but is deliberately left OUT of `only_mutate`; see the note inside that
 # list below for why mutmut's mutation trampoline is structurally incompatible
@@ -303,6 +306,20 @@ only_mutate = [
   # function-granular, so the whole module must be excluded. Only the *mutation*
   # coverage is given up -- the pure helpers (`_cassette_name`, `_is_record_mode`,
   # `_cassette_dir`) stay directly unit-tested in `tests/test_pytest_plugin.py`.
+  # `src/processkit/_cli/` is the actual home of the exit-code mapping this
+  # section's intro paragraph describes (`run.py`'s exception -> exit-code
+  # translation, `doctor.py`'s independent-probe verdict codes, `parser.py`'s
+  # `--` splitting/argparse wiring, and the shared constants in
+  # `exit_codes.py`) -- it moved here from `__main__.py` when that logic was
+  # split into its own package. It is an ordinary importable package (no
+  # `pytest11` entry point, nothing pytester-driven touches it -- unlike
+  # `pytest_plugin.py` above), so none of that trampoline/cwd hazard applies.
+  "src/processkit/_cli/*.py",
+  # `__main__.py` itself is kept in scope too even though it is now just a
+  # two-line `sys.exit(main())` shim with almost nothing left to mutate
+  # meaningfully: leaving it listed costs nothing (mutmut will simply surface
+  # few or no surviving mutants there) and avoids a config gap if logic ever
+  # moves back into it.
   "src/processkit/__main__.py",
   "scripts/release/*.py",
 ]

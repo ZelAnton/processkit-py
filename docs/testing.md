@@ -91,6 +91,7 @@ process:
 | `scripted_runner` | a fresh [`ScriptedRunner`](#scripting-replies-scriptedrunner) | teach it replies with `.on()` / `.when()` / `.fallback()` |
 | `recording_runner` | a [`RecordingRunner`](#asserting-on-calls-recordingrunner) spy | replies `Reply.ok("")` (a clean exit 0, empty stdout — the neutral default) to every call and records each one |
 | `record_replay_runner` | a [`RecordReplayRunner`](#recordreplay-cassettes-recordreplayrunner) cassette | replay by default, record on demand — see below |
+| `dry_run_runner` | a fresh [`DryRunRunner`](#rendering-commands-without-running-dryrunrunner) | renders each command to text instead of running it |
 
 ```python
 from processkit import Command

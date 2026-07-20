@@ -81,6 +81,11 @@ dev = [
   # docs-only group) because the drift guard tests/test_api_reference.py runs in
   # the ordinary `uv run pytest` gate. The mdBook docs build itself uses no Python.
   "griffelib>=2,<3",
+  # Mutation testing for the pure-Python binding layer (nightly-hardening.yml's
+  # `mutmut` job only; not run in the ordinary PR-gate `test` job). Requires a
+  # POSIX host (`os.fork()`-based worker model) -- no native Windows support, see
+  # `[tool.mutmut]` below for the exact scope.
+  "mutmut>=3.6.0,<4",
 ]
 # The `benchmarks/` suite (overhead vs `subprocess`/`asyncio.subprocess`,
 # `ProcessGroup` start/exit, line-streaming throughput, `output_all` at
@@ -250,6 +255,99 @@ exclude_lines = [
 
 [tool.coverage.html]
 directory = "htmlcov"
+
+[tool.mutmut]
+# Scoped deliberately narrow: the compiled `_processkit` extension is native code
+# mutmut cannot instrument (the sibling `processkit` Rust crate runs cargo-mutants
+# over that logic in its own repository), and `*.pyi`/tests are not mutation
+# targets. `source_paths` must list whole
+# directories (mutmut copies the tree verbatim to build the sandboxed `mutants/`
+# tree the mutated modules import their siblings from -- e.g.
+# `pytest_plugin.py`'s `from .testing import ...` and every module's
+# `from ._processkit import ...` need the rest of `src/processkit/` present,
+# just unmutated) -- `only_mutate` is the actual scope filter: everything under
+# `source_paths` is copied unmodified, but only paths matching one of these glob
+# patterns is actually mutated. This is the tightest scope mutmut's config model
+# supports for a subset of a package: deadlines/cancellation/races in `_aio.py`,
+# exit-code mapping in `__main__.py`, and the release helper scripts.
+# (`pytest_plugin.py` would be a prime target too -- its cassette-mode/naming
+# logic -- but is deliberately left OUT of `only_mutate`; see the note inside that
+# list below for why mutmut's mutation trampoline is structurally incompatible
+# with the pytester-driven inner sessions in `tests/test_pytest_plugin.py`.)
+# `scripts` (the whole directory,
+# not just `scripts/release`) is likewise a `source_paths` entry rather than an
+# `also_copy` one: `tests/test_api_reference.py` does `from scripts import
+# gen_api_reference` and `tests/test_ci_privileged_guard.py` loads
+# `scripts/ci-privileged-guard.py` by path, so both siblings of `release/` need to
+# exist, unmutated, in the sandbox tree for those tests to collect -- `only_mutate`
+# below still confines actual mutation to `scripts/release/*.py`.
+source_paths = ["src", "scripts"]
+only_mutate = [
+  "src/processkit/_aio.py",
+  # `src/processkit/pytest_plugin.py` is deliberately NOT mutated, despite its
+  # cassette-naming / record-mode logic being an ideal mutation target. The
+  # module is autoloaded (the `pytest11` entry point) into *every* pytest
+  # session, including the *inner* sessions `tests/test_pytest_plugin.py` spins
+  # up via the `pytester` fixture. mutmut wraps each mutated function in a
+  # "trampoline" that, during its stats-collection pass (`MUTANT_UNDER_TEST=
+  # stats`), calls `record_trampoline_hit`, which eagerly evaluates
+  # `[p.resolve(strict=True) for p in Config.source_paths]` on *every* hit.
+  # `source_paths` are stored relative ("src"/"scripts") and `Path.resolve` is
+  # cwd-relative -- but `pytester` chdirs each inner session into its own tmp
+  # dir, where no `src/` exists, so the mutated plugin's hooks/fixtures firing
+  # inside an inner session raise `FileNotFoundError: 'src'`. That aborts the
+  # whole stats pass (it surfaces as pytester's "terminal summary report not
+  # found"), so mutating this one file breaks the entire mutmut run. This is
+  # structural, not a config bug: mutmut resolves `source_paths` lazily against
+  # cwd while pytester owns the inner cwd, and mutmut's scope filter is file- not
+  # function-granular, so the whole module must be excluded. Only the *mutation*
+  # coverage is given up -- the pure helpers (`_cassette_name`, `_is_record_mode`,
+  # `_cassette_dir`) stay directly unit-tested in `tests/test_pytest_plugin.py`.
+  "src/processkit/__main__.py",
+  "scripts/release/*.py",
+]
+# mutmut always copies `tests/`, `setup.cfg`, and `pyproject.toml` into the
+# sandbox alongside this list (see mutmut's own `_load_config`), so those don't
+# need to be repeated here. What's listed below covers what the *whole* test
+# suite additionally reaches for by a repo-root-relative path -- the full suite,
+# not just tests for the mutated modules, has to collect and pass inside the
+# sandbox: mutmut's stats-collection pass is one `pytest` invocation over
+# `tests/` that determines which tests exercise which mutated function, so an
+# unrelated test failing (a collection error, a missing fixture file) fails that
+# whole pass, not just the tests it belongs to.
+#   - `conftest.py` (repo root, not `tests/`): registers
+#     `pytest_plugins = ["pytester"]`, needed by `tests/test_pytest_plugin.py`
+#     (pytester-driven inner pytest sessions).
+#   - `README.md`, `docs/`: `tests/_docs_snippets.py`'s `ROOT` (repo root, one
+#     level up from `tests/` inside the sandbox) points at both, read by
+#     `tests/test_docs_snippets.py`; `tests/test_api_reference.py` separately
+#     reads `docs/api-reference.md`.
+#   - `examples/`: `tests/test_examples.py` runs every `examples/*.py` script in
+#     a child interpreter.
+#   - `cliff.toml`: `tests/test_release_scripts.py` parses its `commit_parsers`
+#     table.
+also_copy = ["conftest.py", "README.md", "docs", "examples", "cliff.toml"]
+# `-n auto` (pytest-xdist, the repo-wide default -- see the comment on `addopts`
+# in `[tool.pytest.ini_options]` above) breaks mutmut's in-process stats
+# collection: mutmut's `StatsCollector` pytest plugin records which test hit
+# which mutated function via hooks that run in the controller process, but under
+# `-n auto` the actual test bodies execute in xdist worker *sub*processes, so
+# those hook calls never happen in-process and no test ends up associated with
+# any mutant (mutmut then aborts stats collection outright, before running a
+# single mutant). `-p no:xdist` alone is not enough -- once the plugin that
+# registers `-n` is disabled, `-n auto` (still present via the ini file's
+# `addopts`, which mutmut's sandboxed pytest run reads same as any other run)
+# becomes an unrecognized option and pytest itself fails to start; `-o
+# addopts=...` fully overrides (not appends to) the ini value, so the
+# replacement below must keep every other `addopts` flag verbatim (i.e. stay in
+# sync with `[tool.pytest.ini_options] addopts` above, minus `-n auto`) rather
+# than only dropping `-n auto` from it.
+pytest_add_cli_args = [
+  "-p",
+  "no:xdist",
+  "-o",
+  "addopts=-ra --strict-markers --strict-config --import-mode=importlib",
+]
 
 [tool.cibuildwheel]
 # Two wheel families per OS/arch:

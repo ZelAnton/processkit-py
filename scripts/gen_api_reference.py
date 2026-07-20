@@ -410,8 +410,25 @@ def _fence(code: str) -> list[str]:
 
 def _is_documented_member(name: str, obj: Doc) -> bool:
     """Public members only: drop dunders and single-underscore privates. The
-    constructor is folded into the class signature, never listed separately."""
-    if name.startswith("_"):
+    constructor is folded into the class signature, never listed separately.
+
+    Also drop any non-ASCII identifier. Every real public member name in this
+    codebase is plain ASCII, so this is a no-op against committed source — but
+    it guards against tooling that rewrites a module in place and injects
+    synthetic sibling class members outside that convention. Concretely: when
+    `_aio.py` is mutation-tested (`mutmut`, `nightly-hardening.yml`), a mutated
+    method like `WaitTimeout.__init__` is expanded, *inside the class body*,
+    into `__init__` itself plus one sibling per mutant variant named
+    `xǁWaitTimeoutǁ__init____mutmut_orig` / `..._1` / `...` — using U+01C1 as a
+    separator so the generated name can't collide with a real identifier. Those
+    siblings don't start with `_`, so the check above alone would treat them as
+    newly-added public API and render a `#### ...` entry for each, making the
+    page generated inside the mutmut sandbox (`mutants/`) diverge from the
+    committed one and fail `tests/test_api_reference.py` — not because the
+    surface actually changed, just because mutmut's own instrumentation is
+    visible to griffe's static (AST) read the same as real source would be.
+    """
+    if name.startswith("_") or not name.isascii():
         return False
     return obj.kind in (Kind.FUNCTION, Kind.ATTRIBUTE)
 

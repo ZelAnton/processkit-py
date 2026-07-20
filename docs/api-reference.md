@@ -2012,13 +2012,13 @@ class StreamingRunner
 `ProcessRunner` plus `start`/`astart` — the full runner verb surface,
 for code that also needs a live `RunningProcess` handle to stream.
 
-`Runner`, `ScriptedRunner`, `RecordReplayRunner`, and `RecordingRunner` all
-satisfy it. A hand-rolled double can implement the capture/check verbs
-easily, but `start`/`astart` must return a `RunningProcess`, which has no
-public constructor — and the built-in runners are `@final`, so a
-fully-conforming custom runner in practice means *wrapping* one
-(delegating `start`/`astart` to it; use `ScriptedRunner` for streaming
-doubles).
+`Runner`, `ScriptedRunner`, `RecordReplayRunner`, `RecordingRunner`, and
+`DryRunRunner` all satisfy it. A hand-rolled double can implement the
+capture/check verbs easily, but `start`/`astart` must return a
+`RunningProcess`, which has no public constructor — and the built-in
+runners are `@final`, so a fully-conforming custom runner in practice means
+*wrapping* one (delegating `start`/`astart` to it; use `ScriptedRunner`
+for streaming doubles).
 
 #### `start`
 

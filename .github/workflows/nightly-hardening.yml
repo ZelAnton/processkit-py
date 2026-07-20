@@ -158,7 +158,16 @@ jobs:
       - run: uv sync
       - name: Run mutation testing
         run: uv run mutmut run
+      # `!cancelled()` (rather than the GitHub Actions default, implicit
+      # `success()`) on this step and the two below: if `mutmut run` itself
+      # fails (a genuine setup/environment problem, not an ordinary surviving
+      # mutant -- see the comment above), these steps still run instead of
+      # being silently skipped, so the job summary/artifact carry whatever
+      # diagnostic output `mutmut results`/`export-cicd-stats` can produce
+      # instead of the failure going dark. Only an explicit workflow
+      # cancellation suppresses them.
       - name: Publish surviving mutants to the job summary
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           {
@@ -169,8 +178,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Export mutation stats
-        run: uv run mutmut export_cicd_stats
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        run: uv run mutmut export-cicd-stats
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutmut-cicd-stats
           path: mutants/mutmut-cicd-stats.json

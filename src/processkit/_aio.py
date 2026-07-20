@@ -437,8 +437,17 @@ async def wait_for_line(
     if isinstance(predicate, str):
         needle = predicate
 
-        def match(item: Any) -> bool:
+        # Named distinctly from the `match` variable above (not reused as the
+        # def's own name): pyright otherwise infers `match`'s declared type
+        # from this nested def (with its named `item` parameter) rather than
+        # from the `Callable[[Any], bool]` annotation two lines up, then
+        # rejects the `else` branch's `match = predicate` as incompatible
+        # (reportRedeclaration / reportAssignmentType) — mypy has no such
+        # issue with the original same-name form.
+        def _contains(item: Any) -> bool:
             return needle in item
+
+        match = _contains
     else:
         match = predicate
 

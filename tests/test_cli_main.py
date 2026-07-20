@@ -1,7 +1,8 @@
-"""`python -m processkit run -- ...` — the CLI wrapper (`src/processkit/__main__.py`).
+"""`python -m processkit run -- ...` — the CLI wrapper (`src/processkit/__main__.py`,
+delegating to the private `src/processkit/_cli/` package).
 
 Every test here spawns a **real** `sys.executable -m processkit ...` subprocess
-rather than importing `processkit.__main__` and calling `main()` directly: the
+rather than importing `processkit._cli` and calling `main()` directly: the
 whole point under test is argv parsing and process exit-code plumbing, neither
 of which a direct import would actually exercise (an in-process call can't
 observe `sys.exit()`/the real process exit code the way a subprocess round
@@ -139,12 +140,13 @@ def test_fallback_process_group_failure_is_reported_not_raised() -> None:
     script = (
         "import sys\n"
         "import processkit\n"
-        "import processkit.__main__ as m\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.run as run_mod\n"
         "class _AlwaysUnsupported:\n"
         "    def __init__(self, *a, **k):\n"
         "        raise processkit.Unsupported('containment is unavailable')\n"
-        "m.ProcessGroup = _AlwaysUnsupported\n"
-        "sys.exit(m.main(['run', '--max-memory', '1', '--', 'irrelevant']))\n"
+        "run_mod.ProcessGroup = _AlwaysUnsupported\n"
+        "sys.exit(cli.main(['run', '--max-memory', '1', '--', 'irrelevant']))\n"
     )
     result = subprocess.run(
         [PY, "-c", script],
@@ -283,7 +285,7 @@ def test_doctor_prints_a_report_and_exits_with_one_of_the_documented_codes() -> 
 
 
 def _run_doctor_with_mocked_process_group(mock_class_body: str) -> subprocess.CompletedProcess[str]:
-    """Run `main(["doctor"])` in-process with `processkit.__main__.ProcessGroup`
+    """Run `main(["doctor"])` in-process with `processkit._cli.doctor.ProcessGroup`
     monkeypatched to `mock_class_body` (a `class _MockGroup: ...` definition,
     verbatim) — the same technique
     `test_fallback_process_group_failure_is_reported_not_raised` already uses
@@ -293,10 +295,11 @@ def _run_doctor_with_mocked_process_group(mock_class_body: str) -> subprocess.Co
     script = (
         "import sys\n"
         "import processkit\n"
-        "import processkit.__main__ as m\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.doctor as doctor_mod\n"
         f"{mock_class_body}\n"
-        "m.ProcessGroup = _MockGroup\n"
-        "sys.exit(m.main(['doctor']))\n"
+        "doctor_mod.ProcessGroup = _MockGroup\n"
+        "sys.exit(cli.main(['doctor']))\n"
     )
     return subprocess.run(
         [PY, "-c", script],

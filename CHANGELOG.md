@@ -23,94 +23,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProcessGroup` monitoring: a fused, periodic series of `ProcessGroupStats`
   snapshots built on top of `ProcessGroup.stats()`
 
-### Changed
--
-
-### Fixed
--
-
 ## [1.2.4] - 2026-07-12
 
 ### Added
-
 - Add Open Graph and Twitter Card metadata to the docs site
-- Add Open Graph and Twitter Card metadata to the docs site
-- Add real Rust crate and .NET documentation links
 - Add real Rust crate and .NET documentation links
 - Add table border, header fill, and row striping to match the reference site
 
-
 ### Changed
-
-- Publish documentation site to GitHub Pages
-- Pin GitHub Pages deploy actions to commit SHA
-- Initialize integration workspace for batch B-20260711T155830Z
-- Publish documentation site to GitHub Pages on push to main
-- Initialize integration workspace for batch B-20260711T171812Z
+- Publish the documentation site to GitHub Pages on push to main
+- Pin the GitHub Pages deploy actions to a commit SHA
 - Reserve navigation placeholders for the Rust crate and .NET variant
-- Initialize integration workspace for batch B-20260711T181214Z
-- Reserve navigation placeholders for the Rust crate and .NET variant
-- 
 - Restyle the docs site navigation and tables to match the ProcessKit look
-- Move Rust crate and .NET nav entries right after Home
-- Initialize integration workspace for batch B-20260711T234535Z
-- Move Rust crate and .NET nav entries right after Home
-- Link the Rust crate and .NET nav entries directly to their docs sites
-- Match the reference's pinned nav-group title styling more closely
-- Initialize integration workspace for batch B-20260712T014055Z
-- Match the reference site's typography and CSS styling more closely
-- Link the Rust crate and .NET nav entries directly to their docs sites
-- Move the implementation switcher above Home in the docs nav
-- Move the Rust/Python/.NET version switcher above Overview in nav
-- Match the reference site's actual dark-theme table colors (navy, not coal)
-- Match reference site's table borders, header fill, row striping, and dark-theme colors
+- Move the Rust crate and .NET nav entries right after Home, then link them
+  directly to their docs sites
+- Match the reference site's pinned nav-group title styling, typography, CSS,
+  and table borders/header fill/row striping/dark-theme colors (navy, not
+  coal) more closely
+- Move the implementation switcher above Home, then the Rust/Python/.NET
+  version switcher above Overview, in the docs nav
 - Rebuild the docs site with mdBook to match the ProcessKit family
-- Render API-reference signatures as text, fix generator griffe types
-- Give a clear diagnostic for parse_signal with out-of-range ints and floats
-- Convert Supervisor to the frozen + Mutex<Option<...>> pattern
-- Open integration workspace for batch B-20260712T150224Z
-- Convert Supervisor to the frozen + Mutex<Option<...>> pattern
-- Give a clear diagnostic for parse_signal with out-of-range ints and floats
-- Align property test with the corrected out-of-i32-range signal diagnostic
-- Unify named-preset parsers on case-insensitive matching
-- Case-normalize the rejection filters in preset property tests
-- Open integration workspace for batch B-20260712T164130Z
-- Unify case-insensitivity across named-preset parsers
-- Bump processkit dependency to 2.2.4
-- Open integration workspace for batch B-20260712T184717Z
-- Bump processkit dependency to 2.2.4
-
+- Render API-reference signatures as text and fix the generator's griffe types
+- Give a clear diagnostic for `parse_signal` with out-of-range ints and
+  floats, and align the property test with the corrected diagnostic
+- Convert `Supervisor` to the frozen + `Mutex<Option<...>>` pattern
+- Unify the named-preset parsers (and their property tests) on
+  case-insensitive matching
+- Bump the processkit dependency to 2.2.4
 
 ### Fixed
-
 - Fix wide-table scrolling specificity and code word-breaking
 - Fix doc comment list-bullet misparse and reformat long test line
 
-
 ### Removed
-
 - Drop the external crates.io link from the Rust crate placeholder
 - Remove stray trailing blank line from mkdocs.yml
 
 ## [1.2.3] - 2026-07-11
 
 ### Changed
-
-- Bump processkit dependency to 2.2.3
-- Initialize integration workspace for batch B-20260710T121901Z
-- Bump processkit dependency to 2.2.3
-- Initialize integration workspace for batch B-20260710T230508Z
-
+- Bump the processkit dependency to 2.2.3
 
 ### Fixed
-
-- Fix broken repo-relative README links on PyPI
 - Fix broken repo-relative README links for PyPI rendering
 
 ## [1.2.2] - 2026-07-10
-
-### Added
--
 
 ### Changed
 - `ProcessResult` and `SupervisionOutcome` are no longer picklable — pickling
@@ -153,31 +110,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.2.1] - 2026-07-09
 
 ### Added
-
-- Add Command.prefer_local, exposing crate 2.2's bare-name resolution override
-- Add Command.prefer_local, exposing crate 2.2's bare-name resolution override
-- Add a runnable Command.prefer_local example to docs
-- Add ProcessStdin.send_control for interactive control-byte delivery
-- Add ProcessStdin.send_control for interactive control-byte delivery
-- Add Command.prefer_local usage example to docs/commands.md
-
+- Add `Command.prefer_local`, exposing crate 2.2's bare-name resolution override
+- Add a runnable `Command.prefer_local` usage example to `docs/commands.md`
+- Add `ProcessStdin.send_control` for interactive control-byte delivery
 
 ### Changed
-
-- Broaden Command.priority docstring privilege caveat to cover above_normal and niced-parent normal
-- Bump processkit dependency requirement and lockfile to 2.2.0
-- Bump processkit dependency requirement and lockfile to 2.2.0
-- Broaden Command.priority docstring privilege caveat to cover above_normal and niced-parent normal
-- Initialize integration workspace for batch B-20260709T132808Z
-- Initialize integration workspace for batch B-20260709T144637Z
-- Apply rustfmt to send_control signature
-- Bump processkit dependency to 2.2.1
-- Initialize integration workspace for batch B-20260709T162529Z
-- Bump processkit dependency to 2.2.1
-
+- Broaden the `Command.priority` docstring privilege caveat to cover
+  `above_normal` and a niced-parent `normal`
+- Bump the processkit dependency requirement and lockfile to 2.2.0
+- Apply rustfmt to the `send_control` signature
+- Bump the processkit dependency to 2.2.1
 
 ### Fixed
-
 - Fix Windows-incompatible relative path-form assertion in the prefer_local example
 
 ## [1.2.0] - 2026-07-08
@@ -387,9 +331,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Pipeline`, `RunningProcess`, `ProcessGroup`, and the `runner=` doubles). The
   `Supervisor` capture policy is unaffected — it captures line-based output only
   and has no `output_bytes` verb.
-
-### Fixed
--
 
 ## [1.1.0] - 2026-07-06
 

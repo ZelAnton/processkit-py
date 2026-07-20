@@ -110,7 +110,7 @@ def test_fixtures_are_available_and_are_process_runners(pytester: pytest.Pyteste
     pytester.makepyfile(
         """
         from processkit import Command, ProcessRunner
-        from processkit.testing import RecordingRunner, ScriptedRunner
+        from processkit.testing import DryRunRunner, RecordingRunner, ScriptedRunner
 
 
         def test_scripted(scripted_runner):
@@ -124,10 +124,17 @@ def test_fixtures_are_available_and_are_process_runners(pytester: pytest.Pyteste
             # Documented default reply: a clean exit 0 with empty stdout.
             assert recording_runner.run(Command("anything")) == ""
             assert recording_runner.only_call().program == "anything"
+
+
+        def test_dry_run(dry_run_runner):
+            assert isinstance(dry_run_runner, DryRunRunner)
+            assert isinstance(dry_run_runner, ProcessRunner)
+            assert dry_run_runner.run(Command("anything")) == ""
+            assert dry_run_runner.only_command() == "anything"
         """
     )
     result = pytester.runpytest()
-    result.assert_outcomes(passed=2)
+    result.assert_outcomes(passed=3)
 
 
 def test_plugin_autoloads_in_a_subprocess_session(pytester: pytest.Pytester) -> None:
@@ -306,13 +313,20 @@ def test_guard_allows_injected_doubles_and_is_inactive_unmarked(
             assert scripted_runner.run(Command("anything")) == "safe"
 
 
+        @pytest.mark.no_real_spawn
+        def test_dry_run_double_still_works(dry_run_runner):
+            # A dry-run double renders instead of spawning — the guard leaves it alone.
+            dry_run_runner.run(Command("anything"))
+            assert dry_run_runner.only_command() == "anything"
+
+
         def test_unmarked_may_spawn():
             # Without the marker the guard is inactive; a real run works normally.
             assert Command(sys.executable, ["-c", "print('hi')"]).run() == "hi"
         """
     )
     result = pytester.runpytest("--strict-markers")
-    result.assert_outcomes(passed=2)
+    result.assert_outcomes(passed=3)
 
 
 def test_guard_is_restored_after_the_marked_test(pytester: pytest.Pytester) -> None:

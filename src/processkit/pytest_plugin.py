@@ -18,6 +18,8 @@ the seam your code is written against:
 - ``record_replay_runner`` — a :class:`~processkit.testing.RecordReplayRunner`
   bound to a per-test cassette, in *replay* mode by default and *record* mode when
   recording is switched on (see below).
+- ``dry_run_runner`` — a fresh :class:`~processkit.testing.DryRunRunner` that
+  renders each command to text instead of running it.
 
 Record/replay mode is chosen the way vcr-like tools do it — a switch, off
 (replay) by default so CI never spawns by accident. In precedence order:
@@ -56,7 +58,7 @@ from typing import TYPE_CHECKING, NoReturn
 import pytest
 
 from ._processkit import Command, Pipeline, ProcessGroup, Runner
-from .testing import RecordingRunner, RecordReplayRunner, Reply, ScriptedRunner
+from .testing import DryRunRunner, RecordingRunner, RecordReplayRunner, Reply, ScriptedRunner
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -141,6 +143,14 @@ def recording_runner() -> RecordingRunner:
     yourself via ``RecordingRunner.new(...)`` / ``.replying(...)`` when the
     default reply doesn't fit."""
     return RecordingRunner.replying(Reply.ok(""))
+
+
+@pytest.fixture
+def dry_run_runner() -> DryRunRunner:
+    """A fresh :class:`~processkit.testing.DryRunRunner` — renders each command to
+    text instead of running it, the seam behind a tool's own ``--dry-run``/
+    ``--echo`` mode. No real process is ever spawned."""
+    return DryRunRunner()
 
 
 def _is_record_mode(config: pytest.Config) -> bool:

@@ -71,6 +71,28 @@ jobs:
       # disjoint-base candidates a future mypy could start flagging.
       - run: uv run python -m mypy.stubtest processkit --ignore-disjoint-bases --allowlist stubtest-allowlist.txt
 
+  pyright:
+    name: pyright
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # A separate job (not an extra step in `typecheck` above): pyright and
+      # mypy disagree often enough (overloads/Literal/protocols/Awaitable
+      # patterns) that a pyright failure must never be masked by, or
+      # muddled with, the mypy/stubtest signal in one job's log.
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+      # Checks the public typing surface — see `[tool.pyright]` in
+      # pyproject.toml for the exact `include` scope and the `basic` vs
+      # `strict` rationale.
+      - run: uv run pyright
+
   rust-lint:
     name: rust-lint
     runs-on: ubuntu-latest

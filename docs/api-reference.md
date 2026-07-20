@@ -1946,61 +1946,61 @@ either per-call `Args` (which it combines with its bound program) or a
 #### `output`
 
 ```text
-def output(command: Command) -> ProcessResult
+def output(command: Command, /) -> ProcessResult
 ```
 
 #### `output_bytes`
 
 ```text
-def output_bytes(command: Command) -> BytesResult
+def output_bytes(command: Command, /) -> BytesResult
 ```
 
 #### `run`
 
 ```text
-def run(command: Command) -> str
+def run(command: Command, /) -> str
 ```
 
 #### `exit_code`
 
 ```text
-def exit_code(command: Command) -> int
+def exit_code(command: Command, /) -> int
 ```
 
 #### `probe`
 
 ```text
-def probe(command: Command) -> bool
+def probe(command: Command, /) -> bool
 ```
 
 #### `aoutput`
 
 ```text
-def aoutput(command: Command) -> Awaitable[ProcessResult]
+def aoutput(command: Command, /) -> Awaitable[ProcessResult]
 ```
 
 #### `aoutput_bytes`
 
 ```text
-def aoutput_bytes(command: Command) -> Awaitable[BytesResult]
+def aoutput_bytes(command: Command, /) -> Awaitable[BytesResult]
 ```
 
 #### `arun`
 
 ```text
-def arun(command: Command) -> Awaitable[str]
+def arun(command: Command, /) -> Awaitable[str]
 ```
 
 #### `aexit_code`
 
 ```text
-def aexit_code(command: Command) -> Awaitable[int]
+def aexit_code(command: Command, /) -> Awaitable[int]
 ```
 
 #### `aprobe`
 
 ```text
-def aprobe(command: Command) -> Awaitable[bool]
+def aprobe(command: Command, /) -> Awaitable[bool]
 ```
 
 ### `StreamingRunner`
@@ -2012,24 +2012,24 @@ class StreamingRunner
 `ProcessRunner` plus `start`/`astart` — the full runner verb surface,
 for code that also needs a live `RunningProcess` handle to stream.
 
-`Runner`, `ScriptedRunner`, `RecordReplayRunner`, and `RecordingRunner` all
-satisfy it. A hand-rolled double can implement the capture/check verbs
-easily, but `start`/`astart` must return a `RunningProcess`, which has no
-public constructor — and the built-in runners are `@final`, so a
-fully-conforming custom runner in practice means *wrapping* one
-(delegating `start`/`astart` to it; use `ScriptedRunner` for streaming
-doubles).
+`Runner`, `ScriptedRunner`, `RecordReplayRunner`, `RecordingRunner`, and
+`DryRunRunner` all satisfy it. A hand-rolled double can implement the
+capture/check verbs easily, but `start`/`astart` must return a
+`RunningProcess`, which has no public constructor — and the built-in
+runners are `@final`, so a fully-conforming custom runner in practice means
+*wrapping* one (delegating `start`/`astart` to it; use `ScriptedRunner`
+for streaming doubles).
 
 #### `start`
 
 ```text
-def start(command: Command) -> RunningProcess
+def start(command: Command, /) -> RunningProcess
 ```
 
 #### `astart`
 
 ```text
-def astart(command: Command) -> Awaitable[RunningProcess]
+def astart(command: Command, /) -> Awaitable[RunningProcess]
 ```
 
 ### `Runner`

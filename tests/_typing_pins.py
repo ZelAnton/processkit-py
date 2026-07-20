@@ -237,8 +237,18 @@ if TYPE_CHECKING:
         assert_type(client.exit_code(["x"]), int)
 
     def _cli_client_is_a_process_runner(client: CliClient) -> None:
+        # The annotated assignment itself is the pin: if `CliClient` didn't
+        # structurally satisfy `ProcessRunner`, this line would fail under
+        # both type checkers. Deliberately no trailing `assert_type(runner,
+        # ProcessRunner)` here — mypy keeps `runner`'s type as the declared
+        # `ProcessRunner`, but pyright narrows the *narrowed* type of an
+        # annotated variable to the assigned expression's type (`CliClient`,
+        # a subtype) on assignment, so `assert_type` would report a mismatch
+        # under pyright even though the protocol conformance it's meant to
+        # check is genuinely satisfied — a mypy/pyright divergence over
+        # variable narrowing, not a real typing bug.
         runner: ProcessRunner = client
-        assert_type(runner, ProcessRunner)
+        del runner
 
     def _supervisor_return_type(sup: Supervisor) -> None:
         assert_type(sup.run(), SupervisionOutcome)

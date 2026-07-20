@@ -80,3 +80,10 @@ $RECYCLE.BIN/
 src/processkit/_processkit*.pyd
 src/processkit/_processkit*.so
 src/processkit/_processkit*.pdb
+
+## -------
+## mutmut (mutation testing, .github/workflows/nightly-hardening.yml)
+## -------
+# The sandboxed source-tree copy + all per-mutant results/stats mutmut writes
+# (mutants/mutmut-stats.json, mutants/mutmut-cicd-stats.json, per-file .meta).
+/mutants/

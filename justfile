@@ -62,6 +62,7 @@ api-ref-check:
 
 # Run the benchmark suite (benchmarks/, pytest-benchmark; separate from `just test`).
 bench:
+    uv sync --group bench
     uv run pytest benchmarks/ --benchmark-only -p no:xdist -o addopts=""
 
 # Run the test suite in the Linux Docker container (covers cgroup/process-group teardown, async cancellation, and Ctrl+C paths skipped on Windows).

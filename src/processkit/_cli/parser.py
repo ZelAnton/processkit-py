@@ -7,6 +7,18 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+#: Sentinel `const=` for ``--profile``'s optional `FILE` argument (`nargs="?"`):
+#: distinguishes "flag absent" (`args.profile is None`, the default) from
+#: "flag given with no value" (`args.profile is PROFILE_STDERR_MARKER`, print
+#: to stderr) from "flag given with a value" (`args.profile` is that path
+#: string). A single ``--profile [FILE]`` flag was chosen over a `--profile` +
+#: `--profile-out FILE` pair: it is one flag to document/complete instead of
+#: two that must be used together, mirrors the "optional value" idiom
+#: `nargs="?"` already gives argparse for free, and there is no scenario where
+#: a caller wants "collect a profile" and "where to put it" to vary
+#: independently of each other.
+PROFILE_STDERR_MARKER = object()
+
 
 def _positive_int(value: str) -> int:
     parsed = int(value)
@@ -124,6 +136,22 @@ def _build_parser() -> tuple[
         default=None,
         metavar="DIR",
         help="Run the child with DIR as its working directory (Command.cwd(...)).",
+    )
+    run_parser.add_argument(
+        "--profile",
+        dest="profile",
+        nargs="?",
+        const=PROFILE_STDERR_MARKER,
+        default=None,
+        metavar="FILE",
+        help=(
+            "After the child exits, emit a machine-readable JSON resource profile "
+            "(RunningProcess.profile(): duration_seconds/cpu_time_seconds/"
+            "peak_memory_bytes/avg_cpu_cores/samples, plus code/signal/timed_out) "
+            "— to stderr if FILE is omitted, or written to FILE otherwise. Never "
+            "interleaved with the child's own inherited stdio. Fields needing a "
+            "Windows Job Object or Linux cgroup-v2 are null where unavailable."
+        ),
     )
     supervise_parser = subparsers.add_parser(
         "supervise",

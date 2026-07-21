@@ -6,6 +6,8 @@ with inherited stdio, implementing the exit-code contract documented in
 from __future__ import annotations
 
 import argparse
+import json
+import pathlib
 import signal
 import sys
 
@@ -16,6 +18,7 @@ from processkit import (
     ProcessGroup,
     ProcessNotFound,
     ResourceLimit,
+    RunProfile,
     Unsupported,
 )
 from processkit._cli.exit_codes import (
@@ -25,10 +28,57 @@ from processkit._cli.exit_codes import (
     EXIT_SIGNAL_BASE,
     EXIT_TIMEOUT,
 )
+from processkit._cli.parser import PROFILE_STDERR_MARKER
+
+#: Sampling period for ``--profile``'s `RunningProcess.profile()` call. Not
+#: exposed as its own flag (see `PROFILE_STDERR_MARKER`'s docstring in
+#: `_cli/parser.py` for why `--profile` stays a single flag): fine enough
+#: granularity for the short-lived CI-step commands this wrapper targets,
+#: without flooding a long-running one with samples.
+_PROFILE_SAMPLE_INTERVAL_SECONDS = 0.1
 
 
 def _fail(message: str) -> None:
     print(f"processkit: {message}", file=sys.stderr)
+
+
+def _profile_payload(profile: RunProfile) -> dict[str, object]:
+    """The JSON-serializable shape emitted by ``--profile``: `RunProfile`'s own
+    resource-usage fields, plus the run's outcome (`code`/`signal`/
+    `timed_out`) so a caller does not need a second source for that. Fields
+    that need a Windows Job Object / Linux cgroup-v2 the environment doesn't
+    have serialize as JSON `null` (`RunProfile` already reports them as
+    `None` in that case) rather than the command failing."""
+    return {
+        "duration_seconds": profile.duration_seconds,
+        "cpu_time_seconds": profile.cpu_time_seconds,
+        "peak_memory_bytes": profile.peak_memory_bytes,
+        "avg_cpu_cores": profile.avg_cpu_cores,
+        "samples": profile.samples,
+        "code": profile.code,
+        "signal": profile.signal,
+        "timed_out": profile.timed_out,
+    }
+
+
+def _emit_profile(target: object, profile: RunProfile) -> int | None:
+    """Emit `profile` as one line of JSON to stderr (``target is
+    PROFILE_STDERR_MARKER``) or write it to the path `target` names. Called
+    only after the child has already exited (`proc.profile(...)` blocks until
+    then, like `proc.outcome()`), so this can never interleave with the
+    child's own inherited stdio. Returns an exit code to abort with if
+    writing to a file fails (never a raw traceback), `None` on success."""
+    text = json.dumps(_profile_payload(profile))
+    if target is PROFILE_STDERR_MARKER:
+        print(text, file=sys.stderr)
+        return None
+    assert isinstance(target, str)  # the only other value argparse can produce here
+    try:
+        pathlib.Path(target).write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:
+        _fail(f"could not write --profile output to {target!r}: {exc}")
+        return EXIT_INTERNAL_ERROR
+    return None
 
 
 def _parse_env_flags(
@@ -99,6 +149,7 @@ def _run(
             f"({exc}); running contained, but uncapped."
         )
 
+    profile_requested = args.profile is not None
     try:
         with group:
             try:
@@ -112,13 +163,29 @@ def _run(
                     return EXIT_NOT_EXECUTABLE
                 _fail(f"could not start {program!r}: {exc}")
                 return EXIT_INTERNAL_ERROR
-            outcome = proc.outcome()
+            if profile_requested:
+                # profile() blocks until the child exits, exactly like
+                # outcome() — it is a superset of it (RunProfile.outcome).
+                profile = proc.profile(_PROFILE_SAMPLE_INTERVAL_SECONDS)
+                outcome = profile.outcome
+            else:
+                profile = None
+                outcome = proc.outcome()
     except KeyboardInterrupt:
         _fail("interrupted")
         return EXIT_SIGNAL_BASE + signal.SIGINT
     except ProcessError as exc:  # defensive: no known path raises here, but never a traceback
         _fail(f"{program!r} failed: {exc}")
         return EXIT_INTERNAL_ERROR
+
+    if profile is not None:
+        # Emitted once the child has fully exited (never interleaved with its
+        # already-inherited, already-flushed stdio) and regardless of how the
+        # run ended (normal exit, timeout, signal) — the caller gets the
+        # profile whichever exit code follows below.
+        profile_error_code = _emit_profile(args.profile, profile)
+        if profile_error_code is not None:
+            return profile_error_code
 
     if outcome.timed_out:
         _fail(f"{program!r} timed out after {args.timeout}s")

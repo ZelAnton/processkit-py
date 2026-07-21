@@ -14,6 +14,7 @@ anything (see [below](#doctor-preflight-diagnose-the-environment)).
 
 - [Basic usage](#basic-usage)
 - [Flags](#flags)
+- [`--profile`: machine-readable resource usage](#--profile-machine-readable-resource-usage)
 - [Exit codes](#exit-codes)
 - [supervise](#supervise)
 - [Resource limits: hard cap or best effort?](#resource-limits-hard-cap-or-best-effort)
@@ -61,12 +62,59 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--inherit-env NAME` | `Command.inherit_env([...])` | Allow-list a parent variable through (implies `--env-clear`). Repeatable. |
 | `--env KEY=VALUE` | `Command.env(key, value)` | Set/override a child environment variable. Repeatable. A value without `=` is a usage error. |
 | `--cwd DIR` | `Command.cwd(dir)` | Run the child with `DIR` as its working directory. |
+| `--profile [FILE]` | `RunningProcess.profile(...)` | After the child exits, emit a JSON resource profile — to stderr if `FILE` is omitted, or written to `FILE` otherwise. See [below](#--profile-machine-readable-resource-usage). |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
 `docs/commands.md` for what each underlying builder method does in full —
 including how the environment builders (`env_clear` / `inherit_env` / `env`)
 compose regardless of call order.
+
+### `--profile`: machine-readable resource usage
+
+Without `--profile`, `run` only ever reports an exit code — the resource side
+of the run (wall time, CPU time, peak memory) is invisible from the CLI, even
+though the binding already tracks it end-to-end (`RunningProcess.profile()` /
+`RunProfile`, see [Streaming & interactive
+I/O](streaming.md#live-introspection-and-per-run-telemetry)). `--profile`
+exposes exactly that, for a CI step that wants a machine-readable resource
+accounting of a containerized run without writing any Python:
+
+```bash
+# Print the profile to stderr once the child exits.
+python -m processkit run --profile -- pytest -x
+
+# Or write it to a file instead.
+python -m processkit run --profile /tmp/run-profile.json -- pytest -x
+```
+
+Either way, the child's own stdin/stdout/stderr are still inherited straight
+through exactly as without the flag — the profile is only ever emitted
+**after** the child has fully exited (the same point `outcome()` itself
+returns at), so it never interleaves with the child's own output. It is one
+line of JSON with these fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `duration_seconds` | `float` | Wall-clock time the run took. |
+| `cpu_time_seconds` | `float \| null` | User + kernel CPU time consumed by the whole run. |
+| `peak_memory_bytes` | `int \| null` | Peak memory observed during the run. |
+| `avg_cpu_cores` | `float \| null` | `cpu_time_seconds / duration_seconds` — e.g. `1.7` means ~1.7 cores kept busy on average. |
+| `samples` | `int` | How many resource samples were taken while the child ran. |
+| `code` | `int \| null` | Same meaning as the process's own exit code (`null` if the run ended some other way). |
+| `signal` | `int \| null` | Set if the child was killed by a signal (POSIX only). |
+| `timed_out` | `bool` | Whether `--timeout` expired. |
+
+The `cpu_time_seconds` / `peak_memory_bytes` / `avg_cpu_cores` fields need the
+same kernel-level accounting `ProcessGroup`'s own resource limits do (a
+Windows Job Object or a Linux cgroup-v2 root — see [Resource limits: hard cap
+or best effort?](#resource-limits-hard-cap-or-best-effort) above); where the
+environment doesn't grant that, they serialize as JSON `null` rather than
+failing the run — `duration_seconds`/`samples`/`code`/`signal`/`timed_out` are
+always available. `--profile`'s own exit-code contract is otherwise unchanged
+from the table above — it never introduces a new exit code, and a failure
+writing the profile to `FILE` (e.g. an unwritable path) surfaces as the
+existing internal-failure code `125`, with a one-line message on stderr.
 
 ## Exit codes
 

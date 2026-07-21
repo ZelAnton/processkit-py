@@ -11,6 +11,7 @@ trip does).
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -59,6 +60,7 @@ def test_run_help_does_not_raise() -> None:
     assert result.returncode == 0
     assert "usage" in result.stdout.lower()
     assert "--timeout" in result.stdout
+    assert "--profile" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 
@@ -248,6 +250,146 @@ def test_cwd_flag_changes_the_child_working_directory(tmp_path: pathlib.Path) ->
     assert result.returncode == 0
     assert os.path.realpath(result.stdout.strip()) == os.path.realpath(str(tmp_path))
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+# --- --profile ------------------------------------------------------------
+
+_PROFILE_JSON_KEYS = {
+    "duration_seconds",
+    "cpu_time_seconds",
+    "peak_memory_bytes",
+    "avg_cpu_cores",
+    "samples",
+    "code",
+    "signal",
+    "timed_out",
+}
+
+
+def test_without_profile_flag_behavior_is_unchanged() -> None:
+    # Regression guard: the flag is purely additive — omitting it must leave
+    # stdout/stderr and the exit code exactly as before this feature existed.
+    result = _run_cli("run", "--", PY, "-c", "print('plain')")
+    assert result.returncode == 0
+    assert result.stdout.strip() == "plain"
+    assert result.stderr == ""
+
+
+def test_profile_flag_emits_json_profile_to_stderr() -> None:
+    result = _run_cli("run", "--profile", "--", PY, "-c", "print('child output')")
+    assert result.returncode == 0
+    assert result.stdout.strip() == "child output"
+    assert "Traceback (most recent call last)" not in result.stderr
+    profile = json.loads(result.stderr.strip())
+    assert set(profile) == _PROFILE_JSON_KEYS
+    assert profile["code"] == 0
+    assert profile["signal"] is None
+    assert profile["timed_out"] is False
+    assert profile["duration_seconds"] >= 0.0
+    assert profile["samples"] >= 1
+    assert profile["cpu_time_seconds"] is None or profile["cpu_time_seconds"] >= 0.0
+    assert profile["peak_memory_bytes"] is None or profile["peak_memory_bytes"] >= 0
+    assert profile["avg_cpu_cores"] is None or profile["avg_cpu_cores"] >= 0.0
+
+
+def test_profile_flag_writes_json_profile_to_a_file(tmp_path: pathlib.Path) -> None:
+    profile_path = tmp_path / "profile.json"
+    result = _run_cli(
+        "run", "--profile", str(profile_path), "--", PY, "-c", "print('hi from child')"
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "hi from child"
+    # Written to the file, not to stderr -- the two destinations are mutually
+    # exclusive.
+    assert result.stderr == ""
+    assert "Traceback (most recent call last)" not in result.stderr
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert set(profile) == _PROFILE_JSON_KEYS
+    assert profile["code"] == 0
+    assert profile["timed_out"] is False
+
+
+def test_profile_output_is_never_interleaved_with_child_stdio() -> None:
+    # The profile is only ever emitted after proc.profile(...) returns, which
+    # blocks until the child has fully exited (the same as outcome()) -- so
+    # its one JSON line must trail the child's own stderr output, never split
+    # across/inside it.
+    result = _run_cli(
+        "run",
+        "--profile",
+        "--",
+        PY,
+        "-c",
+        "import sys; print('child-stdout'); print('child-stderr', file=sys.stderr)",
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "child-stdout"
+    stderr_lines = result.stderr.strip().splitlines()
+    assert stderr_lines[0] == "child-stderr"
+    assert len(stderr_lines) == 2
+    profile = json.loads(stderr_lines[-1])
+    assert profile["code"] == 0
+
+
+def test_profile_flag_reports_a_nonzero_child_exit_code() -> None:
+    result = _run_cli("run", "--profile", "--", PY, "-c", "import sys; sys.exit(7)")
+    assert result.returncode == 7
+    profile = json.loads(result.stderr.strip())
+    assert profile["code"] == 7
+    assert profile["signal"] is None
+    assert profile["timed_out"] is False
+
+
+def test_profile_flag_degrades_to_null_fields_when_unavailable() -> None:
+    # Simulates the without-Job-Object/cgroup-v2 case: `RunningProcess.profile()`
+    # itself already reports the unavailable fields as `None` rather than
+    # failing -- this must survive straight through to JSON `null`, not a
+    # traceback or a dropped key.
+    script = (
+        "import sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.run as run_mod\n"
+        "class _FakeOutcome:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _FakeProfile:\n"
+        "    duration_seconds = 0.01\n"
+        "    cpu_time_seconds = None\n"
+        "    peak_memory_bytes = None\n"
+        "    avg_cpu_cores = None\n"
+        "    samples = 0\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "    outcome = _FakeOutcome()\n"
+        "class _FakeProc:\n"
+        "    def profile(self, every_seconds):\n"
+        "        return _FakeProfile()\n"
+        "class _FakeGroup:\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *a): return False\n"
+        "    def start(self, command): return _FakeProc()\n"
+        "run_mod.ProcessGroup = _FakeGroup\n"
+        "sys.exit(cli.main(['run', '--profile', '--', 'irrelevant']))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "Traceback (most recent call last)" not in result.stderr
+    profile = json.loads(result.stderr.strip())
+    assert set(profile) == _PROFILE_JSON_KEYS
+    assert profile["cpu_time_seconds"] is None
+    assert profile["peak_memory_bytes"] is None
+    assert profile["avg_cpu_cores"] is None
+    assert profile["samples"] == 0
+    assert profile["duration_seconds"] == 0.01
 
 
 # --- doctor -------------------------------------------------------------

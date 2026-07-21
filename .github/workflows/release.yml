@@ -108,9 +108,11 @@ jobs:
             echo "::error::Computed version '$NEW' is not a valid MAJOR.MINOR.PATCH semver."
             exit 1
           fi
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "version=$NEW" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
+          {
+            echo "current=$CURRENT"
+            echo "version=$NEW"
+            echo "tag=v$NEW"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Verify tag does not exist
         run: |

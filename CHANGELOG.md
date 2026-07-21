@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add an actionlint CI gate for semantic GitHub Actions and shell-script checks
+- Add the `supervise` CLI subcommand with restart-policy and backoff flags.
 - Add `wait_for_http(host, port, path="/", *, timeout, interval=0.05,
   expected_status=None)`, a readiness helper that polls an HTTP endpoint (a
   hand-rolled GET over asyncio streams, no new dependency) and succeeds only on

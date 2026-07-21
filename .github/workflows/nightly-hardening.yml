@@ -172,6 +172,8 @@ jobs:
         run: |
           {
             echo '## Mutation testing (mutmut)'
+            # Literal Markdown backticks inside single quotes, not command substitution.
+            # shellcheck disable=SC2016
             echo 'Scope: `src/processkit/_aio.py`, `pytest_plugin.py`, `__main__.py`, `scripts/release/*.py` -- see `[tool.mutmut]` in pyproject.toml. Killed mutants are omitted; only surviving/no-tests/timeout/etc. are listed below (empty output means every mutant was killed).'
             echo '```'
             uv run mutmut results

@@ -31,6 +31,30 @@ jobs:
         # setup-python step is needed.
         run: uvx 'yamllint>=1,<2' .
 
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSL --fail -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --status
+          tar xzf "$archive" actionlint
+          install -m 0755 actionlint "$RUNNER_TEMP/actionlint"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Lint GitHub Actions workflows
+        # shellcheck is preinstalled on GitHub's Ubuntu runners; actionlint
+        # detects it on PATH and lints every Bash `run:` block as well.
+        run: actionlint
+
   lint:
     name: ruff
     runs-on: ubuntu-latest
@@ -189,6 +213,8 @@ jobs:
         run: |
           {
             echo '## Coverage (Python only)'
+            # Literal Markdown backticks inside single quotes, not command substitution.
+            # shellcheck disable=SC2016
             echo 'The compiled `_processkit` extension is not measured here -- see its own Rust test suite.'
             echo '```'
             uv run coverage report

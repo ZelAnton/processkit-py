@@ -63,6 +63,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--env KEY=VALUE` | `Command.env(key, value)` | Set/override a child environment variable. Repeatable. A value without `=` is a usage error. |
 | `--cwd DIR` | `Command.cwd(dir)` | Run the child with `DIR` as its working directory. |
 | `--profile [FILE]` | `RunningProcess.profile(...)` | After the child exits, emit a JSON resource profile — to stderr if `FILE` is omitted, or written to `FILE` otherwise. See [below](#--profile-machine-readable-resource-usage). |
+| `--create-no-window` | `Command.create_no_window()` | Do not create a console window for the child. No-op outside Windows (same as the underlying binding method). |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and

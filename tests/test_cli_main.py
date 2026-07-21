@@ -61,6 +61,7 @@ def test_run_help_does_not_raise() -> None:
     assert "usage" in result.stdout.lower()
     assert "--timeout" in result.stdout
     assert "--profile" in result.stdout
+    assert "--create-no-window" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 
@@ -249,6 +250,72 @@ def test_cwd_flag_changes_the_child_working_directory(tmp_path: pathlib.Path) ->
     )
     assert result.returncode == 0
     assert os.path.realpath(result.stdout.strip()) == os.path.realpath(str(tmp_path))
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+# --- --create-no-window ----------------------------------------------------
+
+
+def _run_with_command_spy(*run_args: str) -> subprocess.CompletedProcess[str]:
+    """Run `main(["run", *run_args, "--", "irrelevant"])` in-process with
+    `processkit._cli.run.Command` monkeypatched to a spy that records whether
+    `create_no_window()` was called on the built command, then prints that
+    flag before exiting with the real `main()` return code — the same
+    fake-`ProcessGroup` technique
+    `test_fallback_process_group_failure_is_reported_not_raised` already uses
+    for `run`, extended with a `Command` spy since the built command itself
+    (not just `ProcessGroup`) is what `--create-no-window` touches."""
+    script = (
+        "import sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.run as run_mod\n"
+        "class _SpyCommand:\n"
+        "    create_no_window_called = False\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): return self\n"
+        "    def stdout(self, *a): return self\n"
+        "    def stderr(self, *a): return self\n"
+        "    def create_no_window(self):\n"
+        "        _SpyCommand.create_no_window_called = True\n"
+        "        return self\n"
+        "class _FakeOutcome:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _FakeProc:\n"
+        "    def outcome(self): return _FakeOutcome()\n"
+        "class _FakeGroup:\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *a): return False\n"
+        "    def start(self, command): return _FakeProc()\n"
+        "run_mod.Command = _SpyCommand\n"
+        "run_mod.ProcessGroup = _FakeGroup\n"
+        f"code = cli.main(['run', {', '.join(repr(a) for a in run_args)}"
+        f"{', ' if run_args else ''}'--', 'irrelevant'])\n"
+        "print(_SpyCommand.create_no_window_called)\n"
+        "sys.exit(code)\n"
+    )
+    return subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+
+
+def test_create_no_window_flag_applies_create_no_window() -> None:
+    result = _run_with_command_spy("--create-no-window")
+    assert result.returncode == 0
+    assert result.stdout.strip() == "True"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_without_create_no_window_flag_create_no_window_is_not_called() -> None:
+    result = _run_with_command_spy()
+    assert result.returncode == 0
+    assert result.stdout.strip() == "False"
     assert "Traceback (most recent call last)" not in result.stderr
 
 

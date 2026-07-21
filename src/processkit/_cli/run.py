@@ -106,6 +106,8 @@ def _run(
 
     program, *rest = child_argv
     command = Command(program, rest).inherit_stdin().stdout("inherit").stderr("inherit")
+    if args.create_no_window:
+        command = command.create_no_window()
     # Environment builders compose in a fixed order at spawn regardless of
     # call order (docs/commands.md#environment-and-sandboxing), but this is
     # still the natural reading order: clear/allow-list the base environment

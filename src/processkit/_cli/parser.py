@@ -153,6 +153,15 @@ def _build_parser() -> tuple[
             "Windows Job Object or Linux cgroup-v2 are null where unavailable."
         ),
     )
+    run_parser.add_argument(
+        "--create-no-window",
+        dest="create_no_window",
+        action="store_true",
+        help=(
+            "Do not create a console window for the child (Command.create_no_window()). "
+            "No-op outside Windows, same as the underlying binding method."
+        ),
+    )
     supervise_parser = subparsers.add_parser(
         "supervise",
         help="Keep a command alive with restart policy and backoff",

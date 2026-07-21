@@ -18,7 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connections while still warming up
 
 ### Changed
--
+- Bump the processkit dependency to 2.3.1 (lockfile pinned via `cargo update -p
+  processkit --precise 2.3.1`; the Cargo.toml requirement stays at the broad
+  `2.3` range). 2.3.1 also adds new upstream public surface (Command
+  stdout/stderr file-redirect sinks, `windows_graceful_ctrl_break`,
+  `ProcessGroup::members_info`/`MemberInfo`, `Supervisor` liveness health
+  checks) that this binding does not adopt yet — pending coordination on a
+  follow-up task before touching `src/*.rs`, `_processkit.pyi`,
+  `tests/test_api_surface.py`, or `docs/api-reference.md`.
 
 ### Fixed
 -

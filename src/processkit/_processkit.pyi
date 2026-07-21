@@ -275,6 +275,50 @@ class Command:
         bridge, never closed for you), coexisting with capture, inert unless
         stderr is piped through the line pump."""
 
+    def stdout_file(self, path: StrPath, *, append: bool = ...) -> Command:
+        """Redirect the child's stdout **straight to a file**, opened at spawn
+        time — the child writes to the file's own descriptor, with no
+        parent-side pump, tee, or capture buffer. The direct-redirect cousin of
+        ``stdout_tee`` (which instead *also* captures and mirrors each line): a
+        ``>`` / ``>>`` shell redirect, minus the shell.
+
+        The binding folds the crate's three spellings (``stdout_file`` /
+        ``stdout_file_append`` / ``stdout_file_truncate``) into one ``append=``
+        kwarg, mirroring the sibling ``stdout_tee(sink, *, append=False)`` rather
+        than a 1:1 copy of the core's convenience aliases. ``append=False`` (the
+        default) **creates or truncates** the file on every spawn; ``append=True``
+        **creates or appends** — the mode for a shared log across ``Supervisor``
+        incarnations / ``retry()`` attempts (each re-run appends to the one file
+        with no separator).
+
+        **Opened at spawn, not now (unlike ``stdout_tee``).** Only the path is
+        stored; the file is opened when the command launches, so a not-yet-
+        existing path is not a build-time error and each re-run / retry reopens
+        it. An unopenable path (a missing parent directory, a permission denial)
+        surfaces from the run verb at launch, not from this call.
+
+        **No capture — use a non-capturing verb.** With stdout on the file there
+        is no pipe to read, so the capture/streaming verbs (``output()`` /
+        ``run()`` / ``output_bytes()`` / their ``a``-twins, and ``start()`` +
+        ``stdout_lines()`` / ``output_events()``) raise ``ProcessError`` ("stdout
+        is not piped … so the capture verbs have nothing to read") instead of
+        returning empty output — drive it with ``exit_code()`` / ``probe()``. A
+        later ``stdout("pipe"/"inherit"/"null")`` **clears** the redirect and
+        restores the ordinary stdio mode."""
+
+    def stderr_file(self, path: StrPath, *, append: bool = ...) -> Command:
+        """Redirect the child's stderr **straight to a file**, opened at spawn
+        time. Same contract as ``stdout_file`` — a child-owned descriptor with no
+        parent-side pump/tee/buffer, the path opened lazily at launch (a missing
+        path is not a build-time error), ``append=False`` truncating on every
+        spawn while ``append=True`` appends (the shared-``Supervisor``-log mode),
+        and a later ``stderr("pipe"/"inherit"/"null")`` clearing the redirect.
+
+        Unlike ``stdout_file``, this does **not** disable the capture verbs: only
+        a non-piped *stdout* gates them, so ``output()`` / ``run()`` keep working
+        and return the child's stdout while stderr is diverted to the file and
+        ``result.stderr`` comes back empty."""
+
     def on_stdout_line(self, callback: Callable[[str], None]) -> Command:
         """Call ``callback`` with every decoded stdout line as it is produced —
         the way to give the **synchronous** surface (``.output()``/``.run()``)

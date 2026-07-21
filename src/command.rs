@@ -565,6 +565,77 @@ impl PyCommand {
         Ok(Self { inner })
     }
 
+    /// Redirect the child's stdout **straight to a file**, opened at spawn time —
+    /// the child writes to the file's own descriptor, with no parent-side pump,
+    /// tee, or capture buffer in between. This is the direct-redirect cousin of
+    /// `stdout_tee()`: where the tee *also* captures and mirrors every decoded
+    /// line, this simply hands the child the file and steps out of the way (a `>`
+    /// / `>>` shell redirect, minus the shell).
+    ///
+    /// **API shape — one `append=` kwarg, not the crate's three spellings.** The
+    /// core exposes `stdout_file` / `stdout_file_append` / `stdout_file_truncate`;
+    /// this binding folds them into a single `stdout_file(path, *, append=False)`,
+    /// mirroring the sibling `stdout_tee(sink, *, append=False)` it already ships.
+    /// Keeping the two file sinks consistent with the tee pair — the binding's own
+    /// established convention — beats a 1:1 mirror of the crate's truncate/append
+    /// convenience aliases. `append=False` (the default) **creates or truncates**
+    /// the file on every spawn; `append=True` **creates or appends** — the mode
+    /// for a shared log across `Supervisor` incarnations / `retry()` attempts,
+    /// which write to the one file with no separator.
+    ///
+    /// **Opened at spawn, not now (unlike `stdout_tee`).** This only stores the
+    /// path — the file is opened when the command actually launches, so a path
+    /// that doesn't exist yet is not an error at build time, and every re-run /
+    /// retry reopens it (truncating or appending per the mode). An unopenable path
+    /// (a missing parent directory, a permission denial) surfaces from the run
+    /// verb when it launches, not from this builder call.
+    ///
+    /// **No capture — drive it with a non-capturing verb.** With stdout going to
+    /// the file there is no pipe for the parent to read, so the capture/streaming
+    /// verbs (`output()` / `run()` / `output_bytes()` / their `a`-twins, and
+    /// `start()` + `stdout_lines()` / `output_events()`) raise `ProcessError`
+    /// ("stdout is not piped … so the capture verbs have nothing to read") rather
+    /// than returning silently-empty output — use `exit_code()` / `probe()` (or
+    /// their async twins) instead. A later `stdout("pipe"/"inherit"/"null")`
+    /// **clears** this redirect and restores the ordinary stdio mode (the crate
+    /// documents the reset explicitly), keeping the builder chain composable.
+    #[pyo3(signature = (path, *, append = false))]
+    fn stdout_file(&self, path: PathBuf, append: bool) -> Self {
+        let inner = self.inner.clone();
+        Self {
+            inner: if append {
+                inner.stdout_file_append(path)
+            } else {
+                inner.stdout_file(path)
+            },
+        }
+    }
+
+    /// Redirect the child's stderr **straight to a file**, opened at spawn time.
+    /// Same contract as `stdout_file` — the child owns the descriptor with no
+    /// parent-side pump/tee/buffer, the path is opened lazily at launch (a missing
+    /// path is not a build-time error), `append=False` truncates on every spawn
+    /// while `append=True` appends (the shared-`Supervisor`-log mode), and a later
+    /// `stderr("pipe"/"inherit"/"null")` clears the redirect and restores the
+    /// normal stdio mode.
+    ///
+    /// Unlike `stdout_file`, this does **not** disable the capture verbs: only a
+    /// non-piped *stdout* gates them, so `output()` / `run()` keep working and
+    /// still return the child's stdout — stderr is simply diverted to the file and
+    /// `result.stderr` comes back empty. Redirect stdout with `stdout_file` when
+    /// you need the capture verbs gated too.
+    #[pyo3(signature = (path, *, append = false))]
+    fn stderr_file(&self, path: PathBuf, append: bool) -> Self {
+        let inner = self.inner.clone();
+        Self {
+            inner: if append {
+                inner.stderr_file_append(path)
+            } else {
+                inner.stderr_file(path)
+            },
+        }
+    }
+
     /// Call `callback` with every decoded stdout line as it is produced — the
     /// one way to give the **synchronous** surface (`.output()`/`.run()`) live
     /// progress observation during an otherwise-blocking call, without giving

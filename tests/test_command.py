@@ -729,6 +729,116 @@ def test_stderr_null_works_with_start_then_wait() -> None:
     assert asyncio.run(scenario()) == 0
 
 
+# --- file-redirect sinks: stdout_file / stderr_file (T-140) ------------------
+#
+# `stdout_file`/`stderr_file` send a stream straight to a file at spawn time, with
+# no parent-side pump/capture. A stdout redirect therefore has no pipe to read, so
+# the capture verbs reject it — these tests drive such a command through the
+# discard path (`start()` + `outcome()`), the same non-capturing path
+# `test_stdout_null_works_with_start_then_wait` uses. A *stderr* redirect leaves
+# stdout piped, so `output()` keeps working there (stderr just lands in the file).
+
+
+def test_stdout_file_writes_child_output_to_the_file(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "out.log"
+    cmd = Command(PY, ["-c", "print('to-file')"]).stdout_file(path)
+    with cmd.start() as proc:
+        outcome = proc.outcome()
+    assert outcome.code == 0
+    # The child wrote directly to the file — no parent capture involved.
+    assert path.read_text(encoding="utf-8").strip() == "to-file"
+
+
+def test_stdout_file_truncate_overwrites_on_each_spawn(tmp_path: pathlib.Path) -> None:
+    # The default (truncate) recreates/truncates the file on every spawn, so a
+    # pre-existing file's content is gone and a re-run of the same built command
+    # does not accumulate.
+    path = tmp_path / "out.log"
+    path.write_text("STALE-PREEXISTING\n", encoding="utf-8")
+    cmd = Command(PY, ["-c", "print('fresh')"]).stdout_file(path)
+    for _ in range(2):
+        with cmd.start() as proc:
+            proc.outcome()
+    text = path.read_text(encoding="utf-8")
+    assert "STALE" not in text  # the pre-existing content was truncated away
+    assert text.strip() == "fresh"  # a second spawn truncated too, not doubled
+
+
+def test_stdout_file_append_preserves_previous_content(tmp_path: pathlib.Path) -> None:
+    # append mode creates-or-appends, never truncating — the shared-log mode for
+    # Supervisor incarnations / retries: a pre-seeded file is kept and successive
+    # spawns of the same command add to it with no separator.
+    path = tmp_path / "shared.log"
+    path.write_text("preamble\n", encoding="utf-8")
+    cmd = Command(PY, ["-c", "print('run')"]).stdout_file(path, append=True)
+    for _ in range(2):  # simulate two incarnations writing to one log
+        with cmd.start() as proc:
+            proc.outcome()
+    assert path.read_text(encoding="utf-8").splitlines() == ["preamble", "run", "run"]
+
+
+def test_stdout_file_rejects_capture_verbs(tmp_path: pathlib.Path) -> None:
+    # A redirected stdout has no pipe, so the one-shot capture verbs raise the
+    # documented "not piped" ProcessError (the same clear failure as stdout("null"))
+    # rather than returning silently-empty output.
+    path = tmp_path / "out.log"
+    with pytest.raises(ProcessError, match="not piped"):
+        Command(PY, ["-c", "print('x')"]).stdout_file(path).output()
+
+
+def test_stdout_pipe_after_file_redirect_restores_capture(tmp_path: pathlib.Path) -> None:
+    # A later stdout(mode) call clears the file redirect and restores the normal
+    # stdio mode — the crate documents this reset, and the builder chain must keep
+    # it. After stdout("pipe") the capture verbs work again and the file is never
+    # touched (the redirect was cleared before spawn).
+    path = tmp_path / "out.log"
+    result = Command(PY, ["-c", "print('captured')"]).stdout_file(path).stdout("pipe").output()
+    assert result.stdout.strip() == "captured"
+    assert not path.exists()
+
+
+def test_stderr_file_writes_child_stderr_to_the_file(tmp_path: pathlib.Path) -> None:
+    # A stderr redirect leaves stdout piped, so output() still works: stdout is
+    # captured as usual while stderr is diverted to the file (result.stderr empty).
+    path = tmp_path / "err.log"
+    code = "import sys; print('on-stdout'); sys.stderr.write('err-to-file\\n')"
+    result = Command(PY, ["-c", code]).stderr_file(path).output()
+    assert result.is_success
+    assert result.stdout.strip() == "on-stdout"
+    assert result.stderr == ""  # stderr went to the file, not the capture buffer
+    assert path.read_text(encoding="utf-8").strip() == "err-to-file"
+
+
+def test_stderr_file_truncate_overwrites_on_each_spawn(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "err.log"
+    path.write_text("STALE\n", encoding="utf-8")
+    code = "import sys; sys.stderr.write('fresh\\n')"
+    Command(PY, ["-c", code]).stderr_file(path).output()
+    text = path.read_text(encoding="utf-8")
+    assert "STALE" not in text
+    assert text.strip() == "fresh"
+
+
+def test_stderr_file_append_preserves_previous_content(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "shared.log"
+    path.write_text("preamble\n", encoding="utf-8")
+    code = "import sys; sys.stderr.write('run\\n')"
+    cmd = Command(PY, ["-c", code]).stderr_file(path, append=True)
+    for _ in range(2):
+        cmd.output()
+    assert path.read_text(encoding="utf-8").splitlines() == ["preamble", "run", "run"]
+
+
+def test_stderr_pipe_after_file_redirect_restores_normal_mode(tmp_path: pathlib.Path) -> None:
+    # Mirror of the stdout reset: stderr(mode) after stderr_file clears the
+    # redirect, so stderr is captured again and the file is never written.
+    path = tmp_path / "err.log"
+    code = "import sys; sys.stderr.write('back-to-pipe\\n')"
+    result = Command(PY, ["-c", code]).stderr_file(path).stderr("pipe").output()
+    assert "back-to-pipe" in result.stderr
+    assert not path.exists()
+
+
 # --- lifetime / redirect / privilege knobs ----------------------------------
 
 

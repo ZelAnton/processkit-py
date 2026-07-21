@@ -349,6 +349,49 @@ This matters: the one-shot capturing verbs (`output`, `output_bytes`, `run`,
 streaming work with a non-piped stdout, because there is nothing to capture. Redirect
 streams only when you intend to stream or to discard.
 
+### Redirecting a stream straight to a file
+
+To send a stream *directly* to a file — the child writes to the file's own
+descriptor, with no parent-side pump or capture in between — use `stdout_file()`
+/ `stderr_file()`. This is the direct-redirect cousin of `stdout_tee()`: the tee
+*also* captures and mirrors every decoded line, while these simply hand the child
+the file (a `>` / `>>` shell redirect, minus the shell). `append=False` (the
+default) creates or **truncates** the file on each spawn; `append=True` creates
+or **appends** — the mode for a shared log across `Supervisor` incarnations or
+`retry()` attempts, which write to one file with no separator.
+
+```python
+from processkit import Command, Supervisor
+
+# Truncate a fresh file on each spawn (the default).
+with Command("build", ["--all"]).stdout_file("build.log").start() as proc:
+    proc.outcome()
+
+# Append across restarts — one shared log for every Supervisor incarnation.
+Supervisor(
+    Command("worker").stdout_file("worker.log", append=True).stderr_file("worker.log", append=True)
+).run()
+```
+
+Unlike `stdout_tee()`, the file is opened **at spawn time**, not when you build
+the command — so a not-yet-existing path is not an error here, and each re-run or
+retry reopens it. An unopenable path (a missing parent directory, a permission
+denial) surfaces from the run verb when the command launches.
+
+Because a file-redirected **stdout** has no pipe for the parent to read, the
+verbs that actually read stdout back — `output()`, `run()`, `output_bytes()`
+(and their `a`-twins), plus `start()` + `stdout_lines()` / `output_events()` —
+**raise** the same "not piped" `ProcessError` as `stdout("null")`. `exit_code()`
+and `probe()` are *not* capture verbs: they discard output entirely and never
+touch the stdout pipe, so they work fine with a file-redirected stdout — they
+(and their async twins `aexit_code()` / `aprobe()`) are the recommended way to
+drive such a command to completion, alongside `start()` + `outcome()` /
+`aoutcome()` (as the example above does). A file-redirected **stderr** leaves
+stdout piped, so `output()` keeps working there; the child's stderr just lands
+in the file and `result.stderr` comes back empty. A later `stdout(...)` /
+`stderr(...)` call **clears** the redirect and restores the normal stdio mode,
+so the builder chain stays composable.
+
 ## Text decoding
 
 Output is decoded line by line, UTF-8 by default; invalid bytes become `U+FFFD`

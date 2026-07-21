@@ -1455,7 +1455,7 @@ def close() -> Awaitable[None]
 
 ## Process groups
 
-Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring.
+Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `MemberInfo` is the enriched per-member snapshot `members_info()` returns; `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring.
 
 ### `ProcessGroup`
 
@@ -1487,6 +1487,18 @@ mechanism: Literal['job_object', 'cgroup_v2', 'process_group', 'unknown']
 ```text
 def members() -> list[int]
 ```
+
+#### `members_info`
+
+```text
+def members_info() -> list[MemberInfo]
+```
+
+An enriched, point-in-time snapshot of the group's members — the same
+set as ``members()``, but each pid carried in a `MemberInfo` alongside
+best-effort ``ppid``/``exe_name``/``start_time``. Synchronous only (the
+crate offers no async twin). See `MemberInfo` for the per-field platform
+matrix and the ``start_time`` opacity/pid-reuse note.
 
 #### `signal`
 
@@ -1564,6 +1576,75 @@ peak_memory_bytes: int | None
 ```text
 total_cpu_time_seconds: float | None
 ```
+
+### `MemberInfo`
+
+```text
+class MemberInfo
+```
+
+An enriched, point-in-time snapshot of one member of a `ProcessGroup`'s
+tree — its pid plus best-effort metadata.
+
+The metadata-carrying companion to a bare pid from `ProcessGroup.members()`.
+*Which* members appear follows the same platform matrix as ``members()`` (the
+whole tree on Windows and the Linux cgroup backend; the tracked group leaders
+on the POSIX process-group fallback). Every field beyond ``pid`` is
+independently ``None`` wherever the platform can't report it — never a
+fabricated value — and a member that exits mid-snapshot is silently omitted,
+not invented.
+
+The raw command line / environment is **deliberately never** carried, on any
+platform: an argv routinely holds secrets, and redaction is the consumer's
+policy to own.
+
+Field availability (``None`` where the platform can't report it): ``ppid``,
+``exe_name``, and ``start_time`` are populated on Windows, Linux, and macOS,
+and are always ``None`` on the BSDs (no wired-up per-process reader).
+
+#### `pid`
+
+```text
+pid: int
+```
+
+The member's process id — always present. Point-in-time, like a pid
+from ``members()``: pair it with ``start_time`` to tell a recycled number
+apart from the original process.
+
+#### `ppid`
+
+```text
+ppid: int | None
+```
+
+The member's parent process id, or ``None`` where unreadable (always
+``None`` on the BSDs).
+
+#### `exe_name`
+
+```text
+exe_name: str | None
+```
+
+The member's short image **base name** — never a full path, and never a
+command line (the crate never exposes argv/env). ``None`` where unreadable
+(always ``None`` on the BSDs).
+
+#### `start_time`
+
+```text
+start_time: int | None
+```
+
+An **opaque per-process identity token**, or ``None`` where unreadable —
+**not** a wall-clock timestamp. Its unit and epoch are platform-specific
+(Windows creation ``FILETIME``, 100ns intervals since 1601; Linux
+``/proc/<pid>/stat`` field 22, clock ticks since boot; macOS microseconds
+since the Unix epoch; always ``None`` on the BSDs), so do not interpret it
+or compare it across platforms. Its sole use is pairing with ``pid``: two
+snapshots whose ``pid`` **and** ``start_time`` both match name the same
+process instance, telling a recycled pid apart from the original.
 
 ### `sample_stats`
 

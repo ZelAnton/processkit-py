@@ -235,6 +235,33 @@ process-group backends (macOS/BSD, Linux without cgroup) it is the tracked
 group *leaders*, one pid per started child; their descendants are contained but
 not enumerated. A tree that is forking races the snapshot.
 
+`members_info()` returns that **same** set of members — the same point-in-time
+snapshot, the same mechanism-dependent matrix above — but carries each pid in a
+`MemberInfo` alongside best-effort metadata (parent pid, image name, start time):
+
+```python
+with ProcessGroup() as group:
+    group.start(Command("worker"))
+    for member in group.members_info():
+        print(member.pid, member.ppid, member.exe_name, member.start_time)
+```
+
+Every field beyond `pid` is `None` wherever the platform can't report it —
+`ppid`/`exe_name`/`start_time` are populated on Windows, Linux, and macOS, and
+are all `None` on the BSDs (no wired-up per-process reader). Values are never
+fabricated: a member that exits mid-snapshot is simply omitted rather than
+reported with invented fields.
+
+`start_time` is **not** a wall-clock timestamp — it is an *opaque per-process
+identity token* whose unit and epoch are platform-specific (a Windows creation
+`FILETIME`, Linux clock ticks since boot, macOS microseconds since the Unix
+epoch). Do not interpret it or compare it across platforms; its sole use is
+pairing with `pid` — two snapshots whose `pid` *and* `start_time` both match name
+the same process instance — to tell a recycled pid apart from the original. And,
+like the crate's `tracing` output, `MemberInfo` deliberately never carries the
+raw command line or environment on any platform: an argv routinely holds
+secrets, and redaction is a policy the consumer must own.
+
 ## Resource limits: the sandbox
 
 The three limit keywords turn the group into a sandbox. They are a property of

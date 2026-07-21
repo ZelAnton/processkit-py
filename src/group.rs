@@ -59,6 +59,70 @@ impl PyProcessGroupStats {
     }
 }
 
+/// An enriched, point-in-time snapshot of one member of a `ProcessGroup`'s tree
+/// — its pid plus best-effort metadata (parent pid, image name, start time).
+///
+/// The metadata-carrying companion to a bare pid from `members()`: *which*
+/// members appear follows the same platform matrix as `members()`, and every
+/// enriching field beyond `pid` is independently `None` wherever the platform
+/// can't report it — never a fabricated value. A member that exits mid-snapshot
+/// is silently omitted (never invented). The raw command line / environment is
+/// deliberately never carried, on any platform. Like `ProcessGroupStats`, a plain
+/// immutable point-in-time record — no lock/lifecycle.
+#[pyclass(name = "MemberInfo", frozen, module = "processkit")]
+pub(crate) struct PyMemberInfo {
+    pid: u32,
+    ppid: Option<u32>,
+    exe_name: Option<String>,
+    start_time: Option<u64>,
+}
+
+#[pymethods]
+impl PyMemberInfo {
+    /// The member's process id — always present. Point-in-time, like a pid from
+    /// `members()`: pair it with `start_time` to tell a recycled number apart
+    /// from the original process.
+    #[getter]
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// The member's parent process id, or `None` where the platform can't report
+    /// one (always `None` on the BSDs).
+    #[getter]
+    fn ppid(&self) -> Option<u32> {
+        self.ppid
+    }
+
+    /// The member's short image (executable) *base name* — never a full path, and
+    /// never a command line (the crate deliberately never exposes argv/env). `None`
+    /// where the platform can't report one (always `None` on the BSDs).
+    #[getter]
+    fn exe_name(&self) -> Option<&str> {
+        self.exe_name.as_deref()
+    }
+
+    /// An **opaque per-process identity token**, or `None` where the platform can't
+    /// report one — **not** a wall-clock timestamp. Its unit and epoch are
+    /// platform-specific (Windows creation `FILETIME`, 100ns intervals since 1601;
+    /// Linux `/proc/<pid>/stat` field 22, clock ticks since boot; macOS microseconds
+    /// since the Unix epoch; always `None` on the BSDs), so do not interpret it or
+    /// compare it across platforms. Its sole use is pairing with `pid`: two snapshots
+    /// whose `pid` **and** `start_time` both match name the same process instance,
+    /// telling a recycled pid apart from the original.
+    #[getter]
+    fn start_time(&self) -> Option<u64> {
+        self.start_time
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MemberInfo(pid={}, ppid={:?}, exe_name={:?}, start_time={:?})",
+            self.pid, self.ppid, self.exe_name, self.start_time,
+        )
+    }
+}
+
 /// Tear the group down gracefully (SIGTERM -> grace -> SIGKILL survivors). Uses
 /// the crate's `shutdown_ref(&self)` (since 1.1.0), which borrows the group rather
 /// than consuming it — so it works even while an `astart` future still holds an
@@ -326,6 +390,24 @@ impl PyProcessGroup {
         self.group()?.members().map_err(map_err)
     }
 
+    /// An enriched, point-in-time snapshot of the group's members — the same set
+    /// as `members()`, but each pid carried in a `MemberInfo` alongside
+    /// best-effort parent pid, image name, and start time. Synchronous only
+    /// (the crate offers no async twin). A member that exits mid-snapshot is
+    /// silently omitted by the crate — the fields are never fabricated.
+    fn members_info(&self) -> PyResult<Vec<PyMemberInfo>> {
+        let infos = self.group()?.members_info().map_err(map_err)?;
+        Ok(infos
+            .into_iter()
+            .map(|info| PyMemberInfo {
+                pid: info.pid(),
+                ppid: info.ppid(),
+                exe_name: info.exe_name().map(str::to_owned),
+                start_time: info.start_time(),
+            })
+            .collect())
+    }
+
     /// Send a signal to every process in the tree. `name` is one of `term`,
     /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2`, or a raw platform signal
     /// number (Unix only) — but a Job Object has no POSIX signals, so on
@@ -399,10 +481,11 @@ impl PyProcessGroup {
     }
 }
 
-/// Register this module's pyclasses (`ProcessGroup`, `ProcessGroupStats`) on
-/// `_processkit`.
+/// Register this module's pyclasses (`ProcessGroup`, `ProcessGroupStats`,
+/// `MemberInfo`) on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessGroup>()?;
     m.add_class::<PyProcessGroupStats>()?;
+    m.add_class::<PyMemberInfo>()?;
     Ok(())
 }

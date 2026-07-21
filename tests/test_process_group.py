@@ -22,6 +22,7 @@ import pytest
 
 from processkit import (
     Command,
+    MemberInfo,
     NonZeroExit,
     ProcessError,
     ProcessGroup,
@@ -444,6 +445,45 @@ def test_group_stats() -> None:
         assert stats.active_process_count >= 1
         assert stats.peak_memory_bytes is None or stats.peak_memory_bytes >= 0
         assert stats.total_cpu_time_seconds is None or stats.total_cpu_time_seconds >= 0.0
+
+
+def test_group_members_info_snapshots_a_live_child() -> None:
+    # members_info() is the enriched companion to members(): the same member set,
+    # but each pid carried in a MemberInfo alongside best-effort ppid/exe_name/
+    # start_time. A started live child must appear in BOTH snapshots, and every
+    # MemberInfo field must be either None or its documented type. The enriching
+    # fields are platform-dependent (all None on the BSDs, and a member can vanish
+    # mid-snapshot), so non-None is never required — only well-typedness is.
+    with ProcessGroup() as group:
+        running = group.start(Command(PY, ["-c", "import time; time.sleep(30)"]))
+        pid = running.pid
+        assert pid is not None
+
+        # The pid may take a moment to register with the container; wait until it
+        # is provably a member before snapshotting (mirrors the members() poll in
+        # test_max_processes_enforcement_rejects_second_spawn).
+        assert wait_until(lambda: pid in group.members(), timeout=15.0), (
+            f"child {pid} never appeared in group.members()"
+        )
+
+        infos = group.members_info()
+        assert isinstance(infos, list)
+        assert all(isinstance(mi, MemberInfo) for mi in infos)
+
+        # (a) same member set as members(): the known live child appears in both.
+        assert pid in {mi.pid for mi in infos}, (
+            f"child {pid} is in members() but missing from members_info()"
+        )
+
+        # (b) every field is well-typed: pid is always an int; each enriching
+        # field is either None or its documented type. start_time is an opaque
+        # identity token (an int where present), never interpreted as a timestamp.
+        for mi in infos:
+            assert isinstance(mi.pid, int)
+            assert mi.ppid is None or isinstance(mi.ppid, int)
+            assert mi.exe_name is None or isinstance(mi.exe_name, str)
+            assert mi.start_time is None or isinstance(mi.start_time, int)
+            assert isinstance(repr(mi), str)
 
 
 # --- sample_stats (live monitoring) ------------------------------------------

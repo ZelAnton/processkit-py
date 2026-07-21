@@ -914,14 +914,36 @@ def test_wait_for_http_chains_last_connection_error() -> None:
     asyncio.run(scenario())
 
 
-def test_wait_for_http_unexpected_status_is_not_ready() -> None:
+def test_wait_for_http_unexpected_status_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A 503 (still warming up) is NOT ready under the default 2xx set: unlike a
     # bare `wait_for_port`, the probe keeps retrying and finally times out,
     # chaining the last unexpected status code as the cause.
+    #
+    # Deterministic construction: same race as
+    # test_wait_for_http_malformed_response_is_not_ready above -- every attempt
+    # but the first hands its per-attempt `asyncio.wait_for` the ENTIRE
+    # remaining budget, which on the last retry before the deadline can be a
+    # thin sliver. Under real CI scheduling delay that last probe can be
+    # cancelled by ITS OWN `wait_for` before the 503 status line is even read,
+    # overwriting the meaningful `_HttpProbeError`/`ProcessError` cause with a
+    # bare `TimeoutError`. Patching `asyncio.wait_for` to simply await the
+    # future (no extra per-attempt deadline of its own) removes exactly that
+    # race without weakening intent: the 503 status is still read and rejected
+    # on every attempt, `wait_for_http` still retries until ITS OWN outer
+    # deadline (tracked via `loop.time()`, untouched here) elapses, and the
+    # final `WaitTimeout` is still chained from a genuine `ProcessError`
+    # recorded by the last completed attempt.
+    async def passthrough_wait_for(fut: asyncio.Future[int], timeout: float) -> int:
+        del timeout
+        return await fut
+
     async def scenario() -> None:
         port = free_port()
         server = await _serve_http(port, 503, reason="Service Unavailable")
         async with server:
+            monkeypatch.setattr(asyncio, "wait_for", passthrough_wait_for)
             with pytest.raises(WaitTimeout) as excinfo:
                 await wait_for_http("127.0.0.1", port, timeout=0.4, interval=0.05)
             cause = excinfo.value.__cause__
@@ -956,9 +978,31 @@ def test_wait_for_http_accepts_a_status_predicate() -> None:
     asyncio.run(scenario())
 
 
-def test_wait_for_http_malformed_response_is_not_ready() -> None:
+def test_wait_for_http_malformed_response_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A server answering with a non-HTTP line is a failed attempt (retried, then
     # timed out), never an uncaught crash inside the helper.
+    #
+    # Deterministic construction: every attempt but the first hands its per-attempt
+    # `asyncio.wait_for` the ENTIRE remaining budget (see wait_for_http's own
+    # comments on `attempt_timeout`), which on the last retry before the deadline
+    # can be a thin sliver. Under real CI scheduling delay that last probe can be
+    # cancelled by ITS OWN `wait_for` before the malformed line is even read,
+    # overwriting the meaningful `_HttpProbeError`/`ProcessError` cause with a bare
+    # `TimeoutError` -- a real race, reproducible locally under load, independent of
+    # how generous `timeout` is (a larger `timeout` does not shrink the final
+    # sliver's odds). Patching `asyncio.wait_for` to simply await the future (no
+    # extra per-attempt deadline of its own) removes exactly that race without
+    # weakening intent: the malformed line is still read and rejected on every
+    # attempt, `wait_for_http` still retries until ITS OWN outer deadline (tracked
+    # via `loop.time()`, untouched here) elapses, and the final `WaitTimeout` is
+    # still chained from a genuine `ProcessError` recorded by the last completed
+    # attempt.
+    async def passthrough_wait_for(fut: asyncio.Future[int], timeout: float) -> int:
+        del timeout
+        return await fut
+
     async def scenario() -> None:
         port = free_port()
 
@@ -971,6 +1015,7 @@ def test_wait_for_http_malformed_response_is_not_ready() -> None:
 
         server = await asyncio.start_server(handle, "127.0.0.1", port)
         async with server:
+            monkeypatch.setattr(asyncio, "wait_for", passthrough_wait_for)
             with pytest.raises(WaitTimeout) as excinfo:
                 await wait_for_http("127.0.0.1", port, timeout=0.4, interval=0.05)
             assert isinstance(excinfo.value.__cause__, ProcessError)

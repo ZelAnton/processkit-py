@@ -203,11 +203,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-report=html
       # Coverage measures Python only -- see the `[tool.coverage.run]` comment in
-      # pyproject.toml. No threshold is enforced (yet): this is the first CI run to
-      # measure coverage at all, so the current baseline number isn't established.
-      # Once a few runs have landed, revisit adding a non-blocking `fail_under` (or
-      # promote it to blocking) as a deliberate follow-up, not a threshold picked
-      # blind today.
+      # pyproject.toml. A blocking threshold (`fail_under`, see
+      # `[tool.coverage.report]` in pyproject.toml) is enforced: `--cov` fails
+      # this step (and the job) if coverage drops below it. The baseline has
+      # been established from several runs' worth of history; the threshold
+      # sits a small margin below the measured percentage so it catches real
+      # regressions without flapping on xdist/measurement noise.
       - name: Publish coverage summary
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
         run: |

@@ -247,6 +247,13 @@ parallel = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+# Current actual coverage (pure-Python scope above) is ~47% as of 2026-07-21
+# (see the `test` job's "Run tests with coverage" step in ci.yml, and
+# CI run history). `fail_under` is set a few points below that measured
+# baseline -- enough margin to absorb xdist/platform measurement noise
+# without flapping, while still catching a real regression (e.g. a big
+# chunk of `_cli/` or `_aio.py` losing its tests outright).
+fail_under = 43
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",

@@ -1,7 +1,8 @@
 """Readiness probes: `wait_until` (predicate polling), `wait_for_port` (TCP
-accept), `wait_for_line` (match a streamed line), and `wait_for_path`
-(filesystem path appears). Includes the probe-socket cleanup wiring that a
-cancelled/refused `wait_for_port` must run.
+accept), `wait_for_http` (an HTTP endpoint answers with an expected status),
+`wait_for_line` (match a streamed line), and `wait_for_path` (filesystem path
+appears). Includes the probe-socket cleanup wiring that a cancelled/refused
+`wait_for_port` / `wait_for_http` must run.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from processkit import (
     ProcessError,
     ProcessGroup,
     WaitTimeout,
+    wait_for_http,
     wait_for_line,
     wait_for_path,
     wait_for_port,
@@ -94,9 +96,9 @@ def test_wait_until_returns_immediately_when_already_true() -> None:
 
 
 def test_readiness_timeout_is_keyword_only() -> None:
-    # `timeout` is keyword-only across ALL four readiness helpers — pin each
+    # `timeout` is keyword-only across ALL five readiness helpers — pin each
     # signature so dropping the `*` on any of them fails.
-    for fn in (wait_until, wait_for_port, wait_for_line, wait_for_path):
+    for fn in (wait_until, wait_for_port, wait_for_http, wait_for_line, wait_for_path):
         kind = inspect.signature(fn).parameters["timeout"].kind
         assert kind is inspect.Parameter.KEYWORD_ONLY, f"{fn.__name__}.timeout is {kind}"
 
@@ -782,6 +784,269 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
     with refused_port() as port:  # nothing listening -> the OSError path runs the cleanup
         asyncio.run(scenario(port))
     assert called, "wait_for_port should route cleanup through _close_pending_connection"
+
+
+# --- wait_for_http (an HTTP endpoint answers with an expected status) --------
+
+
+async def _serve_http(
+    port: int, status: int, *, reason: str = "OK", body: bytes = b""
+) -> asyncio.AbstractServer:
+    # A minimal one-shot HTTP/1.1 responder on 127.0.0.1: read the request head
+    # (up to the blank line, so the peer's write side never blocks), then reply
+    # with `status`. Enough to exercise wait_for_http without a web framework;
+    # a fresh handler runs per connection, so each retry attempt gets a reply.
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        with contextlib.suppress(Exception):
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b""):
+                    break
+            head = (
+                f"HTTP/1.1 {status} {reason}\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            ).encode("latin-1")
+            writer.write(head + body)
+            await writer.drain()
+            writer.close()
+
+    return await asyncio.start_server(handle, "127.0.0.1", port)
+
+
+def test_wait_for_http_ready() -> None:
+    async def scenario() -> None:
+        port = free_port()
+        server = await _serve_http(port, 200)
+        async with server:
+            await wait_for_http("127.0.0.1", port, "/health", timeout=5.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_ready_at_zero_timeout() -> None:
+    # Symmetry with the sibling helpers: an already-ready endpoint must still
+    # succeed at timeout=0 (at least one request attempt always happens), not
+    # fail before it was ever probed.
+    async def scenario() -> None:
+        port = free_port()
+        server = await _serve_http(port, 204, reason="No Content")
+        async with server:
+            await wait_for_http("127.0.0.1", port, timeout=0.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_rejects_nan_timeout() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for_http("127.0.0.1", 1, timeout=float("nan"))
+        with pytest.raises(ValueError):
+            await wait_for_http("127.0.0.1", 1, timeout=1.0, interval=float("nan"))
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_rejects_negative_timeout() -> None:
+    # Unified `timeout<=0` contract: a negative timeout is rejected outright
+    # (like NaN), the same across every readiness helper.
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="negative"):
+            await wait_for_http("127.0.0.1", 1, timeout=-1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_rejects_nonpositive_interval() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError):
+            await wait_for_http("127.0.0.1", 1, timeout=1.0, interval=0)
+        with pytest.raises(ValueError):
+            await wait_for_http("127.0.0.1", 1, timeout=1.0, interval=-1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_times_out_when_never_ready() -> None:
+    async def scenario(port: int) -> None:
+        with pytest.raises(TimeoutError):
+            await wait_for_http("127.0.0.1", port, timeout=0.4)
+
+    with refused_port() as port:  # nothing listening
+        asyncio.run(scenario(port))
+
+
+def test_wait_for_http_zero_timeout_unready_fails() -> None:
+    async def scenario(port: int) -> None:
+        with pytest.raises(WaitTimeout):
+            await wait_for_http("127.0.0.1", port, timeout=0.0)
+
+    with refused_port() as port:  # nothing listening
+        asyncio.run(scenario(port))
+
+
+def test_wait_for_http_timeout_carries_host_port_path() -> None:
+    # Like wait_for_port's WaitTimeout, but also carrying `path` — the one
+    # variant where all three apply.
+    async def scenario(port: int) -> None:
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_for_http("127.0.0.1", port, "/ready", timeout=0.4)
+        assert isinstance(excinfo.value, TimeoutError)
+        assert isinstance(excinfo.value, ProcessError)
+        assert excinfo.value.timeout_seconds == 0.4
+        assert excinfo.value.host == "127.0.0.1"
+        assert excinfo.value.port == port
+        assert excinfo.value.path == "/ready"
+
+    with refused_port() as port:  # nothing listening
+        asyncio.run(scenario(port))
+
+
+def test_wait_for_http_chains_last_connection_error() -> None:
+    # An unresolvable hostname: the DNS/connect failure survives as the
+    # TimeoutError's cause instead of being silently discarded.
+    async def scenario() -> None:
+        with pytest.raises(TimeoutError) as excinfo:
+            await wait_for_http("this-host-does-not-resolve.invalid", 1, timeout=0.4, interval=0.05)
+        assert isinstance(excinfo.value.__cause__, OSError)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_unexpected_status_is_not_ready() -> None:
+    # A 503 (still warming up) is NOT ready under the default 2xx set: unlike a
+    # bare `wait_for_port`, the probe keeps retrying and finally times out,
+    # chaining the last unexpected status code as the cause.
+    async def scenario() -> None:
+        port = free_port()
+        server = await _serve_http(port, 503, reason="Service Unavailable")
+        async with server:
+            with pytest.raises(WaitTimeout) as excinfo:
+                await wait_for_http("127.0.0.1", port, timeout=0.4, interval=0.05)
+            cause = excinfo.value.__cause__
+            assert isinstance(cause, ProcessError)
+            assert getattr(cause, "status", None) == 503
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_accepts_a_custom_status_container() -> None:
+    # `expected_status` as a container: a caller who considers 503 "ready"
+    # succeeds via membership testing.
+    async def scenario() -> None:
+        port = free_port()
+        server = await _serve_http(port, 503, reason="Service Unavailable")
+        async with server:
+            await wait_for_http("127.0.0.1", port, timeout=5.0, expected_status={200, 503})
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_accepts_a_status_predicate() -> None:
+    # `expected_status` as a predicate over the code, not only a container.
+    async def scenario() -> None:
+        port = free_port()
+        server = await _serve_http(port, 204, reason="No Content")
+        async with server:
+            await wait_for_http(
+                "127.0.0.1", port, timeout=5.0, expected_status=lambda code: code == 204
+            )
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_malformed_response_is_not_ready() -> None:
+    # A server answering with a non-HTTP line is a failed attempt (retried, then
+    # timed out), never an uncaught crash inside the helper.
+    async def scenario() -> None:
+        port = free_port()
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            with contextlib.suppress(Exception):
+                await reader.readline()
+                writer.write(b"not-an-http-response\r\n")
+                await writer.drain()
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", port)
+        async with server:
+            with pytest.raises(WaitTimeout) as excinfo:
+                await wait_for_http("127.0.0.1", port, timeout=0.4, interval=0.05)
+            assert isinstance(excinfo.value.__cause__, ProcessError)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_honors_success_that_raced_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression mirror of wait_for_port's same-tick race (K-030): if the probe
+    # actually read an acceptable status in the very tick the deadline cancelled
+    # it, wait_for_http must honor that met success instead of closing the live
+    # transport and raising WaitTimeout. A patched `asyncio.wait_for` drives the
+    # probe to a genuine success and *then* reports a timeout, mocking the race.
+    async def racing_wait_for(fut: asyncio.Future[int], timeout: float) -> int:
+        await fut  # the probe completes (its status is read)...
+        raise asyncio.TimeoutError  # ...but the deadline "fires" in the same tick
+
+    async def scenario() -> None:
+        port = free_port()
+        server = await _serve_http(port, 200)
+        async with server:
+            monkeypatch.setattr(asyncio, "wait_for", racing_wait_for)
+            # Must return normally: the raced-but-read acceptable status wins.
+            await wait_for_http("127.0.0.1", port, timeout=0.5)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_bounds_and_closes_a_hanging_server() -> None:
+    # A server that accepts the connection and reads the request but never
+    # answers must not let wait_for_http outlive its deadline (the whole
+    # request/response is bounded, not just the connect), and the probe must
+    # close its transport on timeout — the server observes the peer disconnect.
+    async def scenario() -> None:
+        port = free_port()
+        peer_closed = asyncio.Event()
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                while True:
+                    line = await reader.readline()
+                    if line in (b"\r\n", b""):
+                        break
+                if await reader.read() == b"":  # blocks until the client closes
+                    peer_closed.set()
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", port)
+        async with server:
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            with pytest.raises(WaitTimeout):
+                await asyncio.wait_for(
+                    wait_for_http("127.0.0.1", port, timeout=0.3, interval=0.05), timeout=5.0
+                )
+            elapsed = loop.time() - start
+            assert elapsed < 2.0, f"wait_for_http did not bound the hanging server ({elapsed:.1f}s)"
+            # The probe closed its transport on timeout — the server sees EOF.
+            await asyncio.wait_for(peer_closed.wait(), timeout=2.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_cancel_propagates() -> None:
+    async def scenario(port: int) -> None:
+        task = asyncio.ensure_future(wait_for_http("127.0.0.1", port, timeout=10.0))
+        await asyncio.sleep(0.05)  # let it enter the retry loop
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with refused_port() as port:  # nothing listening -> the helper stays in its retry loop
+        asyncio.run(scenario(port))
 
 
 # --- wait_for_path (filesystem path appears) ---------------------------------

@@ -313,11 +313,22 @@ task.cancel()                        # the process tree is reaped; CancelledErro
 ## Wait for a server to be ready
 
 ```python
-from processkit import Command, ProcessGroup, wait_until, wait_for_path, wait_for_port, wait_for_line
+from processkit import (
+    Command,
+    ProcessGroup,
+    wait_until,
+    wait_for_path,
+    wait_for_port,
+    wait_for_http,
+    wait_for_line,
+)
 
 async with ProcessGroup() as group:
     proc = await group.astart(Command("my-server"))
     await wait_for_port("127.0.0.1", 8080, timeout=10)        # poll the port
+    # or probe an HTTP health endpoint (ready only on a 2xx, not merely an open
+    # port — a warming-up server accepts the port while still replying 503):
+    # await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
     # or wait for a log line (a plain string is a substring-match shorthand):
     # await wait_for_line(proc.stdout_lines(), "listening", timeout=10)
     # or wait for a unix socket / pid file to appear:

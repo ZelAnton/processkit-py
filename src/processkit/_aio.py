@@ -3,8 +3,9 @@
 Two families live here:
 
 - **Readiness helpers** (`wait_until` / `wait_for_line` / `wait_for_port` /
-  `wait_for_path`) compose on top of the compiled async surface (a
-  `StdoutLines` iterator, a plain TCP connect) rather than bridging the Rust
+  `wait_for_http` / `wait_for_path`) compose on top of the compiled async
+  surface (a `StdoutLines` iterator, a plain TCP connect, a hand-rolled HTTP
+  GET) rather than bridging the Rust
   crate's borrowing probe methods — simpler, fully composable, and they work
   against any server, not only one this package started. (The `processkit`
   crate's 1.1.0 made its probes `Send`-bridgeable, but these Python helpers are
@@ -22,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Container
 from pathlib import Path
 from typing import Any, TypeVar, overload
 
@@ -32,6 +33,7 @@ from ._types import StrPath
 __all__ = [
     "WaitTimeout",
     "sample_stats",
+    "wait_for_http",
     "wait_for_line",
     "wait_for_path",
     "wait_for_port",
@@ -44,14 +46,16 @@ _ZERO_TIMEOUT_CONNECT_TICK = 0.05
 
 class WaitTimeout(ProcessError, TimeoutError):
     """A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
-    `wait_for_path`) didn't succeed within its deadline.
+    `wait_for_http` / `wait_for_path`) didn't succeed within its deadline.
 
     Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
     the same convention a run's own `.timeout()` uses (see `Timeout`). Always
-    carries `timeout_seconds`; `wait_for_port` additionally sets `host` /
-    `port`, and `wait_for_path` sets `path` (all `None` for `wait_until` /
-    `wait_for_line`, which have none of these) and chains the last connection
-    attempt's exception as `__cause__` (`wait_for_port` only).
+    carries `timeout_seconds`; `wait_for_port` and `wait_for_http` additionally
+    set `host` / `port` (and `wait_for_http` also `path`), and `wait_for_path`
+    sets `path` (all `None` for `wait_until` / `wait_for_line`, which have none
+    of these). `wait_for_port` / `wait_for_http` also chain the last attempt's
+    failure as `__cause__` (a connection error, or — for `wait_for_http` — the
+    last unexpected status code).
     """
 
     def __init__(
@@ -389,6 +393,198 @@ async def wait_for_port(
         with contextlib.suppress(OSError):
             await writer.wait_closed()
         return
+
+
+class _HttpProbeError(ProcessError):
+    """Internal: one `wait_for_http` attempt reached the server but the reply
+    wasn't an acceptable readiness signal — an unexpected status code (``status``
+    set) or a malformed/absent HTTP response (``status`` is ``None``). Only ever
+    surfaced as a `WaitTimeout`'s ``__cause__``, never raised to callers.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _status_predicate(
+    expected_status: Container[int] | Callable[[int], bool],
+) -> Callable[[int], bool]:
+    """Normalize `wait_for_http`'s ``expected_status`` to a predicate: a callable
+    is used as-is; anything else is treated as a container and tested with ``in``
+    (so ``range(200, 300)`` / a ``set`` / a ``frozenset`` all work)."""
+    if callable(expected_status):
+        return expected_status
+    container = expected_status
+    return lambda code: code in container
+
+
+def _parse_status_code(status_line: bytes) -> int:
+    """Extract the integer status code from an HTTP/1.1 status line
+    (``b"HTTP/1.1 200 OK\\r\\n"`` -> ``200``). Raises `_HttpProbeError` for an
+    empty line (the server hung up before answering) or a malformed one."""
+    parts = status_line.split(None, 2)
+    if len(parts) < 2 or not parts[0].upper().startswith(b"HTTP/"):
+        raise _HttpProbeError(f"malformed or empty HTTP status line: {status_line!r}")
+    try:
+        return int(parts[1])
+    except ValueError:
+        raise _HttpProbeError(f"non-numeric HTTP status code in: {status_line!r}") from None
+
+
+async def _probe_http(host: str, port: int, request: bytes) -> int:
+    """Open one connection, send ``request``, read the HTTP status line, and
+    return its status code. Owns its socket end-to-end: the ``finally`` closes
+    the writer even on cancellation/timeout, so a probe cut short by the deadline
+    never leaks the connection. Only the status line is read (the request already
+    asked the server to ``Connection: close``); the body is left undrained and
+    dropped when the transport closes."""
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(request)
+        await writer.drain()
+        status_line = await reader.readline()
+        code = _parse_status_code(status_line)
+    finally:
+        # Synchronous close in the finally guarantees the socket is released even
+        # when a CancelledError is unwinding this frame; wait_closed is only
+        # awaited on the normal path (below), never during cancellation.
+        writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return code
+
+
+def _discard_probe(task: asyncio.Task[int]) -> None:
+    """Settle a probe task we own but no longer want — a failed, raced, or
+    cancelled attempt. Cancel it if still running (its own ``finally`` then closes
+    the socket); otherwise retrieve its result/exception so a finished-with-error
+    task doesn't trip asyncio's 'exception never retrieved' warning."""
+    if not task.done():
+        task.cancel()
+        return
+    if task.cancelled():
+        return
+    task.exception()
+
+
+async def wait_for_http(
+    host: str,
+    port: int,
+    path: str = "/",
+    *,
+    timeout: float,
+    interval: float = 0.05,
+    expected_status: Container[int] | Callable[[int], bool] | None = None,
+) -> None:
+    """Wait until an HTTP ``GET`` of ``http://host:port/path`` answers with an
+    acceptable status code.
+
+    A stronger readiness signal than `wait_for_port`: a server often *accepts*
+    TCP connections while still warming up and answering ``503``, so a bare port
+    probe reports ready too early. This one performs a minimal HTTP/1.1 ``GET``
+    (hand-rolled over `asyncio.open_connection` — no `http.client` / `urllib` /
+    third-party dependency) every ``interval`` seconds and succeeds only once the
+    response's status code is accepted.
+
+    ``expected_status`` decides what "accepted" means: either a container tested
+    with ``in`` or a predicate ``Callable[[int], bool]`` for arbitrary logic
+    (e.g. ``lambda c: c == 204``). The default (``None``) accepts any 2xx code —
+    equivalent to passing ``range(200, 300)``. The whole request/response is
+    bounded by the deadline, so a server that accepts the connection but never
+    answers can't outlive ``timeout``.
+
+    On failure the deadline raises `WaitTimeout` (also a `TimeoutError`),
+    carrying ``host`` / ``port`` / ``path`` and chained (as ``__cause__``) from
+    the last attempt's failure — a connection error (e.g. a refused connect or a
+    DNS failure) or a `ProcessError` recording the last unexpected status code —
+    so the evidence for *why* it never became ready survives.
+
+    ``timeout<=0`` contract (shared with `wait_until` / `wait_for_port` /
+    `wait_for_line` / `wait_for_path`): at ``timeout=0`` one request attempt is
+    still made (at least one), so an already-ready endpoint succeeds instead of
+    failing before it was ever probed; that first attempt is bounded to a short,
+    fixed event-loop tick (or a smaller caller-supplied ``interval``), never left
+    uncapped. A **negative** ``timeout`` is rejected outright — raises
+    `ValueError`, same as NaN — as is a non-positive ``interval``.
+    """
+    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
+        raise ValueError("interval must be a positive number of seconds")
+    _check_timeout(timeout)
+    if expected_status is None:
+        expected_status = range(200, 300)  # default: any 2xx
+    status_ok = _status_predicate(expected_status)
+    request = (f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n").encode(
+        "latin-1"
+    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_exc: BaseException | None = None
+    first_attempt = True
+    while True:
+        remaining = deadline - loop.time()
+        if not first_attempt and remaining <= 0:
+            raise WaitTimeout(
+                f"http://{host}:{port}{path} not ready within {timeout}s",
+                timeout_seconds=timeout,
+                host=host,
+                port=port,
+                path=path,
+            ) from last_exc
+        # The first attempt is floored to a short positive tick (never the
+        # non-positive ``remaining`` that ``timeout=0`` yields, which would trip
+        # ``asyncio.wait_for``'s fast-cancel and reject an already-ready endpoint
+        # before a request ever ran), and kept MONOTONE in ``timeout`` via
+        # ``max(...)`` — the exact same reasoning as ``wait_for_port``'s first
+        # connect window (see its docstring/comments). Every later attempt is
+        # bounded by the real ``remaining`` (kept positive by the guard above).
+        if first_attempt:
+            attempt_timeout = max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
+        else:
+            attempt_timeout = remaining
+        first_attempt = False
+        # Own the whole probe (connect + request + status read) as a task so a
+        # deadline/cancellation racing its completion can be told apart from a
+        # real timeout (K-030): on ``asyncio.wait_for``'s TimeoutError we check
+        # whether the probe actually finished in that same tick and, if so, honor
+        # the status it read instead of discarding a met condition — the same
+        # race ``wait_until`` / ``wait_for_line`` / ``wait_for_port`` all resolve
+        # in favor of the success.
+        probe = asyncio.ensure_future(_probe_http(host, port, request))
+        code: int | None = None
+        try:
+            code = await asyncio.wait_for(probe, timeout=attempt_timeout)
+        except (OSError, _HttpProbeError, asyncio.TimeoutError) as exc:
+            if (
+                isinstance(exc, asyncio.TimeoutError)
+                and probe.done()
+                and not probe.cancelled()
+                and probe.exception() is None
+            ):
+                code = probe.result()  # same-tick success: recover the status
+            else:
+                _discard_probe(probe)
+                last_exc = exc
+        except asyncio.CancelledError:
+            _discard_probe(probe)
+            raise
+        if code is not None:
+            if status_ok(code):
+                return
+            last_exc = _HttpProbeError(
+                f"HTTP status {code} is not in the expected set", status=code
+            )
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise WaitTimeout(
+                f"http://{host}:{port}{path} not ready within {timeout}s",
+                timeout_seconds=timeout,
+                host=host,
+                port=port,
+                path=path,
+            ) from last_exc
+        # Don't overshoot the deadline by a full interval on the last retry.
+        await asyncio.sleep(min(interval, remaining))
 
 
 _Item = TypeVar("_Item")

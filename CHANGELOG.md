@@ -8,7 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- Add `wait_for_http(host, port, path="/", *, timeout, interval=0.05,
+  expected_status=None)`, a readiness helper that polls an HTTP endpoint (a
+  hand-rolled GET over asyncio streams, no new dependency) and succeeds only on
+  an accepted status code (any 2xx by default; a set/range or a predicate
+  overrides) — a stronger signal than `wait_for_port` for a server that accepts
+  connections while still warming up
 
 ### Changed
 -

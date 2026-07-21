@@ -1732,7 +1732,7 @@ def aoutput_all_bytes(
 
 ## Readiness helpers
 
-Asyncio helpers that wait for a condition — a matching output line, an open TCP port, a filesystem path, or any polled predicate — bounded by a deadline.
+Asyncio helpers that wait for a condition — a matching output line, an open TCP port, an HTTP endpoint answering with an expected status, a filesystem path, or any polled predicate — bounded by a deadline.
 
 ### `wait_until`
 
@@ -1835,6 +1835,51 @@ connect/DNS timeout well past the caller's requested deadline. A
 **negative** ``timeout`` is rejected outright — raises `ValueError`, same
 as NaN — rather than being treated as "expired" or silently accepted.
 
+### `wait_for_http`
+
+```text
+async def wait_for_http(
+    host: str,
+    port: int,
+    path: str = '/',
+    *,
+    timeout: float,
+    interval: float = 0.05,
+    expected_status: Container[int] | Callable[[int], bool] | None = None,
+) -> None
+```
+
+Wait until an HTTP ``GET`` of ``http://host:port/path`` answers with an
+acceptable status code.
+
+A stronger readiness signal than `wait_for_port`: a server often *accepts*
+TCP connections while still warming up and answering ``503``, so a bare port
+probe reports ready too early. This one performs a minimal HTTP/1.1 ``GET``
+(hand-rolled over `asyncio.open_connection` — no `http.client` / `urllib` /
+third-party dependency) every ``interval`` seconds and succeeds only once the
+response's status code is accepted.
+
+``expected_status`` decides what "accepted" means: either a container tested
+with ``in`` or a predicate ``Callable[[int], bool]`` for arbitrary logic
+(e.g. ``lambda c: c == 204``). The default (``None``) accepts any 2xx code —
+equivalent to passing ``range(200, 300)``. The whole request/response is
+bounded by the deadline, so a server that accepts the connection but never
+answers can't outlive ``timeout``.
+
+On failure the deadline raises `WaitTimeout` (also a `TimeoutError`),
+carrying ``host`` / ``port`` / ``path`` and chained (as ``__cause__``) from
+the last attempt's failure — a connection error (e.g. a refused connect or a
+DNS failure) or a `ProcessError` recording the last unexpected status code —
+so the evidence for *why* it never became ready survives.
+
+``timeout<=0`` contract (shared with `wait_until` / `wait_for_port` /
+`wait_for_line` / `wait_for_path`): at ``timeout=0`` one request attempt is
+still made (at least one), so an already-ready endpoint succeeds instead of
+failing before it was ever probed; that first attempt is bounded to a short,
+fixed event-loop tick (or a smaller caller-supplied ``interval``), never left
+uncapped. A **negative** ``timeout`` is rejected outright — raises
+`ValueError`, same as NaN — as is a non-positive ``interval``.
+
 ### `wait_for_path`
 
 ```text
@@ -1878,14 +1923,16 @@ WaitTimeout(
 ```
 
 A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
-`wait_for_path`) didn't succeed within its deadline.
+`wait_for_http` / `wait_for_path`) didn't succeed within its deadline.
 
 Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
 the same convention a run's own `.timeout()` uses (see `Timeout`). Always
-carries `timeout_seconds`; `wait_for_port` additionally sets `host` /
-`port`, and `wait_for_path` sets `path` (all `None` for `wait_until` /
-`wait_for_line`, which have none of these) and chains the last connection
-attempt's exception as `__cause__` (`wait_for_port` only).
+carries `timeout_seconds`; `wait_for_port` and `wait_for_http` additionally
+set `host` / `port` (and `wait_for_http` also `path`), and `wait_for_path`
+sets `path` (all `None` for `wait_until` / `wait_for_line`, which have none
+of these). `wait_for_port` / `wait_for_http` also chain the last attempt's
+failure as `__cause__` (a connection error, or — for `wait_for_http` — the
+last unexpected status code).
 
 #### `timeout_seconds`
 

@@ -352,12 +352,19 @@ await proc.aoutcome()
 
 ## Readiness probes
 
-"Start a server, then use it" needs *ready*, not merely *started*. Four
+"Start a server, then use it" needs *ready*, not merely *started*. Five
 free async helpers replace the arbitrary `asyncio.sleep`, each bounded by its
 own deadline:
 
 ```python
-from processkit import Command, wait_until, wait_for_path, wait_for_port, wait_for_line
+from processkit import (
+    Command,
+    wait_until,
+    wait_for_path,
+    wait_for_port,
+    wait_for_http,
+    wait_for_line,
+)
 
 proc = await Command("my-server").astart()
 lines = proc.stdout_lines()        # bind once — you reuse this same iterator
@@ -372,10 +379,15 @@ banner = await wait_for_line(lines, lambda l: "listening on" in l, timeout=10)
 # 2. A TCP port accepting connections:
 await wait_for_port("127.0.0.1", 8080, timeout=10)
 
-# 3. A path appearing on the filesystem (a unix socket, a pid file, …):
+# 3. An HTTP endpoint answering with an acceptable status (2xx by default) — a
+#    stronger signal than the port alone, which a warming-up server accepts
+#    while still replying 503. `expected_status` takes a set/range or a predicate:
+await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
+
+# 4. A path appearing on the filesystem (a unix socket, a pid file, …):
 await wait_for_path("/run/my-server.sock", timeout=10)
 
-# 4. Any predicate — sync bool OR an awaitable (an HTTP /health, …):
+# 5. Any predicate — sync bool OR an awaitable (a DB ping, …):
 await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 
 # ready — keep consuming from the SAME iterator:
@@ -392,20 +404,24 @@ Semantics, deliberately uniform:
 - A probe that can't pass within its deadline raises **`WaitTimeout`**
   (`ProcessError`, `TimeoutError`) — so `except TimeoutError` catches both run
   and readiness timeouts, and `.timeout_seconds` reads the configured deadline
-  either way. `wait_for_port` additionally sets `.host`/`.port`, and
-  `wait_for_path` sets `.path`.
+  either way. `wait_for_port` additionally sets `.host`/`.port`, `wait_for_http`
+  sets `.host`/`.port`/`.path`, and `wait_for_path` sets `.path`.
+  `wait_for_port` / `wait_for_http` also chain the last failed attempt (a
+  connection error, or — for `wait_for_http` — the last unexpected status) as
+  `__cause__`.
 - `wait_for_line` additionally raises `ProcessError` if the stdout stream ends
   *before* a match — no waiting out a 10s deadline on a dead server. It
   consumes items up to (and including) a match; iteration may continue
   afterward **only when a match was found** — exactly how far it advanced past
   the last inspected item on a timeout is unspecified, so don't rely on the
-  iterator's position there. `wait_for_port` / `wait_for_path` / `wait_until`
-  don't touch the pipes at all.
+  iterator's position there. `wait_for_port` / `wait_for_http` / `wait_for_path`
+  / `wait_until` don't touch the pipes at all.
 - A failed probe **never kills the child** — you decide: retry, log, or tear
   down.
-- `wait_until` / `wait_for_path` poll every `interval` seconds (`ValueError` if
-  `interval <= 0`). A sync predicate runs on the event loop, so keep it
-  non-blocking; for blocking work, pass an awaitable.
+- `wait_until` / `wait_for_port` / `wait_for_http` / `wait_for_path` poll every
+  `interval` seconds (`ValueError` if `interval <= 0`). A sync `wait_until`
+  predicate runs on the event loop, so keep it non-blocking; for blocking work,
+  pass an awaitable.
 
 *Deeper: bounding the whole run (not just the wait) is
 [Timeouts & cancellation](timeouts-and-cancellation.md).*

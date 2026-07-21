@@ -27,7 +27,15 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 from threading import Lock
 
-from ._aio import WaitTimeout, sample_stats, wait_for_line, wait_for_path, wait_for_port, wait_until
+from ._aio import (
+    WaitTimeout,
+    sample_stats,
+    wait_for_http,
+    wait_for_line,
+    wait_for_path,
+    wait_for_port,
+    wait_until,
+)
 from ._processkit import (
     BytesResult,
     CancellationToken,
@@ -150,6 +158,7 @@ __all__ = [
     "output_all",
     "output_all_bytes",
     "sample_stats",
+    "wait_for_http",
     "wait_for_line",
     "wait_for_path",
     "wait_for_port",

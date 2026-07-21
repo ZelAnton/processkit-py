@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an accepted status code (any 2xx by default; a set/range or a predicate
   overrides) — a stronger signal than `wait_for_port` for a server that accepts
   connections while still warming up
+- Add `aoutput_as_completed`/`aoutput_as_completed_bytes`, the streaming
+  counterpart to the `aoutput_all` family: an async iterator that yields each
+  `(index, result)` pair as its command finishes rather than waiting for the
+  whole batch, with the same hard concurrency cap and no-orphan teardown on
+  cancellation or early exit
+- Add `python -m processkit run --profile [FILE]`, emitting a one-line JSON
+  resource profile (duration, CPU time, peak memory, average CPU cores,
+  sample count, exit code/signal, timed-out flag) after the child exits — to
+  stderr if `FILE` is omitted, or written to `FILE` otherwise
+- Add `python -m processkit run --create-no-window`, applying
+  `Command.create_no_window()` to the child so the wrapper does not create a
+  console window on Windows — a no-op outside Windows (same as the
+  underlying binding method)
 
 ### Changed
 - Bump the processkit dependency to 2.3.1 (lockfile pinned via `cargo update -p

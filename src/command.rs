@@ -705,6 +705,34 @@ impl PyCommand {
         }
     }
 
+    /// Windows: opt in to a **graceful teardown** — at a graceful timeout
+    /// (`timeout_grace`) or a `ProcessGroup` shutdown, send the direct child a
+    /// console `CTRL_BREAK` before the grace window, giving a console child (a
+    /// CLI, Node, Python, or Go service that installs a `CTRL_BREAK` handler) a
+    /// chance to flush and exit cleanly ahead of the hard `TerminateJobObject`
+    /// fallback. Without it Windows has no soft-signal tier and a graceful
+    /// timeout collapses straight to an atomic Job Object kill; any survivor
+    /// past the grace is still hard-killed, so containment is never weakened.
+    ///
+    /// **Boundaries (from the crate).** *Console-only* — the event travels the
+    /// console this process shares with the child, so a child spawned
+    /// `create_no_window()` (or otherwise detached) shares no console, never
+    /// receives it, and simply rides the grace to the hard kill; a GUI/service
+    /// parent with no console of its own can't deliver it either. It is
+    /// `CTRL_BREAK`, **not** `CTRL_C` (the new process group disables `CTRL_C`),
+    /// and `timeout_signal` (the Unix signal choice) does not apply. Only the
+    /// **direct child** is addressed — its own descendants receive it via the
+    /// shared console/group, but an `adopt`ed process (not spawned here) is not,
+    /// and falls back to the hard kill. **No-op off Windows**: Unix's graceful
+    /// tier already sends a real signal, so this builder does nothing there
+    /// (unlike the POSIX-only `uid`/`gid`/`groups`/`setsid`/`umask`, which raise
+    /// `Unsupported` off-platform rather than silently no-op'ing).
+    fn windows_graceful_ctrl_break(&self) -> Self {
+        Self {
+            inner: self.inner.clone().windows_graceful_ctrl_break(),
+        }
+    }
+
     /// POSIX: run the child as this user id (drop privileges). On a non-POSIX
     /// platform the run raises `Unsupported` — a requested privilege drop is
     /// never silently skipped.

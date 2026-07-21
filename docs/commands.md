@@ -518,6 +518,9 @@ Spawn-time controls for sandboxing and service launch:
 # Windows: don't flash a console window from a GUI app.
 Command("helper").create_no_window().run()
 
+# Windows: give a console child a CTRL_BREAK to shut down cleanly before the hard kill.
+Command("service").windows_graceful_ctrl_break().timeout(30.0).timeout_grace(5.0).run()
+
 # Take the direct child down even if THIS process is killed before teardown runs.
 Command("worker").kill_on_parent_death().start()
 ```
@@ -529,6 +532,14 @@ Platform honesty, not silent no-ops:
   drop sets all three of `uid`/`gid`/`groups` — dropping the uid alone leaves the
   child holding the parent's (often root's) supplementary groups.
 - `create_no_window` is a harmless no-op outside Windows.
+- `windows_graceful_ctrl_break` is a **Windows-only opt-in**: at a graceful
+  timeout (`timeout_grace`) or a group shutdown it sends the direct console
+  child a `CTRL_BREAK` before the grace window, so a child that handles it can
+  exit cleanly before the hard `TerminateJobObject` fallback (Windows otherwise
+  has no soft-signal tier). Console-only — inert under `create_no_window` /
+  detached, and it delivers `CTRL_BREAK`, not `CTRL_C`. A harmless no-op outside
+  Windows (Unix's graceful tier already sends a real signal), like
+  `create_no_window` — not one of the POSIX-only knobs that raise `Unsupported`.
 - `kill_on_parent_death` is best-effort by design: kernel-guaranteed on Windows,
   `PR_SET_PDEATHSIG` on the direct child on Linux, a documented no-op on
   macOS/BSD. The graceful `with`-block teardown holds everywhere regardless.

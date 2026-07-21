@@ -427,6 +427,33 @@ def kill_on_parent_death() -> Command
 def create_no_window() -> Command
 ```
 
+#### `windows_graceful_ctrl_break`
+
+```text
+def windows_graceful_ctrl_break() -> Command
+```
+
+Windows: opt in to a **graceful teardown** — at a graceful timeout
+(``timeout_grace``) or a ``ProcessGroup`` shutdown, send the direct
+child a console ``CTRL_BREAK`` before the grace window, so a console
+child (a CLI, Node, Python, or Go service that installs a ``CTRL_BREAK``
+handler) can flush and exit cleanly ahead of the hard
+``TerminateJobObject`` fallback. Without it Windows has no soft-signal
+tier and a graceful timeout collapses straight to an atomic Job Object
+kill; any survivor past the grace is still hard-killed.
+
+**Boundaries.** *Console-only* — a child spawned ``create_no_window()``
+(or otherwise detached) shares no console, never receives the event, and
+rides the grace to the hard kill; a GUI/service parent with no console
+of its own can't deliver it either. It is ``CTRL_BREAK``, **not**
+``CTRL_C``, and ``timeout_signal`` does not apply. Only the **direct
+child** is addressed — its own descendants get it via the shared
+console/group, but an ``adopt``ed process does not. A harmless **no-op
+outside Windows** (Unix's graceful tier already sends a real signal) —
+unlike the POSIX-only ``uid``/``gid``/``groups``/``setsid``/``umask``,
+which raise ``Unsupported`` off-platform rather than silently
+no-op'ing.
+
 #### `uid`
 
 ```text

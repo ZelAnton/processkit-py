@@ -848,6 +848,7 @@ def test_builder_knobs_chain_builds() -> None:
         Command(PY, ["-c", "print('ok')"])
         .kill_on_parent_death()
         .create_no_window()
+        .windows_graceful_ctrl_break()
         .timeout_grace(0.5)
         .timeout_signal("term")
         .uid(0)
@@ -860,6 +861,19 @@ def test_builder_knobs_chain_builds() -> None:
     assert isinstance(cmd, Command)
     # The cross-platform lifetime knobs actually run.
     assert "ok" in Command(PY, ["-c", "print('ok')"]).kill_on_parent_death().run()
+
+
+def test_windows_graceful_ctrl_break_is_a_platform_honest_no_op() -> None:
+    # Like `create_no_window`, this is a Windows-only opt-in that is a harmless
+    # no-op elsewhere — never an `Unsupported` raise (unlike the POSIX-only
+    # uid/gid/groups/setsid/umask knobs). The builder accepts the call, returns
+    # a `Command`, and a run configured with it succeeds on every platform. We
+    # do NOT try to exercise a real CTRL_BREAK teardown here — that is a
+    # processkit-core behavior, not a property of this binding; we only pin that
+    # the opt-in builds and does not derail an ordinary run.
+    cmd = Command(PY, ["-c", "print('ok')"]).windows_graceful_ctrl_break()
+    assert isinstance(cmd, Command)
+    assert "ok" in cmd.run()
 
 
 @pytest.mark.skipif(

@@ -444,3 +444,254 @@ def test_doctor_exits_four_when_a_limit_probe_hits_an_operational_error() -> Non
     assert "resource limits        : error probing --max-processes" in result.stdout
     assert "verdict: ERROR" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+# --- supervise ----------------------------------------------------------
+
+
+def test_supervise_help_does_not_raise() -> None:
+    result = _run_cli("supervise", "--help")
+    assert result.returncode == 0
+    assert "usage" in result.stdout.lower()
+    assert "--restart" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_parses_flags() -> None:
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "never",
+        "--max-restarts",
+        "2",
+        "--backoff-initial",
+        "0.01",
+        "--backoff-factor",
+        "1",
+        "--max-backoff",
+        "1",
+        "--no-jitter",
+        "--",
+        PY,
+        "-c",
+        "pass",
+    )
+    assert result.returncode == 0
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_parses_env_and_cwd_flags(tmp_path: pathlib.Path) -> None:
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "never",
+        "--env",
+        "PK_SUPERVISE_ENV=applied",
+        "--cwd",
+        str(tmp_path),
+        "--",
+        PY,
+        "-c",
+        "import os; print(os.environ['PK_SUPERVISE_ENV']); print(os.getcwd())",
+    )
+    assert result.returncode == 0
+    lines = result.stdout.strip().splitlines()
+    assert lines[0] == "applied"
+    assert os.path.realpath(lines[1]) == os.path.realpath(str(tmp_path))
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_missing_command_after_supervise_is_a_usage_error() -> None:
+    result = _run_cli("supervise", "--restart", "always")
+    assert result.returncode == 2
+    assert "missing command" in result.stderr
+    assert "usage: python -m processkit supervise" in result.stderr
+    assert "--restart" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_successful_run_exits_with_final_result_code() -> None:
+    result = _run_cli("supervise", "--restart", "never", "--", PY, "-c", "import sys; sys.exit(7)")
+    assert result.returncode == 7
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_exits_restarts_exhausted_code_on_max_restarts() -> None:
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "on_crash",
+        "--max-restarts",
+        "2",
+        "--backoff-initial",
+        "0.01",
+        "--backoff-factor",
+        "1",
+        "--no-jitter",
+        "--",
+        PY,
+        "-c",
+        "import sys; sys.exit(1)",
+    )
+    assert result.returncode == 121
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_exits_sigint_on_keyboard_interrupt() -> None:
+    script = (
+        "import sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as supervise_mod\n"
+        "class _InterruptingSupervisor:\n"
+        "    def __init__(self, *args, **kwargs): pass\n"
+        "    def run(self): raise KeyboardInterrupt\n"
+        "supervise_mod.Supervisor = _InterruptingSupervisor\n"
+        "sys.exit(cli.main(['supervise', '--', 'irrelevant']))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 130
+    assert "interrupted" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_exits_gave_up_code_when_outcome_reports_gave_up() -> None:
+    # `give_up_when` is API-only (not exposed as a CLI flag), so drive the
+    # "gave_up" branch directly with a fake `Supervisor`/outcome, the same
+    # technique `test_supervise_exits_sigint_on_keyboard_interrupt` uses above.
+    script = (
+        "import sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as supervise_mod\n"
+        "class _FinalResult:\n"
+        "    code = 1\n"
+        "    signal = None\n"
+        "class _Outcome:\n"
+        "    stopped = 'gave_up'\n"
+        "    final_result = _FinalResult()\n"
+        "class _GivingUpSupervisor:\n"
+        "    def __init__(self, *args, **kwargs): pass\n"
+        "    def run(self): return _Outcome()\n"
+        "supervise_mod.Supervisor = _GivingUpSupervisor\n"
+        "sys.exit(cli.main(['supervise', '--', 'irrelevant']))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 122
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_exits_signal_code_when_final_result_was_killed_by_signal() -> None:
+    # A signal-killed last incarnation under a satisfied policy has no `.code`
+    # — must map to `128 + signal` (mirroring `run`'s own convention), not the
+    # generic internal-error code.
+    script = (
+        "import sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as supervise_mod\n"
+        "class _FinalResult:\n"
+        "    code = None\n"
+        "    signal = 15\n"
+        "class _Outcome:\n"
+        "    stopped = 'policy_satisfied'\n"
+        "    final_result = _FinalResult()\n"
+        "class _SignalledSupervisor:\n"
+        "    def __init__(self, *args, **kwargs): pass\n"
+        "    def run(self): return _Outcome()\n"
+        "supervise_mod.Supervisor = _SignalledSupervisor\n"
+        "sys.exit(cli.main(['supervise', '--', 'irrelevant']))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 128 + 15
+    assert "killed by signal 15" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_exits_internal_error_on_missing_program() -> None:
+    result = _run_cli("supervise", "--restart", "never", "--", NO_SUCH_PROGRAM)
+    assert result.returncode == 120
+    assert "could not supervise" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_internal_error_is_reported_not_raised() -> None:
+    script = (
+        "import sys\n"
+        "import processkit\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as supervise_mod\n"
+        "class _UnsupportedSupervisor:\n"
+        "    def __init__(self, *args, **kwargs):\n"
+        "        raise processkit.Unsupported('containment is unavailable')\n"
+        "supervise_mod.Supervisor = _UnsupportedSupervisor\n"
+        "sys.exit(cli.main(['supervise', '--', 'irrelevant']))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 120
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "containment is unavailable" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_env_clear_and_inherit_env_work_like_run() -> None:
+    parent_env = _parent_env_with(PK_SUPERVISE_KEEP="kept", PK_SUPERVISE_DROP="dropped")
+    args = ["supervise", "--restart", "never", "--inherit-env", "PK_SUPERVISE_KEEP"]
+    if sys.platform == "win32":
+        args += ["--inherit-env", "SYSTEMROOT"]
+    code = (
+        "import os; print(os.environ.get('PK_SUPERVISE_KEEP', '-'), "
+        "os.environ.get('PK_SUPERVISE_DROP', '-'))"
+    )
+    args += ["--", PY, "-c", code]
+    result = _run_cli(*args, env=parent_env)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "kept -"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_cwd_flag_works(tmp_path: pathlib.Path) -> None:
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "never",
+        "--cwd",
+        str(tmp_path),
+        "--",
+        PY,
+        "-c",
+        "import os; print(os.getcwd())",
+    )
+    assert result.returncode == 0
+    assert os.path.realpath(result.stdout.strip()) == os.path.realpath(str(tmp_path))
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_successful_program_exits_zero_and_streams_stdout() -> None:
+    result = _run_cli(
+        "supervise", "--restart", "never", "--", PY, "-c", "print('hello from supervisor')"
+    )
+    assert result.returncode == 0
+    assert "hello from supervisor" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr

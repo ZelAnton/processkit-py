@@ -6,14 +6,16 @@ Most of this package's value lives behind Python code — but sometimes the
 caller is a shell script or a CI step, not a Python program. `python -m
 processkit run` is a thin CLI wrapper over `Command` / `ProcessGroup` for
 exactly that case: kill-on-exit containment and resource limits for a single
-shell command, with no Python to write. `python -m processkit doctor` is its
-read-only companion: a preflight diagnosis of what this environment's kernel
-actually grants, without running anything (see
-[below](#doctor-preflight-diagnose-the-environment)).
+shell command, with no Python to write. `python -m processkit supervise`
+exposes restart-based keep-alive supervision (`Supervisor`) the same way, and
+`python -m processkit doctor` is `run`'s read-only companion: a preflight
+diagnosis of what this environment's kernel actually grants, without running
+anything (see [below](#doctor-preflight-diagnose-the-environment)).
 
 - [Basic usage](#basic-usage)
 - [Flags](#flags)
 - [Exit codes](#exit-codes)
+- [supervise](#supervise)
 - [Resource limits: hard cap or best effort?](#resource-limits-hard-cap-or-best-effort)
 - [`doctor`: preflight-diagnose the environment](#doctor-preflight-diagnose-the-environment)
 - [What you don't get here](#what-you-dont-get-here)
@@ -86,6 +88,51 @@ None of these ever surface as a raw Python traceback — every documented
 processkit exception (`Timeout`, `Signalled`, `ProcessNotFound`,
 `PermissionDenied`, `ResourceLimit`, `Unsupported`) is caught and turned into
 one of the codes above, with a one-line message on stderr.
+
+## supervise
+
+**Basic usage:**
+
+```bash
+python -m processkit supervise [OPTIONS] -- PROGRAM [ARG ...]
+```
+
+`supervise` keeps a command alive by restarting it according to a selected
+policy, with configurable exponential backoff. Its child's stdin is inherited
+exactly as with `run` (`Command.inherit_stdin()`). Stdout/stderr are handled
+differently than `run`, though: `Supervisor` requires a **piped** stdout to
+capture each incarnation's result (to evaluate the restart policy and
+populate `SupervisionOutcome.final_result`) — a non-piped stdout errors every
+incarnation. To still stream live to this terminal, this wrapper pipes both
+streams and tees every decoded line straight through to its own inherited
+stdout/stderr (`Command.stdout_tee`/`stderr_tee`); output still appears live,
+just line-buffered rather than a byte-for-byte fd passthrough.
+
+| Flag | Description |
+|---|---|
+| `--restart {always,on_crash,never}` | Restart policy passed to `Supervisor`. |
+| `--max-restarts N` | Stop after `N` restarts. `N` must be positive. |
+| `--backoff-initial SECONDS` | Initial delay before a restart. Must be positive. |
+| `--backoff-factor FLOAT` | Multiplier for successive restart delays. Must be at least `1`. |
+| `--max-backoff SECONDS` | Upper bound for restart delay. Must be positive. |
+| `--no-jitter` | Disable restart-delay jitter; jitter is enabled by default. |
+| `--env-clear` | Start the child with an empty environment. |
+| `--inherit-env NAME` | Allow-list a parent variable (implies `--env-clear`). Repeatable. |
+| `--env KEY=VALUE` | Set or override a child variable. Repeatable. |
+| `--cwd DIR` | Run the child with `DIR` as its working directory. |
+
+```bash
+python -m processkit supervise --restart always --max-restarts 5 -- some_command
+```
+
+| Exit code | Meaning |
+|---|---|
+| *(the final child result's code)* | Supervision stopped because the restart policy was satisfied. |
+| `120` | An internal command/supervisor failure, including a missing or unexecutable program. |
+| `121` | The restart policy required another attempt, but `--max-restarts` was exhausted. |
+| `122` | Supervision gave up due to a `give_up_when` condition (reserved for API-driven outcomes). |
+| `128 + N` | The final incarnation was killed by signal `N` (POSIX only) — mirrors `run`'s own convention. |
+| `128 + SIGINT` (`130`) | `python -m processkit` itself was interrupted with Ctrl+C. |
 
 ## Resource limits: hard cap or best effort?
 
@@ -164,7 +211,7 @@ of the codes below:
 
 This is a v1, deliberately minimal wrapper — reach for the Python API
 directly for anything beyond it: piping several commands together
-([Pipelines](pipelines.md)), restart-on-crash supervision
+([Pipelines](pipelines.md)), advanced supervision callbacks such as `stop_when` and `give_up_when`
 ([Supervision](supervision.md)), line-by-line streaming ([Streaming &
 interactive I/O](streaming.md)), or running a batch of commands concurrently
 (`output_all` / `aoutput_all`). There is also no `--dry-run` mode yet — a

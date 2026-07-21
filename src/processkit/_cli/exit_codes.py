@@ -1,13 +1,26 @@
 """Shared exit-code constants for the ``python -m processkit`` CLI.
 
 See `processkit._cli`'s module docstring for the full exit-code contract
-these implement; kept in one module so `run` and `doctor` (independent exit-
-code namespaces that must stay disjoint from each other and from argparse's
-own usage-error code `2`) can both import from a single source of truth.
+these implement; kept in one module so `run`, `doctor`, and `supervise`
+(independent exit-code namespaces that must stay disjoint from each other and
+from argparse's own usage-error code `2`) can all import from a single
+source of truth.
 """
 
 from __future__ import annotations
 
+#: `supervise` uses 120-122, deliberately disjoint from argparse's usage-error
+#: code 2, `doctor`'s 0/1/3/4 verdicts, and `run`'s 124-127 reservation below
+#: (it reuses the shared `EXIT_SIGNAL_BASE` + signal-number convention below
+#: for a signal-killed final incarnation and for its own Ctrl+C handling,
+#: exactly like `run`, rather than reserving a separate code for either).
+#: `supervise`: an internal error building or running its `Command` / `Supervisor`
+#: (including `ProcessNotFound`, `PermissionDenied`, `ResourceLimit`, or `Unsupported`).
+EXIT_SUPERVISE_INTERNAL_ERROR = 120
+#: `supervise`: the restart policy wanted another attempt, but `max_restarts` was exhausted.
+EXIT_SUPERVISE_RESTARTS_EXHAUSTED = 121
+#: `supervise`: supervision stopped because a `give_up_when` predicate matched.
+EXIT_SUPERVISE_GAVE_UP = 122
 #: GNU-`timeout`-compatible: the run hit its `--timeout` deadline.
 EXIT_TIMEOUT = 124
 #: An internal / containment failure that isn't one of the more specific codes

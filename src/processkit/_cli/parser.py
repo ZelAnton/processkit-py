@@ -23,9 +23,12 @@ def _positive_float(value: str) -> float:
 
 
 def _build_parser() -> tuple[
-    argparse.ArgumentParser, argparse.ArgumentParser, argparse.ArgumentParser
+    argparse.ArgumentParser,
+    argparse.ArgumentParser,
+    argparse.ArgumentParser,
+    argparse.ArgumentParser,
 ]:
-    """The top-level parser plus the ``run`` and ``doctor`` subparsers
+    """The top-level parser plus the ``run``, ``doctor``, and ``supervise`` subparsers
     (returned separately so a validation error found only after parsing —
     e.g. ``--timeout-grace`` without ``--timeout``, or a trailing command
     after ``doctor`` — can still report against the right subcommand's usage
@@ -122,6 +125,91 @@ def _build_parser() -> tuple[
         metavar="DIR",
         help="Run the child with DIR as its working directory (Command.cwd(...)).",
     )
+    supervise_parser = subparsers.add_parser(
+        "supervise",
+        help="Keep a command alive with restart policy and backoff",
+        description=(
+            "Run PROGRAM [ARG ...] under Supervisor, restarting it according to the "
+            "selected policy with optional bounded exponential backoff."
+        ),
+        epilog="Example: python -m processkit supervise --restart always -- ./server",
+    )
+    supervise_parser.add_argument(
+        "--restart",
+        choices=("always", "on_crash", "never"),
+        default=None,
+        help="Restart policy (Supervisor(restart=...)).",
+    )
+    supervise_parser.add_argument(
+        "--max-restarts",
+        dest="max_restarts",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Stop supervising after N restarts (Supervisor(max_restarts=...)).",
+    )
+    supervise_parser.add_argument(
+        "--backoff-initial",
+        dest="backoff_initial",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help="Initial delay before a restart (Supervisor(backoff_initial=...)).",
+    )
+    supervise_parser.add_argument(
+        "--backoff-factor",
+        dest="backoff_factor",
+        type=_positive_float,
+        default=None,
+        metavar="FLOAT",
+        help="Multiplier for successive restart delays; must be at least 1.",
+    )
+    supervise_parser.add_argument(
+        "--max-backoff",
+        dest="max_backoff",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help="Maximum delay before a restart (Supervisor(max_backoff=...)).",
+    )
+    supervise_parser.add_argument(
+        "--no-jitter",
+        dest="no_jitter",
+        action="store_true",
+        help="Disable random jitter in restart delays (enabled by default).",
+    )
+    supervise_parser.add_argument(
+        "--env-clear",
+        dest="env_clear",
+        action="store_true",
+        help="Start the child with an empty environment (Command.env_clear()).",
+    )
+    supervise_parser.add_argument(
+        "--inherit-env",
+        dest="inherit_env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Allow-list a parent environment variable through to the child "
+            "(Command.inherit_env(...); implies --env-clear). Repeatable."
+        ),
+    )
+    supervise_parser.add_argument(
+        "--env",
+        dest="env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Set/override a child environment variable (Command.env(...)). Repeatable.",
+    )
+    supervise_parser.add_argument(
+        "--cwd",
+        dest="cwd",
+        default=None,
+        metavar="DIR",
+        help="Run the child with DIR as its working directory (Command.cwd(...)).",
+    )
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Diagnose the containment environment without running anything",
@@ -132,7 +220,7 @@ def _build_parser() -> tuple[
         ),
         epilog="Example: python -m processkit doctor",
     )
-    return parser, run_parser, doctor_parser
+    return parser, run_parser, doctor_parser, supervise_parser
 
 
 def _split_child_argv(argv: Sequence[str]) -> tuple[list[str], list[str]]:

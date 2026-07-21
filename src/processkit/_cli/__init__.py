@@ -1,4 +1,4 @@
-"""``python -m processkit`` — run a shell command under processkit containment.
+"""``python -m processkit`` — run or supervise a shell command under processkit.
 
     python -m processkit run [OPTIONS] -- PROGRAM [ARG ...]
 
@@ -45,6 +45,45 @@ shouldn't-happen) case where the requested cap was rejected *and* the plain,
 uncapped fallback still fails: containment is unavailable outright, not
 merely the specific cap.
 
+    python -m processkit supervise [OPTIONS] -- PROGRAM [ARG ...]
+
+Keeps PROGRAM alive by restarting it per a selected policy (`Supervisor`),
+with bounded exponential backoff between restarts. `--restart
+{always,on_crash,never}` selects the policy (default `on_crash`);
+`--max-restarts` bounds how many restarts are attempted; `--backoff-initial` /
+`--backoff-factor` / `--max-backoff` tune the delay schedule; `--no-jitter`
+disables the default random jitter. The same `--env-clear` / `--inherit-env` /
+`--env` / `--cwd` flags as `run` configure the environment and working
+directory identically.
+
+Stdin is inherited exactly like `run` (`inherit_stdin()`). Stdout/stderr are
+**not** raw fd-inherited, unlike `run`: `Supervisor` requires a piped stdout to
+capture each incarnation's result (to evaluate the restart policy and
+populate `SupervisionOutcome.final_result`) — a non-piped stdout errors every
+incarnation. To still stream live to this terminal, this wrapper pipes both
+streams and tees every decoded line straight through to its own inherited
+stdout/stderr (`Command.stdout_tee` / `stderr_tee`); output still appears
+live, but line-buffered rather than a byte-for-byte fd passthrough.
+
+Exit code contract (its own reserved range, disjoint from `run`'s
+124-127/128+signal above, `doctor`'s 0/1/3/4 below, and argparse's own
+usage-error code `2`):
+
+- Normal completion (`SupervisionOutcome.stopped` in
+  ``{"policy_satisfied", "predicate"}``): this process exits with the last
+  incarnation's own code (`final_result.code`, unchanged), or
+  **128 + signal number** if that incarnation was killed by a signal (POSIX
+  only) — the same convention `run` uses.
+- ``stopped == "restarts_exhausted"``: exit **121** — the restart policy
+  wanted another attempt, but `--max-restarts` was exhausted.
+- ``stopped == "gave_up"``: exit **122** — supervision gave up (reserved for
+  API-driven `give_up_when` outcomes; this CLI does not expose that knob).
+- `python -m processkit` itself was interrupted with Ctrl+C: exit
+  **128 + SIGINT**.
+- Any other internal failure building or running the `Command` /
+  `Supervisor` (`ProcessNotFound` / `PermissionDenied` / `ResourceLimit` /
+  `Unsupported`, or an unrecognized `stopped` value): exit **120**.
+
     python -m processkit doctor
 
 A read-only preflight diagnosis of the containment environment, for CI gates
@@ -66,11 +105,12 @@ so "resource limits are available" means *all three* probed successfully,
 not just the first one tried.
 
 `doctor`'s exit code is machine-readable and lives in its own reserved range,
-deliberately disjoint from `run`'s codes above (124/125/126/127/128+signal)
-*and* from argparse's own usage-error code (`2` — the same code `run` itself
-uses for a bad invocation, e.g. a missing `--`-terminated command): `doctor`
-never returns `2` as a diagnostic verdict, so a caller can always read `2` as
-"you called this wrong", unambiguous from any of the codes below:
+deliberately disjoint from `run`'s codes above (124/125/126/127/128+signal),
+`supervise`'s codes above (120/121/122/128+signal), *and* from argparse's own
+usage-error code (`2` — the same code `run` itself uses for a bad invocation,
+e.g. a missing `--`-terminated command): `doctor` never returns `2` as a
+diagnostic verdict, so a caller can always read `2` as "you called this
+wrong", unambiguous from any of the codes below:
 
 - **0** — resource limits are available (containment *and* all three caps
   hold).
@@ -87,8 +127,9 @@ never returns `2` as a diagnostic verdict, so a caller can always read `2` as
 This package (``processkit._cli``) is the private implementation behind the
 thin ``src/processkit/__main__.py`` entry point: `parser` builds the
 argparse parsers and splits the ``--`` separator, `run` implements the
-``run`` subcommand, `doctor` implements the ``doctor`` subcommand, and
-`exit_codes` holds the shared exit-code constants both subcommands use.
+``run`` subcommand, `doctor` implements the ``doctor`` subcommand,
+`supervise` implements the ``supervise`` subcommand, and `exit_codes`
+holds the shared exit-code constants all subcommands use.
 Nothing here is part of the public ``processkit`` package surface.
 """
 
@@ -100,6 +141,7 @@ from collections.abc import Sequence
 from processkit._cli.doctor import _doctor
 from processkit._cli.parser import _build_parser, _split_child_argv
 from processkit._cli.run import _run
+from processkit._cli.supervise import _supervise
 
 __all__: list[str] = []  # deliberately empty: this package is not public API
 
@@ -108,13 +150,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     own_argv, child_argv = _split_child_argv(raw_argv)
 
-    parser, run_parser, doctor_parser = _build_parser()
+    parser, run_parser, doctor_parser, supervise_parser = _build_parser()
     args = parser.parse_args(own_argv)
 
     if args.subcommand == "doctor":
         if child_argv:
             doctor_parser.error("doctor: does not take a trailing command (no '--' needed)")
         return _doctor()
+
+    if args.subcommand == "supervise":
+        if not child_argv:
+            supervise_parser.error("supervise: missing command to execute after '--'")
+        return _supervise(supervise_parser, args, child_argv)
 
     # "run" is the only other subparser registered above, and `required=True`
     # means `parse_args` itself already rejected anything else — so `run` is

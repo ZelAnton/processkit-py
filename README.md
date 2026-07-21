@@ -270,7 +270,10 @@ failed = sum(not (isinstance(r, ProcessResult) and r.is_success) for r in result
 It is **collect-all**: each slot is one command's `ProcessResult`, or a
 `ProcessError` for a spawn/I/O failure — a non-zero exit never short-circuits the
 batch. `aoutput_all` / `output_all_bytes` / `aoutput_all_bytes` round out the
-set. *Deeper: [Cookbook → run many at once](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md).*
+set. Need results **as they finish** instead? `aoutput_as_completed` (and its
+`aoutput_as_completed_bytes` twin) streams each `(index, result)` pair the moment
+its command completes, under the same concurrency cap and no-orphan teardown.
+*Deeper: [Cookbook → run many at once](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md).*
 
 ### Supervising a long-lived child
 

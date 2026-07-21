@@ -399,6 +399,31 @@ All four accept `runner=` too, driving the whole batch through a double (see
 [Test code without spawning processes](#test-code-without-spawning-processes))
 instead of the real runner — no real processes spawned in a batch test.
 
+### Stream results as they finish
+
+`output_all` and its twins are *collect-all* — nothing is visible until the whole
+batch is done. For a large fan-out where you want progress, or to react to early
+finishers instead of blocking on the slowest command, `aoutput_as_completed` is
+an async iterator that yields each `(index, result)` pair the moment its command
+completes — in completion order, not input order, with the `index` (the command's
+position in the input) re-associating a result with the command that produced it:
+
+```python
+from processkit import Command, ProcessResult, aoutput_as_completed
+
+commands = [Command("convert", [f"{i}.png", f"{i}.jpg"]) for i in range(200)]
+async for index, result in aoutput_as_completed(commands, concurrency=8):
+    if isinstance(result, ProcessResult) and result.is_success:
+        print(f"page {index} converted")
+```
+
+Same hard concurrency cap (never more than `concurrency` children alive at once)
+and the same per-slot-error contract as the collect-all verbs — a command that
+fails to spawn yields its `ProcessError` in its own pair without aborting the
+stream. Cancelling the consuming task, or `break`ing out of the loop early, tears
+down every command still in flight, leaving no orphaned children. Use
+`aoutput_as_completed_bytes` for undecoded `bytes` output.
+
 ## Wrap a CLI tool
 
 `CliClient` binds a program to default timeout/env, so repeated calls pass only

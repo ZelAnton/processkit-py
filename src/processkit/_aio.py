@@ -1,6 +1,6 @@
 """Pure-Python asyncio helpers layered on top of the compiled extension.
 
-Two families live here:
+Three families live here:
 
 - **Readiness helpers** (`wait_until` / `wait_for_line` / `wait_for_port` /
   `wait_for_http` / `wait_for_path`) compose on top of the compiled async
@@ -16,6 +16,12 @@ Two families live here:
   reason: the crate's `StatsSampler` borrows the group by lifetime and has no
   FFI-safe equivalent, so this is plain Python built directly on the already
   -public `ProcessGroup.stats()`.
+- **Streaming batch iterators** (`aoutput_as_completed` /
+  `aoutput_as_completed_bytes`) fan a sequence of commands out under a hard
+  concurrency cap and yield each ``(index, result)`` pair *as its command
+  finishes* — a streaming, pure-Python counterpart to the compiled crate's
+  *collect-all* `aoutput_all` family, built directly on `Command.aoutput()` and
+  carrying the same no-orphan teardown on cancellation.
 """
 
 from __future__ import annotations
@@ -23,15 +29,25 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable, Container
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
 from typing import Any, TypeVar, overload
 
-from ._processkit import ProcessError, ProcessGroup, ProcessGroupStats
+from ._processkit import (
+    BytesResult,
+    Command,
+    ProcessError,
+    ProcessGroup,
+    ProcessGroupStats,
+    ProcessResult,
+)
 from ._types import StrPath
 
 __all__ = [
     "WaitTimeout",
+    "aoutput_as_completed",
+    "aoutput_as_completed_bytes",
     "sample_stats",
     "wait_for_http",
     "wait_for_line",
@@ -728,3 +744,173 @@ async def sample_stats(group: ProcessGroup, every: float) -> AsyncIterator[Proce
     while True:
         yield group.stats()
         await asyncio.sleep(every)
+
+
+# --- streaming batch (aoutput_as_completed) ----------------------------------
+
+
+_Result = TypeVar("_Result")
+
+
+def _resolve_concurrency(concurrency: int | None) -> int:
+    """Shared ``concurrency`` handling for the streaming batch iterators:
+    ``None`` means "as many at once as the machine has CPUs" (`os.cpu_count()`,
+    floored at 1), matching the `output_all` family's default; a non-positive
+    explicit value raises `ValueError` rather than being silently clamped to 1
+    — the same contract the compiled batch verbs enforce.
+    """
+    if concurrency is None:
+        return os.cpu_count() or 1
+    if concurrency < 1:
+        raise ValueError("concurrency must be a positive integer")
+    return concurrency
+
+
+async def _reap_slots(tasks: set[asyncio.Task[Any]]) -> None:
+    """Cancel every still-running slot task and wait for all of them to reach a
+    terminal state before returning, so each already-started child subtree is
+    torn down (reaped) — no orphan survives an early ``break``, an exception
+    mid-iteration, or the consuming task's own cancellation.
+
+    Robust against a *fresh* cancellation landing while we drain: `asyncio.wait`
+    waits for every task to settle and never re-raises a child's own exception
+    into this frame, so the only thing that can interrupt the drain is a new
+    cancellation of *this* await — which we absorb by re-cancelling and looping,
+    never returning while a slot (and thus a subtree) is still live. Mirrors
+    `_quiesce`'s discipline for the single-task case.
+    """
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    while True:
+        try:
+            await asyncio.wait(tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            continue
+        break
+
+
+async def _stream_as_completed(
+    commands: Sequence[Command],
+    concurrency: int | None,
+    run: Callable[[Command], Awaitable[_Result]],
+) -> AsyncIterator[tuple[int, _Result | ProcessError]]:
+    """Shared engine for `aoutput_as_completed` / `aoutput_as_completed_bytes`:
+    drive ``commands`` through ``run`` (`Command.aoutput` or `.aoutput_bytes`)
+    under a hard concurrency cap, yielding ``(original index, result)`` as each
+    command finishes. See the public wrappers for the full contract.
+    """
+    limit = _resolve_concurrency(concurrency)
+    items = list(commands)
+    if not items:
+        return
+    semaphore = asyncio.Semaphore(limit)
+
+    async def _slot(index: int, command: Command) -> tuple[int, _Result | ProcessError]:
+        # Acquire BEFORE running: the semaphore caps how many `run(command)`
+        # calls — i.e. how many live child subtrees — exist at once, never more
+        # than ``limit``, no matter how many commands are queued behind them.
+        async with semaphore:
+            try:
+                return index, await run(command)
+            except ProcessError as error:
+                # A spawn/I/O failure (or a `CancellationToken`-driven
+                # `Cancelled`) is data for THIS slot, aligned with `output_all`
+                # — never an exception that aborts the rest of the series. A
+                # task cancellation is an `asyncio.CancelledError` (a
+                # `BaseException`, not a `ProcessError`), so it is deliberately
+                # NOT caught here: it propagates out to reap this slot's tree.
+                return index, error
+
+    pending: set[asyncio.Task[tuple[int, _Result | ProcessError]]] = {
+        asyncio.ensure_future(_slot(index, command)) for index, command in enumerate(items)
+    }
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                yield task.result()
+    finally:
+        # An early `break`, an exception, or cancellation of the consuming task
+        # all unwind through here: tear down every slot still in flight so no
+        # already-started subtree is left orphaned.
+        await _reap_slots(pending)
+
+
+def _aoutput_slot(command: Command) -> Awaitable[ProcessResult]:
+    return command.aoutput()
+
+
+def _aoutput_bytes_slot(command: Command) -> Awaitable[BytesResult]:
+    return command.aoutput_bytes()
+
+
+def aoutput_as_completed(
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = None,
+) -> AsyncIterator[tuple[int, ProcessResult | ProcessError]]:
+    """Run ``commands`` with bounded concurrency, yielding each ``(original
+    index, ProcessResult | ProcessError)`` pair **as that command finishes** —
+    the streaming, pure-Python counterpart to the compiled `aoutput_all`.
+
+    Where `aoutput_all` is *collect-all* (nothing is visible until the whole
+    batch is done), this is an async iterator — ``async for index, result in
+    aoutput_as_completed(commands, concurrency=8): ...`` — that hands each
+    result back the moment its command completes, so a large fan-out reports
+    progress and lets you react to early finishers instead of blocking on the
+    slowest command in the batch.
+
+    **Completion order, not input order.** Pairs arrive in the order their
+    commands *finish*, which is generally not the input order; the ``index`` (a
+    command's position in ``commands``) is what re-associates a result with the
+    command that produced it. Every command is yielded exactly once, and the
+    iterator is exhausted once all of them have been.
+
+    **Errors are per-slot data, not a series-ending raise** (aligned with
+    `output_all`): a command that fails to *spawn* — or hits an I/O error, or is
+    cancelled through its own `CancellationToken` — yields its `ProcessError` in
+    its own pair, and never short-circuits the others. A non-zero exit, a
+    timeout, and a signal-kill are, as everywhere in this library, *data* on a
+    `ProcessResult`, not errors at all.
+
+    **Hard concurrency cap.** At most ``concurrency`` commands are ever live at
+    once (an `asyncio.Semaphore` gates each `Command.aoutput()`), so fanning out
+    hundreds of commands can't exhaust file descriptors or the process table —
+    the same bound `aoutput_all` gives, held *while* streaming. ``concurrency``
+    defaults to the CPU count (`os.cpu_count()`), matching the batch family; a
+    non-positive value raises `ValueError` rather than being silently clamped.
+
+    **No orphans on cancellation or early exit.** Cancelling the task consuming
+    this iterator — or simply ``break``ing out of the ``async for`` early — tears
+    down every command still in flight: each `Command.aoutput()` reaps its whole
+    process subtree (grandchildren included) on cancellation, and this iterator
+    drives that teardown for *all* live slots before it finishes unwinding. No
+    started child is left orphaned, whether the batch ran to completion, was
+    abandoned partway, or was cancelled outright.
+
+    Built directly on `Command.aoutput()`; unlike the compiled `aoutput_all`
+    family it takes no ``runner=`` double — the streaming layer is deliberately
+    kept minimal, so for a hermetic batch that doesn't need streaming reach for
+    `aoutput_all(..., runner=...)` instead. For raw ``bytes`` output (no UTF-8
+    decode) use the twin `aoutput_as_completed_bytes`.
+    """
+    return _stream_as_completed(commands, concurrency, _aoutput_slot)
+
+
+def aoutput_as_completed_bytes(
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = None,
+) -> AsyncIterator[tuple[int, BytesResult | ProcessError]]:
+    """The raw-``bytes`` twin of `aoutput_as_completed`: the identical streaming,
+    concurrency-cap, per-slot-error, and no-orphan-on-cancellation contract, but
+    each finished command yields a `BytesResult` — its stdout/stderr as undecoded
+    ``bytes``, for non-UTF-8 or binary output — in place of a text
+    `ProcessResult`, mirroring how `aoutput_all_bytes` relates to `aoutput_all`.
+    See `aoutput_as_completed` for the full contract.
+    """
+    return _stream_as_completed(commands, concurrency, _aoutput_bytes_slot)

@@ -1684,7 +1684,7 @@ affect this token or its other children.
 
 ## Batch execution
 
-Run many commands with bounded concurrency, returning each result — or a `ProcessError` for a spawn/I/O failure — in input order.
+Run many commands with bounded concurrency, each result — or a `ProcessError` for a spawn/I/O failure — in its own slot. The `output_all` family is *collect-all* (every result in input order once the whole batch finishes); `aoutput_as_completed` and its `_bytes` twin instead stream each `(index, result)` pair *as it finishes*, for progress and early reaction on a large fan-out.
 
 ### `output_all`
 
@@ -1729,6 +1729,78 @@ def aoutput_all_bytes(
     runner: RunnerLike | None = ...,
 ) -> Awaitable[list[BytesResult | ProcessError]]
 ```
+
+### `aoutput_as_completed`
+
+```text
+def aoutput_as_completed(
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = None,
+) -> AsyncIterator[tuple[int, ProcessResult | ProcessError]]
+```
+
+Run ``commands`` with bounded concurrency, yielding each ``(original
+index, ProcessResult | ProcessError)`` pair **as that command finishes** —
+the streaming, pure-Python counterpart to the compiled `aoutput_all`.
+
+Where `aoutput_all` is *collect-all* (nothing is visible until the whole
+batch is done), this is an async iterator — ``async for index, result in
+aoutput_as_completed(commands, concurrency=8): ...`` — that hands each
+result back the moment its command completes, so a large fan-out reports
+progress and lets you react to early finishers instead of blocking on the
+slowest command in the batch.
+
+**Completion order, not input order.** Pairs arrive in the order their
+commands *finish*, which is generally not the input order; the ``index`` (a
+command's position in ``commands``) is what re-associates a result with the
+command that produced it. Every command is yielded exactly once, and the
+iterator is exhausted once all of them have been.
+
+**Errors are per-slot data, not a series-ending raise** (aligned with
+`output_all`): a command that fails to *spawn* — or hits an I/O error, or is
+cancelled through its own `CancellationToken` — yields its `ProcessError` in
+its own pair, and never short-circuits the others. A non-zero exit, a
+timeout, and a signal-kill are, as everywhere in this library, *data* on a
+`ProcessResult`, not errors at all.
+
+**Hard concurrency cap.** At most ``concurrency`` commands are ever live at
+once (an `asyncio.Semaphore` gates each `Command.aoutput()`), so fanning out
+hundreds of commands can't exhaust file descriptors or the process table —
+the same bound `aoutput_all` gives, held *while* streaming. ``concurrency``
+defaults to the CPU count (`os.cpu_count()`), matching the batch family; a
+non-positive value raises `ValueError` rather than being silently clamped.
+
+**No orphans on cancellation or early exit.** Cancelling the task consuming
+this iterator — or simply ``break``ing out of the ``async for`` early — tears
+down every command still in flight: each `Command.aoutput()` reaps its whole
+process subtree (grandchildren included) on cancellation, and this iterator
+drives that teardown for *all* live slots before it finishes unwinding. No
+started child is left orphaned, whether the batch ran to completion, was
+abandoned partway, or was cancelled outright.
+
+Built directly on `Command.aoutput()`; unlike the compiled `aoutput_all`
+family it takes no ``runner=`` double — the streaming layer is deliberately
+kept minimal, so for a hermetic batch that doesn't need streaming reach for
+`aoutput_all(..., runner=...)` instead. For raw ``bytes`` output (no UTF-8
+decode) use the twin `aoutput_as_completed_bytes`.
+
+### `aoutput_as_completed_bytes`
+
+```text
+def aoutput_as_completed_bytes(
+    commands: Sequence[Command],
+    *,
+    concurrency: int | None = None,
+) -> AsyncIterator[tuple[int, BytesResult | ProcessError]]
+```
+
+The raw-``bytes`` twin of `aoutput_as_completed`: the identical streaming,
+concurrency-cap, per-slot-error, and no-orphan-on-cancellation contract, but
+each finished command yields a `BytesResult` — its stdout/stderr as undecoded
+``bytes``, for non-UTF-8 or binary output — in place of a text
+`ProcessResult`, mirroring how `aoutput_all_bytes` relates to `aoutput_all`.
+See `aoutput_as_completed` for the full contract.
 
 ## Readiness helpers
 

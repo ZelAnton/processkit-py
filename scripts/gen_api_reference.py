@@ -138,9 +138,20 @@ SECTIONS: tuple[Section, ...] = (
     ),
     Section(
         "Batch execution",
-        "Run many commands with bounded concurrency, returning each result — or a "
-        "`ProcessError` for a spawn/I/O failure — in input order.",
-        ("output_all", "output_all_bytes", "aoutput_all", "aoutput_all_bytes"),
+        "Run many commands with bounded concurrency, each result — or a "
+        "`ProcessError` for a spawn/I/O failure — in its own slot. The `output_all` "
+        "family is *collect-all* (every result in input order once the whole batch "
+        "finishes); `aoutput_as_completed` and its `_bytes` twin instead stream each "
+        "`(index, result)` pair *as it finishes*, for progress and early reaction on "
+        "a large fan-out.",
+        (
+            "output_all",
+            "output_all_bytes",
+            "aoutput_all",
+            "aoutput_all_bytes",
+            "aoutput_as_completed",
+            "aoutput_as_completed_bytes",
+        ),
     ),
     Section(
         "Readiness helpers",

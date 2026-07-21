@@ -22,6 +22,8 @@ from processkit import (
     ProcessResult,
     aoutput_all,
     aoutput_all_bytes,
+    aoutput_as_completed,
+    aoutput_as_completed_bytes,
     output_all,
     output_all_bytes,
 )
@@ -451,4 +453,145 @@ def test_aoutput_all_bounds_live_children_to_concurrency(
     assert 1 <= peak <= concurrency, (
         f"observed peak of {peak} live children, expected 1..{concurrency} "
         f"({child_count} commands queued behind a concurrency={concurrency} limit)"
+    )
+
+
+# --- streaming as-completed (aoutput_as_completed) ---------------------------
+
+
+def test_aoutput_as_completed_yields_in_completion_order() -> None:
+    # The whole point of the streaming variant vs collect-all `aoutput_all`: the
+    # first command sleeps far longer than the second, so it *finishes* last, and
+    # a completion-order iterator must yield the fast slot (index 1) BEFORE the
+    # slow one (index 0) -- not in input order. The index in each pair is what
+    # re-associates a result with the command that produced it. Same inverted
+    # completion order as `test_aoutput_all_returns_results_in_order`, but here
+    # the ordering asserted is the emission order, not a returned list.
+    async def scenario() -> list[tuple[int, ProcessResult | ProcessError]]:
+        slow = Command(PY, ["-c", "import time; time.sleep(0.5); print(1)"])
+        fast = Command(PY, ["-c", "print(2)"])
+        collected: list[tuple[int, ProcessResult | ProcessError]] = []
+        async for pair in aoutput_as_completed([slow, fast], concurrency=2):
+            collected.append(pair)
+        return collected
+
+    collected = asyncio.run(scenario())
+    order = [index for index, _ in collected]
+    assert order == [1, 0], f"expected completion order [fast=1, slow=0], got {order}"
+    by_index = dict(collected)
+    assert isinstance(by_index[0], ProcessResult)
+    assert by_index[0].stdout.strip() == "1"
+    assert isinstance(by_index[1], ProcessResult)
+    assert by_index[1].stdout.strip() == "2"
+
+
+def test_aoutput_as_completed_puts_spawn_failure_in_its_slot() -> None:
+    # A real spawn failure alongside a real success: the failure is data in its
+    # own slot (a `ProcessError`), never an exception that aborts the whole
+    # stream -- the streaming analogue of
+    # `test_aoutput_all_puts_spawn_failure_in_its_slot`. Both commands must still
+    # be emitted; the good one is unaffected by the bad one's failure.
+    async def scenario() -> dict[int, ProcessResult | ProcessError]:
+        commands = [Command(PY, ["-c", "print(1)"]), Command(NO_SUCH_PROGRAM)]
+        results: dict[int, ProcessResult | ProcessError] = {}
+        async for index, result in aoutput_as_completed(commands, concurrency=2):
+            results[index] = result
+        return results
+
+    results = asyncio.run(scenario())
+    assert set(results) == {0, 1}
+    ok, failed = results[0], results[1]
+    assert isinstance(ok, ProcessResult)
+    assert ok.stdout.strip() == "1"
+    assert isinstance(failed, ProcessNotFound)
+    assert isinstance(failed, ProcessError)
+
+
+def test_aoutput_as_completed_bytes_streams_byteresults() -> None:
+    # The bytes twin emits `BytesResult`s (undecoded stdout) rather than text
+    # `ProcessResult`s, on the same streaming path.
+    async def scenario() -> dict[int, BytesResult | ProcessError]:
+        code = "import sys; sys.stdout.buffer.write(b'\\x07\\x08')"
+        results: dict[int, BytesResult | ProcessError] = {}
+        async for index, result in aoutput_as_completed_bytes([Command(PY, ["-c", code])]):
+            results[index] = result
+        return results
+
+    results = asyncio.run(scenario())
+    first = results[0]
+    assert isinstance(first, BytesResult)
+    assert first.stdout == b"\x07\x08"
+
+
+def test_aoutput_as_completed_rejects_zero_concurrency() -> None:
+    # Same contract as the `output_all` family: `concurrency=0` is a clear
+    # `ValueError` (surfaced on the first iteration step), not a silent clamp to
+    # 1 -- across both the text and bytes streaming variants.
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="concurrency"):
+            async for _ in aoutput_as_completed([Command(PY, ["-c", "pass"])], concurrency=0):
+                pass
+        with pytest.raises(ValueError, match="concurrency"):
+            async for _ in aoutput_as_completed_bytes([Command(PY, ["-c", "pass"])], concurrency=0):
+                pass
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("concurrency", "child_count"), _CONCURRENCY_CASES)
+def test_aoutput_as_completed_bounds_live_children_to_concurrency(
+    tmp_path: pathlib.Path, concurrency: int, child_count: int
+) -> None:
+    # The hard cap holds while streaming, not just for the collect-all verbs:
+    # more commands than the limit are queued, and at no point may more than
+    # `concurrency` children be alive at once (the semaphore gates each
+    # `Command.aoutput()`). Reuses the same marker-file peak-concurrency probe as
+    # the `output_all`/`aoutput_all` cap tests.
+    marks_dir = tmp_path / "marks"
+    marks_dir.mkdir()
+    commands = [_mark_lifecycle_command(marks_dir, 0.35) for _ in range(child_count)]
+
+    async def scenario() -> None:
+        async for _ in aoutput_as_completed(commands, concurrency=concurrency):
+            pass
+
+    peak = _measure_peak_concurrency(marks_dir, lambda: asyncio.run(scenario()))
+
+    # See the sync `test_output_all_bounds_live_children_to_concurrency` for why
+    # this is `1 <= peak <= concurrency`, not a strict `==`.
+    assert 1 <= peak <= concurrency, (
+        f"observed peak of {peak} live children, expected 1..{concurrency} "
+        f"({child_count} commands streamed under a concurrency={concurrency} cap)"
+    )
+
+
+def test_aoutput_as_completed_cancel_mid_flight_kills_the_tree(pid_file: pathlib.Path) -> None:
+    # No-orphan teardown for the STREAMING batch surface, pinned by its own test
+    # rather than leaning on `aoutput`'s per-call guarantee: cancelling the task
+    # consuming `aoutput_as_completed` while a slot is still in flight must tear
+    # down the whole tree that slot spawned -- the iterator's `finally` has to
+    # cancel every live slot task (which reaps its subtree) before it finishes
+    # unwinding, leaving no grandchild orphaned. Mirrors
+    # `test_aoutput_all_cancel_mid_flight_kills_the_tree`, but exercises the
+    # iterator's teardown path (a cancelled consumer of an `async for`), which is
+    # new code here, not the compiled batch driver's.
+    async def consume() -> None:
+        async for _index, _result in aoutput_as_completed(
+            [spawn_grandchild_command(pid_file)], concurrency=1
+        ):
+            pass
+
+    async def driver() -> int:
+        task = asyncio.ensure_future(consume())
+        grandchild_pid = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+        assert is_alive(grandchild_pid)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return grandchild_pid
+
+    grandchild_pid = asyncio.run(driver())
+    assert wait_dead(grandchild_pid, timeout=10.0), (
+        f"grandchild {grandchild_pid} survived cancellation of an in-flight "
+        "aoutput_as_completed consumer"
     )

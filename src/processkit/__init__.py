@@ -29,6 +29,8 @@ from threading import Lock
 
 from ._aio import (
     WaitTimeout,
+    aoutput_as_completed,
+    aoutput_as_completed_bytes,
     sample_stats,
     wait_for_http,
     wait_for_line,
@@ -154,6 +156,8 @@ __all__ = [
     "WaitTimeout",
     "aoutput_all",
     "aoutput_all_bytes",
+    "aoutput_as_completed",
+    "aoutput_as_completed_bytes",
     "enable_logging",
     "output_all",
     "output_all_bytes",

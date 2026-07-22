@@ -523,6 +523,10 @@ Command("service").windows_graceful_ctrl_break().timeout(30.0).timeout_grace(5.0
 
 # Take the direct child down even if THIS process is killed before teardown runs.
 Command("worker").kill_on_parent_death().start()
+
+# Ask what scope that hardening actually reaches on THIS platform (build-time
+# fixed; no prior kill_on_parent_death() needed).
+scope = Command.kill_on_parent_death_scope()  # "whole_tree" | "direct_child_only" | "unsupported"
 ```
 
 Platform honesty, not silent no-ops:
@@ -543,6 +547,13 @@ Platform honesty, not silent no-ops:
 - `kill_on_parent_death` is best-effort by design: kernel-guaranteed on Windows,
   `PR_SET_PDEATHSIG` on the direct child on Linux, a documented no-op on
   macOS/BSD. The graceful `with`-block teardown holds everywhere regardless.
+  `Command.kill_on_parent_death_scope()` reports that reach programmatically —
+  `"whole_tree"` on Windows, `"direct_child_only"` on Linux, `"unsupported"` on
+  macOS/BSD — so you can read the *actual* abrupt-death scope instead of trusting
+  the prose caveat. It is a static capability query fixed at build time: it needs
+  no prior `kill_on_parent_death()` call (read it off the class or any instance)
+  and describes only abrupt owner death — graceful teardown still kills the whole
+  tree everywhere.
 
 processkit wires **pipes**, not a pseudo-terminal, so a tool that *demands* a tty
 (an `ssh`/`sudo` password prompt) won't get one. Drive such tools

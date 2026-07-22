@@ -353,6 +353,31 @@ class Command:
         ``output()``, so this callback still fires."""
 
     def kill_on_parent_death(self) -> Command: ...
+    @staticmethod
+    def kill_on_parent_death_scope() -> str:
+        """The scope of parent-death cleanup this platform actually achieves
+        when the owner dies **abruptly** (a ``SIGKILL`` or crash, where graceful
+        ``Drop`` teardown never runs), as a stable string:
+
+        - ``"whole_tree"`` — Windows: the kernel closes the Job Object handle on
+          owner death and kill-on-close reaps the direct child and every
+          descendant.
+        - ``"direct_child_only"`` — Linux: ``PR_SET_PDEATHSIG`` reaches only the
+          direct child; grandchildren survive the owner's abrupt death.
+        - ``"unsupported"`` — macOS/BSD: no ``pdeathsig`` equivalent, so an
+          abrupt owner death triggers no cleanup at all.
+
+        An honest capability report, not a request — read it to state the real
+        reach of ``kill_on_parent_death()`` (best-effort on Unix) instead of
+        overpromising a whole-tree guarantee the OS cannot keep. It covers only
+        the abrupt-death path: ordinary graceful teardown still kills the whole
+        tree on every platform regardless.
+
+        A ``staticmethod`` — the scope is fixed per target at build time and does
+        not depend on instance state or on whether ``kill_on_parent_death()`` was
+        called, so call it on the class (``Command.kill_on_parent_death_scope()``)
+        or on any instance for the same answer."""
+
     def create_no_window(self) -> Command: ...
     def windows_graceful_ctrl_break(self) -> Command:
         """Windows: opt in to a **graceful teardown** — at a graceful timeout

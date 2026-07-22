@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   increments the new `SupervisionOutcome.liveness_kills` counter, and the
   final such stop under `restart="never"` reports `SupervisionOutcome.stopped
   == "unhealthy"`
+- Add `Command.kill_on_parent_death_scope()`, a read-only capability query
+  reporting the scope of parent-death cleanup the current platform actually
+  achieves when the owner dies abruptly, as a string: `"whole_tree"` on Windows
+  (the Job Object reaps the whole tree on owner death), `"direct_child_only"`
+  on Linux (`PR_SET_PDEATHSIG` reaches only the direct child; grandchildren
+  survive), or `"unsupported"` on macOS/BSD (no `pdeathsig` equivalent). A
+  static query fixed at build time — read it off the class or any instance,
+  with no prior `kill_on_parent_death()` call — so a caller can state the real
+  reach of the best-effort hardening instead of overpromising a whole-tree
+  guarantee the OS cannot keep
 
 ### Changed
 - Bump the processkit dependency to 2.3.1 (lockfile pinned via `cargo update -p
@@ -67,6 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdout/stderr file-redirect sinks, `windows_graceful_ctrl_break`,
   `ProcessGroup::members_info`/`MemberInfo`, `Supervisor` liveness health
   checks) that this binding has since adopted — see the `Added` entries above.
+- Bump the processkit dependency to 2.3.2 (lockfile pinned via `cargo update -p
+  processkit --precise 2.3.2`; the Cargo.toml requirement stays at the broad
+  `2.3` range). 2.3.2 adds new upstream public surface
+  (`Command::kill_on_parent_death_scope` and the `ParentDeathCleanup` enum it
+  returns) that this binding adopts — see the `Added` entry above.
 
 ### Fixed
 -

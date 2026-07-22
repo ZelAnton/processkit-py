@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use processkit::Command as PkCommand;
+use processkit::ParentDeathCleanup;
 use processkit::Pipeline as PkPipeline;
 use processkit::Stdin as PkStdin;
 use pyo3::exceptions::PyValueError;
@@ -61,6 +62,28 @@ fn reject_append_for_writer(append: bool) -> PyResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Render a `ParentDeathCleanup` capability report as a stable snake_case
+/// string. Same enum-to-string convention this binding uses for the crate's
+/// other `#[non_exhaustive]` enums (see `stop_reason_str` in `supervisor.rs`):
+/// a private `match … -> &'static str` with every named variant spelled out and
+/// pinned by a unit test, plus a catch-all so a future upstream variant can
+/// never fail the build or panic at runtime.
+///
+/// The catch-all degrades to a distinct `"unknown"` sentinel rather than folding
+/// an unrecognized scope into `"unsupported"`: the crate's enum doc flags a
+/// *possible future whole-tree Linux mechanism*, so an unknown variant might
+/// actually reach further than `"unsupported"` ("no cleanup at all") would
+/// claim — reporting `"unknown"` refuses to under-promise a reach we can't name,
+/// exactly as `stop_reason_str`'s `_ => "unknown"` does.
+fn parent_death_cleanup_str(scope: ParentDeathCleanup) -> &'static str {
+    match scope {
+        ParentDeathCleanup::WholeTree => "whole_tree",
+        ParentDeathCleanup::DirectChildOnly => "direct_child_only",
+        ParentDeathCleanup::Unsupported => "unsupported",
+        _ => "unknown",
+    }
 }
 
 #[pymethods]
@@ -698,6 +721,35 @@ impl PyCommand {
         }
     }
 
+    /// The scope of parent-death cleanup this build's platform actually achieves
+    /// when the owner dies **abruptly** (a `SIGKILL` or crash, where graceful
+    /// `Drop` teardown never runs), as a stable string:
+    ///
+    /// - `"whole_tree"` — Windows: the kernel closes the Job Object handle on
+    ///   owner death and kill-on-close reaps the direct child and every
+    ///   descendant.
+    /// - `"direct_child_only"` — Linux: `PR_SET_PDEATHSIG` reaches only the
+    ///   direct child; with the owner gone nothing tears the surviving
+    ///   grandchildren down.
+    /// - `"unsupported"` — macOS / the BSDs: no `pdeathsig` equivalent, so an
+    ///   abrupt owner death triggers no cleanup at all.
+    ///
+    /// An honest capability report, not a request — it lets a caller state the
+    /// real reach of `kill_on_parent_death()` (best-effort on Unix) instead of
+    /// overpromising a whole-tree guarantee the OS cannot keep. It covers only
+    /// the abrupt-death path: ordinary graceful teardown still kills the whole
+    /// tree on every platform regardless.
+    ///
+    /// Exposed as a `staticmethod` because it mirrors the crate's associated
+    /// function `Command::kill_on_parent_death_scope()` 1:1: the value is fixed
+    /// per target at build time and does **not** depend on instance/config or on
+    /// whether `kill_on_parent_death()` was called, so call it on the class or
+    /// any instance for the same answer.
+    #[staticmethod]
+    fn kill_on_parent_death_scope() -> &'static str {
+        parent_death_cleanup_str(PkCommand::kill_on_parent_death_scope())
+    }
+
     /// Windows: don't allocate a console window for the child. No-op elsewhere.
     fn create_no_window(&self) -> Self {
         Self {
@@ -1155,4 +1207,25 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPipeline>()?;
     m.add_function(pyo3::wrap_pyfunction!(which, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mirrors `supervisor.rs`'s `stop_reason_str_covers_every_variant`: pin the
+    // enum-to-string mapping so a renamed/repurposed variant string is caught
+    // here, and the `#[non_exhaustive]` catch-all can never silently swallow one
+    // of the three variants that exist today.
+    #[test]
+    fn parent_death_cleanup_str_covers_every_variant() {
+        let cases = [
+            (ParentDeathCleanup::WholeTree, "whole_tree"),
+            (ParentDeathCleanup::DirectChildOnly, "direct_child_only"),
+            (ParentDeathCleanup::Unsupported, "unsupported"),
+        ];
+        for (scope, expected) in cases {
+            assert_eq!(parent_death_cleanup_str(scope), expected, "{scope:?}");
+        }
+    }
 }

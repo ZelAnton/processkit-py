@@ -876,6 +876,30 @@ def test_windows_graceful_ctrl_break_is_a_platform_honest_no_op() -> None:
     assert "ok" in cmd.run()
 
 
+def test_kill_on_parent_death_scope_reports_a_valid_platform_scope() -> None:
+    # `kill_on_parent_death_scope()` is a read-only capability query: it reports
+    # the reach of `kill_on_parent_death()` on this platform as a stable string.
+    # It is a staticmethod fixed at build time — it needs no prior
+    # `kill_on_parent_death()` call and returns the same value whether read off
+    # the class or an instance. We assert only that it returns a valid value from
+    # the documented set (not a specific one): the concrete scope is a
+    # processkit-core, per-platform decision — Windows reports whole-tree, Linux
+    # direct-child-only, macOS/BSD unsupported — so pinning one here would make
+    # the test host-specific for no gain.
+    valid = {"whole_tree", "direct_child_only", "unsupported"}
+
+    from_class = Command.kill_on_parent_death_scope()
+    assert isinstance(from_class, str)
+    assert from_class in valid, f"unexpected parent-death scope: {from_class!r}"
+
+    # Same answer off an instance, and unaffected by whether the hardening was
+    # opted into on that instance (it is a platform capability, not a per-command
+    # flag).
+    cmd = Command(PY, ["-c", "print('ok')"])
+    assert cmd.kill_on_parent_death_scope() == from_class
+    assert cmd.kill_on_parent_death().kill_on_parent_death_scope() == from_class
+
+
 @pytest.mark.skipif(
     sys.platform == "win32" or os.geteuid() != 0,
     reason="dropping privilege requires starting as root on POSIX (e.g. the Docker test harness)",

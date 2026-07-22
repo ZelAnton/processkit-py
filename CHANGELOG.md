@@ -29,16 +29,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Command.create_no_window()` to the child so the wrapper does not create a
   console window on Windows — a no-op outside Windows (same as the
   underlying binding method)
+- Add `Command.stdout_file()` / `stderr_file()`, spawn-time direct-redirect
+  sinks that send a stream straight to a file with no parent-side pump or
+  capture in between (`append=False`, the default, truncates the file on each
+  spawn; `append=True` appends — e.g. a shared log across `Supervisor`
+  incarnations or `retry()` attempts). A file-redirected stdout makes
+  `output()` / `run()` / `output_bytes()` (and their async twins) raise the
+  usual "not piped" `ProcessError`, but `exit_code()` / `probe()` still work
+  since they never touch the stdout pipe; a file-redirected stderr leaves
+  `output()` working, with `result.stderr` coming back empty
+- Add `ProcessGroup.members_info()` / `MemberInfo`, an enriched process-tree
+  snapshot alongside `members()`: each pid comes with best-effort
+  `ppid`/`exe_name`/`start_time` metadata (`None` wherever the platform can't
+  report it). `exe_name` is a short image name, not a path, and `start_time`
+  is an opaque, platform-specific identity token, not wall-clock — its sole
+  use is pairing with `pid` across two snapshots to tell a recycled pid apart
+  from the original
+- Add `Command.windows_graceful_ctrl_break()`, an opt-in Windows-only graceful
+  shutdown: at a graceful timeout (`timeout_grace`) or a group shutdown it
+  sends the direct console child a `CTRL_BREAK` before the hard
+  `TerminateJobObject` fallback, giving a child that handles it a chance to
+  exit cleanly first. Console-only (inert under `create_no_window` /
+  detached) and a harmless no-op outside Windows
+- Add opt-in `Supervisor` liveness health checks via three new keyword-only
+  constructor parameters: `health_check` (a synchronous `() -> bool`
+  callable), `health_check_interval` (required alongside it), and
+  `health_check_failures`. After `health_check_failures` consecutive probe
+  failures the supervisor force-restarts the run; each force-restart
+  increments the new `SupervisionOutcome.liveness_kills` counter, and the
+  final such stop under `restart="never"` reports `SupervisionOutcome.stopped
+  == "unhealthy"`
 
 ### Changed
 - Bump the processkit dependency to 2.3.1 (lockfile pinned via `cargo update -p
   processkit --precise 2.3.1`; the Cargo.toml requirement stays at the broad
-  `2.3` range). 2.3.1 also adds new upstream public surface (Command
+  `2.3` range). 2.3.1 also added new upstream public surface (Command
   stdout/stderr file-redirect sinks, `windows_graceful_ctrl_break`,
   `ProcessGroup::members_info`/`MemberInfo`, `Supervisor` liveness health
-  checks) that this binding does not adopt yet — pending coordination on a
-  follow-up task before touching `src/*.rs`, `_processkit.pyi`,
-  `tests/test_api_surface.py`, or `docs/api-reference.md`.
+  checks) that this binding has since adopted — see the `Added` entries above.
 
 ### Fixed
 -

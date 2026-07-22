@@ -80,6 +80,7 @@ fn stop_reason_str(reason: StopReason) -> &'static str {
         StopReason::Predicate => "predicate",
         StopReason::RestartsExhausted => "restarts_exhausted",
         StopReason::GaveUp => "gave_up",
+        StopReason::Unhealthy => "unhealthy",
         _ => "unknown",
     }
 }
@@ -234,12 +235,63 @@ fn make_give_up_classifier(
     }
 }
 
+/// Wrap a synchronous Python liveness probe `() -> bool` as a
+/// `Supervisor.health_check` async probe. The crate's `health_check(probe,
+/// interval)` wants `Fn() -> Fut, Fut: Future<Output = bool> + Send + 'static`
+/// — but this binding has no bridge from a Python coroutine to a tokio future
+/// polled off-loop, so the probe is a **synchronous** Python callable (the async
+/// twin of the `stop_when`/`give_up_when` predicates): it is attached via
+/// `Python::try_attach`, its `bool` computed inline, and that already-resolved
+/// value handed back as a trivially-ready future (`std::future::ready`). Keep
+/// the callback fast and non-blocking — it runs on a tokio supervision worker
+/// under the GIL, exactly like `stop_when`.
+///
+/// A probe that raises or returns a non-`bool` cannot answer "healthy", so it is
+/// treated as **unhealthy** (`false`) — letting the consecutive-failure streak
+/// advance toward a force-restart rather than silently reading a broken probe as
+/// healthy and pinning a wedged child forever — and its error is stashed in
+/// `slot` (first-error-wins, shared with the control predicates) so `run()` /
+/// `arun()` re-raise it to the caller once the loop halts, instead of swallowing
+/// it into a spurious liveness kill.
+fn make_health_probe(
+    callback: Py<PyAny>,
+    slot: ErrorSlot,
+) -> impl Fn() -> std::future::Ready<bool> + Send + Sync + 'static {
+    move || {
+        // `try_attach`, not `attach`: the probe runs on a tokio supervision
+        // worker not joined at `Py_Finalize` (the runtime is an immortal
+        // singleton). A finalizing interpreter yields `None` -> assume healthy
+        // (do not force-kill a child while the interpreter is going away),
+        // instead of the panic/crash a plain `attach` would cause at shutdown —
+        // the same finalization guard as `make_stop_predicate` (whose
+        // non-disruptive default is "do not stop"; here it is "still healthy").
+        let healthy = Python::try_attach(|py| {
+            match callback
+                .call0(py)
+                .and_then(|value| value.extract::<bool>(py))
+            {
+                Ok(healthy) => healthy,
+                // A raise or a non-`bool` return: stash the error (re-raised by
+                // `run`/`arun` after the loop halts) and report unhealthy so the
+                // failure streak advances rather than swallowing the defect.
+                Err(err) => {
+                    record_slot_error(&slot, err);
+                    false
+                }
+            }
+        })
+        .unwrap_or(true);
+        std::future::ready(healthy)
+    }
+}
+
 fn convert_supervision_outcome(outcome: &SupervisionOutcome) -> PySupervisionOutcome {
     PySupervisionOutcome {
         final_result: outcome.final_result.clone(),
         restarts: outcome.restarts,
         stopped: stop_reason_str(outcome.stopped),
         storm_pauses: outcome.storm_pauses,
+        liveness_kills: outcome.liveness_kills,
     }
 }
 
@@ -250,6 +302,7 @@ pub(crate) struct PySupervisionOutcome {
     restarts: u32,
     stopped: &'static str,
     storm_pauses: u32,
+    liveness_kills: u32,
 }
 
 #[pymethods]
@@ -269,8 +322,10 @@ impl PySupervisionOutcome {
     }
 
     /// Why supervision stopped: `"policy_satisfied"`, `"predicate"`,
-    /// `"restarts_exhausted"`, or `"gave_up"` (a `give_up_when` classifier
-    /// recognized a crash as permanent).
+    /// `"restarts_exhausted"`, `"gave_up"` (a `give_up_when` classifier
+    /// recognized a crash as permanent), or `"unhealthy"` (a liveness
+    /// `health_check` judged the final run wedged and force-killed it under
+    /// `restart="never"`).
     #[getter]
     fn stopped(&self) -> &'static str {
         self.stopped
@@ -282,21 +337,32 @@ impl PySupervisionOutcome {
         self.storm_pauses
     }
 
+    /// How many incarnations a liveness `health_check` force-killed for being
+    /// unresponsive — `0` unless a health check is enabled. Each such kill is
+    /// treated as a crash for the restart policy, so it is *also* reflected in
+    /// `restarts` when the policy restarted it.
+    #[getter]
+    fn liveness_kills(&self) -> u32 {
+        self.liveness_kills
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "SupervisionOutcome(restarts={}, stopped={:?}, storm_pauses={})",
-            self.restarts, self.stopped, self.storm_pauses,
+            "SupervisionOutcome(restarts={}, stopped={:?}, storm_pauses={}, liveness_kills={})",
+            self.restarts, self.stopped, self.storm_pauses, self.liveness_kills,
         )
     }
 
     /// Value equality over every field (`final_result` via the crate's own
-    /// `ProcessResult` `PartialEq`, plus `restarts`/`stopped`/`storm_pauses`) —
-    /// not `object`'s identity comparison.
+    /// `ProcessResult` `PartialEq`, plus
+    /// `restarts`/`stopped`/`storm_pauses`/`liveness_kills`) — not `object`'s
+    /// identity comparison.
     fn __eq__(&self, other: &Self) -> bool {
         self.final_result == other.final_result
             && self.restarts == other.restarts
             && self.stopped == other.stopped
             && self.storm_pauses == other.storm_pauses
+            && self.liveness_kills == other.liveness_kills
     }
 
     /// Consistent with `__eq__`; see `ProcessResult.__hash__` for why
@@ -312,6 +378,7 @@ impl PySupervisionOutcome {
         self.restarts.hash(&mut hasher);
         self.stopped.hash(&mut hasher);
         self.storm_pauses.hash(&mut hasher);
+        self.liveness_kills.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -397,6 +464,9 @@ impl PySupervisor {
         capture_max_bytes=None,
         capture_max_lines=None,
         capture_on_overflow=None,
+        health_check=None,
+        health_check_interval=None,
+        health_check_failures=None,
         runner=None,
     ))]
     #[allow(clippy::too_many_arguments)] // a keyword-only builder constructor
@@ -416,6 +486,9 @@ impl PySupervisor {
         capture_max_bytes: Option<usize>,
         capture_max_lines: Option<usize>,
         capture_on_overflow: Option<&str>,
+        health_check: Option<Py<PyAny>>,
+        health_check_interval: Option<f64>,
+        health_check_failures: Option<u32>,
         runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         // One error sink for this supervisor's control predicates, read back by
@@ -507,6 +580,37 @@ impl PySupervisor {
                 "capture",
             )?;
             supervisor = supervisor.capture(policy);
+        }
+        // Opt-in liveness health-checking (off unless `health_check` is set): the
+        // crate's `health_check(probe, interval)` takes probe *and* cadence
+        // together, so `health_check_interval` is `health_check`'s required
+        // partner — enforced here (each without the other is a misconfiguration,
+        // not a silent no-op). `health_check_failures` is applied only when a
+        // probe is set, and is otherwise a permissive no-op (the crate ignores it
+        // too), like `storm_pause`'s companion `failure_*` knobs. The probe is a
+        // synchronous Python callable bridged by `make_health_probe` (see there
+        // for the no-async-bridge rationale); applied before `with_runner` like
+        // every other optional builder step.
+        match (health_check, health_check_interval) {
+            (Some(callback), Some(seconds)) => {
+                let interval = positive_duration(seconds, "health_check_interval")?;
+                supervisor = supervisor
+                    .health_check(make_health_probe(callback, error_slot.clone()), interval);
+                if let Some(n) = health_check_failures {
+                    supervisor = supervisor.health_check_failures(n);
+                }
+            }
+            (Some(_), None) => {
+                return Err(PyValueError::new_err(
+                    "health_check requires health_check_interval",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(PyValueError::new_err(
+                    "health_check_interval has no effect without health_check",
+                ));
+            }
+            (None, None) => {}
         }
         // `Supervisor::new` only exists for `Supervisor<JobRunner>`; every builder
         // call above is generic over `R` and works unchanged on that concrete
@@ -674,6 +778,7 @@ mod tests {
             (StopReason::Predicate, "predicate"),
             (StopReason::RestartsExhausted, "restarts_exhausted"),
             (StopReason::GaveUp, "gave_up"),
+            (StopReason::Unhealthy, "unhealthy"),
         ];
         for (reason, expected) in cases {
             assert_eq!(stop_reason_str(reason), expected, "{reason:?}");

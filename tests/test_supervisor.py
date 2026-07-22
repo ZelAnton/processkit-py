@@ -509,6 +509,189 @@ def test_supervisor_rejects_unsupported_runner_object() -> None:
         Supervisor(Command(PY, ["-c", "pass"]), runner=object())  # type: ignore[arg-type]
 
 
+# --- liveness health checks (T-143) -----------------------------------------
+
+
+def test_supervisor_health_check_healthy_probe_never_force_kills() -> None:
+    # A probe that always reports healthy never trips the liveness force-kill:
+    # the child runs to its natural (clean) exit, `liveness_kills` stays 0, and
+    # `stopped` is the ordinary policy outcome. Uses a real short-lived child so
+    # the probe is genuinely consulted on its cadence (a scripted bulk reply would
+    # resolve before the first interval); the wide sleep-vs-interval margin keeps
+    # it robust, and an always-True probe can never trip regardless of timing.
+    probes: list[int] = []
+
+    def healthy() -> bool:
+        probes.append(1)
+        return True
+
+    outcome = Supervisor(
+        Command(PY, ["-c", "import time; time.sleep(0.2)"]),
+        restart="never",
+        health_check=healthy,
+        health_check_interval=0.02,
+    ).run()
+    assert outcome.liveness_kills == 0
+    assert outcome.stopped == "policy_satisfied"
+    assert outcome.final_result.is_success
+    assert probes, "the liveness probe was consulted at least once"
+
+
+def test_supervisor_health_check_never_policy_reports_unhealthy() -> None:
+    # A probe that fails its threshold of consecutive checks force-kills the wedged
+    # incarnation. Under restart="never" that single force-killed run is the final
+    # one, reported as `stopped == "unhealthy"` with `liveness_kills == 1` and no
+    # restarts. The scripted `pending` reply never exits on its own, so the
+    # liveness timer is what ends the incarnation — exactly the wedged-but-alive
+    # case health checks exist for.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    def unhealthy() -> bool:
+        return False
+
+    outcome = Supervisor(
+        Command(NO_SUCH_PROGRAM),
+        restart="never",
+        health_check=unhealthy,
+        health_check_interval=0.02,
+        health_check_failures=1,
+        runner=runner,
+    ).run()
+    assert outcome.stopped == "unhealthy"
+    assert outcome.liveness_kills == 1
+    assert outcome.restarts == 0
+    # The final synthetic result is a non-success signal kill (we killed it).
+    assert not outcome.final_result.is_success
+
+
+def test_supervisor_health_check_unhealthy_via_arun() -> None:
+    # The async supervision path surfaces a liveness kill identically to the sync
+    # loop (same outcome, same counters).
+    async def scenario() -> SupervisionOutcome:
+        runner = ScriptedRunner()
+        runner.fallback(Reply.pending())
+        sup = Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="never",
+            health_check=lambda: False,
+            health_check_interval=0.02,
+            health_check_failures=1,
+            runner=runner,
+        )
+        return await sup.arun()
+
+    outcome = asyncio.run(scenario())
+    assert outcome.stopped == "unhealthy"
+    assert outcome.liveness_kills == 1
+    assert outcome.restarts == 0
+
+
+def test_supervisor_health_check_counts_as_crash_under_a_restart_policy() -> None:
+    # Under a restart-wanting policy a failed liveness check is treated exactly
+    # like a crash: it flows through backoff/`max_restarts`, incrementing
+    # `restarts`, and `liveness_kills` grows once per force-kill. Here three wedged
+    # incarnations (initial + 2 restarts) exhaust `max_restarts=2`, so
+    # `stopped == "restarts_exhausted"`, `restarts == 2`, `liveness_kills == 3`.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    outcome = Supervisor(
+        Command(NO_SUCH_PROGRAM),
+        restart="on_crash",
+        max_restarts=2,
+        backoff_initial=0.001,
+        backoff_factor=1.0,
+        jitter=False,
+        health_check=lambda: False,
+        health_check_interval=0.02,
+        health_check_failures=1,
+        runner=runner,
+    ).run()
+    assert outcome.stopped == "restarts_exhausted"
+    assert outcome.restarts == 2
+    assert outcome.liveness_kills == 3
+
+
+def test_supervisor_health_check_requires_interval() -> None:
+    # `health_check` and `health_check_interval` are a required pair (the crate
+    # takes probe + cadence together): a probe without an interval is a misuse,
+    # not a silent default.
+    with pytest.raises(ValueError, match="health_check requires health_check_interval"):
+        Supervisor(Command(PY, ["-c", "pass"]), health_check=lambda: True)
+
+
+def test_supervisor_health_check_interval_requires_a_probe() -> None:
+    # The reverse: an interval with no probe has nothing to schedule — reject it
+    # rather than silently ignore it.
+    with pytest.raises(
+        ValueError, match="health_check_interval has no effect without health_check"
+    ):
+        Supervisor(Command(PY, ["-c", "pass"]), health_check_interval=0.02)
+
+
+def test_supervisor_health_check_interval_must_be_positive() -> None:
+    # `health_check_interval` goes through the shared positive-duration check.
+    with pytest.raises(ValueError):
+        Supervisor(
+            Command(PY, ["-c", "pass"]), health_check=lambda: True, health_check_interval=0.0
+        )
+
+
+def test_supervisor_health_check_failures_without_a_probe_is_a_noop() -> None:
+    # `health_check_failures` alone (no `health_check`) is an inert no-op — the
+    # crate ignores the threshold without a probe — matching `storm_pause`'s own
+    # companion-knob permissiveness. Construction succeeds and supervision runs.
+    outcome = Supervisor(
+        Command(PY, ["-c", "pass"]), restart="never", health_check_failures=3
+    ).run()
+    assert outcome.final_result.is_success
+    assert outcome.liveness_kills == 0
+
+
+def test_supervisor_health_check_raising_probe_propagates() -> None:
+    # A probe that raises cannot answer "healthy": it is treated as unhealthy (so
+    # the failure streak advances and the wedged run is force-killed) AND its error
+    # is surfaced to the caller from run(), rather than swallowed into a spurious
+    # liveness kill — mirroring stop_when/give_up_when's own contract. Under
+    # restart="never" the single force-kill halts the loop and run() re-raises.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    def boom() -> bool:
+        raise ValueError("probe exploded")
+
+    with pytest.raises(ValueError, match="probe exploded"):
+        Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="never",
+            health_check=boom,
+            health_check_interval=0.02,
+            health_check_failures=1,
+            runner=runner,
+        ).run()
+
+
+def test_supervisor_health_check_non_bool_probe_propagates() -> None:
+    # A non-bool probe return is as undecidable as a raise: surface a TypeError
+    # rather than coercing it to a health verdict.
+    runner = ScriptedRunner()
+    runner.fallback(Reply.pending())
+
+    def probe() -> bool:
+        return "healthy"  # type: ignore[return-value]
+
+    with pytest.raises(TypeError):
+        Supervisor(
+            Command(NO_SUCH_PROGRAM),
+            restart="never",
+            health_check=probe,
+            health_check_interval=0.02,
+            health_check_failures=1,
+            runner=runner,
+        ).run()
+
+
 # --- value semantics: __eq__/__hash__/pickle (T-041) -------------------------
 
 
@@ -518,6 +701,15 @@ def test_supervision_outcome_eq_and_hash_compare_by_value() -> None:
     assert a is not b
     assert a == b
     assert hash(a) == hash(b)
+
+
+def test_supervision_outcome_repr_includes_liveness_kills() -> None:
+    # The liveness-kill counter is part of the outcome's value identity, so it
+    # appears in the repr alongside restarts/stopped/storm_pauses (0 without a
+    # health check).
+    outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
+    assert outcome.liveness_kills == 0
+    assert "liveness_kills=0" in repr(outcome)
 
 
 def test_supervision_outcome_not_equal_when_a_field_differs() -> None:

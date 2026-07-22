@@ -828,7 +828,8 @@ class SupervisionOutcome:
     """The result of a `Supervisor.run()`.
 
     Value semantics: `==`/`hash()` compare every field (`final_result` via
-    `ProcessResult`'s own comparison, plus `restarts`/`stopped`/`storm_pauses`).
+    `ProcessResult`'s own comparison, plus
+    `restarts`/`stopped`/`storm_pauses`/`liveness_kills`).
     **Not** picklable: its identity includes `final_result` (a `ProcessResult`),
     which cannot be faithfully reconstructed from a pickle (its `timeout`/
     `success_codes` have no accessor to read back), so pickling raises
@@ -839,15 +840,25 @@ class SupervisionOutcome:
     def final_result(self) -> ProcessResult: ...
     @property
     def restarts(self) -> int: ...
-    # Why the run ended. "unknown" is a forward-compat fallback the pinned crate
-    # version does not emit. (Inline like the other read-only Literals —
-    # `OutputEvent.stream`, `ProcessGroup.mechanism` — rather than a named export.)
+    # Why the run ended. "unhealthy" is a liveness `health_check` force-kill of
+    # the final run under `restart="never"`. "unknown" is a forward-compat
+    # fallback the pinned crate version does not emit. (Inline like the other
+    # read-only Literals — `OutputEvent.stream`, `ProcessGroup.mechanism` —
+    # rather than a named export.)
     @property
     def stopped(
         self,
-    ) -> Literal["policy_satisfied", "predicate", "restarts_exhausted", "gave_up", "unknown"]: ...
+    ) -> Literal[
+        "policy_satisfied", "predicate", "restarts_exhausted", "gave_up", "unhealthy", "unknown"
+    ]: ...
     @property
     def storm_pauses(self) -> int: ...
+    # How many incarnations a liveness `health_check` force-killed for being
+    # unresponsive — `0` unless `health_check=` is enabled. Each such kill counts
+    # as a crash for the restart policy, so it is also reflected in `restarts`
+    # when the policy restarted it.
+    @property
+    def liveness_kills(self) -> int: ...
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
@@ -896,6 +907,31 @@ class Supervisor:
         capture_max_bytes: int | None = ...,
         capture_max_lines: int | None = ...,
         capture_on_overflow: Literal["drop_oldest", "drop_newest", "error"] | None = ...,
+        # Opt-in liveness health-checking (off by default): re-run `health_check`
+        # every `health_check_interval` seconds for the life of each incarnation,
+        # and force-restart the child after `health_check_failures` consecutive
+        # failed probes (crate default 3). This catches a process that is still
+        # *alive* but *wedged* — a deadlocked server, a stuck loop — which never
+        # exits, so the exit-driven restart policy would keep it "running" forever.
+        #
+        # `health_check` is a SYNCHRONOUS callable `() -> bool` returning `True`
+        # for healthy — NOT a coroutine. It is the async-liveness twin of
+        # `stop_when`/`give_up_when` and runs under the same GIL-attach on a
+        # supervision worker, so keep it fast and non-blocking (a quick
+        # `socket`/heartbeat/file check); a probe that raises or returns a
+        # non-bool aborts supervision with that error from `run()`/`arun()` rather
+        # than being read as healthy. `health_check_interval` is REQUIRED whenever
+        # `health_check` is set (and vice versa) — the crate takes the probe and
+        # its cadence together — so passing one without the other raises
+        # `ValueError`. `health_check_failures` without `health_check` is an inert
+        # no-op. Each force-kill is counted in `SupervisionOutcome.liveness_kills`
+        # and is treated as a crash for the restart policy/backoff; the final
+        # force-killed run is reported as `SupervisionOutcome.stopped ==
+        # "unhealthy"` only under `restart="never"` (a restart-wanting policy
+        # instead restarts it, surfacing as the usual gave_up/restarts_exhausted).
+        health_check: Callable[[], bool] | None = ...,
+        health_check_interval: float | None = ...,
+        health_check_failures: int | None = ...,
         # Drives every incarnation through this runner instead of the real
         # `Runner` — any `RunnerLike` for hermetic supervision tests. Not a
         # `ProcessGroup` — deliberately not an `extract_runner` target; see

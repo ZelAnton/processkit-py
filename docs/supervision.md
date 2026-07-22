@@ -15,6 +15,7 @@ platform-agnostic.
 - [Backoff and jitter](#backoff-and-jitter)
 - [Stopping: the predicate](#stopping-the-predicate)
 - [Reading the outcome](#reading-the-outcome)
+- [Liveness health checks](#liveness-health-checks)
 - [Sync vs async](#sync-vs-async)
 
 ## A supervised server
@@ -135,9 +136,11 @@ Two honest caveats about `stop_when=`:
 outcome.final_result   # ProcessResult of the LAST run
 outcome.restarts       # restarts performed (run #1 is not a restart)
 outcome.stopped        # "policy_satisfied" | "predicate" | "restarts_exhausted"
-                        # | "gave_up" | "unknown" (forward-compat fallback, not
-                        # emitted by the pinned crate version)
+                        # | "gave_up" | "unhealthy" | "unknown" (forward-compat
+                        # fallback, not emitted by the pinned crate version)
 outcome.storm_pauses   # how many failure-storm pauses were taken (see below)
+outcome.liveness_kills # how many wedged incarnations a health check force-killed
+                        # (see "Liveness health checks"; 0 unless one is enabled)
 ```
 
 A returned outcome means supervision *concluded*, not that the child succeeded —
@@ -182,6 +185,69 @@ Each failure adds to a score that decays every `failure_decay`; once it crosses
 
 A `Supervisor` is single-shot: `run()`/`arun()` consume it, so build a fresh one to
 supervise again.
+
+## Liveness health checks
+
+Restart policies react to a process that *exits*. But a long-lived service can wedge
+*without* exiting — a deadlocked server, a stuck event loop, a worker that stopped
+answering — and an exit-driven policy would happily call that "still running" forever.
+A **liveness health check** closes that blind spot: an opt-in probe, re-run on a fixed
+cadence, that force-restarts the child when it stops looking healthy. It is the
+`Supervisor`'s take on systemd's `WatchdogSec` or a container liveness probe, and it is
+**off by default**.
+
+```python
+import socket
+
+from processkit import Command, Supervisor
+
+
+def is_healthy() -> bool:
+    # A fast, non-blocking liveness probe: can we still reach the server's port?
+    try:
+        with socket.create_connection(("127.0.0.1", 8080), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+outcome = Supervisor(
+    Command("my-server", ["--port", "8080"]),
+    health_check=is_healthy,       # sync () -> bool; True == healthy
+    health_check_interval=5.0,     # seconds between probes — REQUIRED with health_check
+    health_check_failures=3,       # consecutive failures before a force-restart (default 3)
+    max_restarts=10,
+).run()
+
+print(outcome.liveness_kills)      # wedged incarnations that were force-killed
+```
+
+`health_check=` is a **synchronous** callable `() -> bool` — *not* a coroutine —
+returning `True` for healthy. It is the liveness twin of `stop_when=`/`give_up_when=`
+and runs on the supervision runtime, so keep it fast and non-blocking (a quick socket
+connect, an HTTP `/healthz` GET, a heartbeat-file check); a slow probe merely stretches
+the effective cadence. `health_check_interval=` is its **required** partner — the crate
+takes probe and cadence together, so passing either one alone raises `ValueError`. The
+first probe fires one interval *after* an incarnation starts (startup grace), then
+repeats for that incarnation's life; a healthy child is never disturbed.
+
+A probe that fails `health_check_failures=` checks **in a row** (default `3`; one
+healthy probe resets the streak, so a single blip is forgiven) force-restarts the
+child. A failed streak is treated **exactly like a crash**: it flows through the restart
+policy, `backoff`, the storm guard, and `max_restarts` just as a real crash would — but
+it does *not* consult `stop_when=` (there is no cleanly-completed run to judge). So:
+
+- under `restart="never"`, the single force-killed run is the final one, reported as
+  `outcome.stopped == "unhealthy"`;
+- under a restart-wanting policy (`"on_crash"`/`"always"`), it restarts and surfaces —
+  if it ends supervision at all — as the usual `"gave_up"` / `"restarts_exhausted"`.
+
+Either way each force-kill is counted in `outcome.liveness_kills` (and, because it
+counts as a crash, is also reflected in `outcome.restarts` when the policy restarted
+it), and the final synthetic result is a non-success signal-kill. A probe that *raises*
+or returns a non-`bool` cannot answer "healthy": it is treated as unhealthy **and** its
+error is surfaced to the caller from `run()`/`arun()` — not swallowed into a spurious
+liveness kill — the same fail-loud contract as `stop_when=`/`give_up_when=`.
 
 ## Sync vs async
 

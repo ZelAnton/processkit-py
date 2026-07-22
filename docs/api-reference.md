@@ -1743,6 +1743,9 @@ Supervisor(
     capture_max_bytes: int | None = ...,
     capture_max_lines: int | None = ...,
     capture_on_overflow: Literal['drop_oldest', 'drop_newest', 'error'] | None = ...,
+    health_check: Callable[[], bool] | None = ...,
+    health_check_interval: float | None = ...,
+    health_check_failures: int | None = ...,
     runner: RunnerLike | None = ...,
 )
 ```
@@ -1770,7 +1773,8 @@ class SupervisionOutcome
 The result of a `Supervisor.run()`.
 
 Value semantics: `==`/`hash()` compare every field (`final_result` via
-`ProcessResult`'s own comparison, plus `restarts`/`stopped`/`storm_pauses`).
+`ProcessResult`'s own comparison, plus
+`restarts`/`stopped`/`storm_pauses`/`liveness_kills`).
 **Not** picklable: its identity includes `final_result` (a `ProcessResult`),
 which cannot be faithfully reconstructed from a pickle (its `timeout`/
 `success_codes` have no accessor to read back), so pickling raises
@@ -1792,13 +1796,19 @@ restarts: int
 #### `stopped`
 
 ```text
-stopped: Literal['policy_satisfied', 'predicate', 'restarts_exhausted', 'gave_up', 'unknown']
+stopped: Literal['policy_satisfied', 'predicate', 'restarts_exhausted', 'gave_up', 'unhealthy', 'unknown']
 ```
 
 #### `storm_pauses`
 
 ```text
 storm_pauses: int
+```
+
+#### `liveness_kills`
+
+```text
+liveness_kills: int
 ```
 
 ## Cancellation

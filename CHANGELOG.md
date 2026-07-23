@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+
+## [1.4.0] - 2026-07-23
+
+### Added
 - Add an actionlint CI gate for semantic GitHub Actions and shell-script checks
 - Add the `supervise` CLI subcommand with restart-policy and backoff flags.
 - Add `wait_for_http(host, port, path="/", *, timeout, interval=0.05,
@@ -1010,7 +1021,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/ZelAnton/processkit-py/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ZelAnton/processkit-py/compare/v1.2.4...v1.3.0
 [1.2.4]: https://github.com/ZelAnton/processkit-py/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/ZelAnton/processkit-py/compare/v1.2.2...v1.2.3

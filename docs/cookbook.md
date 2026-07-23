@@ -1,11 +1,11 @@
 # processkit cookbook
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 Task-oriented snippets — *"I want to … → do this."* Every example assumes
 `from processkit import …`. Each recipe is a quick hit; for the full treatment of
 any area — every knob, the error semantics, the platform fine print — follow the
-links into the [guide set](README.md): [Running commands](commands.md),
+links into the [guide set](./): [Running commands](commands.md),
 [Process groups](process-groups.md),
 [Streaming & interactive I/O](streaming.md), [Pipelines](pipelines.md),
 [Timeouts & cancellation](timeouts-and-cancellation.md),

@@ -12,9 +12,8 @@ its own line immediately above the opening fence:
     ...
     ```
 
-The marker is an HTML comment, so it renders invisibly on the built site
-(mkdocs strips it like any HTML comment) rather than becoming part of the
-visible sample.
+The marker is an HTML comment, so it remains invisible on the rendered mdBook
+site rather than becoming part of the visible sample.
 """
 
 from __future__ import annotations
@@ -112,7 +111,7 @@ def extract_snippets(path: pathlib.Path) -> list[Snippet]:
             i += 1
         # `i` now indexes the closing fence (or the end of file, for an
         # unterminated block — the compile check below will surface that
-        # loudly rather than silently mis-parsing the rest of the page).
+        # loudly rather than silently parsing the rest of the page incorrectly).
         i += 1
         preceding = lines[start - 1] if start > 0 else ""
         incomplete = _INCOMPLETE_MARKER_RE.match(preceding) is not None

@@ -1,6 +1,6 @@
 # Streaming & interactive I/O
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 The one-shot verbs in [Running commands](commands.md) — `output()`, `run()`,
 `output_bytes()` — buffer the *whole* output and hand it back at exit. That is

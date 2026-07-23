@@ -1,12 +1,14 @@
 # Pipelines
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 `a | b | c` **without a shell**. Each stage's stdout feeds the next stage's
 stdin through an in-process relay — there is no shell string anywhere, so no
 quoting rules, no word splitting, no injection surface. Every stage spawns into
-one shared kill-on-exit [process group](process-groups.md), so the chain lives
-and dies as a unit.
+its own kill-on-exit [process-group](process-groups.md) sub-group. A checked
+stage failure, chain timeout, or cancellation fans teardown across every
+sub-group, so the chain still lives and dies as a unit while a per-stage timeout
+can first reap that stage's entire subtree.
 
 ```python
 from processkit import Command
@@ -139,8 +141,10 @@ counts = (
 ## Timeouts bound the chain
 
 `Pipeline.timeout(seconds)` bounds the **whole** chain. At the deadline the
-shared group is torn down and every stage is killed at once; the result reports
-`timed_out` (and `run()` raises `Timeout`). Durations are floats of seconds:
+teardown fans across every stage's sub-group; the result reports `timed_out`
+(and `run()` raises `Timeout`). Its `program` is the composite pipeline name,
+with every stage joined by `" | "`, because no individual stage caused this
+chain-level deadline. Durations are floats of seconds:
 
 ```python
 result = (
@@ -153,8 +157,9 @@ result.timed_out     # True if the 30s deadline fired
 
 Unlike a single command's captured timeout, a timed-out pipeline yields **no
 partial stdout** — the chain is run-to-completion or nothing. A per-stage
-`Command.timeout(...)` set on an individual stage still kills just that stage and
-surfaces under pipefail as that stage's `Timeout`. See
+`Command.timeout(...)` first reaps that stage's whole subtree; the resulting
+checked `Timeout` then tears down the remaining stage sub-groups and is
+attributed to the timed-out stage under pipefail. See
 [Timeouts & cancellation](timeouts-and-cancellation.md); cancelling an awaited
 `arun()`/`aoutput()` reaps the whole chain's tree the same way, and so does
 firing a `CancellationToken` wired with `Pipeline.cancel_on(token)` — **gap-fill**

@@ -1,6 +1,6 @@
 # Troubleshooting & FAQ
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 Use this page to map a symptom to the guide that explains the full platform or
 runtime contract. The entries are deliberately short; follow the links for the

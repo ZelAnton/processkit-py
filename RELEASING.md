@@ -67,12 +67,14 @@ GitHub Release (wheels + sdist + `SHA256SUMS`).
 
 ## Docs site
 
-The guides in `docs/` render as a [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/)
-site. On a push to `main`, `docs.yml` first validates it with `mkdocs build
---strict`, then automatically publishes the generated site to GitHub Pages.
-Pull requests run the same strict build as a build-only check and never deploy.
+The guides in `docs/` render as an [mdBook](https://rust-lang.github.io/mdBook/)
+site at <https://zelanton.github.io/processkit-py/>. On a push to `main`,
+`docs.yml` builds the book, validates its rendered local links and anchors, and
+publishes it to GitHub Pages. Pull requests run the same build and checks but
+never deploy.
 
-Preview the docs locally with `uv run --group docs mkdocs serve`.
+Preview the docs locally with `mdbook serve --open`, or run `just docs` for the
+same build-and-link-check sequence CI uses.
 
 ## If a release fails
 

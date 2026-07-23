@@ -712,9 +712,11 @@ impl PyCommand {
         }
     }
 
-    /// Tie the child's lifetime to this process: if the parent dies, the OS kills
-    /// the child too (Linux `PR_SET_PDEATHSIG`; folded into the job elsewhere).
-    /// Reinforces the no-orphan guarantee even without explicit teardown.
+    /// Add best-effort hardening for abrupt owner death, beyond ordinary
+    /// kill-on-drop teardown. Windows already reaps the whole Job Object tree;
+    /// Linux arms `PR_SET_PDEATHSIG` for the direct child only; macOS/BSD have
+    /// no equivalent and treat this as a no-op. Use
+    /// `kill_on_parent_death_scope()` to report the platform's actual reach.
     fn kill_on_parent_death(&self) -> Self {
         Self {
             inner: self.inner.clone().kill_on_parent_death(),
@@ -1064,7 +1066,9 @@ impl PyCommand {
 }
 
 /// A shell-free pipeline `a | b | c`: each stage's stdout feeds the next's
-/// stdin, all in one process group, with pipefail outcome semantics.
+/// stdin and each stage runs in its own kill-on-drop sub-group. Checked failure,
+/// chain timeout, or cancellation fans teardown across every sub-group; outcome
+/// attribution follows pipefail semantics.
 ///
 /// By design, no `start`/`astart`: the crate's own `Pipeline` has no such
 /// method — a pipeline is inherently a *whole-chain* verb (the outcome/

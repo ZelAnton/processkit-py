@@ -1,6 +1,6 @@
 # Supervision
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 A [`timeout`](timeouts-and-cancellation.md) or a cancelled task *bounds one run* — it
 caps a single invocation, and then it's over. A `Supervisor` answers the opposite

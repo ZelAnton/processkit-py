@@ -3,7 +3,7 @@
 This page is for contributors: how the binding is put together, where the line
 between "binding" and "crate" runs, and the conventions that keep the two
 layers — and the three parallel views of the public API — in sync. The user-
-facing guides (linked from the [docs home](README.md)) explain *what* the
+facing guides (linked from the [docs home](./)) explain *what* the
 library does; this page explains *how the code that implements it is
 organized*.
 

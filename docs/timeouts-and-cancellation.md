@@ -1,6 +1,6 @@
 # Timeouts & cancellation
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 Two ways a run can end early, with two different philosophies:
 

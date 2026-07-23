@@ -32,7 +32,7 @@ just rust-test-windows  # Rust unit tests (Windows; after `just build`)
 just fmt                # apply ruff formatting
 just lint               # ruff format --check + ruff check
 just typecheck          # mypy --strict, then stubtest against the compiled extension
-just docs               # build the mdBook site
+just docs               # build the mdBook site and validate rendered links
 just api-ref            # regenerate docs/api-reference.md
 just bench              # run the benchmark suite
 ```
@@ -97,11 +97,12 @@ native `uv run pytest`, which is faster for day-to-day work.
   warning-free `pytest`, plus `cargo fmt` / `clippy` on the Rust side — all
   configured in [`pyproject.toml`](pyproject.toml); run the
   [gates above](#build-and-test) locally before opening a pull request.
-- **Docs are built here, not published here.** `docs.yml` runs `mkdocs build
-  --strict` as a link/anchor check only; this repo does not deploy to GitHub
-  Pages or anywhere else (a separate project owns docs publishing). Do not
-  add a Pages/`mike`/`gh-pages` deploy step back — see RELEASING.md's "Docs
-  site" note.
+- **Docs are built and published here.** `docs.yml` builds the mdBook site,
+  validates rendered local links and anchors, and publishes successful
+  `main` builds to GitHub Pages. Pull requests run the same build and link
+  checks without deploying. Run `just docs` locally and open
+  `book/index.html`; see RELEASING.md's "Docs site" note for the live URL and
+  preview command.
 
 ## Changelog
 

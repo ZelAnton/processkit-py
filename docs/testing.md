@@ -1,6 +1,6 @@
 # Testing your code
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 Code that shells out is miserable to test — unless the subprocess sits behind a
 seam. In **processkit-py** that seam is a plain object: a *runner*. Write your

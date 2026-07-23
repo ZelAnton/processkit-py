@@ -14,6 +14,10 @@
 # CONTRIBUTING.md and .github/workflows/ci.yml) — it introduces no new
 # formatting/testing/build logic of its own.
 
+# `just` otherwise looks for `sh` even on Windows, where this repository's
+# documented shell and helper scripts use PowerShell 7.
+set windows-shell := ["pwsh", "-NoLogo", "-Command"]
+
 # List available recipes (default when `just` is run with no arguments).
 default:
     just --list
@@ -48,9 +52,10 @@ rust-test:
 rust-test-windows:
     pwsh ./scripts/cargo-test-windows.ps1
 
-# Build the mdBook documentation site (docs/ + theme/) into book/.
+# Build the mdBook documentation site and validate rendered local links/anchors.
 docs:
     mdbook build
+    uv run python scripts/check_docs_links.py book
 
 # Regenerate docs/api-reference.md from the type stub.
 api-ref:

@@ -1,34 +1,80 @@
-# processkit — documentation
+![processkit](https://raw.githubusercontent.com/ZelAnton/processkit-py/main/.github/cover.png)
 
-`processkit` is a child-process toolkit for Python — the asyncio-native,
-kernel-backed, no-orphan binding to the [`processkit`](https://crates.io/crates/processkit)
-Rust crate. It is organized in two layers:
+[![CI](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml/badge.svg)](https://github.com/ZelAnton/processkit-py/actions/workflows/codeql.yml)
+[![PyPI](https://img.shields.io/pypi/v/processkit-py.svg)](https://pypi.org/project/processkit-py/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://github.com/ZelAnton/processkit-py/blob/main/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ZelAnton/processkit-py/blob/main/LICENSE)
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│  Runner layer (sync + asyncio)                                  │
-│  Command · RunningProcess · Pipeline · Supervisor · CliClient   │
-│  capture / streaming / interactive stdin / readiness probes     │
-│  testing seam: Runner / Scripted / RecordReplay / Recording     │
-├─────────────────────────────────────────────────────────────────┤
-│  Group layer (kill-on-exit containment)                         │
-│  ProcessGroup: start / signal / suspend / members /             │
-│  stats / limits / shutdown                                      │
-├─────────────────────────────────────────────────────────────────┤
-│  OS mechanisms (in the Rust crate)                              │
-│  Windows Job Object · Linux cgroup v2 · POSIX process group     │
-└─────────────────────────────────────────────────────────────────┘
+Async-and-sync child-process management for Python with a kernel-backed
+**no-orphan guarantee**: every process you start — and everything *it* spawns —
+lives in a kill-on-exit container (a **Windows Job Object**, a **Linux cgroup
+v2**, or a POSIX process group). Subject to the documented POSIX escape caveats,
+normal completion, errors, timeouts, cancellation, and context-manager exit reap
+descendants as a unit. Abrupt owner-death coverage is platform-specific and
+reported explicitly.
+
+Beyond spawning a subprocess: run-and-capture, line streaming, interactive
+stdin, shell-free pipelines, readiness probes, timeouts & cancellation,
+supervision with restart/backoff, resource-limited sandboxes, and a mockable
+runner seam for subprocess-free tests — each in a synchronous *and* an
+asyncio-native form.
+
+```python
+from processkit import Command
+
+# Require success and get trimmed stdout; a failure raises a typed exception.
+version = Command("python", ["--version"]).run()
+print(version)
 ```
 
-Every `Command` run gets containment for free: the one-shot verbs spawn into a
-fresh private group that dies with the run, so a returning, raising, or cancelled
-caller never leaks a process tree. The layers are also usable independently — a
-raw `ProcessGroup` contains children you start into it, and the testing doubles
-never touch the OS at all.
+## Why processkit?
 
-Both surfaces are first-class: a **synchronous** one (plain method names) and an
-**asyncio** one (the same names with an `a` prefix). They share the same types
-and the same no-orphan guarantee.
+`subprocess` and `asyncio.subprocess` reach (at most) the direct child. The
+processes *it* spawned — a build tool's compiler children, the real payload
+behind a wrapper (`cmd /c …`, `sh -c …`), a test's helper servers — survive a
+timeout, an exception, or a cancelled task, and keep running as orphans.
+
+`processkit` spawns every child into the operating system's own containment
+primitive — a **Job Object** on Windows, a **cgroup v2** on Linux (with a
+process-group fallback), a POSIX **process group** on macOS/BSD — so teardown is
+a kernel operation over the whole tree, not a best-effort signal to one pid:
+
+- **Nothing escapes silently.** Exiting a `with` / `async with` block reaps every
+  descendant, grandchildren included. Where a mechanism has a genuine weakness (a
+  `setsid` child can escape a POSIX process group), `ProcessGroup.mechanism`
+  reports the active backend instead of pretending — never a silent downgrade.
+- **Sync *and* async, first-class.** The run-&-capture verbs, pipelines, and
+  supervision each exist as a plain synchronous call *and* an `a`-prefixed asyncio
+  coroutine, sharing one set of types. The inherently-streaming surfaces — live
+  line streaming, interactive stdin, readiness probes — are asyncio-native
+  (awaited on a started process), not duplicated as blocking calls.
+- **Honest results.** A non-zero exit is data (`ProcessResult`) until you ask for
+  success; a timeout is *captured* in the result; a cancellation is always an
+  error; every platform divergence raises `Unsupported` or is documented. Raised
+  exceptions carry structured fields and alias the stdlib's (`Timeout` is a
+  `TimeoutError`, `ProcessNotFound` a `FileNotFoundError`, `PermissionDenied` a
+  `PermissionError`).
+- **Testable.** One runner seam swaps the real spawner for scripted doubles or
+  record/replay cassettes — no subprocess in your tests.
+
+### How it compares
+
+| | whole-tree kill-on-exit | async | sync | limits / stats | streaming · pipelines · supervision |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `subprocess` | — | — | ✓ | — | — |
+| `asyncio.subprocess` | — | ✓ | — | — | — |
+| **`processkit`** | **✓** | **✓** | **✓** | **✓** | **✓** |
+
+The first column is the differentiator: a child's *descendants* are contained and
+reaped as a unit (Job Object / cgroup v2 / process group), not just the direct
+child.
+
+> **Stable API.** The public API has been stable since 1.0 and follows
+> [Semantic Versioning](https://semver.org/): breaking changes land only in a new
+> major version, so `1.x` upgrades are backward-compatible. See
+> [CHANGELOG.md](https://github.com/ZelAnton/processkit-py/blob/main/CHANGELOG.md), and
+> [ROADMAP.md](https://github.com/ZelAnton/processkit-py/blob/main/ROADMAP.md) for how it was built.
 
 ## Guides
 

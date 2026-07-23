@@ -352,7 +352,12 @@ class Command:
         stderr still decodes through the line pump exactly as under
         ``output()``, so this callback still fires."""
 
-    def kill_on_parent_death(self) -> Command: ...
+    def kill_on_parent_death(self) -> Command:
+        """Add best-effort hardening for abrupt owner death, beyond ordinary
+        kill-on-drop teardown. Windows already reaps the whole Job Object tree;
+        Linux arms ``PR_SET_PDEATHSIG`` for the direct child only (grandchildren
+        survive); macOS/BSD have no equivalent and treat this as a no-op. Use
+        ``kill_on_parent_death_scope()`` to report the platform's actual reach."""
     @staticmethod
     def kill_on_parent_death_scope() -> str:
         """The scope of parent-death cleanup this platform actually achieves
@@ -452,7 +457,10 @@ class Command:
 
 @final
 class Pipeline:
-    """A shell-free pipeline `a | b | c`.
+    """A shell-free pipeline `a | b | c`. Each stage runs in its own
+    kill-on-drop sub-group; checked failure, chain timeout, or cancellation fans
+    teardown across every sub-group, while outcome attribution follows pipefail
+    semantics.
 
     By design, no `start`/`astart` — see `Command.pipe()`'s stub/binding
     comment: a pipeline is a whole-chain verb, with no natural "handle to a

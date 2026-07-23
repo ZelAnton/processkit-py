@@ -19,10 +19,10 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'theme/**', book.toml, .github/workflows/docs.yml]
+    paths: ['docs/**', 'theme/**', book.toml, justfile, scripts/check_docs_links.py, .github/workflows/docs.yml]
   pull_request:
     branches: [main]
-    paths: ['docs/**', 'theme/**', book.toml, .github/workflows/docs.yml]
+    paths: ['docs/**', 'theme/**', book.toml, justfile, scripts/check_docs_links.py, .github/workflows/docs.yml]
   workflow_dispatch:
 
 concurrency:
@@ -48,6 +48,8 @@ jobs:
             | tar -xz -C /usr/local/bin
       - name: Build the book
         run: mdbook build
+      - name: Check rendered local links and anchors
+        run: python scripts/check_docs_links.py book
 
   deploy:
     # PRs validate the book only; only a push to main may publish it.

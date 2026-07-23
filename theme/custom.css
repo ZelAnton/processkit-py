@@ -82,8 +82,11 @@
     max-width: 100%;
 }
 
-/* Pinned title ("Overview") above the divider */
-.sidebar .chapter li:not(.chapter-item):not(.spacer) > a {
+/* Pinned title ("Overview") above the divider. mdBook v0.4.40 gives every
+   prefix chapter the `chapter-item` class, so the older `:not(.chapter-item)`
+   selector never matched the overview entry. In SUMMARY.md, Overview is the
+   only affix entry immediately after a spacer. */
+.sidebar .chapter li.spacer + li.chapter-item.affix > a {
     font-size: 0.88em;
     opacity: 0.75;
     letter-spacing: 0.03em;

@@ -1,6 +1,6 @@
 # Coming from `subprocess`
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 You already know `subprocess` (or `asyncio.subprocess`). This guide maps the
 patterns you write today onto their `processkit` equivalents, so porting existing

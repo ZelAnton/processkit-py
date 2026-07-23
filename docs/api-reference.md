@@ -6,7 +6,7 @@ package, plus the `processkit.testing` submodule.
 
 It is generated from the type stub (`processkit/_processkit.pyi`) and the
 docstrings, the same source your IDE and `mypy` read, so it cannot drift from
-the real API. The narrative [guides](README.md) explain how the pieces compose;
+the real API. The narrative [guides](./) explain how the pieces compose;
 this page is the exhaustive index. Both surfaces are covered together: the
 synchronous verbs and their `a`-prefixed asyncio twins.
 
@@ -421,6 +421,12 @@ stderr still decodes through the line pump exactly as under
 def kill_on_parent_death() -> Command
 ```
 
+Add best-effort hardening for abrupt owner death, beyond ordinary
+kill-on-drop teardown. Windows already reaps the whole Job Object tree;
+Linux arms ``PR_SET_PDEATHSIG`` for the direct child only (grandchildren
+survive); macOS/BSD have no equivalent and treat this as a no-op. Use
+``kill_on_parent_death_scope()`` to report the platform's actual reach.
+
 #### `kill_on_parent_death_scope`
 
 ```text
@@ -770,7 +776,10 @@ def aprobe(call: Args | Command) -> Awaitable[bool]
 class Pipeline
 ```
 
-A shell-free pipeline `a | b | c`.
+A shell-free pipeline `a | b | c`. Each stage runs in its own
+kill-on-drop sub-group; checked failure, chain timeout, or cancellation fans
+teardown across every sub-group, while outcome attribution follows pipefail
+semantics.
 
 By design, no `start`/`astart` — see `Command.pipe()`'s stub/binding
 comment: a pipeline is a whole-chain verb, with no natural "handle to a

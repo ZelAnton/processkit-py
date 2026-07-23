@@ -1,6 +1,6 @@
 # Command-line usage
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 Most of this package's value lives behind Python code — but sometimes the
 caller is a shell script or a CI step, not a Python program. `python -m

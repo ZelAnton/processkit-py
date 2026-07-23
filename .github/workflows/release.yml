@@ -385,6 +385,7 @@ jobs:
           echo "::error::Failed to create/update the GitHub Release after 3 attempts. The package is ALREADY on PyPI and the tag is ALREADY on main. Do NOT re-run this workflow (a re-run computes the NEXT version and orphans this release). Finish by hand: if the Release does not exist yet, 'gh release create $TAG --title $TAG --notes-file release-notes.md ./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS'; if it already exists, 'gh release edit $TAG --notes-file release-notes.md && gh release upload $TAG ./artifacts/*.whl ./artifacts/*.tar.gz SHA256SUMS --clobber'."
           exit 1
 
-      # This repo does not publish docs (GitHub Pages or otherwise) — a
-      # separate project owns that. Do not re-add a mike/gh-pages deploy step
-      # here; see RELEASING.md's "Docs site" note.
+      # Documentation publication is owned by docs.yml. The release commit's
+      # push to main triggers that workflow, which builds and deploys mdBook to
+      # GitHub Pages; do not duplicate the Pages deployment in this release
+      # workflow. See RELEASING.md's "Docs site" note.

@@ -1,6 +1,6 @@
 # Running commands
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 `Command` is the entry point of the runner layer: a builder that describes *what*
 to run and *how*, plus a family of verbs that decide *what you get back*. Every

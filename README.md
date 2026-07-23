@@ -3,7 +3,10 @@
 Async-and-sync child-process management for Python with a kernel-backed
 **no-orphan guarantee**: every process you start — and everything *it* spawns —
 lives in a kill-on-exit container (a **Windows Job Object**, a **Linux cgroup
-v2**, or a POSIX process group), so no descendant ever outlives your program.
+v2**, or a POSIX process group). Subject to the documented POSIX escape caveats,
+normal completion, errors, timeouts, cancellation, and context-manager exit reap
+descendants as a unit. Abrupt owner-death coverage is platform-specific and
+reported explicitly.
 
 Beyond spawning a subprocess: run-and-capture, line streaming, interactive
 stdin, shell-free pipelines, readiness probes, timeouts & cancellation,
@@ -167,9 +170,11 @@ contract.
 
 ## Documentation
 
-This README is the quick tour. The **[`docs/` guide set](https://github.com/ZelAnton/processkit-py/blob/main/docs/README.md)** goes
-deeper on every capability, with more examples and the platform fine print in one
-place. New here? Skim the [Cookbook](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md) first — it maps "I want
+This README is the quick tour. Read the **[rendered documentation
+site](https://zelanton.github.io/processkit-py/)** for the navigable guide set,
+or browse its [Markdown sources](https://github.com/ZelAnton/processkit-py/tree/main/docs).
+The guides go deeper on every capability, with more examples and the platform
+fine print in one place. New here? Skim the [Cookbook](https://github.com/ZelAnton/processkit-py/blob/main/docs/cookbook.md) first — it maps "I want
 to …" tasks to working snippets — then read
 [Running commands](https://github.com/ZelAnton/processkit-py/blob/main/docs/commands.md) end to end:
 
@@ -179,12 +184,19 @@ to …" tasks to working snippets — then read
 | [Coming from subprocess](https://github.com/ZelAnton/processkit-py/blob/main/docs/migrating.md) | Translating your `subprocess` / `asyncio.subprocess` code, and what containment adds |
 | [Running commands](https://github.com/ZelAnton/processkit-py/blob/main/docs/commands.md) | The full `Command` builder and every consuming verb, with error semantics |
 | [Process groups](https://github.com/ZelAnton/processkit-py/blob/main/docs/process-groups.md) | Containment, teardown, signals, suspend/resume, members, limits, stats |
+| [Sandboxing untrusted tools](https://github.com/ZelAnton/processkit-py/blob/main/docs/sandboxing.md) | A bounded agent/tool recipe and an explicit threat model |
 | [Streaming & interactive I/O](https://github.com/ZelAnton/processkit-py/blob/main/docs/streaming.md) | Line streaming, conversational stdin, readiness probes, per-run profiling |
 | [Pipelines](https://github.com/ZelAnton/processkit-py/blob/main/docs/pipelines.md) | Shell-free `a \| b \| c`, pipefail attribution, chain timeouts |
 | [Timeouts & cancellation](https://github.com/ZelAnton/processkit-py/blob/main/docs/timeouts-and-cancellation.md) | Captured vs raised deadlines, Ctrl+C, asyncio cancellation |
 | [Supervision](https://github.com/ZelAnton/processkit-py/blob/main/docs/supervision.md) | Restart policies, backoff & jitter, stop conditions, outcomes |
 | [Testing your code](https://github.com/ZelAnton/processkit-py/blob/main/docs/testing.md) | The runner seam, scripted/record-replay doubles, `CliClient` |
+| [Command-line usage](https://github.com/ZelAnton/processkit-py/blob/main/docs/cli.md) | `run`, `supervise`, `doctor`, profiling, limits, flags, and exit codes |
+| [Performance & overhead](https://github.com/ZelAnton/processkit-py/blob/main/docs/performance.md) | Benchmark scope, reproduction, and qualitative scaling expectations |
+| [Async runtimes & event loops](https://github.com/ZelAnton/processkit-py/blob/main/docs/event-loops.md) | asyncio, uvloop, anyio compatibility, and unsupported runtimes |
 | [Platform support](https://github.com/ZelAnton/processkit-py/blob/main/docs/platforms.md) | Mechanisms, all capability matrices, every caveat |
+| [Troubleshooting](https://github.com/ZelAnton/processkit-py/blob/main/docs/troubleshooting.md) | Symptom-first guidance for limits, signals, loops, cassettes, and teardown |
+| [API reference](https://zelanton.github.io/processkit-py/api-reference.html) | Every public class, function, protocol, alias, and exception |
+| [Architecture](https://github.com/ZelAnton/processkit-py/blob/main/docs/internals.md) | Python/PyO3/Rust boundaries, conventions, and drift guards |
 
 Prefer whole programs to snippets? The **[`examples/`](https://github.com/ZelAnton/processkit-py/tree/main/examples)** directory has
 runnable, self-contained scripts — one per niche (no-orphan teardown, a
@@ -317,8 +329,8 @@ A probe that doesn't pass in time raises `WaitTimeout` (`ProcessError`,
 ### Pipelines without a shell
 
 `a | b | c` without a shell string — stages connected in-process (a relay, not a
-shell), so no quoting or injection surface, and every stage lives in one shared
-kill-on-exit group:
+shell), so no quoting or injection surface. Each stage lives in its own
+kill-on-exit sub-group; chain-wide teardown still reaches every stage:
 
 ```python
 authors = (

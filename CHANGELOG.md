@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guarantee the OS cannot keep
 
 ### Changed
+- Refresh the GitHub Pages landing page from the README: its cover, status
+  badges, no-orphan introduction, runnable example, and capability summary now
+  appear before the guide index.
 - Bump the processkit dependency to 2.3.1 (lockfile pinned via `cargo update -p
   processkit --precise 2.3.1`; the Cargo.toml requirement stays at the broad
   `2.3` range). 2.3.1 also added new upstream public surface (Command
@@ -95,7 +98,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns) that this binding adopts — see the `Added` entry above.
 
 ### Fixed
--
+- Correct the pipeline documentation to describe per-stage kill-on-drop
+  sub-groups, chain-wide teardown fan-out, and composite timeout attribution,
+  matching the processkit 2.3.x core.
+- Fix rendered mdBook links that pointed at the nonexistent `README.html`,
+  correct the uvloop section anchor, and align contributor/release instructions
+  with the current mdBook-to-GitHub-Pages workflow.
+- Make the documented `just` recipes run on Windows by selecting PowerShell 7
+  instead of relying on an unavailable `sh` executable.
 
 ## [1.3.0] - 2026-07-19
 

@@ -1,6 +1,6 @@
 # Process groups
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 A `ProcessGroup` ties the lifetime of a whole child-process **tree** to a
 context manager: every process you start in the group — and everything *those*

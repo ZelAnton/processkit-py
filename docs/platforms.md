@@ -10,13 +10,15 @@ inherent to what each OS offers, and it is documented here rather than hidden.
 | | Mechanism | When the `with` / `async with` block exits | If the Python process is hard-killed (`SIGKILL`, `os._exit`) |
 |---|---|---|---|
 | **Windows** | Job Object | Whole tree reaped (kernel-enforced) | **Still reaped** — `KILL_ON_JOB_CLOSE` fires when the last handle closes |
-| **Linux** | cgroup v2 (else process group) | Whole tree reaped | **Best-effort** — teardown runs from the exit path, which a hard kill skips |
-| **macOS / BSD** | process group | Tree reaped, *except* children that called `setsid()` | **Best-effort**, same caveat |
+| **Linux** | cgroup v2 (else process group) | Whole tree reaped | No whole-tree cleanup. Opt-in `kill_on_parent_death()` kills the direct child only; grandchildren survive |
+| **macOS / BSD** | process group | Tree reaped, *except* children that called `setsid()` | No automatic cleanup; the platform has no parent-death signal equivalent |
 
 The takeaway: the `with` / `async with` exit path (and ordinary GC) reaps the
-tree on every platform. Surviving a hard kill of the parent is a Windows-only
-property. Lean on the context managers; don't rely on `__del__` or `atexit`,
-which don't run on `SIGKILL` / `os._exit`.
+tree on every platform. Whole-tree cleanup after a hard kill of the parent is a
+Windows-only property. `Command.kill_on_parent_death_scope()` reports the
+actual abrupt-death capability as `"whole_tree"`, `"direct_child_only"`, or
+`"unsupported"`. Lean on the context managers; don't rely on `__del__` or
+`atexit`, which don't run on `SIGKILL` / `os._exit`.
 
 Cancelling an awaited run (`task.cancel()`, `asyncio.wait_for`,
 `asyncio.timeout`) reaps the run's tree on every platform — the dropped future

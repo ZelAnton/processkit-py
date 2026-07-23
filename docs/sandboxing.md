@@ -1,6 +1,6 @@
 # Sandboxing untrusted tools
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 Agent/LLM frameworks routinely hand a model the ability to run a "tool" it
 picked itself, with arguments it generated itself — a shell command, a code
@@ -177,7 +177,9 @@ Full treatment: [Tearing down](process-groups.md#tearing-down).
       process crashes before teardown runs — on POSIX this covers only the
       **direct child** (Linux `PR_SET_PDEATHSIG`; not inherited by
       grandchildren, resettable by the child itself via
-      `prctl(PR_SET_PDEATHSIG, 0)`, and lost across `exec`/a uid change), and
+      `prctl(PR_SET_PDEATHSIG, 0)`, and cleared by credential changes or by
+      executing a setuid/setgid/capability-bearing binary; ordinary `execve`
+      preserves it), and
       is a documented no-op on macOS/BSD. A tree-wide guarantee against a
       hard kill of your own process is Windows-only (Job Object). See
       [Privileges and spawn flags](commands.md#privileges-and-spawn-flags).

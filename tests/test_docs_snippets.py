@@ -1,11 +1,11 @@
 """Drift guard for the python code samples in `README.md` and `docs/*.md`.
 
-The guides are a large, showcase part of the project (the README plus ten
-guides in `docs/`, with a snippet for nearly every capability), but the only
-existing gate on them is `mkdocs build --strict` (broken links/anchors) — the
-*code* in a sample is never executed or even parsed, so a renamed method or a
-changed signature leaves a stale example shipping silently (this has already
-happened and was only ever caught by manual review).
+The guides are a large, showcase part of the project (the README plus every
+narrative and reference page in `docs/`, with a snippet for nearly every
+capability). The mdBook build and rendered-link guard validate the site shape,
+but they cannot validate the *code* inside a sample: without these checks, a
+renamed method or changed signature can leave a stale example shipping
+silently.
 
 Two checks run over every fenced ` ```python ` block (`tests/_docs_snippets.py`
 does the extraction):

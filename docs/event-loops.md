@@ -1,6 +1,6 @@
 # Async runtimes & event loops
 
-[‹ docs index](README.md)
+[‹ docs index](./)
 
 processkit's async surface is **asyncio-native**. Every `a`-prefixed verb
 (`aoutput`, `arun`, `astart`, …) and every streaming handle (`stdout_lines()`,
@@ -9,7 +9,7 @@ loop by [`pyo3-async-runtimes`], so it needs a real asyncio loop underneath.
 This page says exactly which runtimes provide one — and which don't.
 
 - [Support at a glance](#support-at-a-glance)
-- [asyncio & uvloop](#asyncio-uvloop)
+- [asyncio & uvloop](#asyncio--uvloop)
 - [anyio](#anyio)
 - [trio](#trio)
 - [Why asyncio-native](#why-asyncio-native)

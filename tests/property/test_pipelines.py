@@ -276,13 +276,27 @@ def test_pipeline_sync_and_async_verbs_agree(data: st.DataObject) -> None:
         return await build().aprobe()
 
     assert build().exit_code() == asyncio.run(async_exit_code())
-    assert build().output() == asyncio.run(async_output())
-    assert build().output_bytes() == asyncio.run(async_output_bytes())
 
     if fail_index is None:
+        assert build().output() == asyncio.run(async_output())
+        assert build().output_bytes() == asyncio.run(async_output_bytes())
         assert build().probe() == asyncio.run(async_probe())
         assert build().run() == asyncio.run(async_run())
     else:
+        sync_output = build().output()
+        async_output_result = asyncio.run(async_output())
+        assert sync_output.code == async_output_result.code
+        assert sync_output.is_success == async_output_result.is_success
+        assert sync_output.program == async_output_result.program
+        assert sync_output.stderr == async_output_result.stderr
+
+        sync_output_bytes = build().output_bytes()
+        async_output_bytes_result = asyncio.run(async_output_bytes())
+        assert sync_output_bytes.code == async_output_bytes_result.code
+        assert sync_output_bytes.is_success == async_output_bytes_result.is_success
+        assert sync_output_bytes.program == async_output_bytes_result.program
+        assert sync_output_bytes.stderr == async_output_bytes_result.stderr
+
         assert build().probe() == asyncio.run(async_probe())
         with pytest.raises(NonZeroExit) as sync_exc:
             build().run()

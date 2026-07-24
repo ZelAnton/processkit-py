@@ -31,6 +31,7 @@ import contextlib
 import ipaddress
 import math
 import os
+import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
 from typing import Any, TypeVar, overload
@@ -487,29 +488,33 @@ def _discard_probe(task: asyncio.Task[int]) -> None:
 
 def _format_host_header(host: str, port: int) -> str:
     """Render `wait_for_http`'s ``Host`` header value for ``host``/``port`` per
-    RFC 9112/3986: an IPv6 literal is bracketed (``Host: [::1]:8080``) since a
-    bare colon-separated literal would otherwise be indistinguishable from the
-    header's own ``host:port`` separator; anything else (an IPv4 literal or a
-    DNS name) is used as-is, unchanged from before this validation existed
+    RFC 9112/3986/6874: an IPv6 literal is bracketed (``Host: [::1]:8080``) and
+    a scope-ID separator is percent-encoded (``[fe80::1%25eth0]:8080``), since
+    a bare colon-separated literal would otherwise be indistinguishable from
+    the header's own ``host:port`` separator; anything else (an IPv4 literal or
+    a DNS name) is used as-is, unchanged from before this validation existed
     (``Host: 127.0.0.1:8080`` / ``Host: example.com:8080``). A caller who
     already passed a bracketed literal (``"[::1]"``) is not double-wrapped.
     """
     if host.startswith("[") and host.endswith("]"):
-        return f"{host}:{port}"
+        return f"{host.replace('%', '%25')}:{port}"
     try:
         is_ipv6_literal = ipaddress.ip_address(host).version == 6
     except ValueError:
         is_ipv6_literal = False
     if is_ipv6_literal:
-        return f"[{host}]:{port}"
+        return f"[{host.replace('%', '%25')}]:{port}"
     return f"{host}:{port}"
 
 
-# C0 controls (0x00-0x1F, includes CR/LF and tab), space (0x20), and DEL
-# (0x7F): any of these in `path` would corrupt `wait_for_http`'s hand-rolled,
-# single-line request — and CR/LF specifically would let an untrusted `path`
-# inject extra request/header lines into the request that follows.
-_HTTP_FORBIDDEN_PATH_CHARS = frozenset(chr(c) for c in range(0x21)) | frozenset({"\x7f"})
+# Every Latin-1 control character: C0 (0x00-0x1F), DEL (0x7F), and C1
+# (0x80-0x9F). Any of these in `path` would corrupt `wait_for_http`'s
+# hand-rolled, single-line request — and CR/LF specifically would let an
+# untrusted `path` inject extra request/header lines into the request that
+# follows.
+_HTTP_FORBIDDEN_PATH_CHARS = frozenset(
+    chr(c) for c in range(0x100) if unicodedata.category(chr(c)) == "Cc"
+)
 
 
 def _check_http_path(path: str) -> None:
@@ -520,7 +525,9 @@ def _check_http_path(path: str) -> None:
     ``interval`` validation.
     """
     for ch in path:
-        if ch in _HTTP_FORBIDDEN_PATH_CHARS:
+        # Keep non-Latin-1 characters on the existing encode-time ValueError
+        # path below: only characters that could reach the wire belong here.
+        if ord(ch) <= 0xFF and (ch in _HTTP_FORBIDDEN_PATH_CHARS or ch.isspace()):
             raise ValueError(
                 f"path must not contain whitespace or control characters (found {ch!r} in {path!r})"
             )

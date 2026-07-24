@@ -77,7 +77,7 @@ def test_format_host_header_leaves_dns_names_unbracketed(name: str, port: int) -
     prefix=st.text(
         alphabet=st.characters(exclude_categories=("Cc", "Cs"), min_codepoint=33), max_size=8
     ),
-    bad_char=st.sampled_from(["\r", "\n", " ", "\t", "\x00", "\x1f", "\x7f"]),
+    bad_char=st.sampled_from(["\r", "\n", " ", "\t", "\x00", "\x1f", "\x7f", "\x85", "\xa0"]),
     suffix=st.text(
         alphabet=st.characters(exclude_categories=("Cc", "Cs"), min_codepoint=33), max_size=8
     ),

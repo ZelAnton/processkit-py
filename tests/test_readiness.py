@@ -28,6 +28,7 @@ from processkit import (
     wait_for_port,
     wait_until,
 )
+from processkit._aio import _format_host_header
 
 from ._programs import free_port, refused_port
 
@@ -1161,10 +1162,23 @@ def test_wait_for_http_ipv4_and_dns_hosts_stay_unbracketed() -> None:
     assert "[" not in received_head
 
 
+def test_format_host_header_percent_encodes_scoped_ipv6_zone_id() -> None:
+    assert _format_host_header("fe80::1%eth0", 8080) == "[fe80::1%25eth0]:8080"
+
+
 def test_wait_for_http_rejects_path_with_space() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="whitespace or control characters"):
             await wait_for_http("127.0.0.1", 1, "/foo bar", timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bad_char", ["\x85", "\xa0"])
+def test_wait_for_http_rejects_latin1_control_and_whitespace_in_path(bad_char: str) -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="whitespace or control characters"):
+            await wait_for_http("127.0.0.1", 1, f"/foo{bad_char}bar", timeout=1.0)
 
     asyncio.run(scenario())
 

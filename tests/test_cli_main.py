@@ -705,9 +705,7 @@ def test_doctor_json_exits_four_when_mechanism_probe_hits_an_operational_error()
         "max_processes": False,
         "cpu_quota": False,
     }
-    assert payload["error_probe_failures"] == [
-        "containment mechanism (cannot read /sys/fs/cgroup)"
-    ]
+    assert payload["error_probe_failures"] == ["containment mechanism (cannot read /sys/fs/cgroup)"]
 
 
 def test_doctor_exits_zero_when_resource_limits_are_available() -> None:

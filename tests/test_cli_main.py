@@ -515,6 +515,16 @@ def test_profile_flag_degrades_to_null_fields_when_unavailable() -> None:
 # --- doctor -------------------------------------------------------------
 
 
+_DOCTOR_JSON_KEYS = {
+    "mechanism",
+    "verdict",
+    "exit_code",
+    "resource_limits",
+    "caveat",
+}
+_DOCTOR_RESOURCE_LIMIT_KEYS = {"max_memory", "max_processes", "cpu_quota"}
+
+
 def test_doctor_help_does_not_raise() -> None:
     result = _run_cli("doctor", "--help")
     assert result.returncode == 0
@@ -546,10 +556,13 @@ def test_doctor_prints_a_report_and_exits_with_one_of_the_documented_codes() -> 
     assert "Traceback (most recent call last)" not in result.stderr
 
 
-def _run_doctor_with_mocked_process_group(mock_class_body: str) -> subprocess.CompletedProcess[str]:
-    """Run `main(["doctor"])` in-process with `processkit._cli.doctor.ProcessGroup`
-    monkeypatched to `mock_class_body` (a `class _MockGroup: ...` definition,
-    verbatim) — the same technique
+def _run_doctor_with_mocked_process_group(
+    mock_class_body: str, *doctor_args: str
+) -> subprocess.CompletedProcess[str]:
+    """Run ``main(["doctor", *doctor_args])`` with its ``ProcessGroup`` patched.
+
+    ``mock_class_body`` is a verbatim ``class _MockGroup: ...`` definition —
+    the same technique
     `test_fallback_process_group_failure_is_reported_not_raised` already uses
     for `run`, needed here because the live probe's outcome depends on
     whatever container primitives (or lack thereof) this CI runner's kernel
@@ -561,7 +574,7 @@ def _run_doctor_with_mocked_process_group(mock_class_body: str) -> subprocess.Co
         "import processkit._cli.doctor as doctor_mod\n"
         f"{mock_class_body}\n"
         "doctor_mod.ProcessGroup = _MockGroup\n"
-        "sys.exit(cli.main(['doctor']))\n"
+        f"sys.exit(cli.main({['doctor', *doctor_args]!r}))\n"
     )
     return subprocess.run(
         [PY, "-c", script],
@@ -570,6 +583,85 @@ def _run_doctor_with_mocked_process_group(mock_class_body: str) -> subprocess.Co
         timeout=_SUBPROCESS_TIMEOUT,
         check=False,
     )
+
+
+def test_doctor_json_has_a_stable_schema_and_replaces_the_text_report() -> None:
+    mock_group = (
+        "class _MockGroup:\n"
+        "    def __init__(self, *, max_memory=None, max_processes=None,\n"
+        "                 cpu_quota=None, **kwargs):\n"
+        "        self.mechanism = 'cgroup_v2'\n"
+    )
+    result = _run_doctor_with_mocked_process_group(mock_group, "--json")
+
+    assert result.returncode == 0
+    assert "Traceback (most recent call last)" not in result.stderr
+    payload = json.loads(result.stdout)
+    assert set(payload) == _DOCTOR_JSON_KEYS
+    assert isinstance(payload["mechanism"], str)
+    assert payload["mechanism"] == "cgroup_v2"
+    assert isinstance(payload["verdict"], str)
+    assert payload["verdict"] == "OK"
+    assert isinstance(payload["exit_code"], int)
+    assert payload["exit_code"] == 0
+    assert isinstance(payload["caveat"], str)
+    assert "Windows Job Object" in payload["caveat"]
+    resource_limits = payload["resource_limits"]
+    assert isinstance(resource_limits, dict)
+    assert set(resource_limits) == _DOCTOR_RESOURCE_LIMIT_KEYS
+    assert all(isinstance(available, bool) for available in resource_limits.values())
+    assert resource_limits == {
+        "max_memory": True,
+        "max_processes": True,
+        "cpu_quota": True,
+    }
+
+
+def test_doctor_json_and_text_modes_have_identical_exit_codes() -> None:
+    mock_group = (
+        "class _MockGroup:\n"
+        "    def __init__(self, *, max_memory=None, max_processes=None,\n"
+        "                 cpu_quota=None, **kwargs):\n"
+        "        if max_memory is not None:\n"
+        "            raise processkit.ResourceLimit('cgroup-v2 root required')\n"
+        "        self.mechanism = 'process_group'\n"
+    )
+    text_result = _run_doctor_with_mocked_process_group(mock_group)
+    json_result = _run_doctor_with_mocked_process_group(mock_group, "--json")
+
+    assert text_result.returncode == json_result.returncode == 1
+    assert "verdict: DEGRADED" in text_result.stdout
+    payload = json.loads(json_result.stdout)
+    assert payload["verdict"] == "DEGRADED"
+    assert payload["exit_code"] == text_result.returncode
+    assert payload["resource_limits"] == {
+        "max_memory": False,
+        "max_processes": True,
+        "cpu_quota": True,
+    }
+
+
+def test_doctor_json_reports_operational_probe_failures() -> None:
+    result = _run_doctor_with_mocked_process_group(
+        "class _MockGroup:\n"
+        "    def __init__(self, *, max_memory=None, max_processes=None,\n"
+        "                 cpu_quota=None, **kwargs):\n"
+        "        if max_processes is not None:\n"
+        "            raise OSError('cannot read pids.max')\n"
+        "        self.mechanism = 'cgroup_v2'\n",
+        "--json",
+    )
+
+    assert result.returncode == 4
+    payload = json.loads(result.stdout)
+    assert set(payload) == _DOCTOR_JSON_KEYS | {"error_probe_failures"}
+    assert payload["verdict"] == "ERROR"
+    assert payload["resource_limits"] == {
+        "max_memory": True,
+        "max_processes": False,
+        "cpu_quota": True,
+    }
+    assert payload["error_probe_failures"] == ["--max-processes (cannot read pids.max)"]
 
 
 def test_doctor_exits_zero_when_resource_limits_are_available() -> None:

@@ -253,7 +253,30 @@ of the codes below:
 | `3` | Containment itself is unavailable (should not happen on any supported platform). |
 | `4` | A probe raised an unexpected operational error (`OSError`/`PermissionError`, e.g. failing to read cgroup state) rather than a definitive result — the environment's actual availability could not be determined. |
 
-`doctor` takes no flags beyond `-h`/`--help` — in particular, no trailing
+For CI, `doctor --json` replaces that text report with one JSON object on
+stdout while preserving the same exit code. Its stable base schema is:
+
+```json
+{
+  "mechanism": "cgroup_v2",
+  "verdict": "OK",
+  "exit_code": 0,
+  "resource_limits": {
+    "max_memory": true,
+    "max_processes": true,
+    "cpu_quota": true
+  },
+  "caveat": "--max-memory/--max-processes/--cpu-quota need a Windows Job Object or a Linux cgroup-v2 root; the kernel typically refuses them inside containers, systemd user sessions, and non-root cgroups, and always on macOS (docs/cli.md#resource-limits-hard-cap-or-best-effort)."
+}
+```
+
+`mechanism`, `verdict`, and `caveat` are strings; `exit_code` is an integer;
+and all `resource_limits` fields are booleans. `verdict` is one of `OK`,
+`DEGRADED`, `UNAVAILABLE`, or `ERROR`, matching exit codes `0`, `1`, `3`, and
+`4`. When an `OSError` prevents a definitive probe result, the payload also
+contains `error_probe_failures`, a list of error strings.
+
+`doctor` takes only `-h`/`--help` and `--json` — in particular, no trailing
 `-- PROGRAM ...` (it is diagnostic-only and never runs a command).
 
 ## What you don't get here

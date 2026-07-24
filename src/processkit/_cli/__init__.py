@@ -97,6 +97,15 @@ actually enforceable — the same platform gap `run` degrades around above
 (containers, systemd user sessions, non-root cgroups, and always on macOS
 lack the Windows Job Object / Linux cgroup-v2 root those caps need).
 
+``doctor --json`` replaces the text report with one JSON object on stdout:
+``mechanism`` (string), ``verdict`` (``OK``, ``DEGRADED``, ``UNAVAILABLE``,
+or ``ERROR``), ``exit_code`` (integer), ``resource_limits`` (an object with
+boolean ``max_memory``, ``max_processes``, and ``cpu_quota`` fields), and the
+Windows Job Object / Linux cgroup-v2 ``caveat`` (string). On an operational
+probe failure, it additionally includes ``error_probe_failures`` (a list of
+error strings). It preserves the same 0/1/3/4 exit-code contract as text
+mode.
+
 `doctor` probes each of the three resource-limit controllers
 (``--max-memory`` / ``--max-processes`` / ``--cpu-quota``) **independently** —
 on Linux cgroup-v2 these are separate controllers (``memory.max``,
@@ -156,7 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.subcommand == "doctor":
         if child_argv:
             doctor_parser.error("doctor: does not take a trailing command (no '--' needed)")
-        return _doctor()
+        return _doctor(json_output=args.json)
 
     if args.subcommand == "supervise":
         if not child_argv:

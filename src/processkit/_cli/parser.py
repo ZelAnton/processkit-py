@@ -257,6 +257,12 @@ def _build_parser() -> tuple[
         ),
         epilog="Example: python -m processkit doctor",
     )
+    doctor_parser.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Emit the containment verdict as one machine-readable JSON object on stdout.",
+    )
     return parser, run_parser, doctor_parser, supervise_parser
 
 

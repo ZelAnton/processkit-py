@@ -18,6 +18,7 @@ python examples/01_no_orphan_guarantee.py
 | [`02_wait_for_server.py`](02_wait_for_server.py) | Start a server, `await wait_for_port(...)`, make a request, tear the tree down (async) | CI orchestration / integration tests |
 | [`03_supervise_until_healthy.py`](03_supervise_until_healthy.py) | `Supervisor` with restart + backoff + a `stop_when` predicate | Agents / long-lived services |
 | [`04_sandbox_resource_limits.py`](04_sandbox_resource_limits.py) | Memory / process / CPU caps, per-call output limits, timeouts, and teardown across a locked-down agent's tool calls | Sandboxing untrusted tools |
+| [`05_interactive_stdin.py`](05_interactive_stdin.py) | `keep_stdin_open()` + `take_stdin()` + `stdout_lines()` for a request/response conversation with a live REPL-style child | Agent/LLM tools driving a conversational subprocess |
 
 For task-sized snippets rather than whole programs, see the
 [cookbook](../docs/cookbook.md); for the full treatment of any area, the

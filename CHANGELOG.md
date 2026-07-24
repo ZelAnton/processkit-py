@@ -14,7 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Fixed
--
+- `wait_for_http` now forms a correct HTTP/1.1 request line for edge-case
+  `host`/`path` values: an IPv6 literal `host` (e.g. `"::1"`) is bracketed in
+  the `Host` header per RFC 9112/3986 (`Host: [::1]:8080`, not the previously
+  ambiguous `Host: ::1:8080`), and a `path` containing whitespace, a control
+  character (including CR/LF — previously a header-injection-shaped hazard),
+  or a character outside latin-1 now raises `ValueError` up front, before any
+  connection is attempted, instead of silently corrupting the request line or
+  raising a raw `UnicodeEncodeError`.
 
 ## [1.4.0] - 2026-07-23
 

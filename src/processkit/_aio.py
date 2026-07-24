@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import math
 import os
+import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
 from typing import Any, TypeVar, overload
@@ -484,6 +486,73 @@ def _discard_probe(task: asyncio.Task[int]) -> None:
     task.exception()
 
 
+def _format_host_header(host: str, port: int) -> str:
+    """Render `wait_for_http`'s ``Host`` header value for ``host``/``port`` per
+    RFC 9112/3986/6874: an IPv6 literal is bracketed (``Host: [::1]:8080``) and
+    a scope-ID separator is percent-encoded (``[fe80::1%25eth0]:8080``), since
+    a bare colon-separated literal would otherwise be indistinguishable from
+    the header's own ``host:port`` separator; anything else (an IPv4 literal or
+    a DNS name) is used as-is, unchanged from before this validation existed
+    (``Host: 127.0.0.1:8080`` / ``Host: example.com:8080``). A caller who
+    already passed a bracketed literal (``"[::1]"``) is not double-wrapped.
+    """
+    if host.startswith("[") and host.endswith("]"):
+        return f"{host.replace('%', '%25')}:{port}"
+    try:
+        is_ipv6_literal = ipaddress.ip_address(host).version == 6
+    except ValueError:
+        is_ipv6_literal = False
+    if is_ipv6_literal:
+        return f"[{host.replace('%', '%25')}]:{port}"
+    return f"{host}:{port}"
+
+
+# Every Latin-1 control character: C0 (0x00-0x1F), DEL (0x7F), and C1
+# (0x80-0x9F). Any of these in `path` would corrupt `wait_for_http`'s
+# hand-rolled, single-line request — and CR/LF specifically would let an
+# untrusted `path` inject extra request/header lines into the request that
+# follows.
+_HTTP_FORBIDDEN_PATH_CHARS = frozenset(
+    chr(c) for c in range(0x100) if unicodedata.category(chr(c)) == "Cc"
+)
+
+
+def _check_http_path(path: str) -> None:
+    """Guard `wait_for_http`'s request-line construction against a ``path``
+    that would corrupt it: reject whitespace and control characters (CR/LF
+    included) with a `ValueError` up front, fail-fast, before any connection
+    is attempted — the same discipline as this module's ``timeout``/
+    ``interval`` validation.
+    """
+    for ch in path:
+        # Keep non-Latin-1 characters on the existing encode-time ValueError
+        # path below: only characters that could reach the wire belong here.
+        if ord(ch) <= 0xFF and (ch in _HTTP_FORBIDDEN_PATH_CHARS or ch.isspace()):
+            raise ValueError(
+                f"path must not contain whitespace or control characters (found {ch!r} in {path!r})"
+            )
+
+
+def _build_http_request(host: str, port: int, path: str) -> bytes:
+    """Validate ``host``/``path`` and render `wait_for_http`'s hand-rolled
+    HTTP/1.1 request line as ``bytes``, fail-fast (before any connection is
+    attempted): rejects a ``path`` with whitespace/control characters
+    (`_check_http_path`), brackets an IPv6 literal ``host`` in the ``Host``
+    header (`_format_host_header`), and turns a ``host``/``path`` character
+    that can't be encoded as latin-1 into a `ValueError` instead of a raw
+    `UnicodeEncodeError`.
+    """
+    _check_http_path(path)
+    host_header = _format_host_header(host, port)
+    request_text = f"GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n"
+    try:
+        return request_text.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"host and path must be latin-1 encodable for an HTTP request line: {exc}"
+        ) from exc
+
+
 async def wait_for_http(
     host: str,
     port: int,
@@ -523,6 +592,16 @@ async def wait_for_http(
     fixed event-loop tick (or a smaller caller-supplied ``interval``), never left
     uncapped. A **negative** ``timeout`` is rejected outright — raises
     `ValueError`, same as NaN — as is a non-positive ``interval``.
+
+    ``host`` and ``path`` are validated up front, before any connection is
+    attempted (fail-fast, not "after one retry cycle"): an IPv6 literal
+    ``host`` (e.g. ``"::1"``) is bracketed in the ``Host`` header per RFC
+    9112/3986 (``Host: [::1]:8080``, never the ambiguous ``Host: ::1:8080``);
+    a ``path`` containing whitespace or a control character (including
+    CR/LF — which could otherwise inject extra request/header lines from an
+    untrusted ``path``) raises `ValueError`; and a ``host``/``path`` with a
+    character that can't be encoded as latin-1 (required for the request
+    line) raises `ValueError` instead of a raw `UnicodeEncodeError`.
     """
     if not interval > 0:  # rejects NaN too (every NaN comparison is False)
         raise ValueError("interval must be a positive number of seconds")
@@ -530,9 +609,7 @@ async def wait_for_http(
     if expected_status is None:
         expected_status = range(200, 300)  # default: any 2xx
     status_ok = _status_predicate(expected_status)
-    request = (f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n").encode(
-        "latin-1"
-    )
+    request = _build_http_request(host, port, path)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     last_exc: BaseException | None = None

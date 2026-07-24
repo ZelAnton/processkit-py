@@ -28,6 +28,7 @@ from processkit import (
     wait_for_port,
     wait_until,
 )
+from processkit._aio import _format_host_header
 
 from ._programs import free_port, refused_port
 
@@ -1092,6 +1093,135 @@ def test_wait_for_http_cancel_propagates() -> None:
 
     with refused_port() as port:  # nothing listening -> the helper stays in its retry loop
         asyncio.run(scenario(port))
+
+
+# --- wait_for_http: host/path validation (T-147) ------------------------------
+
+
+def test_wait_for_http_brackets_ipv6_host_in_header() -> None:
+    # An IPv6 literal host must produce a bracketed `Host` header per RFC
+    # 9112/3986 (`Host: [::1]:port`), not the ambiguous `Host: ::1:port` a bare
+    # colon-separated literal would otherwise produce — some servers reject the
+    # latter outright with a 400, which would otherwise leave the probe
+    # "forever not ready" for a confusing reason.
+    received_head = ""
+
+    async def scenario() -> None:
+        nonlocal received_head
+        port = free_port()
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            nonlocal received_head
+            with contextlib.suppress(Exception):
+                while True:
+                    line = await reader.readline()
+                    if line in (b"\r\n", b""):
+                        break
+                    received_head += line.decode("latin-1")
+                writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                writer.close()
+
+        try:
+            server = await asyncio.start_server(handle, "::1", port)
+        except OSError:
+            pytest.skip("IPv6 loopback is not available in this environment")
+        async with server:
+            await wait_for_http("::1", port, timeout=5.0)
+
+    asyncio.run(scenario())
+    assert "Host: [::1]:" in received_head
+
+
+def test_wait_for_http_ipv4_and_dns_hosts_stay_unbracketed() -> None:
+    # Regression: existing IPv4/DNS-name behavior must not change.
+    received_head = ""
+
+    async def scenario() -> None:
+        nonlocal received_head
+        port = free_port()
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            nonlocal received_head
+            with contextlib.suppress(Exception):
+                while True:
+                    line = await reader.readline()
+                    if line in (b"\r\n", b""):
+                        break
+                    received_head += line.decode("latin-1")
+                writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", port)
+        async with server:
+            await wait_for_http("127.0.0.1", port, timeout=5.0)
+
+    asyncio.run(scenario())
+    assert "Host: 127.0.0.1:" in received_head
+    assert "[" not in received_head
+
+
+def test_format_host_header_percent_encodes_scoped_ipv6_zone_id() -> None:
+    assert _format_host_header("fe80::1%eth0", 8080) == "[fe80::1%25eth0]:8080"
+
+
+def test_wait_for_http_rejects_path_with_space() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="whitespace or control characters"):
+            await wait_for_http("127.0.0.1", 1, "/foo bar", timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bad_char", ["\x85", "\xa0"])
+def test_wait_for_http_rejects_latin1_control_and_whitespace_in_path(bad_char: str) -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="whitespace or control characters"):
+            await wait_for_http("127.0.0.1", 1, f"/foo{bad_char}bar", timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_rejects_path_with_crlf() -> None:
+    # The header-injection-shaped case: an untrusted `path` carrying CR/LF must
+    # never reach the request line unvalidated.
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="whitespace or control characters"):
+            await wait_for_http("127.0.0.1", 1, "/foo\r\nX-Injected: 1", timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_path_validation_is_fail_fast() -> None:
+    # The ValueError must fire before any connection attempt -- an unreachable
+    # host/port must not delay or mask it (fail-fast, not "after one retry
+    # cycle").
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with pytest.raises(ValueError, match="whitespace or control characters"):
+            await wait_for_http("this-host-does-not-resolve.invalid", 1, "/bad path", timeout=5.0)
+        elapsed = loop.time() - start
+        assert elapsed < 1.0, "path validation should reject before any network attempt"
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_rejects_non_latin1_path() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="latin-1"):
+            await wait_for_http("127.0.0.1", 1, "/café☃", timeout=1.0)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_http_rejects_non_latin1_host() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="latin-1"):
+            await wait_for_http("h☃ost.invalid", 1, timeout=1.0)
+
+    asyncio.run(scenario())
 
 
 # --- wait_for_path (filesystem path appears) ---------------------------------

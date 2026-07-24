@@ -475,6 +475,40 @@ git = CliClient("git", runner=scripted)
 assert git.run(["rev-parse", "HEAD"]) == "deadbeef"   # no real git spawned
 ```
 
+`run_json` / `arun_json` run like `run` (requiring a zero exit) but parse the
+stdout as JSON and return the decoded object — the wrapper for tools that speak
+JSON (`gh`, `kubectl`, `docker`, `az`, `jj`). They go through the same `runner=`
+seam, so a scripted reply's stdout is parsed exactly as a real tool's would be —
+no process, no filesystem:
+
+```python
+from processkit import CliClient
+from processkit.testing import Reply, ScriptedRunner
+
+scripted = ScriptedRunner()
+scripted.on(["gh", "pr", "view", "42", "--json", "state"], Reply.ok('{"state": "OPEN"}'))
+gh = CliClient("gh", runner=scripted)
+assert gh.run_json(["pr", "view", "42", "--json", "state"]) == {"state": "OPEN"}
+```
+
+Stdout that is not valid JSON raises `InvalidJson` (a `ProcessError` carrying the
+`program` and a bounded stdout fragment) rather than a bare
+`json.JSONDecodeError`, and a scripted reply exercises that path too:
+
+```python
+from processkit import CliClient, InvalidJson
+from processkit.testing import Reply, ScriptedRunner
+
+scripted = ScriptedRunner()
+scripted.on(["gh", "pr", "view"], Reply.ok("not json at all"))
+gh = CliClient("gh", runner=scripted)
+try:
+    gh.run_json(["pr", "view"])
+except InvalidJson as exc:
+    assert exc.program == "gh"
+    assert "not json at all" in exc.stdout
+```
+
 `output_all`/`aoutput_all` (and their `_bytes` twins) and `Supervisor` accept
 the same `runner=` keyword, for the same reason — a batch or a supervised
 command can be driven through a double in a test, with the real `Runner`

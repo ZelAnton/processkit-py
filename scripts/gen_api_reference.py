@@ -201,6 +201,7 @@ SECTIONS: tuple[Section, ...] = (
             "Unsupported",
             "OutputTooLarge",
             "Cancelled",
+            "InvalidJson",
         ),
     ),
     Section(

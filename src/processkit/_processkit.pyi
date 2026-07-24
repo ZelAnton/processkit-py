@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from types import TracebackType
-from typing import Literal, final
+from typing import Any, Literal, final
 
 # `StrPath` (program/path arg: `str` or `os.PathLike[str]`), `Args` (an argv-like
 # list/tuple of them — deliberately not `Sequence[StrPath]`, see `_types.py`),
@@ -1220,6 +1220,17 @@ class CliClient:
         arg list. An explicit setting on it always wins over the default."""
 
     def run(self, call: Args | Command) -> str: ...
+    def run_json(self, call: Args | Command) -> Any:
+        """Run like ``run`` (require a zero exit) and parse the stdout as JSON,
+        returning the decoded object (a ``dict``/``list``/``str``/number/
+        ``bool``/``None``) — the ``run(...)`` + ``json.loads(...)`` +
+        error-attribution boilerplate the many CLIs that emit machine JSON
+        otherwise force on every caller. A non-zero exit raises ``NonZeroExit``
+        (like ``run``); stdout that does not parse raises ``InvalidJson`` (a
+        ``ProcessError`` carrying the client's ``program`` and a bounded stdout
+        fragment), never a bare ``json.JSONDecodeError``. Returns ``Any``: JSON
+        admits any of those shapes, so narrow the result yourself."""
+
     def output(self, call: Args | Command) -> ProcessResult: ...
     def output_bytes(self, call: Args | Command) -> BytesResult: ...
     def exit_code(self, call: Args | Command) -> int: ...
@@ -1237,6 +1248,12 @@ class CliClient:
         ``a``-prefixed async twin — the probe is synchronous."""
 
     def arun(self, call: Args | Command) -> Awaitable[str]: ...
+    def arun_json(self, call: Args | Command) -> Awaitable[Any]:
+        """Async counterpart of ``run_json()`` — await it for the decoded JSON
+        object. Same contract: a non-zero exit propagates ``NonZeroExit``,
+        stdout that does not parse propagates ``InvalidJson`` (never a bare
+        ``json.JSONDecodeError``), both out of the ``await``."""
+
     def aoutput(self, call: Args | Command) -> Awaitable[ProcessResult]: ...
     def aoutput_bytes(self, call: Args | Command) -> Awaitable[BytesResult]: ...
     def aexit_code(self, call: Args | Command) -> Awaitable[int]: ...
@@ -1372,6 +1389,24 @@ class IdleTimeout(ProcessError):
     # The configured idle window, in seconds (the value passed to
     # `Command.idle_timeout(...)`).
     idle_timeout_seconds: float
+
+class InvalidJson(ProcessError):
+    """`CliClient.run_json()` / `arun_json()` ran the command successfully (a
+    zero exit, like `run`) but its stdout did not parse as JSON.
+
+    A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
+    so the failure is attributed (which program, and what the parser reported in
+    `str(exc)`) and a single `except ProcessError` still catches it. A deliberate
+    *sibling* of `NonZeroExit`, not a subclass: the run itself succeeded — only
+    its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
+    failure without also catching a genuine non-zero exit."""
+
+    # The wrapped client's program.
+    program: str
+    # A length-capped fragment of the stdout that failed to parse — a bounded
+    # head for diagnosis, not the whole payload (which can be large or hold
+    # secrets). The underlying parser message is in `str(exc)`.
+    stdout: str
 
 # Program resolution: resolve a program to its concrete executable path *without*
 # launching it — a spawn-free, side-effect-free preflight ("is this tool

@@ -42,6 +42,16 @@ create_exception!(_processkit, Cancelled, ProcessError);
 // by `map_err`: the crate has no native idle-timeout, so no crate `Error`
 // variant maps to it.
 create_exception!(_processkit, IdleTimeout, ProcessError);
+// `InvalidJson` is raised by the binding-only `CliClient.run_json`/`arun_json`
+// verbs when a run that succeeded (a zero exit, like `run`) produced stdout that
+// does not parse as JSON. Like `IdleTimeout`, it is synthesized entirely on the
+// binding side (constructed by `invalid_json_err`, never by `map_err`): the crate
+// has no "invalid JSON" concept, so no crate `Error` variant maps to it. Kept a
+// plain sibling under `ProcessError` and deliberately NOT a subclass of
+// `NonZeroExit` — the run itself succeeded; only its *output shape* is wrong — so
+// `except InvalidJson` isolates a bad-payload failure while `except ProcessError`
+// still catches it, and it is never confused with a genuine non-zero exit.
+create_exception!(_processkit, InvalidJson, ProcessError);
 
 // `Timeout` and `ProcessNotFound` carry a second, builtin base so they are
 // catchable the way the stdlib trains Python users to expect: a command timeout
@@ -91,6 +101,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("OutputTooLarge", py.get_type::<OutputTooLarge>()),
         ("Cancelled", py.get_type::<Cancelled>()),
         ("IdleTimeout", py.get_type::<IdleTimeout>()),
+        ("InvalidJson", py.get_type::<InvalidJson>()),
     ] {
         ty.setattr("__module__", "processkit")?;
         m.add(name, ty)?;
@@ -169,6 +180,63 @@ pub(crate) fn idle_timeout_err(seconds: f64) -> PyErr {
         let _ = err.value(py).setattr("idle_timeout_seconds", seconds);
         err
     })
+}
+
+/// Character cap for the `stdout` fragment carried on an [`InvalidJson`]. A
+/// wrapped tool can emit a large payload — and stdout may hold secrets — so the
+/// exception keeps only a bounded head for diagnosis, mirroring the truncated-
+/// diagnostic convention used elsewhere in the binding; the full stdout is never
+/// attached. Counts Unicode scalar values (`char`s), not bytes.
+const INVALID_JSON_STDOUT_CHARS: usize = 2048;
+
+/// The leading `max_chars` characters of `text` as an owned `String` (a clean,
+/// char-boundary-safe prefix), or the whole string when it is already shorter.
+/// Counts `char`s so a multi-byte UTF-8 sequence is never split.
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => text[..byte_idx].to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// Build an [`InvalidJson`] for a `CliClient.run_json`/`arun_json` call whose
+/// (successful) run produced stdout that did not parse as JSON. Carries the
+/// client's `program` and a length-capped `stdout` fragment as structured
+/// attributes — never the whole payload, which can be large or hold secrets —
+/// with the underlying `json.loads` parser message folded into `str(exc)`, so the
+/// failure is attributed rather than surfaced as a bare `json.JSONDecodeError`.
+///
+/// Synthesized entirely on the binding side, like [`idle_timeout_err`]: the crate
+/// has no native "invalid JSON" error, so no `Error` variant maps to it. Unlike
+/// `idle_timeout_err` (which self-attaches on a tokio worker) this takes a live
+/// `py` token — its sole caller already holds the GIL to have just run
+/// `json.loads` — and hands the original parser error in for its message.
+pub(crate) fn invalid_json_err(
+    py: Python<'_>,
+    program: &str,
+    stdout: &str,
+    parse_error: &PyErr,
+) -> PyErr {
+    // Prefer the parser's own message (`str(exc)`, e.g. "Expecting value: line 1
+    // column 1 (char 0)") over the `PyErr` Display, which prepends the type name;
+    // fall back to the Display form only if `str()` itself somehow fails. The
+    // stdlib `json` messages report a position, never echo the payload, so folding
+    // this into the exception message leaks no stdout content (the redaction
+    // boundary `test_exceptions.py` pins for the other exceptions).
+    let parser_message = parse_error
+        .value(py)
+        .str()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| parse_error.to_string());
+    let err = InvalidJson::new_err(format!(
+        "{program}: command output is not valid JSON: {parser_message}"
+    ));
+    // Ignore `setattr` failures: the typed exception with its message is already a
+    // faithful error (same tolerance as `map_err`/`idle_timeout_err`).
+    let value = err.value(py);
+    let _ = value.setattr("program", program);
+    let _ = value.setattr("stdout", truncate_chars(stdout, INVALID_JSON_STDOUT_CHARS));
+    err
 }
 
 /// Fetch a dual-base exception type cached at module init. The `expect` is

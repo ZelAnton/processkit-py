@@ -734,6 +734,22 @@ arg list. An explicit setting on it always wins over the default.
 def run(call: Args | Command) -> str
 ```
 
+#### `run_json`
+
+```text
+def run_json(call: Args | Command) -> Any
+```
+
+Run like ``run`` (require a zero exit) and parse the stdout as JSON,
+returning the decoded object (a ``dict``/``list``/``str``/number/
+``bool``/``None``) — the ``run(...)`` + ``json.loads(...)`` +
+error-attribution boilerplate the many CLIs that emit machine JSON
+otherwise force on every caller. A non-zero exit raises ``NonZeroExit``
+(like ``run``); stdout that does not parse raises ``InvalidJson`` (a
+``ProcessError`` carrying the client's ``program`` and a bounded stdout
+fragment), never a bare ``json.JSONDecodeError``. Returns ``Any``: JSON
+admits any of those shapes, so narrow the result yourself.
+
 #### `output`
 
 ```text
@@ -780,6 +796,17 @@ fail-closed (like the run verbs), and a miss raises ``ProcessNotFound``
 ```text
 def arun(call: Args | Command) -> Awaitable[str]
 ```
+
+#### `arun_json`
+
+```text
+def arun_json(call: Args | Command) -> Awaitable[Any]
+```
+
+Async counterpart of ``run_json()`` — await it for the decoded JSON
+object. Same contract: a non-zero exit propagates ``NonZeroExit``,
+stdout that does not parse propagates ``InvalidJson`` (never a bare
+``json.JSONDecodeError``), both out of the ``await``.
 
 #### `aoutput`
 
@@ -2753,6 +2780,34 @@ attempt could only fail the same way).
 
 ```text
 program: str
+```
+
+### `InvalidJson`
+
+```text
+class InvalidJson
+```
+
+`CliClient.run_json()` / `arun_json()` ran the command successfully (a
+zero exit, like `run`) but its stdout did not parse as JSON.
+
+A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
+so the failure is attributed (which program, and what the parser reported in
+`str(exc)`) and a single `except ProcessError` still catches it. A deliberate
+*sibling* of `NonZeroExit`, not a subclass: the run itself succeeded — only
+its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
+failure without also catching a genuine non-zero exit.
+
+#### `program`
+
+```text
+program: str
+```
+
+#### `stdout`
+
+```text
+stdout: str
 ```
 
 ## Type aliases

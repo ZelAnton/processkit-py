@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+
+## [1.4.1] - 2026-07-24
+
+### Added
 - Add `CliClient.run_json(call)` / `arun_json(call)`: run a wrapped tool like
   `run` (requiring a zero exit) and return its stdout **parsed as JSON** — the
   `run(...)` + `json.loads(...)` + error-mapping boilerplate the many CLIs that
@@ -1073,7 +1084,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/ZelAnton/processkit-py/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/ZelAnton/processkit-py/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ZelAnton/processkit-py/compare/v1.2.4...v1.3.0
 [1.2.4]: https://github.com/ZelAnton/processkit-py/compare/v1.2.3...v1.2.4

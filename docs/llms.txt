@@ -1,0 +1,24 @@
+# processkit
+
+> Asyncio-native, kernel-backed, no-orphan child-process toolkit for Python — a thin binding to the processkit Rust crate.
+
+## Docs
+
+- [Overview](/processkit-py/index.html): Async-and-sync child-process management for Python with a kernel-backed **no-orphan guarantee**: every process you start — and everything *it* spawns — lives in a kill-on-exit container (a **Windows Job Object**, a **Linux cgroup v2**, or a POSIX process group).
+- [Cookbook](/processkit-py/cookbook.html): Task-oriented snippets — *"I want to … → do this."* Every example assumes `from processkit import …`.
+- [Coming from subprocess](/processkit-py/migrating.html): You already know `subprocess` (or `asyncio.subprocess`).
+- [Running commands](/processkit-py/commands.html): `Command` is the entry point of the runner layer: a builder that describes *what* to run and *how*, plus a family of verbs that decide *what you get back*.
+- [Process groups](/processkit-py/process-groups.html): A `ProcessGroup` ties the lifetime of a whole child-process **tree** to a context manager: every process you start in the group — and everything *those* processes spawn — is killed when the block exits.
+- [Sandboxing untrusted tools](/processkit-py/sandboxing.html): Agent/LLM frameworks routinely hand a model the ability to run a "tool" it picked itself, with arguments it generated itself — a shell command, a code interpreter, a scraper.
+- [Streaming & interactive I/O](/processkit-py/streaming.html): The one-shot verbs in [Running commands](commands.md) — `output()`, `run()`, `output_bytes()` — buffer the *whole* output and hand it back at exit.
+- [Pipelines](/processkit-py/pipelines.html): `a | b | c` **without a shell**.
+- [Timeouts & cancellation](/processkit-py/timeouts-and-cancellation.html): Two ways a run can end early, with two different philosophies:
+- [Supervision](/processkit-py/supervision.html): A [`timeout`](timeouts-and-cancellation.md) or a cancelled task *bounds one run* — it caps a single invocation, and then it's over.
+- [Testing your code](/processkit-py/testing.html): Code that shells out is miserable to test — unless the subprocess sits behind a seam.
+- [Command-line usage](/processkit-py/cli.html): Most of this package's value lives behind Python code — but sometimes the caller is a shell script or a CI step, not a Python program.
+- [Performance & overhead](/processkit-py/performance.html): **Short answer: the bridge adds no silly overhead.** Spawning a child process is fundamentally *syscall-bound* — `fork`/`exec`/`posix_spawn` on POSIX, `CreateProcess` plus Job Object setup on Windows — and that OS-side cost dominates the total wall-clock time of a run by a wide margin.
+- [Async runtimes & event loops](/processkit-py/event-loops.html): processkit's async surface is **asyncio-native**.
+- [Platform support](/processkit-py/platforms.html): processkit's guarantee is strongest on Windows and weakest on macOS.
+- [Troubleshooting](/processkit-py/troubleshooting.html): Use this page to map a symptom to the guide that explains the full platform or runtime contract.
+- [API reference](/processkit-py/api-reference.html): The complete, per-symbol reference for the public `processkit` surface — every class, function, protocol, type alias, and exception exported by the package, plus the `processkit.testing` submodule.
+- [Architecture](/processkit-py/internals.html): This page is for contributors: how the binding is put together, where the line between "binding" and "crate" runs, and the conventions that keep the two layers — and the three parallel views of the public API — in sync.

@@ -165,3 +165,17 @@ explain how the pieces compose, with the platform fine print collected in
 [Platform support](platforms.md). The underlying algorithms (the OS containment
 mechanisms, race-free spawn) live in the
 [`processkit`](https://docs.rs/processkit) Rust crate.
+
+## For LLM assistants
+
+This site publishes two machine-readable files following the
+[llmstxt.org](https://llmstxt.org/) convention, so an AI assistant can pull an
+accurate, current slice of the docs instead of guessing from a stale summary:
+
+- [llms.txt](llms.txt) — an annotated index of every guide, in reading order,
+  each linked with a one-line description drawn from the guide itself.
+- [llms-full.txt](llms-full.txt) — the full text of all guides concatenated, for
+  loading the whole documentation set into an assistant's context at once.
+
+Both are generated straight from these guides (`scripts/gen_llms_txt.py`, drift-guarded
+like the API reference) and served as static assets of this book.

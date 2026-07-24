@@ -994,9 +994,10 @@ def aoutput_as_completed_bytes(
 ) -> AsyncIterator[tuple[int, BytesResult | ProcessError]]:
     """The raw-``bytes`` twin of `aoutput_as_completed`: the identical streaming,
     concurrency-cap, per-slot-error, and no-orphan-on-cancellation contract, but
-    each finished command yields a `BytesResult` — its stdout/stderr as undecoded
-    ``bytes``, for non-UTF-8 or binary output — in place of a text
-    `ProcessResult`, mirroring how `aoutput_all_bytes` relates to `aoutput_all`.
+    each finished command yields a `BytesResult` — raw-``bytes`` stdout for
+    non-UTF-8 or binary output, while stderr stays decoded text — in place of a
+    text `ProcessResult`, mirroring how `aoutput_all_bytes` relates to
+    `aoutput_all`.
     With ``concurrency=None``, it uses the same process-available CPU-count
     default (and fallbacks) as every other batch entry point. See
     `aoutput_as_completed` for the full contract.

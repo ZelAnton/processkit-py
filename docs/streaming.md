@@ -290,7 +290,7 @@ finished = await proc.afinish()
 assert finished.exited_zero
 ```
 
-Full runnable example: `examples/05_interactive_stdin.py` — a request/response
+Full runnable example: [examples/05_interactive_stdin.py](../examples/05_interactive_stdin.py) — a request/response
 conversation (multiple exchanges) with a small inline calculator REPL.
 
 `ProcessStdin` is fully awaitable: `await write(bytes)`, `write_line(str)`

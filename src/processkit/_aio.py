@@ -3,7 +3,7 @@
 Three families live here:
 
 - **Readiness helpers** (`wait_until` / `wait_for_line` / `wait_for_port` /
-  `wait_for_http` / `wait_for_path`) compose on top of the compiled async
+  `wait_for_http` / `wait_for_path` / `wait_for_unix_socket`) compose on top of the compiled async
   surface (a `StdoutLines` iterator, a plain TCP connect, a hand-rolled HTTP
   GET) rather than bridging the Rust
   crate's borrowing probe methods — simpler, fully composable, and they work
@@ -31,6 +31,7 @@ import contextlib
 import ipaddress
 import math
 import os
+import socket
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
@@ -43,6 +44,7 @@ from ._processkit import (
     ProcessGroup,
     ProcessGroupStats,
     ProcessResult,
+    Unsupported,
 )
 from ._types import StrPath
 
@@ -55,6 +57,7 @@ __all__ = [
     "wait_for_line",
     "wait_for_path",
     "wait_for_port",
+    "wait_for_unix_socket",
     "wait_until",
 ]
 
@@ -64,14 +67,15 @@ _ZERO_TIMEOUT_CONNECT_TICK = 0.05
 
 class WaitTimeout(ProcessError, TimeoutError):
     """A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
-    `wait_for_http` / `wait_for_path`) didn't succeed within its deadline.
+    `wait_for_http` / `wait_for_path` / `wait_for_unix_socket`) didn't succeed within its deadline.
 
     Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
     the same convention a run's own `.timeout()` uses (see `Timeout`). Always
     carries `timeout_seconds`; `wait_for_port` and `wait_for_http` additionally
-    set `host` / `port` (and `wait_for_http` also `path`), and `wait_for_path`
-    sets `path` (all `None` for `wait_until` / `wait_for_line`, which have none
-    of these). `wait_for_port` / `wait_for_http` also chain the last attempt's
+    set `host` / `port` (and `wait_for_http` also `path`), while `wait_for_path`
+    and `wait_for_unix_socket` set `path` (all `None` for `wait_until` /
+    `wait_for_line`, which have none of these). `wait_for_port` /
+    `wait_for_http`, and `wait_for_unix_socket` also chain the last attempt's
     failure as `__cause__` (a connection error, or — for `wait_for_http` — the
     last unexpected status code).
     """
@@ -93,10 +97,10 @@ class WaitTimeout(ProcessError, TimeoutError):
 
 
 def _check_timeout(timeout: float) -> None:
-    """Shared ``timeout`` validation for `wait_until` / `wait_for_port` /
-    `wait_for_line`: NaN and negative values are both rejected outright rather
-    than silently accepted. ``timeout == 0`` is valid and means "evaluate
-    exactly once, right now" — see each helper's docstring.
+    """Shared ``timeout`` validation for the readiness helpers: NaN and
+    negative values are both rejected outright rather than silently accepted.
+    ``timeout == 0`` is valid and means "evaluate exactly once, right now" —
+    see each helper's docstring.
     """
     if math.isnan(timeout):
         raise ValueError("timeout must not be NaN")
@@ -242,11 +246,12 @@ async def wait_for_path(
     Polls every ``interval`` seconds until ``path.exists()`` returns true or
     ``timeout`` seconds elapse, in which case `WaitTimeout` (also a
     `TimeoutError`) is raised, carrying ``path``. A unix-socket, a pid file, or
-    any other marker file a daemon creates once ready are all typical uses —
-    for a TCP port or an arbitrary predicate, see `wait_for_port` /
-    `wait_until` instead (`wait_until(lambda: path.exists(), ...)` is exactly
-    what this helper does, named for readability and given the same
-    `WaitTimeout` discipline as its siblings).
+    any other marker file a daemon creates once ready are all typical uses. For
+    a Unix-domain socket that must actually accept connections, use
+    `wait_for_unix_socket`; for a TCP port or an arbitrary predicate, see
+    `wait_for_port` / `wait_until` instead (`wait_until(lambda: path.exists(),
+    ...)` is exactly what this helper does, named for readability and given the
+    same `WaitTimeout` discipline as its siblings).
 
     ``timeout<=0`` contract (shared with `wait_until` / `wait_for_port` /
     `wait_for_line`): at ``timeout=0``, ``path`` is still checked (at least
@@ -407,6 +412,94 @@ async def wait_for_port(
             _close_pending_connection(conn)
             raise
         # Connected — close the probe socket (best-effort) and succeed.
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+        return
+
+
+async def wait_for_unix_socket(
+    path: StrPath,
+    *,
+    timeout: float,
+    interval: float = 0.05,
+) -> None:
+    """Wait until a Unix-domain socket at ``path`` accepts a connection.
+
+    Unlike `wait_for_path`, this proves that the socket has started accepting
+    connections, rather than only that its filesystem entry exists. Polls every
+    ``interval`` seconds until a connection succeeds or ``timeout`` seconds
+    elapse, in which case `WaitTimeout` (also a `TimeoutError`) is raised,
+    carrying ``path`` and chained from the last connection failure.
+
+    Platforms whose Python socket module has no ``AF_UNIX`` support raise
+    `Unsupported` instead of silently downgrading to a filesystem-existence
+    check. At ``timeout=0`` one bounded connection attempt still runs, so an
+    already-ready socket succeeds; negative and NaN timeouts are rejected with
+    `ValueError`.
+    """
+    if not hasattr(socket, "AF_UNIX"):
+        exc = Unsupported("Unix-domain sockets are not supported on this platform")
+        exc.operation = "wait_for_unix_socket"
+        raise exc
+    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
+        raise ValueError("interval must be a positive number of seconds")
+    _check_timeout(timeout)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_exc: BaseException | None = None
+    first_attempt = True
+    while True:
+        remaining = deadline - loop.time()
+        if not first_attempt and remaining <= 0:
+            raise WaitTimeout(
+                f"unix socket {path!s} not ready within {timeout}s",
+                timeout_seconds=timeout,
+                path=path,
+            ) from last_exc
+        if first_attempt:
+            connect_timeout = max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
+        else:
+            connect_timeout = remaining
+        first_attempt = False
+        # Keep ownership of the connect task so timeout/cancellation cannot lose
+        # a successfully established transport in a same-tick deadline race.
+        # Typeshed hides this Unix-only asyncio API on Windows even though
+        # modern Windows supports AF_UNIX; the runtime socket capability check
+        # above is the portability contract, not a static platform branch.
+        open_unix_connection = cast(
+            Callable[[StrPath], Awaitable[_Connection]],
+            asyncio.open_unix_connection,  # type: ignore[attr-defined]
+        )
+        conn = asyncio.ensure_future(open_unix_connection(path))
+        try:
+            _reader, writer = await asyncio.wait_for(conn, timeout=connect_timeout)
+        except (OSError, asyncio.TimeoutError) as exc:
+            if (
+                isinstance(exc, asyncio.TimeoutError)
+                and conn.done()
+                and not conn.cancelled()
+                and conn.exception() is None
+            ):
+                _reader, writer = conn.result()
+                writer.close()
+                with contextlib.suppress(OSError):
+                    await writer.wait_closed()
+                return
+            _close_pending_connection(conn)
+            last_exc = exc
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise WaitTimeout(
+                    f"unix socket {path!s} not ready within {timeout}s",
+                    timeout_seconds=timeout,
+                    path=path,
+                ) from last_exc
+            await asyncio.sleep(min(interval, remaining))
+            continue
+        except asyncio.CancelledError:
+            _close_pending_connection(conn)
+            raise
         writer.close()
         with contextlib.suppress(OSError):
             await writer.wait_closed()

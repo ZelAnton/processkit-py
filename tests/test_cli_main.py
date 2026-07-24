@@ -664,6 +664,52 @@ def test_doctor_json_reports_operational_probe_failures() -> None:
     assert payload["error_probe_failures"] == ["--max-processes (cannot read pids.max)"]
 
 
+def test_doctor_json_exits_three_when_containment_itself_is_unavailable() -> None:
+    mock_group = (
+        "class _MockGroup:\n"
+        "    def __init__(self, *a, **k):\n"
+        "        raise processkit.Unsupported('containment is unavailable')\n"
+    )
+    text_result = _run_doctor_with_mocked_process_group(mock_group)
+    result = _run_doctor_with_mocked_process_group(mock_group, "--json")
+
+    assert text_result.returncode == result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "UNAVAILABLE"
+    assert payload["mechanism"] == "unavailable"
+    assert payload["exit_code"] == 3
+    assert payload["resource_limits"] == {
+        "max_memory": False,
+        "max_processes": False,
+        "cpu_quota": False,
+    }
+    assert "error_probe_failures" not in payload
+
+
+def test_doctor_json_exits_four_when_mechanism_probe_hits_an_operational_error() -> None:
+    mock_group = (
+        "class _MockGroup:\n"
+        "    def __init__(self, *a, **k):\n"
+        "        raise PermissionError('cannot read /sys/fs/cgroup')\n"
+    )
+    text_result = _run_doctor_with_mocked_process_group(mock_group)
+    result = _run_doctor_with_mocked_process_group(mock_group, "--json")
+
+    assert text_result.returncode == result.returncode == 4
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == "ERROR"
+    assert payload["mechanism"] == "unknown"
+    assert payload["exit_code"] == 4
+    assert payload["resource_limits"] == {
+        "max_memory": False,
+        "max_processes": False,
+        "cpu_quota": False,
+    }
+    assert payload["error_probe_failures"] == [
+        "containment mechanism (cannot read /sys/fs/cgroup)"
+    ]
+
+
 def test_doctor_exits_zero_when_resource_limits_are_available() -> None:
     result = _run_doctor_with_mocked_process_group(
         "class _MockGroup:\n"

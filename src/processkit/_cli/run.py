@@ -144,6 +144,7 @@ def _run(
         # piped (the Command default) — `_drive_idle` re-emits each line — rather
         # than inheriting raw. `idle_timeout()` is enforced by the streaming
         # iterator that path drives.
+        assert args.idle_timeout is not None
         command = command.idle_timeout(args.idle_timeout)
     else:
         command = command.stdout("inherit").stderr("inherit")

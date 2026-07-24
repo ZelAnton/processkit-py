@@ -71,6 +71,27 @@ def test_timeout_grace_rejects_negative_nonfinite_or_overflowing(seconds: float)
         raise AssertionError(f"Command.timeout_grace({seconds!r}) should have raised ValueError")
 
 
+# --- Command.idle_timeout() --------------------------------------------------
+# Shares `positive_duration` with `timeout()` (K-013: the same contract must be
+# pinned for every sibling, not only the newest), so it accepts a finite
+# positive and rejects nonpositive / nonfinite / overflowing identically.
+
+
+@given(seconds=_finite_positive)
+def test_idle_timeout_accepts_finite_positive(seconds: float) -> None:
+    Command("x").idle_timeout(seconds)
+
+
+@given(seconds=st.one_of(_invalid_shape, _overflowing))
+def test_idle_timeout_rejects_nonpositive_nonfinite_or_overflowing(seconds: float) -> None:
+    try:
+        Command("x").idle_timeout(seconds)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"Command.idle_timeout({seconds!r}) should have raised ValueError")
+
+
 # --- Command.retry()'s backoff knobs -----------------------------------------
 
 

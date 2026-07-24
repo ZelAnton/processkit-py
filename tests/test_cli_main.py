@@ -115,6 +115,59 @@ def test_missing_program_gives_predictable_exit_code_and_stderr_message() -> Non
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_idle_timeout_gives_its_own_exit_code_distinct_from_wall_clock_timeout() -> None:
+    # A child that prints once then goes silent trips --idle-timeout: exit 123
+    # (deliberately NOT 124, the wall-clock --timeout code), a one-line message,
+    # never a traceback. The one stdout line it did emit is re-streamed.
+    result = _run_cli(
+        "run",
+        "--idle-timeout",
+        "0.5",
+        "--",
+        PY,
+        "-c",
+        "import time; print('hi', flush=True); time.sleep(30)",
+    )
+    assert result.returncode == 123
+    assert "idle" in result.stderr.lower()
+    assert "hi" in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_idle_timeout_lets_a_chatty_child_finish_and_passes_its_code_through() -> None:
+    # Output keeps flowing well within the idle window, so it never trips; the
+    # child exits normally and its code passes through, with every line
+    # re-emitted (decoded, line by line) by the streaming path.
+    code = (
+        "import time\n"
+        "for i in range(3):\n"
+        "    print('line', i, flush=True)\n"
+        "    time.sleep(0.1)\n"
+        "import sys; sys.exit(0)\n"
+    )
+    result = _run_cli("run", "--idle-timeout", "2", "--", PY, "-c", code)
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["line 0", "line 1", "line 2"]
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_idle_timeout_with_profile_is_a_usage_error() -> None:
+    # The two need incompatible consuming verbs on the one handle, so the combo
+    # is rejected up front as a usage error (exit 2), not silently.
+    result = _run_cli("run", "--idle-timeout", "1", "--profile", "--", PY, "-c", "print(1)")
+    assert result.returncode == 2
+    assert "--idle-timeout cannot be combined with --profile" in result.stderr
+    assert "usage: python -m processkit run" in result.stderr
+
+
+def test_idle_timeout_rejects_nonpositive_value_as_usage_error() -> None:
+    # Shares the parser's _positive_float type with --timeout, so 0/negative are
+    # argparse usage errors (exit 2), never a spawned child.
+    result = _run_cli("run", "--idle-timeout", "0", "--", PY, "-c", "print(1)")
+    assert result.returncode == 2
+    assert "positive number" in result.stderr
+
+
 def test_timeout_grace_without_timeout_is_a_usage_error() -> None:
     result = _run_cli("run", "--timeout-grace", "1", "--", PY, "-c", "print(1)")
     assert result.returncode == 2
@@ -905,6 +958,30 @@ def test_supervise_missing_command_after_supervise_is_a_usage_error() -> None:
     assert "missing command" in result.stderr
     assert "usage: python -m processkit supervise" in result.stderr
     assert "--restart" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_idle_timeout_is_a_loud_usage_error_not_a_silent_noop() -> None:
+    # `--idle-timeout` is accepted by the supervise parser (parity with `run`)
+    # but cannot be enforced through Supervisor's one-shot verbs in processkit
+    # 2.3.x, so using it is a usage error (exit 2) with a clear message pointing
+    # at `run` — never a silently-ignored flag. Runs a program that WOULD exit 0
+    # to prove the rejection happens before any supervision, not after.
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "never",
+        "--idle-timeout",
+        "1",
+        "--",
+        PY,
+        "-c",
+        "print('should never run')",
+    )
+    assert result.returncode == 2
+    assert "--idle-timeout is not yet supported under supervise" in result.stderr
+    assert "run --idle-timeout" in result.stderr
+    assert "should never run" not in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 

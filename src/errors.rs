@@ -32,6 +32,16 @@ create_exception!(_processkit, ResourceLimit, ProcessError);
 create_exception!(_processkit, Unsupported, ProcessError);
 create_exception!(_processkit, OutputTooLarge, ProcessError);
 create_exception!(_processkit, Cancelled, ProcessError);
+// `IdleTimeout` is a sibling of `Timeout` under `ProcessError`, deliberately
+// NOT a subclass of `Timeout`: an idle (inactivity) timeout is a distinct
+// condition from a wall-clock `timeout()` expiry — "the child went silent" vs
+// "the run took too long overall" — so keeping them separate lets a consumer
+// tell the two timeout classes apart (`except IdleTimeout` does not swallow a
+// wall-clock `Timeout`, and vice-versa) while `except ProcessError` still
+// catches both. Constructed by the binding itself (see `idle_timeout_err`), not
+// by `map_err`: the crate has no native idle-timeout, so no crate `Error`
+// variant maps to it.
+create_exception!(_processkit, IdleTimeout, ProcessError);
 
 // `Timeout` and `ProcessNotFound` carry a second, builtin base so they are
 // catchable the way the stdlib trains Python users to expect: a command timeout
@@ -80,6 +90,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("Unsupported", py.get_type::<Unsupported>()),
         ("OutputTooLarge", py.get_type::<OutputTooLarge>()),
         ("Cancelled", py.get_type::<Cancelled>()),
+        ("IdleTimeout", py.get_type::<IdleTimeout>()),
     ] {
         ty.setattr("__module__", "processkit")?;
         m.add(name, ty)?;
@@ -133,6 +144,31 @@ fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = PROCESS_NOT_FOUND.set(py, not_found.unbind());
     let _ = PERMISSION_DENIED.set(py, permission_denied.unbind());
     Ok(())
+}
+
+/// Build an [`IdleTimeout`] carrying the configured idle window (seconds) as its
+/// `idle_timeout_seconds` attribute — the idle-timeout analogue of the
+/// `timeout_seconds` field `map_err` attaches to a wall-clock [`Timeout`]. Kept
+/// here, the one home for exception construction, even though the binding (not
+/// `map_err`) raises it: the crate has no native idle-timeout, so it is
+/// synthesized entirely on the binding's streaming surface (`running.rs`) when a
+/// run produces no stdout/stderr line for its `Command.idle_timeout(...)` window.
+///
+/// Self-attaching (acquires the GIL itself, a cheap re-entrant no-op when one is
+/// already held), so the streaming `__anext__` — which runs on a tokio worker
+/// with the GIL released across the await — can build the error without a
+/// caller-threaded `py` token, exactly like `map_err`.
+pub(crate) fn idle_timeout_err(seconds: f64) -> PyErr {
+    Python::attach(|py| {
+        let err = IdleTimeout::new_err(format!(
+            "no stdout/stderr line for {seconds}s (idle timeout); the child produced \
+             no output within its Command.idle_timeout({seconds}) window and was killed"
+        ));
+        // Ignore a `setattr` failure: the typed exception with its message is
+        // already a faithful error (same tolerance as `map_err`'s field attach).
+        let _ = err.value(py).setattr("idle_timeout_seconds", seconds);
+        err
+    })
 }
 
 /// Fetch a dual-base exception type cached at module init. The `expect` is

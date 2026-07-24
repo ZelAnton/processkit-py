@@ -291,15 +291,20 @@ impl PyProcessGroup {
     /// runs concurrently; this does not wait for it to finish.
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
         let group = self.group()?;
-        block_on(py, group.start(&command.inner)).map(PyRunningProcess::from)
+        let idle = command.idle_timeout;
+        block_on(py, group.start(&command.inner)).map(|r| PyRunningProcess::started(r, idle))
     }
 
     /// Async counterpart of `start()`.
     fn astart<'py>(&self, py: Python<'py>, command: &PyCommand) -> PyResult<Bound<'py, PyAny>> {
         let group = self.group()?;
         let cmd = command.inner.clone();
+        let idle = command.idle_timeout;
         drive_async(py, async move {
-            group.start(&cmd).await.map(PyRunningProcess::from)
+            group
+                .start(&cmd)
+                .await
+                .map(|r| PyRunningProcess::started(r, idle))
         })
     }
 

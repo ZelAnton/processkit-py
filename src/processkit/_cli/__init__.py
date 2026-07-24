@@ -19,6 +19,15 @@ Exit code contract:
   child (`Outcome.code`, unchanged).
 - ``--timeout`` expired: exit **124** (matching GNU coreutils ``timeout``),
   with a one-line message on stderr — never a traceback.
+- ``--idle-timeout`` expired (the child produced no output line for that many
+  seconds and was killed): exit **123**, a one-line message on stderr —
+  deliberately distinct from ``--timeout``'s 124 so the two timeout classes
+  stay tellable apart by exit code. Because idle monitoring needs the per-line
+  output channel, ``--idle-timeout`` pipes and re-emits the child's stdout/
+  stderr (decoded, one line at a time) instead of inheriting them raw, and is
+  incompatible with ``--profile``. Not available under ``supervise`` (its
+  incarnations run through Supervisor's one-shot verbs, which have no
+  idle-timeout hook — passing it there is a usage error).
 - The child could not be found: exit **127** (``ProcessNotFound``).
 - The child was found but could not be executed (e.g. not executable / no
   permission): exit **126** (``PermissionDenied``).

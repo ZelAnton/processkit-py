@@ -192,6 +192,7 @@ SECTIONS: tuple[Section, ...] = (
             "ProcessError",
             "NonZeroExit",
             "Timeout",
+            "IdleTimeout",
             "Signalled",
             "ProcessNotFound",
             "PermissionDenied",

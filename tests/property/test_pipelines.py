@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 
 import pytest
 from hypothesis import given, settings
@@ -184,9 +185,13 @@ def test_pipeline_stage_timeout_bounds_the_whole_chain(n: int, data: st.DataObje
         else:
             commands.append(_stage(i, 0, 0))
 
+    started_at = time.monotonic()
     result = _pipe_chain(commands).output()
+    elapsed_seconds = time.monotonic() - started_at
+
     assert result.timed_out
     assert not result.is_success
+    assert elapsed_seconds < stage_timeout * 2.5
 
 
 @settings(max_examples=10, deadline=None)
@@ -243,7 +248,9 @@ def test_pipeline_sync_and_async_verbs_agree(data: st.DataObject) -> None:
     # same shape `tests/test_pipelines.py`'s own async scenarios use), not
     # passed to `asyncio.run()` directly.
     fail_index = data.draw(st.one_of(st.none(), st.just(0)))
-    fail_code = data.draw(_STAGE_EXIT_CODE) if fail_index is not None else 0
+    # `probe()` maps only exit code 1 to False (other non-zero codes raise),
+    # so use its predicate-failure code when exercising the failure branch.
+    fail_code = 1 if fail_index is not None else 0
     lines = data.draw(
         st.lists(st.integers(min_value=1, max_value=_MAX_LINES), min_size=2, max_size=2)
     )
@@ -265,13 +272,18 @@ def test_pipeline_sync_and_async_verbs_agree(data: st.DataObject) -> None:
     async def async_run() -> str:
         return await build().arun()
 
+    async def async_probe() -> bool:
+        return await build().aprobe()
+
     assert build().exit_code() == asyncio.run(async_exit_code())
     assert build().output() == asyncio.run(async_output())
     assert build().output_bytes() == asyncio.run(async_output_bytes())
 
     if fail_index is None:
+        assert build().probe() == asyncio.run(async_probe())
         assert build().run() == asyncio.run(async_run())
     else:
+        assert build().probe() == asyncio.run(async_probe())
         with pytest.raises(NonZeroExit) as sync_exc:
             build().run()
         with pytest.raises(NonZeroExit) as async_exc:

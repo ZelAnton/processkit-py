@@ -146,10 +146,20 @@ def _run(
             # message, and never let it propagate as a traceback.
             _fail(f"containment is unavailable in this environment: {exc2}")
             return EXIT_INTERNAL_ERROR
+        except OSError as exc2:
+            # The fallback may encounter an operational containment error of
+            # its own; distinguish it from unsupported requested limits.
+            _fail(f"could not initialize containment in this environment: {exc2}")
+            return EXIT_INTERNAL_ERROR
         _fail(
             f"requested resource limits are not supported in this environment "
             f"({exc}); running contained, but uncapped."
         )
+    except OSError as exc:
+        # This is an operational containment failure (for example, reading
+        # cgroup state), not a definitive answer that limits are unsupported.
+        _fail(f"could not initialize containment in this environment: {exc}")
+        return EXIT_INTERNAL_ERROR
 
     profile_requested = args.profile is not None
     try:

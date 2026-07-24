@@ -164,6 +164,59 @@ def test_fallback_process_group_failure_is_reported_not_raised() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_process_group_operational_errors_are_reported_not_raised() -> None:
+    # An OSError means containment probing failed operationally (for example,
+    # cgroup state could not be read), not that requested limits are known to
+    # be unsupported. Cover both the initially capped construction and its
+    # uncapped fallback so neither path can leak a traceback.
+    # _supervise (src/processkit/_cli/supervise.py) was checked: it has no
+    # ProcessGroup(...) constructor of its own, so no equivalent OSError
+    # handling is needed there.
+    cases = (
+        (
+            "_OperationalFailure",
+            "class _OperationalFailure:\n"
+            "    def __init__(self, *a, **k):\n"
+            "        raise OSError('cannot read containment state')\n",
+            ["run", "--", "irrelevant"],
+            "cannot read containment state",
+        ),
+        (
+            "_FallbackOperationalFailure",
+            "class _FallbackOperationalFailure:\n"
+            "    def __init__(self, *a, **k):\n"
+            "        if k:\n"
+            "            raise processkit.ResourceLimit('limit not delegated')\n"
+            "        raise OSError('cannot create containment group')\n",
+            ["run", "--max-memory", "1", "--", "irrelevant"],
+            "cannot create containment group",
+        ),
+    )
+    for mock_class_name, mock_class_body, argv, error_message in cases:
+        script = (
+            "import sys\n"
+            "import processkit\n"
+            "import processkit._cli as cli\n"
+            "import processkit._cli.run as run_mod\n"
+            f"{mock_class_body}"
+            f"run_mod.ProcessGroup = {mock_class_name}\n"
+            f"sys.exit(cli.main({argv!r}))\n"
+        )
+        result = subprocess.run(
+            [PY, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+            check=False,
+        )
+        assert result.returncode == 125
+        assert len(result.stderr.strip().splitlines()) == 1
+        assert "could not initialize containment in this environment" in result.stderr
+        assert error_message in result.stderr
+        assert "OSError" not in result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
+
+
 def test_double_dash_inside_child_argv_is_passed_through_verbatim() -> None:
     # Only the *first* "--" is this wrapper's separator; a further one belongs
     # to the child's own argv, untouched.

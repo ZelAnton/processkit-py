@@ -65,6 +65,14 @@ api-ref:
 api-ref-check:
     uv run python scripts/gen_api_reference.py --check
 
+# Regenerate docs/llms.txt and docs/llms-full.txt from the docs guides.
+llms:
+    uv run python scripts/gen_llms_txt.py
+
+# Verify docs/llms.txt and docs/llms-full.txt are up to date without rewriting them (CI-style check).
+llms-check:
+    uv run python scripts/gen_llms_txt.py --check
+
 # Run the benchmark suite (benchmarks/, pytest-benchmark; separate from `just test`).
 bench:
     uv sync --group bench

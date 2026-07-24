@@ -169,6 +169,9 @@ def test_process_group_operational_errors_are_reported_not_raised() -> None:
     # cgroup state could not be read), not that requested limits are known to
     # be unsupported. Cover both the initially capped construction and its
     # uncapped fallback so neither path can leak a traceback.
+    # _supervise (src/processkit/_cli/supervise.py) was checked: it has no
+    # ProcessGroup(...) constructor of its own, so no equivalent OSError
+    # handling is needed there.
     cases = (
         (
             "_OperationalFailure",

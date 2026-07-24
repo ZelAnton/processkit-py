@@ -34,17 +34,19 @@ fn resolve_runner(
     }
 }
 
-/// Resolve the requested concurrency, defaulting to the logical CPU count.
-/// Rejects `0` explicitly: it used to be silently clamped to `1` (a confusing
-/// "I asked for no concurrency and got some anyway"), which is worse than a
-/// clear error, since `0` most likely means a caller-computed value (e.g. an
-/// empty allowlist's length) that was never meant to reach here at all.
-fn resolve_concurrency(concurrency: Option<usize>) -> PyResult<usize> {
+/// Resolve the requested concurrency, defaulting to the process-available CPU
+/// count (`available_parallelism`, which honors CPU affinity and cgroup quotas
+/// where the platform supports them). If the operating system cannot report it,
+/// use the shared fallback of `4`. Reject non-positive values explicitly: they
+/// must raise the same `ValueError` as the pure-Python streaming batch helpers,
+/// rather than a PyO3 `usize` conversion error or a silent clamp to `1`.
+fn resolve_concurrency(concurrency: Option<i64>) -> PyResult<usize> {
     match concurrency {
-        Some(0) => Err(PyValueError::new_err(
-            "concurrency must be at least 1 (0 would run nothing, silently)",
+        Some(n) if n < 1 => Err(PyValueError::new_err(
+            "concurrency must be a positive integer",
         )),
-        Some(n) => Ok(n),
+        Some(n) => usize::try_from(n)
+            .map_err(|_| PyValueError::new_err("concurrency must be a positive integer")),
         None => Ok(std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)),
@@ -106,15 +108,17 @@ fn bytes_results_to_pylist(
         .collect()
 }
 
-/// Run every command, at most `concurrency` live at once (default: CPU count),
-/// and return their `ProcessResult`s in input order. A spawn/I/O failure for a
-/// command appears as a `ProcessError` instance in its slot.
+/// Run every command, at most `concurrency` live at once (default:
+/// process-available CPU count, with a fallback of `4`), and return their
+/// `ProcessResult`s in input order. A spawn/I/O failure for a command appears as
+/// a `ProcessError` instance in its slot. A non-positive `concurrency` raises
+/// `ValueError`.
 #[pyfunction]
 #[pyo3(signature = (commands, *, concurrency=None, runner=None))]
 pub(crate) fn output_all(
     py: Python<'_>,
     commands: Vec<Py<PyCommand>>,
-    concurrency: Option<usize>,
+    concurrency: Option<i64>,
     runner: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let cmds = take_commands(py, &commands)?;
@@ -128,13 +132,14 @@ pub(crate) fn output_all(
     string_results_to_pylist(py, results, capture.take_errors())
 }
 
-/// Async counterpart of `output_all`.
+/// Async counterpart of `output_all`, including its process-available default,
+/// fallback of `4`, and `ValueError` for a non-positive `concurrency`.
 #[pyfunction]
 #[pyo3(signature = (commands, *, concurrency=None, runner=None))]
 pub(crate) fn aoutput_all<'py>(
     py: Python<'py>,
     commands: Vec<Py<PyCommand>>,
-    concurrency: Option<usize>,
+    concurrency: Option<i64>,
     runner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmds = take_commands(py, &commands)?;
@@ -149,13 +154,14 @@ pub(crate) fn aoutput_all<'py>(
     })
 }
 
-/// Raw-bytes companion to `output_all` (`BytesResult` per command).
+/// Raw-bytes companion to `output_all` (`BytesResult` per command), with the
+/// same process-available default, fallback of `4`, and validation.
 #[pyfunction]
 #[pyo3(signature = (commands, *, concurrency=None, runner=None))]
 pub(crate) fn output_all_bytes(
     py: Python<'_>,
     commands: Vec<Py<PyCommand>>,
-    concurrency: Option<usize>,
+    concurrency: Option<i64>,
     runner: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let cmds = take_commands(py, &commands)?;
@@ -166,13 +172,14 @@ pub(crate) fn output_all_bytes(
     bytes_results_to_pylist(py, results, capture.take_errors())
 }
 
-/// Async counterpart of `output_all_bytes`.
+/// Async counterpart of `output_all_bytes`, including its process-available
+/// default, fallback of `4`, and `ValueError` for a non-positive `concurrency`.
 #[pyfunction]
 #[pyo3(signature = (commands, *, concurrency=None, runner=None))]
 pub(crate) fn aoutput_all_bytes<'py>(
     py: Python<'py>,
     commands: Vec<Py<PyCommand>>,
-    concurrency: Option<usize>,
+    concurrency: Option<i64>,
     runner: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmds = take_commands(py, &commands)?;

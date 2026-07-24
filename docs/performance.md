@@ -106,6 +106,17 @@ above:
   available to run children concurrently, not by anything in the binding
   layer.
 
+## Batch default concurrency
+
+Leaving `concurrency` unset uses the CPU count available to the *process*, not
+merely the host-wide hardware count. The Rust batch verbs use
+`std::thread::available_parallelism()`; the streaming Python helpers use
+`os.process_cpu_count()` on Python 3.13+ and fall back to `os.cpu_count()` on
+Python 3.10-3.12. These sources account for CPU affinity and cgroup quotas where
+the platform exposes them. If no count is available, every batch entry point
+uses `4`. Pass an explicit positive `concurrency` to choose a different cap;
+zero and negative values raise `ValueError`.
+
 ## Continuous tracking
 
 The `bench` job in

@@ -319,6 +319,7 @@ from processkit import (
     wait_until,
     wait_for_path,
     wait_for_port,
+    wait_for_unix_socket,
     wait_for_http,
     wait_for_line,
 )
@@ -331,28 +332,34 @@ async with ProcessGroup() as group:
     # await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
     # or wait for a log line (a plain string is a substring-match shorthand):
     # await wait_for_line(proc.stdout_lines(), "listening", timeout=10)
-    # or wait for a unix socket / pid file to appear:
-    # await wait_for_path("/run/my-server.sock", timeout=10)
+    # or wait for a Unix socket to accept connections (stronger than a path check):
+    # await wait_for_unix_socket("/run/my-server.sock", timeout=10)
+    # or wait for a pid file to appear:
+    # await wait_for_path("/run/my-server.pid", timeout=10)
     # or poll any (sync or async) condition:
     # await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 ```
 
 ## Wait for a unix socket or pid file to appear
 
-Some daemons (Docker, PostgreSQL, many others) announce readiness by creating
-a file — a unix-domain socket or a pid file — rather than accepting a TCP
-connection or logging a line:
+Some daemons (Docker, PostgreSQL, many others) announce readiness through a
+Unix-domain socket or a pid file rather than a TCP connection or log line. A
+socket's filesystem entry can appear before its daemon accepts connections, so
+use `wait_for_unix_socket` for the socket case; keep `wait_for_path` for a pid
+file or another marker that only needs to exist:
 
 ```python
 from pathlib import Path
-from processkit import Command, ProcessGroup, wait_for_path
+from processkit import Command, ProcessGroup, wait_for_path, wait_for_unix_socket
 
 socket_path = Path("/run/my-daemon.sock")
+pid_path = Path("/run/my-daemon.pid")
 
 async with ProcessGroup() as group:
     await group.astart(Command("my-daemon", ["--socket", str(socket_path)]))
-    await wait_for_path(socket_path, timeout=10, interval=0.05)
-    # socket_path now exists — connect to it
+    await wait_for_unix_socket(socket_path, timeout=10, interval=0.05)
+    # socket_path accepts connections; a pid-file-only daemon uses:
+    # await wait_for_path(pid_path, timeout=10, interval=0.05)
 ```
 
 A `WaitTimeout` (also a `TimeoutError`) is raised if the path never appears
@@ -588,7 +595,8 @@ the stdlib raises for the same condition, so familiar `except` clauses work:
 `Timeout` is also a `TimeoutError` (as `asyncio.TimeoutError` is),
 `ProcessNotFound` is also a `FileNotFoundError` (as `subprocess` raises), and
 `PermissionDenied` is also a `PermissionError`. The async readiness helpers
-(`wait_for_port` / `wait_for_line` / `wait_for_path` / `wait_until`) raise
+(`wait_for_port` / `wait_for_http` / `wait_for_line` / `wait_for_path` /
+`wait_for_unix_socket` / `wait_until`) raise
 builtin `TimeoutError`, so `except TimeoutError` catches both run and
 readiness timeouts.
 

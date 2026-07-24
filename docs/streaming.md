@@ -355,7 +355,7 @@ await proc.aoutcome()
 
 ## Readiness probes
 
-"Start a server, then use it" needs *ready*, not merely *started*. Five
+"Start a server, then use it" needs *ready*, not merely *started*. Six
 free async helpers replace the arbitrary `asyncio.sleep`, each bounded by its
 own deadline:
 
@@ -365,6 +365,7 @@ from processkit import (
     wait_until,
     wait_for_path,
     wait_for_port,
+    wait_for_unix_socket,
     wait_for_http,
     wait_for_line,
 )
@@ -387,10 +388,13 @@ await wait_for_port("127.0.0.1", 8080, timeout=10)
 #    while still replying 503. `expected_status` takes a set/range or a predicate:
 await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
 
-# 4. A path appearing on the filesystem (a unix socket, a pid file, …):
+# 4. A Unix-domain socket accepting connections (stronger than a path check):
+await wait_for_unix_socket("/run/my-server.sock", timeout=10)
+
+# 5. A path appearing on the filesystem (a pid file or other marker, …):
 await wait_for_path("/run/my-server.sock", timeout=10)
 
-# 5. Any predicate — sync bool OR an awaitable (a DB ping, …):
+# 6. Any predicate — sync bool OR an awaitable (a DB ping, …):
 await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 
 # ready — keep consuming from the SAME iterator:
@@ -404,12 +408,14 @@ async for line in lines:
 
 Semantics, deliberately uniform:
 
+- The six probes are `wait_for_line`, `wait_for_port`, `wait_for_http`,
+  `wait_for_unix_socket`, `wait_for_path`, and `wait_until`.
 - A probe that can't pass within its deadline raises **`WaitTimeout`**
   (`ProcessError`, `TimeoutError`) — so `except TimeoutError` catches both run
   and readiness timeouts, and `.timeout_seconds` reads the configured deadline
   either way. `wait_for_port` additionally sets `.host`/`.port`, `wait_for_http`
-  sets `.host`/`.port`/`.path`, and `wait_for_path` sets `.path`.
-  `wait_for_port` / `wait_for_http` also chain the last failed attempt (a
+  sets `.host`/`.port`/`.path`, and `wait_for_path` / `wait_for_unix_socket` set
+  `.path`. `wait_for_port` / `wait_for_http` / `wait_for_unix_socket` also chain the last failed attempt (a
   connection error, or — for `wait_for_http` — the last unexpected status) as
   `__cause__`.
 - `wait_for_line` additionally raises `ProcessError` if the stdout stream ends
@@ -418,11 +424,12 @@ Semantics, deliberately uniform:
   afterward **only when a match was found** — exactly how far it advanced past
   the last inspected item on a timeout is unspecified, so don't rely on the
   iterator's position there. `wait_for_port` / `wait_for_http` / `wait_for_path`
-  / `wait_until` don't touch the pipes at all.
+  / `wait_for_unix_socket` / `wait_until` don't touch the pipes at all.
 - A failed probe **never kills the child** — you decide: retry, log, or tear
   down.
-- `wait_until` / `wait_for_port` / `wait_for_http` / `wait_for_path` poll every
-  `interval` seconds (`ValueError` if `interval <= 0`). A sync `wait_until`
+- `wait_until` / `wait_for_port` / `wait_for_http` / `wait_for_path` /
+  `wait_for_unix_socket` poll every `interval` seconds (`ValueError` if
+  `interval <= 0`). A sync `wait_until`
   predicate runs on the event loop, so keep it non-blocking; for blocking work,
   pass an awaitable.
 

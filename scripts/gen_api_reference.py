@@ -158,13 +158,14 @@ SECTIONS: tuple[Section, ...] = (
         "Readiness helpers",
         "Asyncio helpers that wait for a condition — a matching output line, an "
         "open TCP port, an HTTP endpoint answering with an expected status, a "
-        "filesystem path, or any polled predicate — bounded by a deadline.",
+        "filesystem path or Unix-domain socket, or any polled predicate — bounded by a deadline.",
         (
             "wait_until",
             "wait_for_line",
             "wait_for_port",
             "wait_for_http",
             "wait_for_path",
+            "wait_for_unix_socket",
             "WaitTimeout",
         ),
     ),

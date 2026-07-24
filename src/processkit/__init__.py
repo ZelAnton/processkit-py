@@ -36,6 +36,7 @@ from ._aio import (
     wait_for_line,
     wait_for_path,
     wait_for_port,
+    wait_for_unix_socket,
     wait_until,
 )
 from ._processkit import (
@@ -170,6 +171,7 @@ __all__ = [
     "wait_for_line",
     "wait_for_path",
     "wait_for_port",
+    "wait_for_unix_socket",
     "wait_until",
     "which",
 ]

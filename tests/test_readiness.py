@@ -1,8 +1,9 @@
 """Readiness probes: `wait_until` (predicate polling), `wait_for_port` (TCP
 accept), `wait_for_http` (an HTTP endpoint answers with an expected status),
-`wait_for_line` (match a streamed line), and `wait_for_path` (filesystem path
-appears). Includes the probe-socket cleanup wiring that a cancelled/refused
-`wait_for_port` / `wait_for_http` must run.
+`wait_for_line` (match a streamed line), `wait_for_path` (filesystem path
+appears), and `wait_for_unix_socket` (Unix-domain socket accept). Includes the
+probe-socket cleanup wiring that a cancelled/refused `wait_for_port` /
+`wait_for_http` / `wait_for_unix_socket` must run.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import asyncio
 import contextlib
 import gc
 import inspect
+import socket
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -21,11 +23,13 @@ from processkit import (
     Command,
     ProcessError,
     ProcessGroup,
+    Unsupported,
     WaitTimeout,
     wait_for_http,
     wait_for_line,
     wait_for_path,
     wait_for_port,
+    wait_for_unix_socket,
     wait_until,
 )
 from processkit._aio import _format_host_header
@@ -33,6 +37,7 @@ from processkit._aio import _format_host_header
 from ._programs import free_port, refused_port
 
 PY = sys.executable
+_HAS_UNIX_SOCKETS = hasattr(socket, "AF_UNIX")
 
 
 # --- wait_until (predicate polling) -------------------------------------------
@@ -97,9 +102,16 @@ def test_wait_until_returns_immediately_when_already_true() -> None:
 
 
 def test_readiness_timeout_is_keyword_only() -> None:
-    # `timeout` is keyword-only across ALL five readiness helpers — pin each
+    # `timeout` is keyword-only across ALL six readiness helpers — pin each
     # signature so dropping the `*` on any of them fails.
-    for fn in (wait_until, wait_for_port, wait_for_http, wait_for_line, wait_for_path):
+    for fn in (
+        wait_until,
+        wait_for_port,
+        wait_for_http,
+        wait_for_line,
+        wait_for_path,
+        wait_for_unix_socket,
+    ):
         kind = inspect.signature(fn).parameters["timeout"].kind
         assert kind is inspect.Parameter.KEYWORD_ONLY, f"{fn.__name__}.timeout is {kind}"
 
@@ -785,6 +797,120 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
     with refused_port() as port:  # nothing listening -> the OSError path runs the cleanup
         asyncio.run(scenario(port))
     assert called, "wait_for_port should route cleanup through _close_pending_connection"
+
+
+@pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
+def test_wait_for_unix_socket_ready(tmp_path: Path) -> None:
+    socket_path = tmp_path / "ready.sock"
+
+    async def scenario() -> None:
+        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+            lambda _r, w: w.close(), path=socket_path
+        )
+        try:
+            async with server:
+                await wait_for_unix_socket(socket_path, timeout=5.0)
+        finally:
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
+def test_wait_for_unix_socket_ready_at_zero_timeout(tmp_path: Path) -> None:
+    socket_path = tmp_path / "ready.sock"
+
+    async def scenario() -> None:
+        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+            lambda _r, w: w.close(), path=socket_path
+        )
+        try:
+            async with server:
+                await wait_for_unix_socket(socket_path, timeout=0.0)
+        finally:
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
+def test_wait_for_unix_socket_timeout_carries_path_and_last_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Do not let a tiny final `asyncio.wait_for` window race the refused
+    # connection (K-037): the helper's own monotonic deadline still governs the
+    # retry loop, while this patch preserves the real FileNotFoundError cause.
+    async def passthrough_wait_for(
+        future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]], timeout: float
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        return await future
+
+    missing = tmp_path / "missing.sock"
+
+    async def scenario() -> None:
+        monkeypatch.setattr(asyncio, "wait_for", passthrough_wait_for)
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_for_unix_socket(missing, timeout=0.1, interval=0.01)
+        assert excinfo.value.timeout_seconds == 0.1
+        assert excinfo.value.path == missing
+        assert isinstance(excinfo.value.__cause__, OSError)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
+def test_wait_for_unix_socket_rejects_invalid_timeout_and_interval(tmp_path: Path) -> None:
+    socket_path = tmp_path / "missing.sock"
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for_unix_socket(socket_path, timeout=float("nan"))
+        with pytest.raises(ValueError, match="negative"):
+            await wait_for_unix_socket(socket_path, timeout=-1.0)
+        for interval in (0.0, -1.0, float("nan")):
+            with pytest.raises(ValueError, match="positive"):
+                await wait_for_unix_socket(socket_path, timeout=1.0, interval=interval)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
+def test_wait_for_unix_socket_honors_success_that_raced_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def racing_wait_for(
+        future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]], timeout: float
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        await future
+        raise asyncio.TimeoutError
+
+    socket_path = tmp_path / "ready.sock"
+
+    async def scenario() -> None:
+        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+            lambda _r, w: w.close(), path=socket_path
+        )
+        try:
+            async with server:
+                monkeypatch.setattr(asyncio, "wait_for", racing_wait_for)
+                await wait_for_unix_socket(socket_path, timeout=0.5)
+        finally:
+            socket_path.unlink(missing_ok=True)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_unix_socket_without_af_unix_raises_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+
+    async def scenario() -> None:
+        with pytest.raises(Unsupported) as excinfo:
+            await wait_for_unix_socket(tmp_path / "missing.sock", timeout=1.0)
+        assert excinfo.value.operation == "wait_for_unix_socket"
+
+    asyncio.run(scenario())
 
 
 # --- wait_for_http (an HTTP endpoint answers with an expected status) --------

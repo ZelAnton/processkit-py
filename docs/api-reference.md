@@ -2066,7 +2066,7 @@ default (and fallbacks) as every other batch entry point. See
 
 ## Readiness helpers
 
-Asyncio helpers that wait for a condition — a matching output line, an open TCP port, an HTTP endpoint answering with an expected status, a filesystem path, or any polled predicate — bounded by a deadline.
+Asyncio helpers that wait for a condition — a matching output line, an open TCP port, an HTTP endpoint answering with an expected status, a filesystem path or Unix-domain socket, or any polled predicate — bounded by a deadline.
 
 ### `wait_until`
 
@@ -2240,11 +2240,12 @@ Wait until ``path`` exists on the filesystem.
 Polls every ``interval`` seconds until ``path.exists()`` returns true or
 ``timeout`` seconds elapse, in which case `WaitTimeout` (also a
 `TimeoutError`) is raised, carrying ``path``. A unix-socket, a pid file, or
-any other marker file a daemon creates once ready are all typical uses —
-for a TCP port or an arbitrary predicate, see `wait_for_port` /
-`wait_until` instead (`wait_until(lambda: path.exists(), ...)` is exactly
-what this helper does, named for readability and given the same
-`WaitTimeout` discipline as its siblings).
+any other marker file a daemon creates once ready are all typical uses. For
+a Unix-domain socket that must actually accept connections, use
+`wait_for_unix_socket`; for a TCP port or an arbitrary predicate, see
+`wait_for_port` / `wait_until` instead (`wait_until(lambda: path.exists(),
+...)` is exactly what this helper does, named for readability and given the
+same `WaitTimeout` discipline as its siblings).
 
 ``timeout<=0`` contract (shared with `wait_until` / `wait_for_port` /
 `wait_for_line`): at ``timeout=0``, ``path`` is still checked (at least
@@ -2252,6 +2253,31 @@ once) before any deadline check, so an already-existing path succeeds
 instead of failing before it was ever checked. A **negative** ``timeout``
 is rejected outright — raises `ValueError`, same as NaN — rather than
 being treated as "expired" or silently accepted.
+
+### `wait_for_unix_socket`
+
+```text
+async def wait_for_unix_socket(
+    path: StrPath,
+    *,
+    timeout: float,
+    interval: float = 0.05,
+) -> None
+```
+
+Wait until a Unix-domain socket at ``path`` accepts a connection.
+
+Unlike `wait_for_path`, this proves that the socket has started accepting
+connections, rather than only that its filesystem entry exists. Polls every
+``interval`` seconds until a connection succeeds or ``timeout`` seconds
+elapse, in which case `WaitTimeout` (also a `TimeoutError`) is raised,
+carrying ``path`` and chained from the last connection failure.
+
+Platforms whose Python socket module has no ``AF_UNIX`` support raise
+`Unsupported` instead of silently downgrading to a filesystem-existence
+check. At ``timeout=0`` one bounded connection attempt still runs, so an
+already-ready socket succeeds; negative and NaN timeouts are rejected with
+`ValueError`.
 
 ### `WaitTimeout`
 
@@ -2267,14 +2293,15 @@ WaitTimeout(
 ```
 
 A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
-`wait_for_http` / `wait_for_path`) didn't succeed within its deadline.
+`wait_for_http` / `wait_for_path` / `wait_for_unix_socket`) didn't succeed within its deadline.
 
 Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
 the same convention a run's own `.timeout()` uses (see `Timeout`). Always
 carries `timeout_seconds`; `wait_for_port` and `wait_for_http` additionally
-set `host` / `port` (and `wait_for_http` also `path`), and `wait_for_path`
-sets `path` (all `None` for `wait_until` / `wait_for_line`, which have none
-of these). `wait_for_port` / `wait_for_http` also chain the last attempt's
+set `host` / `port` (and `wait_for_http` also `path`), while `wait_for_path`
+and `wait_for_unix_socket` set `path` (all `None` for `wait_until` /
+`wait_for_line`, which have none of these). `wait_for_port` /
+`wait_for_http`, and `wait_for_unix_socket` also chain the last attempt's
 failure as `__cause__` (a connection error, or — for `wait_for_http` — the
 last unexpected status code).
 

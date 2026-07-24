@@ -741,10 +741,7 @@ impl PyOutputEvent {
     /// `RunProfile`), so nothing can fail to reconstruct: the restored value
     /// always compares `==` its original, and there is no reason to refuse.
     #[allow(clippy::type_complexity)]
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Py<PyAny>, (bool, String))> {
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Py<PyAny>, (bool, String))> {
         let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
         Ok((factory, (self.is_stderr, self.text.clone())))
     }

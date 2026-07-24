@@ -445,6 +445,27 @@ head = git.run(["rev-parse", "HEAD"])            # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 ```
 
+Modern tools (`gh`, `kubectl`, `docker`, `az`, `jj`) emit machine-readable JSON;
+`run_json` / `arun_json` run like `run` (requiring a zero exit) and hand back the
+already-parsed object, so you skip the `run(...)` + `json.loads(...)` +
+error-mapping boilerplate:
+
+```python
+from processkit import CliClient, InvalidJson
+
+gh = CliClient("gh")
+try:
+    pr = gh.run_json(["pr", "view", "42", "--json", "title,state"])
+except InvalidJson as exc:
+    raise SystemExit(f"{exc.program} did not return JSON: {exc.stdout[:80]!r}")
+print(pr["title"], pr["state"])                  # or: await gh.arun_json([...])
+```
+
+A non-zero exit still raises `NonZeroExit` (exactly as `run` does); only a
+zero-exit run whose stdout will not parse raises `InvalidJson` — a `ProcessError`
+carrying the `program` and a bounded stdout fragment, never a bare
+`json.JSONDecodeError`.
+
 For testable code, pass `runner=` (a `ScriptedRunner` and friends from
 `processkit.testing`) to drive every verb through a double instead of the real
 runner — see [Testing your code](testing.md#wrapping-a-cli-tool-cliclient).

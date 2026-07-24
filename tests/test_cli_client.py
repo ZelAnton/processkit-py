@@ -11,6 +11,7 @@ the client structurally satisfies `ProcessRunner`. It has no
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pathlib
 
@@ -21,6 +22,9 @@ from processkit import (
     Cancelled,
     CliClient,
     Command,
+    InvalidJson,
+    NonZeroExit,
+    ProcessError,
     ProcessNotFound,
     ProcessRunner,
     StreamingRunner,
@@ -275,8 +279,8 @@ def test_cli_client_default_env_fn_rejects_a_non_callable_value() -> None:
 # reached, so no process is spawned (fail-closed). A `RecordingRunner` proves
 # the inner runner was never invoked (`len(calls()) == 0`) on the error path.
 
-_SYNC_VERBS = ["run", "output", "output_bytes", "exit_code", "probe"]
-_ASYNC_VERBS = ["arun", "aoutput", "aoutput_bytes", "aexit_code", "aprobe"]
+_SYNC_VERBS = ["run", "run_json", "output", "output_bytes", "exit_code", "probe"]
+_ASYNC_VERBS = ["arun", "arun_json", "aoutput", "aoutput_bytes", "aexit_code", "aprobe"]
 
 
 @pytest.mark.parametrize("verb", _SYNC_VERBS)
@@ -548,3 +552,102 @@ def test_cli_client_when_non_bool_predicate_aborts_the_verb() -> None:
 
     with pytest.raises(TypeError):
         client.exit_code(["--version"])
+
+
+# --- run_json / arun_json (T-155) --------------------------------------------
+
+
+def test_cli_client_run_json_parses_valid_json() -> None:
+    # A successful run whose stdout is JSON comes back as the decoded object
+    # (dict/list/scalars), not the raw text — the boilerplate `run` + `json.loads`
+    # in one verb.
+    client = CliClient(PY)
+    obj = client.run_json(
+        ["-c", "import json; print(json.dumps({'a': 1, 'b': [2, 3], 'c': None}))"]
+    )
+    assert obj == {"a": 1, "b": [2, 3], "c": None}
+
+
+def test_cli_client_arun_json_parses_valid_json() -> None:
+    # The async twin decodes off the awaited result identically.
+    async def scenario() -> object:
+        client = CliClient(PY)
+        return await client.arun_json(["-c", "import json; print(json.dumps([1, 'two', True]))"])
+
+    assert asyncio.run(scenario()) == [1, "two", True]
+
+
+def test_cli_client_run_json_invalid_raises_typed_error_not_jsondecodeerror() -> None:
+    # Invalid JSON on a zero-exit run raises the binding's typed `InvalidJson`
+    # (a `ProcessError`), carrying the program and a stdout fragment — never a
+    # bare, unattributed `json.JSONDecodeError`.
+    client = CliClient(PY)
+    with pytest.raises(InvalidJson) as excinfo:
+        client.run_json(["-c", "print('this is not json')"])
+    exc = excinfo.value
+    assert isinstance(exc, ProcessError)
+    assert not isinstance(exc, json.JSONDecodeError)
+    assert "python" in exc.program.lower() or exc.program == PY
+    assert "this is not json" in exc.stdout
+    # The parser's own message is attributed in str(exc) (not the raw payload).
+    assert "not valid JSON" in str(exc)
+
+
+def test_cli_client_arun_json_invalid_raises_typed_error() -> None:
+    async def scenario() -> None:
+        client = CliClient(PY)
+        with pytest.raises(InvalidJson):
+            await client.arun_json(["-c", "print('still not json')"])
+
+    asyncio.run(scenario())
+
+
+def test_cli_client_run_json_requires_zero_exit_like_run() -> None:
+    # Like `run`, the exit code is checked first: a non-zero exit raises
+    # `NonZeroExit` even when stdout happens to be valid JSON (no parse attempted).
+    client = CliClient(PY)
+    with pytest.raises(NonZeroExit):
+        client.run_json(["-c", "import sys; print('{}'); sys.exit(3)"])
+
+
+def test_cli_client_run_json_through_scripted_runner_both_verbs() -> None:
+    # The JSON wrappers are testable through the `runner=` seam with no real
+    # process: a scripted reply's stdout is parsed exactly as a real tool's would
+    # be. Covers both `run_json` and `arun_json`.
+    runner = ScriptedRunner()
+    runner.on(["gh", "pr", "view"], Reply.ok('{"state": "OPEN", "number": 7}'))
+    gh = CliClient("gh", runner=runner)
+    assert gh.run_json(["pr", "view"]) == {"state": "OPEN", "number": 7}
+
+    async def scenario() -> object:
+        return await gh.arun_json(["pr", "view"])
+
+    assert asyncio.run(scenario()) == {"state": "OPEN", "number": 7}
+
+
+def test_cli_client_run_json_scripted_invalid_json_carries_attributes() -> None:
+    # A scripted non-JSON reply exercises the `InvalidJson` path hermetically: the
+    # exception names the client's program and carries the offending stdout.
+    runner = ScriptedRunner()
+    runner.on(["gh"], Reply.ok("<html>rate limited</html>"))
+    gh = CliClient("gh", runner=runner)
+    with pytest.raises(InvalidJson) as excinfo:
+        gh.run_json(["api", "/rate_limit"])
+    exc = excinfo.value
+    assert exc.program == "gh"
+    assert "rate limited" in exc.stdout
+
+
+def test_cli_client_run_json_invalid_stdout_fragment_is_bounded() -> None:
+    # The carried stdout is a bounded diagnostic fragment (a large or sensitive
+    # payload is not dumped whole onto the exception) — a head, capped well below
+    # the full 10k of non-JSON output here.
+    runner = ScriptedRunner()
+    big = "x" * 10_000  # not valid JSON, far larger than the fragment cap
+    runner.on(["tool"], Reply.ok(big))
+    client = CliClient("tool", runner=runner)
+    with pytest.raises(InvalidJson) as excinfo:
+        client.run_json(["dump"])
+    fragment = excinfo.value.stdout
+    assert 0 < len(fragment) < len(big)
+    assert big.startswith(fragment)  # a clean prefix, not a mangled slice

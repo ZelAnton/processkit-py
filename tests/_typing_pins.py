@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import os
     import pathlib
     from collections.abc import Awaitable, Callable, Coroutine
-    from typing import Literal, assert_type
+    from typing import Any, Literal, assert_type
 
     from processkit import (
         Args,
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         CliClient,
         Command,
         Finished,
+        InvalidJson,
         NonZeroExit,
         Outcome,
         OutputEvent,
@@ -168,6 +169,9 @@ if TYPE_CHECKING:
         assert_type(proc.aoutput(), Awaitable[ProcessResult])
         assert_type(sup.arun(), Awaitable[SupervisionOutcome])
         assert_type(client.aoutput(["x"]), Awaitable[ProcessResult])
+        # `arun_json` returns the decoded JSON as `Awaitable[Any]` (JSON admits any
+        # shape). stubtest can't see a compiled return type, so pin it here.
+        assert_type(client.arun_json(["x"]), Awaitable[Any])
 
     def _a_verbs_are_not_coroutines(cmd: Command, loop: asyncio.AbstractEventLoop) -> None:
         # `a`-verbs return the runtime's custom awaitable, not a native coroutine.
@@ -235,6 +239,8 @@ if TYPE_CHECKING:
     def _cli_client_return_types(client: CliClient) -> None:
         assert_type(client.run(["x"]), str)
         assert_type(client.exit_code(["x"]), int)
+        # `run_json` returns the decoded JSON as `Any` (JSON admits any shape).
+        assert_type(client.run_json(["x"]), Any)
 
     def _cli_client_is_a_process_runner(client: CliClient) -> None:
         # The annotated assignment itself is the pin: if `CliClient` didn't
@@ -313,6 +319,7 @@ if TYPE_CHECKING:
         pd: PermissionDenied,
         otl: OutputTooLarge,
         un: Unsupported,
+        ij: InvalidJson,
     ) -> None:
         assert_type(nz.code, int)
         assert_type(nz.stdout, str)
@@ -325,3 +332,5 @@ if TYPE_CHECKING:
         assert_type(otl.total_lines, int)
         assert_type(otl.total_bytes, int)
         assert_type(un.operation, str)
+        assert_type(ij.program, str)
+        assert_type(ij.stdout, str)

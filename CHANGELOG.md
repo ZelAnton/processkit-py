@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `CliClient.run_json(call)` / `arun_json(call)`: run a wrapped tool like
+  `run` (requiring a zero exit) and return its stdout **parsed as JSON** — the
+  `run(...)` + `json.loads(...)` + error-mapping boilerplate the many CLIs that
+  emit machine JSON (`gh`, `kubectl`, `docker`, `az`, `jj`) otherwise force on
+  every caller. Stdout that does not parse raises a new `InvalidJson` exception
+  (a `ProcessError` carrying the client's `program` and a bounded stdout
+  fragment, with the parser message in `str(exc)`) instead of a bare,
+  unattributed `json.JSONDecodeError`; a non-zero exit still raises `NonZeroExit`
+  as `run` does. Both verbs go through the same `default_env_fn`/`when`-capture
+  pipeline and injectable `runner=` seam as the other `CliClient` verbs, so they
+  are hermetically testable with a `ScriptedRunner` and no real process.
 - Add `Command.idle_timeout(seconds)`, an inactivity timeout that tears the
   child down if it produces no stdout/stderr line for that long — for the
   "hung tool" case a wall-clock `timeout()` handles poorly, where a legitimately

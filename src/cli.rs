@@ -17,7 +17,7 @@ use pyo3::prelude::*;
 use crate::cancellation::PyCancellationToken;
 use crate::command::PyCommand;
 use crate::convert::{build_retry_policy, parse_retry_if, positive_duration};
-use crate::errors::map_err;
+use crate::errors::{invalid_json_err, map_err};
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::runner::{extract_runner, scope_when_capture, with_when_capture_sync};
 use crate::runtime::drive_async_py;
@@ -208,6 +208,28 @@ fn build_command(
     }
 }
 
+/// Parse a successful run's stdout `text` as JSON and return the resulting Python
+/// object (a `dict`/`list`/`str`/number/`bool`/`None`). On a parse failure raise
+/// the binding-synthesized `InvalidJson` (carrying `program` and a bounded stdout
+/// fragment — see [`invalid_json_err`]), never a bare `json.JSONDecodeError`, so a
+/// caller can `except InvalidJson` / `except ProcessError` uniformly and read the
+/// context. `program` names the client's program for the diagnostic.
+///
+/// Decision (T-155): JSON is parsed here through Python's stdlib `json.loads`,
+/// **not** a new `serde_json` Cargo dependency. `json` already ships a fast C
+/// parser and yields native Python objects directly (no Rust->Python value bridge
+/// to write for arbitrary JSON shapes), so leaning on it keeps this binding's
+/// dependency set unchanged and keeps `run_json`/`arun_json` as symmetrically thin
+/// over the crate as the other `CliClient` verbs — the parse is the sole
+/// JSON-specific step and does not warrant widening the crate's dependency surface
+/// for one method pair.
+fn parse_json<'py>(py: Python<'py>, program: &str, text: &str) -> PyResult<Bound<'py, PyAny>> {
+    match py.import("json")?.call_method1("loads", (text,)) {
+        Ok(value) => Ok(value),
+        Err(parse_error) => Err(invalid_json_err(py, program, text, &parse_error)),
+    }
+}
+
 /// A program bound to default timeout/environment/retry, run with the real
 /// `Runner` by default, or an injected `runner=` (a `ScriptedRunner` and
 /// friends, for testable code with no real spawns).
@@ -380,6 +402,32 @@ impl PyCliClient {
         with_when_capture_sync(py, self.inner.run(command))
     }
 
+    /// Run with the given args, or a `Command` from `command()`; require a zero
+    /// exit like `run`, then parse the stdout as JSON and return the decoded
+    /// object (a `dict`/`list`/`str`/number/`bool`/`None`). The `run(...)` +
+    /// `json.loads(...)` + error-attribution boilerplate the many modern CLIs
+    /// (gh, kubectl, docker, az, jj) that emit machine JSON otherwise force on
+    /// every caller.
+    ///
+    /// A non-zero exit raises the same `NonZeroExit` as `run`; stdout that is not
+    /// valid JSON raises `InvalidJson` (a `ProcessError` carrying the client's
+    /// `program` and a bounded stdout fragment), never a bare
+    /// `json.JSONDecodeError`. Goes through the identical `build_command` /
+    /// `default_env_fn` / `when`-capture pipeline as `run`, so the fail-closed
+    /// resolver and raising-`when`-predicate behaviour is unchanged.
+    fn run_json<'py>(
+        &self,
+        py: Python<'py>,
+        call: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let command = build_command(&self.inner, ClientCall::from_py(call)?)?;
+        // Read the program for the `InvalidJson` diagnostic before `run` consumes
+        // the command.
+        let program = command.program().to_string_lossy().into_owned();
+        let text = with_when_capture_sync(py, self.inner.run(command))?;
+        parse_json(py, &program, &text)
+    }
+
     /// Run with the given args, or a `Command` from `command()`, and capture
     /// output (a non-zero exit is data).
     fn output(&self, py: Python<'_>, call: &Bound<'_, PyAny>) -> PyResult<PyProcessResult> {
@@ -455,6 +503,38 @@ impl PyCliClient {
             scope_when_capture(async move {
                 let command = build_command(&client, call)?;
                 client.run(command).await.map_err(map_err)
+            }),
+        )
+    }
+
+    /// Async counterpart of `run_json()`.
+    ///
+    /// Awaiting it runs the command (fresh `default_env_fn` resolution, like the
+    /// other async verbs), requires a zero exit, and parses the stdout as JSON off
+    /// the awaited result: a non-zero exit propagates `NonZeroExit`, invalid JSON
+    /// propagates `InvalidJson`, both out of the `await` — and a raising injected
+    /// `when` predicate aborts it via `scope_when_capture`, exactly like `arun`.
+    /// The JSON parse runs under a re-attached GIL on the completing worker, the
+    /// one JSON-specific step in an otherwise crate-driven future.
+    fn arun_json<'py>(
+        &self,
+        py: Python<'py>,
+        call: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.inner.clone();
+        let call = ClientCall::from_py(call)?;
+        drive_async_py(
+            py,
+            scope_when_capture(async move {
+                let command = build_command(&client, call)?;
+                // Read the program for the `InvalidJson` diagnostic before `run`
+                // consumes the command.
+                let program = command.program().to_string_lossy().into_owned();
+                let text = client.run(command).await.map_err(map_err)?;
+                // `json.loads` needs the GIL; re-attach to parse, then `unbind` so
+                // the parsed object leaves the attach scope as the future's owned
+                // `Py<PyAny>` result.
+                Python::attach(|py| parse_json(py, &program, &text).map(Bound::unbind))
             }),
         )
     }

@@ -8,7 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- Add `Command.idle_timeout(seconds)`, an inactivity timeout that tears the
+  child down if it produces no stdout/stderr line for that long — for the
+  "hung tool" case a wall-clock `timeout()` handles poorly, where a legitimately
+  long job keeps printing progress. It fires as a new, distinct `IdleTimeout`
+  exception (a `ProcessError` sibling of `Timeout`, carrying
+  `idle_timeout_seconds`), deliberately **not** the wall-clock
+  `timed_out`/`Timeout` signal, so the two timeout classes stay tellable apart
+  and the existing captured `timed_out` contract is untouched. Enforced on the
+  streaming/interactive surface (`start()`/`astart()` +
+  `stdout_lines()`/`output_events()`), where the binding drives the per-line
+  output channel; a redirected/inherited stdout is diagnosed by the existing
+  "stdout is not piped" error rather than silently un-watched. **Scope note:**
+  the one-shot capture verbs (`output`/`run`/`exit_code`/`probe` and their
+  `a`-twins), `Pipeline`, and `Supervisor` do not enforce it — processkit
+  2.3.x has no native idle-timeout to observe per-line activity mid-run through
+  those paths, so honoring it there awaits upstream crate support; the setting
+  is carried on the command regardless.
+- Add `python -m processkit run --idle-timeout SECONDS`: kills the child and
+  exits **123** (distinct from `--timeout`'s 124) if it produces no output line
+  for that long. Because idle monitoring rides the per-line channel, this flag
+  pipes and re-emits the child's stdout/stderr (decoded, one line at a time)
+  instead of inheriting them raw, and is incompatible with `--profile`. The
+  flag is also present on `supervise` for parity but is a usage error there
+  until upstream `Supervisor` idle-timeout support lands (its incarnations run
+  through one-shot verbs the idle watchdog cannot observe).
 
 ### Changed
 -

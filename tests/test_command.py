@@ -30,6 +30,7 @@ from processkit import (
     CliClient,
     Command,
     Finished,
+    IdleTimeout,
     NonZeroExit,
     Outcome,
     OutputEvent,
@@ -309,6 +310,136 @@ def test_invalid_timeout_rejected() -> None:
     for bad in (0.0, -1.0, float("inf"), float("nan"), 1e300):
         with pytest.raises(ValueError):
             Command(PY).timeout(bad)
+
+
+def test_invalid_idle_timeout_rejected() -> None:
+    # idle_timeout validates exactly like timeout (positive_duration): zero,
+    # negative, non-finite, and overflow all raise ValueError — never a panic.
+    for bad in (0.0, -1.0, float("inf"), float("nan"), 1e300):
+        with pytest.raises(ValueError):
+            Command(PY).idle_timeout(bad)
+
+
+def test_idle_timeout_fires_on_a_silent_child() -> None:
+    # A child that prints one line then goes silent past the idle window: the
+    # streaming iterator raises the distinct IdleTimeout (carrying the configured
+    # window), NOT StopAsyncIteration and NOT the wall-clock Timeout, and the
+    # child is killed by the binding's watchdog.
+    code = "import time; print('hi', flush=True); time.sleep(30)"
+
+    async def scenario() -> tuple[list[str], float]:
+        proc = Command(PY, ["-c", code]).idle_timeout(0.5).start()
+        seen: list[str] = []
+        async with proc:
+            async for event in proc.output_events():
+                seen.append(event.text)
+        return seen, 0.0  # unreachable: the loop raises before returning
+
+    with pytest.raises(IdleTimeout) as excinfo:
+        asyncio.run(scenario())
+    # A distinct signal — not a wall-clock Timeout — carrying the window it fired on.
+    assert not isinstance(excinfo.value, Timeout)
+    assert excinfo.value.idle_timeout_seconds == pytest.approx(0.5)
+
+
+def test_idle_timeout_does_not_fire_while_output_keeps_flowing() -> None:
+    # A child emitting a line every 0.2s under a 1.0s idle window never trips it:
+    # each line resets the clock, so the stream ends cleanly (no spurious kill).
+    code = "import time\nfor i in range(4):\n print(i, flush=True); time.sleep(0.2)\n"
+
+    async def scenario() -> list[str]:
+        proc = Command(PY, ["-c", code]).idle_timeout(1.0).start()
+        seen: list[str] = []
+        async with proc:
+            async for event in proc.output_events():
+                seen.append(event.text)
+        return seen
+
+    assert asyncio.run(scenario()) == ["0", "1", "2", "3"]
+
+
+def test_idle_timeout_beats_a_larger_wall_clock_timeout() -> None:
+    # When both thresholds are set and the child goes silent, the *shorter* idle
+    # window wins: with idle_timeout(0.5) < timeout(30) the idle watchdog fires
+    # first and surfaces as IdleTimeout, not the wall-clock Timeout. (The two
+    # compose; whichever threshold the run reaches first tears it down, and they
+    # stay distinguishable by exception type.)
+    code = "import time; print('hi', flush=True); time.sleep(30)"
+
+    async def scenario() -> None:
+        proc = Command(PY, ["-c", code]).timeout(30).idle_timeout(0.5).start()
+        async with proc:
+            async for _event in proc.output_events():
+                pass
+
+    with pytest.raises(IdleTimeout):
+        asyncio.run(scenario())
+
+
+def test_idle_timeout_with_stdout_file_is_diagnosed_not_silently_ignored(
+    tmp_path: pathlib.Path,
+) -> None:
+    # K-043: idle monitoring rides the streaming verbs, which the crate gates on
+    # a piped stdout. Combined with stdout_file (stdout not piped), the streaming
+    # setup raises the documented "not piped" ProcessError before any line is
+    # read — so idle_timeout + a redirected stdout surfaces loudly there, it is
+    # never a silent no-op. (stderr_file leaves stdout piped and is exercised by
+    # test_idle_timeout_watches_stdout_when_only_stderr_is_redirected.)
+    path = tmp_path / "out.log"
+    code = "import time; print('to file', flush=True); time.sleep(30)"
+
+    async def scenario() -> None:
+        proc = Command(PY, ["-c", code]).stdout_file(path).idle_timeout(0.5).start()
+        async with proc:
+            async for _line in proc.stdout_lines():
+                pass
+
+    with pytest.raises(ProcessError, match="not piped"):
+        asyncio.run(scenario())
+
+
+def test_idle_timeout_watches_stdout_when_only_stderr_is_redirected(
+    tmp_path: pathlib.Path,
+) -> None:
+    # The K-043 asymmetry: stderr_file leaves stdout piped, so the streaming
+    # verbs keep working and idle monitoring watches the (still-piped) stdout
+    # channel. A child that writes one stdout line then goes silent trips the
+    # idle window normally.
+    path = tmp_path / "err.log"
+    code = "import time; print('one', flush=True); time.sleep(30)"
+
+    async def scenario() -> None:
+        proc = Command(PY, ["-c", code]).stderr_file(path).idle_timeout(0.5).start()
+        async with proc:
+            async for _line in proc.stdout_lines():
+                pass
+
+    with pytest.raises(IdleTimeout):
+        asyncio.run(scenario())
+
+
+def test_idle_timeout_survives_builder_chaining() -> None:
+    # idle_timeout is a binding-only field the crate can't carry, so every
+    # builder threads it through `rewrap`. Set it first, then chain several more
+    # builders, and it must still fire — proving no builder drops it.
+    code = "import time; print('hi', flush=True); time.sleep(30)"
+
+    async def scenario() -> None:
+        proc = (
+            Command(PY)
+            .idle_timeout(0.5)
+            .arg("-c")
+            .arg(code)
+            .env("PROCESSKIT_SMOKE", "1")
+            .stdout("pipe")
+            .start()
+        )
+        async with proc:
+            async for _event in proc.output_events():
+                pass
+
+    with pytest.raises(IdleTimeout):
+        asyncio.run(scenario())
 
 
 def test_builder_chaining_returns_new_command() -> None:

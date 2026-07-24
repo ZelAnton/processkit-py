@@ -472,6 +472,39 @@ signal name in `timeout_signal` is one of `term | kill | int | hup | quit | usr1
 against a client that otherwise imposes a deadline on every call). Whichever
 of `timeout()` / `no_timeout()` you call **last** wins.
 
+### `idle_timeout` — a silence watchdog
+
+`idle_timeout(seconds)` bounds a *silent gap* rather than total runtime: it kills
+the child if it emits no stdout/stderr **line** for that long — for a tool that
+hangs silently while a healthy long job keeps printing. It **composes** with
+`timeout()` (whichever threshold is reached first wins) and validates like it
+(finite, `> 0`).
+
+```python
+from processkit import Command, IdleTimeout
+
+proc = Command("./flaky-build").timeout(600.0).idle_timeout(30.0).start()
+try:
+    async with proc:
+        async for event in proc.output_events():
+            print(event.text)
+except IdleTimeout as e:
+    print(f"silent for {e.idle_timeout_seconds}s — killed")
+```
+
+It fires as a **distinct** `IdleTimeout` (a `ProcessError` sibling of `Timeout`,
+carrying `idle_timeout_seconds`), never the wall-clock `timed_out`/`Timeout`, so
+the two timeout classes stay tellable apart. **Boundaries:** idle monitoring
+rides the per-line output channel, so it is enforced only on the
+streaming/interactive surface (`start()`/`astart()` +
+`stdout_lines()`/`output_events()`); the one-shot capture verbs, `Pipeline`, and
+`Supervisor` do not enforce it (processkit's core has no native idle-timeout —
+that awaits upstream support). A redirected stdout (`stdout_file`/`inherit`/
+`null`) carries no line events, so the streaming verbs raise the usual "stdout is
+not piped" `ProcessError` there — the combination is diagnosed, not silently
+un-watched; redirect only stderr if you still want stdout watched.
+*Deeper: [Timeouts & cancellation](timeouts-and-cancellation.md#idle-inactivity-timeout).*
+
 ## Retrying a run
 
 ```python

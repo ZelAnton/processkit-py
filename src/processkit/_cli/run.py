@@ -6,6 +6,7 @@ with inherited stdio, implementing the exit-code contract documented in
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import pathlib
 import signal
@@ -13,15 +14,19 @@ import sys
 
 from processkit import (
     Command,
+    IdleTimeout,
+    Outcome,
     PermissionDenied,
     ProcessError,
     ProcessGroup,
     ProcessNotFound,
     ResourceLimit,
+    RunningProcess,
     RunProfile,
     Unsupported,
 )
 from processkit._cli.exit_codes import (
+    EXIT_IDLE_TIMEOUT,
     EXIT_INTERNAL_ERROR,
     EXIT_NOT_EXECUTABLE,
     EXIT_NOT_FOUND,
@@ -40,6 +45,27 @@ _PROFILE_SAMPLE_INTERVAL_SECONDS = 0.1
 
 def _fail(message: str) -> None:
     print(f"processkit: {message}", file=sys.stderr)
+
+
+async def _drive_idle(proc: RunningProcess) -> Outcome:
+    """Stream the child's output line-by-line — re-emitting each decoded line to
+    this process's stdout/stderr — while the binding's streaming iterator
+    enforces the command's ``idle_timeout``. Raises `IdleTimeout` if the child
+    goes silent past the window (the binding has already killed it by then);
+    otherwise returns the run `Outcome` once it exits.
+
+    This is a *decoded, line-oriented* re-emit, not the raw byte passthrough
+    ``run`` uses by default: idle monitoring rides the per-line output channel,
+    so ``--idle-timeout`` pipes stdout/stderr and prints each `OutputEvent` line
+    with a trailing newline. Fidelity therefore differs from inherited stdio
+    (UTF-8 decode, per-line framing, no TTY on the child's streams) — the
+    documented trade for a working idle-timeout, taken only when the flag is set.
+    """
+    events = proc.output_events()
+    async for event in events:
+        print(event.text, file=sys.stderr if event.is_stderr else sys.stdout)
+    finished = await proc.afinish()
+    return finished.outcome
 
 
 def _profile_payload(profile: RunProfile) -> dict[str, object]:
@@ -101,11 +127,26 @@ def _run(
 ) -> int:
     if args.timeout_grace is not None and args.timeout is None:
         run_parser.error("--timeout-grace requires --timeout")
+    # `--idle-timeout` streams and re-emits piped output (see `_drive_idle`);
+    # `--profile` consumes the handle with a sampling `profile()` wait. The two
+    # need incompatible consuming verbs on the one handle, so reject the combo up
+    # front rather than silently letting one win.
+    if args.idle_timeout is not None and args.profile is not None:
+        run_parser.error("--idle-timeout cannot be combined with --profile")
 
     env_pairs = _parse_env_flags(run_parser, args.env)
 
     program, *rest = child_argv
-    command = Command(program, rest).inherit_stdin().stdout("inherit").stderr("inherit")
+    idle_requested = args.idle_timeout is not None
+    command = Command(program, rest).inherit_stdin()
+    if idle_requested:
+        # Idle monitoring rides the per-line output channel, so keep stdout/stderr
+        # piped (the Command default) — `_drive_idle` re-emits each line — rather
+        # than inheriting raw. `idle_timeout()` is enforced by the streaming
+        # iterator that path drives.
+        command = command.idle_timeout(args.idle_timeout)
+    else:
+        command = command.stdout("inherit").stderr("inherit")
     if args.create_no_window:
         command = command.create_no_window()
     # Environment builders compose in a fixed order at spawn regardless of
@@ -175,7 +216,18 @@ def _run(
                     return EXIT_NOT_EXECUTABLE
                 _fail(f"could not start {program!r}: {exc}")
                 return EXIT_INTERNAL_ERROR
-            if profile_requested:
+            if idle_requested:
+                # Stream + enforce the idle-timeout (see `_drive_idle`). On a
+                # silent child the binding kills it and the iterator raises
+                # `IdleTimeout`; the surrounding `with group:` still shuts the
+                # tree down on the early return.
+                profile = None
+                try:
+                    outcome = asyncio.run(_drive_idle(proc))
+                except IdleTimeout:
+                    _fail(f"{program!r} was idle for {args.idle_timeout}s (no output line)")
+                    return EXIT_IDLE_TIMEOUT
+            elif profile_requested:
                 # profile() blocks until the child exits, exactly like
                 # outcome() — it is a superset of it (RunProfile.outcome).
                 profile = proc.profile(_PROFILE_SAMPLE_INTERVAL_SECONDS)

@@ -55,6 +55,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 |---|---|---|
 | `--timeout SECONDS` | `Command.timeout(seconds)` | Kills the whole tree once the deadline passes. |
 | `--timeout-grace SECONDS` | `Command.timeout_grace(seconds)` | Signal first, hard-kill after `SECONDS`. Requires `--timeout`; a usage error otherwise. |
+| `--idle-timeout SECONDS` | `Command.idle_timeout(seconds)` | Kill the child if it emits no output line for `SECONDS`. Exit `123` (distinct from `--timeout`'s `124`). Pipes and re-emits stdout/stderr line-by-line; incompatible with `--profile`. See [below](#--idle-timeout-a-silence-watchdog). |
 | `--max-memory BYTES` | `ProcessGroup(max_memory=...)` | Whole-tree memory cap. |
 | `--max-processes N` | `ProcessGroup(max_processes=...)` | Fork-bomb ceiling for the tree. |
 | `--cpu-quota FLOAT` | `ProcessGroup(cpu_quota=...)` | Fraction of a **single** core (`0.5` = half, `2.0` = two cores). |
@@ -117,6 +118,33 @@ from the table above — it never introduces a new exit code, and a failure
 writing the profile to `FILE` (e.g. an unwritable path) surfaces as the
 existing internal-failure code `125`, with a one-line message on stderr.
 
+### `--idle-timeout`: a silence watchdog
+
+`--idle-timeout SECONDS` maps to `Command.idle_timeout(seconds)` — it kills the
+child if it produces no output line for that long, for a tool that hangs
+silently while a healthy long job keeps printing. It exits **123**, deliberately
+distinct from `--timeout`'s `124`, so the two timeout classes stay tellable
+apart by exit code.
+
+```bash
+# Kill the build if it goes quiet for 30s, even though its total budget is high.
+python -m processkit run --timeout 3600 --idle-timeout 30 -- ./flaky-build
+```
+
+Idle monitoring needs the per-line output channel, so with this flag `run`
+**pipes** the child's stdout/stderr and re-emits each decoded line (one at a
+time, with a trailing newline) instead of inheriting the raw streams. That is a
+deliberate fidelity trade taken only when the flag is set: output is UTF-8
+decoded and line-framed, and the child's streams are not a TTY. For the same
+reason `--idle-timeout` is **incompatible with `--profile`** (they need
+different consuming operations on the one handle) — combining them is a usage
+error.
+
+`--idle-timeout` is **not** available under `supervise`: each supervised
+incarnation runs through `Supervisor`'s one-shot verbs, which processkit's core
+gives no idle-timeout hook, so passing it there is a usage error until upstream
+support lands. Use `run --idle-timeout` for a single command.
+
 ## Exit codes
 
 This wrapper's own exit code mirrors the child's — plus a small set of
@@ -126,6 +154,7 @@ following the same convention GNU coreutils' `timeout` and POSIX shells use:
 | Exit code | Meaning |
 |---|---|
 | *(the child's own code)* | Normal completion — passed through unchanged. |
+| `123` | `--idle-timeout` expired; the child produced no output line in time and was killed. Distinct from `124`. |
 | `124` | `--timeout` expired; the tree was killed. |
 | `125` | An internal / containment failure (see below). |
 | `126` | The program was found but could not be executed. |

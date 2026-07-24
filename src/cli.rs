@@ -359,6 +359,11 @@ impl PyCliClient {
     fn command(&self, args: Vec<PathBuf>) -> PyResult<PyCommand> {
         Ok(PyCommand {
             inner: build_command(&self.inner, ClientCall::Args(args))?,
+            // The `CliClient` has no idle-timeout default (it is a binding-only
+            // `Command` concept, not part of the crate's client defaults), so a
+            // command minted from the client starts with none set; chain
+            // `.idle_timeout(...)` on the returned `Command` to add one.
+            idle_timeout: None,
         })
     }
 

@@ -137,6 +137,41 @@ other stdin knob to resolve it.
 def timeout(seconds: float) -> Command
 ```
 
+#### `idle_timeout`
+
+```text
+def idle_timeout(seconds: float) -> Command
+```
+
+Set an idle (inactivity) timeout: tear the child down if it produces
+no stdout/stderr *line* for ``seconds`` (finite, ``> 0`` — else
+``ValueError``, exactly like ``timeout``). For the "hung tool" case a
+plain ``timeout`` handles poorly: a legitimately long job keeps emitting
+progress, so you bound its *silence* instead of guessing a generous
+wall-clock ceiling. Composes with ``timeout``; last write wins against an
+earlier ``idle_timeout``.
+
+When it fires, the streaming iterator raises ``IdleTimeout`` (a
+``ProcessError`` sibling of ``Timeout`` carrying ``idle_timeout_seconds``)
+— a *distinct* signal, deliberately not the wall-clock ``timed_out`` /
+``Timeout``, so the two timeout classes stay tellable apart and the
+captured ``timed_out`` contract is untouched (an idle-timeout never sets
+it).
+
+Enforced on the streaming/interactive surface only — ``start()`` /
+``astart()`` + ``stdout_lines()`` / ``output_events()`` — since idle
+monitoring rides that per-line channel. The one-shot capture verbs
+(``output``/``run``/``exit_code``/``probe`` and their ``a``-twins), the
+``Pipeline``, and ``Supervisor`` run entirely inside the crate, which has
+no native idle-timeout to enforce, so they do **not** honor it (that needs
+upstream support). Monitoring rides the streaming verbs, which the crate
+gates on stdout being piped: under
+``stdout_file``/``stdout("inherit")``/``stdout("null")`` both
+``stdout_lines()`` and ``output_events()`` raise ``ProcessError`` ("stdout
+is not piped") at setup, so an idle-timeout on a redirected stdout is
+diagnosed there — never silently un-enforced. ``stderr_file`` leaves
+stdout piped, so idle monitoring keeps working on the stdout channel.
+
 #### `timeout_grace`
 
 ```text
@@ -2501,6 +2536,30 @@ stdout_bytes: bytes | None
 
 ```text
 diagnostic: str | None
+```
+
+### `IdleTimeout`
+
+```text
+class IdleTimeout
+```
+
+A run produced no stdout/stderr line for its `Command.idle_timeout(...)`
+window (the child went silent) and was killed.
+
+A deliberate *sibling* of `Timeout`, not a subclass: an idle (inactivity)
+timeout is a distinct condition from a wall-clock `timeout()` expiry — "the
+child went silent" vs "the run took too long overall" — so `except
+IdleTimeout` does not swallow a wall-clock `Timeout` and vice-versa, while
+`except ProcessError` still catches both. Raised from the streaming
+iterators (`stdout_lines()` / `output_events()`) on the handle from
+`start()`/`astart()`; the one-shot capture verbs do not enforce
+`idle_timeout` (see its docstring).
+
+#### `idle_timeout_seconds`
+
+```text
+idle_timeout_seconds: float
 ```
 
 ### `Signalled`

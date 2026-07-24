@@ -21,6 +21,14 @@ EXIT_SUPERVISE_INTERNAL_ERROR = 120
 EXIT_SUPERVISE_RESTARTS_EXHAUSTED = 121
 #: `supervise`: supervision stopped because a `give_up_when` predicate matched.
 EXIT_SUPERVISE_GAVE_UP = 122
+#: `run`: the run hit its `--idle-timeout` (produced no output line for that
+#: many seconds and was killed). Deliberately a *distinct* code from
+#: `EXIT_TIMEOUT` (124, wall-clock `--timeout`): the two timeout classes stay
+#: tellable apart by exit code, mirroring the `IdleTimeout`-vs-`Timeout`
+#: exception split. Sits just below `run`'s 124-127 GNU-`timeout` reservation —
+#: 123 is not used by GNU `timeout` — and stays clear of argparse's `2`,
+#: `doctor`'s 0/1/3/4, and `supervise`'s 120-122 (K-027: disjoint namespaces).
+EXIT_IDLE_TIMEOUT = 123
 #: GNU-`timeout`-compatible: the run hit its `--timeout` deadline.
 EXIT_TIMEOUT = 124
 #: An internal / containment failure that isn't one of the more specific codes

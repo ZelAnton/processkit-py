@@ -15,6 +15,7 @@ The one thing to internalize first: the **same deadline** surfaces differently
 the success verbs. Cancellation is never captured: it is always terminal.
 
 - [Setting a timeout](#setting-a-timeout)
+- [Idle (inactivity) timeout](#idle-inactivity-timeout)
 - [Graceful timeout](#graceful-timeout)
 - [Interrupting a blocked sync call (Ctrl+C)](#interrupting-a-blocked-sync-call-ctrlc)
 - [Cancelling an awaited async run](#cancelling-an-awaited-async-run)
@@ -70,6 +71,60 @@ except Timeout as e:
 it too — handy for callers that don't import the processkit hierarchy.
 
 *Deeper: [Running commands](commands.md) for the full verb surface.*
+
+## Idle (inactivity) timeout
+
+`.timeout(...)` bounds *total* runtime; `.idle_timeout(seconds)` bounds a
+**silent gap** instead — it tears the child down if it produces no stdout/stderr
+**line** for that long. This is the "hung tool" case a wall-clock timeout handles
+poorly: a legitimately long job (a build, a test suite, a data export) keeps
+printing progress, so you can bound its *silence* tightly without guessing a
+generous ceiling for its total runtime. The two **compose** — set both, and
+whichever threshold is reached first wins.
+
+Idle-timeout fires as a **distinct** `IdleTimeout` exception — a `ProcessError`
+sibling of `Timeout`, deliberately **not** the wall-clock `timed_out`/`Timeout`
+signal — so "the child went silent" and "the run took too long overall" stay
+tellable apart, and the captured `timed_out` contract is untouched (an
+idle-timeout never sets it):
+
+```python
+from processkit import Command, IdleTimeout
+
+# A build that keeps printing is fine; one that hangs silently for 30s is killed.
+proc = Command("./flaky-build").idle_timeout(30.0).start()
+try:
+    async with proc:
+        async for event in proc.output_events():
+            print(event.text)          # live progress, line by line
+except IdleTimeout as e:
+    print(f"no output for {e.idle_timeout_seconds}s — killed the hung build")
+```
+
+Idle monitoring rides the **per-line output channel**, so it is enforced on the
+**streaming/interactive surface** — `start()`/`astart()` +
+`stdout_lines()`/`output_events()` (piped stdout, the default). It is **not**
+enforced by the one-shot capture verbs (`output`/`run`/`exit_code`/`probe` and
+their `a`-twins), `Pipeline`, or `Supervisor`: those run entirely inside the
+Rust core, which has no native idle-timeout to observe per-line activity mid-run,
+so honoring it there awaits upstream support. The setting is carried on the
+command regardless, so nothing breaks if you set it and use a one-shot verb — it
+simply doesn't fire there.
+
+Because monitoring needs line events, a **redirected stdout** cannot be watched —
+and that combination is *diagnosed*, not silently dropped. Under `stdout_file()`
+/ `stdout("inherit")` / `stdout("null")` the streaming verbs already raise
+`ProcessError` (`"stdout is not piped …"`) at setup, so an `idle_timeout()` on a
+redirected stdout surfaces there. `stderr_file()` is the asymmetric case: it
+leaves stdout piped, so idle monitoring keeps working on the stdout channel while
+stderr goes to the file.
+
+From the CLI, `python -m processkit run --idle-timeout SECONDS` applies the same
+mechanism and exits **123** (distinct from `--timeout`'s 124) on a silent child —
+see the [CLI reference](cli.md#--idle-timeout-a-silence-watchdog).
+
+*Deeper: [Running commands](commands.md#idle_timeout--a-silence-watchdog) for the
+builder's boundaries.*
 
 ## Graceful timeout
 

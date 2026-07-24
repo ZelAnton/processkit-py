@@ -43,6 +43,22 @@ def _supervise(
     """Run ``child_argv`` under `Supervisor` and map its outcome to CLI codes."""
     if args.backoff_factor is not None and args.backoff_factor < 1:
         supervise_parser.error("--backoff-factor must be at least 1")
+    if args.idle_timeout is not None:
+        # The flag exists for parity with `run` (see parser.py), but idle-timeout
+        # is enforced only on the binding's streaming iterator — and each
+        # supervised incarnation runs through Supervisor's one-shot verbs
+        # (`output_string()` / `start().finish()`), which processkit 2.3.x gives
+        # no idle-timeout hook. Rejecting it loudly (a usage error, exit 2) is the
+        # honest handling until upstream Supervisor support lands — never a
+        # silently-ignored flag. `Command.idle_timeout()`'s own docstring records
+        # the same one-shot/Supervisor gap.
+        supervise_parser.error(
+            "--idle-timeout is not yet supported under supervise: each incarnation "
+            "runs through Supervisor's one-shot verbs, for which processkit 2.3.x "
+            "exposes no idle-timeout hook (idle monitoring rides the streaming "
+            "output channel Supervisor does not drive). Use `run --idle-timeout` "
+            "for a single command."
+        )
 
     env_pairs = _parse_env_flags(supervise_parser, args.env)
     program, *rest = child_argv

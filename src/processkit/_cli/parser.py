@@ -79,6 +79,22 @@ def _build_parser() -> tuple[
         ),
     )
     run_parser.add_argument(
+        "--idle-timeout",
+        dest="idle_timeout",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Kill the child if it produces no output line for SECONDS "
+            "(Command.idle_timeout(...)) — for a tool that hangs silently while a "
+            "healthy long job keeps printing. Exit code 123, distinct from "
+            "--timeout's 124. Requires capturing output line-by-line, so with this "
+            "flag the child's stdout/stderr are piped and re-emitted (decoded "
+            "text, one line at a time) instead of inherited raw; incompatible with "
+            "--profile."
+        ),
+    )
+    run_parser.add_argument(
         "--max-memory",
         dest="max_memory",
         type=_positive_int,
@@ -214,6 +230,22 @@ def _build_parser() -> tuple[
         dest="no_jitter",
         action="store_true",
         help="Disable random jitter in restart delays (enabled by default).",
+    )
+    supervise_parser.add_argument(
+        "--idle-timeout",
+        dest="idle_timeout",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Accepted for parity with `run`, but NOT yet enforceable under "
+            "supervise: each incarnation runs through Supervisor's one-shot "
+            "verbs, and processkit 2.3.x exposes no idle-timeout hook there "
+            "(idle monitoring rides the streaming output channel, which "
+            "Supervisor does not drive). Passing it is a usage error until "
+            "upstream support lands; use `run --idle-timeout` for a single "
+            "command."
+        ),
     )
     supervise_parser.add_argument(
         "--env-clear",

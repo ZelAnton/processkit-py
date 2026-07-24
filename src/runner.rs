@@ -330,8 +330,11 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
 ) -> PyResult<PyRunningProcess> {
     // `start()` is async, so `block_on` (inside the capture wrapper) provides the
     // runtime context while it (and its pump spawn) is polled — no `enter()`
-    // needed.
-    with_when_capture_sync(py, runner.start(&command.inner)).map(PyRunningProcess::from)
+    // needed. Carry the command's binding-only idle-timeout onto the handle so
+    // its `stdout_lines()`/`output_events()` streams enforce it.
+    let idle = command.idle_timeout;
+    with_when_capture_sync(py, runner.start(&command.inner))
+        .map(|r| PyRunningProcess::started(r, idle))
 }
 
 // Async run verbs over an owned `Arc<R>` so the future can hold the runner with
@@ -392,8 +395,12 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
     command: &PyCommand,
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
+    let idle = command.idle_timeout;
     with_when_capture_async(py, async move {
-        runner.start(&cmd).await.map(PyRunningProcess::from)
+        runner
+            .start(&cmd)
+            .await
+            .map(|r| PyRunningProcess::started(r, idle))
     })
 }
 
@@ -428,6 +435,11 @@ fn make_command_predicate(
                 py,
                 PyCommand {
                     inner: command.clone(),
+                    // The crate `Command` handed to a `when` predicate carries no
+                    // binding-only idle-timeout (that lives on the `PyCommand`
+                    // wrapper the caller built, not on the crate value the runner
+                    // matches against), so reconstruct with none set.
+                    idle_timeout: None,
                 },
             ) {
                 Ok(py_command) => py_command,

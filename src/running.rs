@@ -2,6 +2,7 @@
 //! `ProcessStdin`, `StdoutLines`, and `OutputEvents`.
 
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
+use std::time::Duration;
 
 use processkit::prelude::StreamExt;
 use processkit::OutputEvents as PkOutputEvents;
@@ -13,13 +14,49 @@ use pyo3::prelude::*;
 use tokio::sync::Mutex;
 
 use crate::convert::{nonnegative_duration, positive_duration};
-use crate::errors::{map_err, ProcessError};
+use crate::errors::{idle_timeout_err, map_err, ProcessError};
 use crate::result::{
     PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
 };
 use crate::runtime::{
     block_on, drive_async, drive_async_py, reject_reentrant_runtime, require_event_loop, runtime,
 };
+
+/// The shared process slot: `None` once a consuming verb has taken ownership.
+/// Shared (via `Arc`) between the `RunningProcess` handle and any idle-timeout
+/// watchdog living in one of its streams, so both address the one process
+/// through the one `StdMutex` (no second, racing kill channel).
+type SharedProcess = Arc<StdMutex<Option<PkRunningProcess>>>;
+
+/// The idle-timeout watchdog carried by a `stdout_lines()` / `output_events()`
+/// stream: the inactivity window plus a shared handle to the process to kill on
+/// silence. Enforcement rides the existing per-line output channel — the
+/// stream's own `.next()` — rather than a separate process-supervision loop:
+/// each `__anext__` bounds the wait for the next line by `window`, and a lapse
+/// is treated as "the child went silent". Cheap to clone (an `Arc` bump + a
+/// `Copy` `Duration`).
+#[derive(Clone)]
+struct IdleGuard {
+    window: Duration,
+    process: SharedProcess,
+}
+
+impl IdleGuard {
+    /// Hard-kill the child on an idle lapse. Locks the shared slot briefly (no
+    /// await held across it) and starts the kill if the process is still there;
+    /// a `None` slot (a consuming verb already took it) is a no-op. `start_kill`
+    /// runs inside the tokio runtime here — `__anext__`'s future is polled on a
+    /// runtime worker — so no explicit `runtime().enter()` is needed (unlike the
+    /// synchronous `RunningProcess.kill()`). A kill error is ignored: the child
+    /// may already be gone, and the caller is about to raise `IdleTimeout`
+    /// regardless.
+    fn kill(&self) {
+        let mut guard = self.process.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(running) = guard.as_mut() {
+            let _ = running.start_kill();
+        }
+    }
+}
 
 /// A writable handle to a running process's stdin. Obtain it once via
 /// `RunningProcess.take_stdin()`; all methods are awaitable.
@@ -113,6 +150,8 @@ impl PyProcessStdin {
 #[pyclass(name = "StdoutLines", module = "processkit")]
 pub(crate) struct PyStdoutLines {
     inner: Arc<Mutex<PkStdoutLines>>,
+    // The idle-timeout watchdog, if the originating command set `idle_timeout`.
+    idle: Option<IdleGuard>,
 }
 
 #[pymethods]
@@ -123,10 +162,29 @@ impl PyStdoutLines {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = self.inner.clone();
+        let idle = self.idle.clone();
         drive_async_py(py, async move {
-            match stream.lock().await.next().await {
-                Some(line) => Ok(line),
-                None => Err(PyStopAsyncIteration::new_err(())),
+            let mut guard = stream.lock().await;
+            match idle {
+                // Bound the wait for the next line by the idle window: a lapse
+                // means the child produced no stdout line in time — kill it and
+                // raise the distinct `IdleTimeout` (never a `StopAsyncIteration`,
+                // which would look like a clean end-of-stream). `None` is a real
+                // end-of-stream; a line resets the clock for the next call.
+                Some(guard_idle) => {
+                    match tokio::time::timeout(guard_idle.window, guard.next()).await {
+                        Ok(Some(line)) => Ok(line),
+                        Ok(None) => Err(PyStopAsyncIteration::new_err(())),
+                        Err(_elapsed) => {
+                            guard_idle.kill();
+                            Err(idle_timeout_err(guard_idle.window.as_secs_f64()))
+                        }
+                    }
+                }
+                None => match guard.next().await {
+                    Some(line) => Ok(line),
+                    None => Err(PyStopAsyncIteration::new_err(())),
+                },
             }
         })
     }
@@ -136,6 +194,11 @@ impl PyStdoutLines {
 #[pyclass(name = "OutputEvents", module = "processkit")]
 pub(crate) struct PyOutputEvents {
     inner: Arc<Mutex<PkOutputEvents>>,
+    // The idle-timeout watchdog, if the originating command set `idle_timeout`.
+    // Watches the interleaved stream, so any *piped* stream (stdout or stderr)
+    // resets the clock — a file-redirected/inherited stream simply contributes
+    // no events (see `Command.idle_timeout`'s docstring).
+    idle: Option<IdleGuard>,
 }
 
 #[pymethods]
@@ -146,10 +209,24 @@ impl PyOutputEvents {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = self.inner.clone();
+        let idle = self.idle.clone();
         drive_async_py(py, async move {
-            match stream.lock().await.next().await {
-                Some(event) => Ok(PyOutputEvent::from_event(event)),
-                None => Err(PyStopAsyncIteration::new_err(())),
+            let mut guard = stream.lock().await;
+            match idle {
+                Some(guard_idle) => {
+                    match tokio::time::timeout(guard_idle.window, guard.next()).await {
+                        Ok(Some(event)) => Ok(PyOutputEvent::from_event(event)),
+                        Ok(None) => Err(PyStopAsyncIteration::new_err(())),
+                        Err(_elapsed) => {
+                            guard_idle.kill();
+                            Err(idle_timeout_err(guard_idle.window.as_secs_f64()))
+                        }
+                    }
+                }
+                None => match guard.next().await {
+                    Some(event) => Ok(PyOutputEvent::from_event(event)),
+                    None => Err(PyStopAsyncIteration::new_err(())),
+                },
             }
         })
     }
@@ -177,18 +254,42 @@ impl PyOutputEvents {
 #[pyclass(name = "RunningProcess", module = "processkit", frozen)]
 pub(crate) struct PyRunningProcess {
     // `None` after a consuming method has taken ownership of the process.
-    pub(crate) inner: StdMutex<Option<PkRunningProcess>>,
-}
-
-impl From<PkRunningProcess> for PyRunningProcess {
-    fn from(running: PkRunningProcess) -> Self {
-        Self {
-            inner: StdMutex::new(Some(running)),
-        }
-    }
+    // `Arc` (was a bare `StdMutex`) so an idle-timeout watchdog in a
+    // `stdout_lines()`/`output_events()` stream can share the very same slot and
+    // hard-kill the child on silence through the one lock — no separate kill
+    // channel that could race a consuming verb. Every access still funnels
+    // through `lock()`, so the `Arc` is transparent to the methods below.
+    pub(crate) inner: SharedProcess,
+    // The binding-only idle (inactivity) timeout carried from the `Command` this
+    // handle was started from (`None` if unset). Applied to every stream the
+    // streaming verbs hand out (see `idle_guard`).
+    idle_timeout: Option<Duration>,
 }
 
 impl PyRunningProcess {
+    /// Wrap a freshly started crate process, carrying the originating
+    /// `Command`'s binding-only idle-timeout onto the handle so its
+    /// `stdout_lines()` / `output_events()` streams enforce it. The single
+    /// constructor every `start()`/`astart()` site (on `Command`, `Runner`/the
+    /// doubles, and `ProcessGroup`) funnels through.
+    pub(crate) fn started(running: PkRunningProcess, idle_timeout: Option<Duration>) -> Self {
+        Self {
+            inner: Arc::new(StdMutex::new(Some(running))),
+            idle_timeout,
+        }
+    }
+
+    /// Build the idle-timeout watchdog for a stream this handle is handing out
+    /// (`None` when the command set no `idle_timeout`). Clones the shared process
+    /// slot so the watchdog can kill through the one lock. Called *before* the
+    /// slot is locked in the streaming verbs (an `Arc` clone takes no lock).
+    fn idle_guard(&self) -> Option<IdleGuard> {
+        self.idle_timeout.map(|window| IdleGuard {
+            window,
+            process: self.inner.clone(),
+        })
+    }
+
     /// Lock the inner slot, recovering from a (never-expected) poisoned mutex
     /// rather than panicking across the FFI boundary — the guarded sections only
     /// read/`as_mut`/`take` the handle and never panic, so poisoning cannot
@@ -341,6 +442,8 @@ impl PyRunningProcess {
         // Setting up the stream spawns a pump task, so it must run inside the
         // tokio runtime context. Holding the std lock across this sync call is
         // safe: it does not await, so it cannot deadlock a concurrent verb.
+        // Build the watchdog before locking (an `Arc` clone takes no lock).
+        let idle = self.idle_guard();
         let _guard = runtime()?.enter();
         let mut inner = self.lock();
         let running = inner
@@ -349,11 +452,13 @@ impl PyRunningProcess {
         let lines = running.stdout_lines().map_err(map_err)?;
         Ok(PyStdoutLines {
             inner: Arc::new(Mutex::new(lines)),
+            idle,
         })
     }
 
     /// An async iterator over stdout and stderr as interleaved `OutputEvent`s.
     fn output_events(&self) -> PyResult<PyOutputEvents> {
+        let idle = self.idle_guard();
         let _guard = runtime()?.enter();
         let mut inner = self.lock();
         let running = inner
@@ -362,6 +467,7 @@ impl PyRunningProcess {
         let events = running.output_events().map_err(map_err)?;
         Ok(PyOutputEvents {
             inner: Arc::new(Mutex::new(events)),
+            idle,
         })
     }
 

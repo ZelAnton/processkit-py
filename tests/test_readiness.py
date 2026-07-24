@@ -920,17 +920,11 @@ def test_wait_for_unix_socket_honors_success_that_raced_the_deadline(
 def test_wait_for_unix_socket_without_af_unix_raises_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Simulate a platform without Unix-domain-socket support the way CPython
-    # actually presents it. asyncio binds ``open_unix_connection`` /
-    # ``start_unix_server`` once, at import, gated on ``socket.AF_UNIX`` (see
-    # asyncio.streams), so a genuinely AF_UNIX-less platform also lacks the
-    # asyncio connector. Deleting ``socket.AF_UNIX`` alone does not remove the
-    # already-bound ``asyncio.open_unix_connection`` the probe actually calls, so
-    # remove all three: this makes the simulated "unsupported" faithful and
-    # exercises the connector-availability gate the probe now keys on.
+    # The guard is an OR condition, so removing the connector it actually calls
+    # is sufficient. Deliberately leave ``socket.AF_UNIX`` intact: it is global
+    # process state and deleting it makes unrelated ``socket.socketpair()``
+    # calls fall back to AF_INET on POSIX event-loop self-pipe setup.
     monkeypatch.delattr(asyncio, "open_unix_connection", raising=False)
-    monkeypatch.delattr(asyncio, "start_unix_server", raising=False)
-    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
 
     async def scenario() -> None:
         with pytest.raises(Unsupported) as excinfo:

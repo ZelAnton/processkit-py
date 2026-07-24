@@ -2273,11 +2273,12 @@ connections, rather than only that its filesystem entry exists. Polls every
 elapse, in which case `WaitTimeout` (also a `TimeoutError`) is raised,
 carrying ``path`` and chained from the last connection failure.
 
-Platforms whose Python socket module has no ``AF_UNIX`` support raise
-`Unsupported` instead of silently downgrading to a filesystem-existence
-check. At ``timeout=0`` one bounded connection attempt still runs, so an
-already-ready socket succeeds; negative and NaN timeouts are rejected with
-`ValueError`.
+Platforms lacking Unix-domain-socket support — no ``socket.AF_UNIX`` or no
+``asyncio.open_unix_connection`` (asyncio binds the latter only when the
+former existed at import) — raise `Unsupported` instead of silently
+downgrading to a filesystem-existence check. At ``timeout=0`` one bounded
+connection attempt still runs, so an already-ready socket succeeds; negative
+and NaN timeouts are rejected with `ValueError`.
 
 ### `WaitTimeout`
 

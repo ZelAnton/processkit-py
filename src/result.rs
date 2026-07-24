@@ -1,14 +1,18 @@
 //! The captured-result value types: `ProcessResult`, `BytesResult`, `Outcome`,
 //! `OutputEvent`, `Finished`, and `RunProfile`.
 //!
-//! ## Value semantics: `__eq__`/`__hash__`/pickle (task T-041)
+//! ## Value semantics: `__eq__`/`__hash__`/pickle (tasks T-041, T-151)
 //!
-//! Every type here (bar `OutputEvent`, out of this task's scope) gets `__eq__`
-//! delegating to the crate's own `PartialEq` (so equality tracks the crate's
-//! notion of identity, not Python's default `object` identity-`__eq__`), plus a
-//! `__hash__` consistent with it — all of their fields are exact (integers,
-//! `Duration`, `bool`, text/bytes; no floats are *stored*, only derived as
-//! `f64` getters), so hashing is semantically sound.
+//! Every type here gets `__eq__` — for `ProcessResult`/`BytesResult`/`Outcome`/
+//! `RunProfile` delegating to the crate's own `PartialEq` over an `inner` crate
+//! value, for `Finished` comparing its (crate-typed) `outcome`/`stderr` fields,
+//! and for `OutputEvent` (added T-151) comparing the two exact fields it stores
+//! directly on the binding (`is_stderr`/`text`), since it wraps no crate
+//! `inner` — so equality tracks the value's fields, not Python's default
+//! `object` identity-`__eq__`. Each pairs that with a `__hash__` consistent
+//! with it — all of their fields are exact (integers, `Duration`, `bool`,
+//! text/bytes; no floats are *stored*, only derived as `f64` getters), so
+//! hashing is semantically sound.
 //!
 //! Pickle is a harder call, and the answer differs per type. All of
 //! `processkit::ProcessResult`/`Outcome`/`Finished`/`RunProfile`/
@@ -25,6 +29,14 @@
 //! is fully determined by `(code, signal, timed_out)` (all Python-visible), and
 //! a `Finished` adds only its `stderr` (carried through verbatim) — so a
 //! reconstructed value compares `==` its original. They support pickle.
+//!
+//! `OutputEvent` (added T-151) round-trips **exactly** too, and more simply
+//! than any of the above: it wraps no crate value, storing its own
+//! `(is_stderr, text)` pair directly, so unpickling is a plain field copy with
+//! no `ScriptedRunner` detour. `text` is already a decoded `String` (never the
+//! raw, possibly-non-UTF-8 bytes that stop `BytesResult`) and there is no live
+//! OS telemetry to synthesize (as there is for `RunProfile`), so nothing can
+//! fail to reconstruct. It supports pickle.
 //!
 //! It does **not** round-trip `ProcessResult` (nor, therefore,
 //! `SupervisionOutcome` in `supervisor.rs`, whose identity includes a
@@ -698,6 +710,51 @@ impl PyOutputEvent {
             self.stream(),
             self.text
         )
+    }
+
+    /// Value equality over the two exact fields this binding stores directly —
+    /// `is_stderr` and `text` — not `object`'s identity comparison. Unlike
+    /// `ProcessResult`/`BytesResult`/`Outcome`/`RunProfile` (which delegate to
+    /// the crate's own `PartialEq` over an `inner` crate value), `OutputEvent`
+    /// wraps no crate `inner` — it derives and keeps its own `(is_stderr, text)`
+    /// pair in `from_event` — so it compares those fields itself.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.is_stderr == other.is_stderr && self.text == other.text
+    }
+
+    /// Consistent with `__eq__`: hashes exactly the two fields compared there.
+    /// Both are exact (`bool`/`str`; no stored float), so hashing is sound.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.is_stderr.hash(&mut hasher);
+        self.text.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Pickle support with an **exact** round trip, and the simplest of the
+    /// picklable types here: unlike `Outcome`/`Finished` (which have no public
+    /// crate constructor and rebuild via `scripted_outcome`), `OutputEvent`
+    /// stores its own two exact fields directly on the binding, so
+    /// reconstruction is a plain field copy — no `ScriptedRunner` detour. `text`
+    /// is already a decoded `String` (not raw, possibly-non-UTF-8 bytes as in
+    /// `BytesResult`) and there is no live OS telemetry to synthesize (as in
+    /// `RunProfile`), so nothing can fail to reconstruct: the restored value
+    /// always compares `==` its original, and there is no reason to refuse.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyAny>, (bool, String))> {
+        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
+        Ok((factory, (self.is_stderr, self.text.clone())))
+    }
+
+    /// `__reduce__`'s factory: a private (leading-underscore) staticmethod, as
+    /// on `Outcome`/`Finished` (see `PyOutcome::_unpickle`). A plain field copy —
+    /// no crate reconstruction needed, since this type wraps no crate value.
+    #[staticmethod]
+    fn _unpickle(is_stderr: bool, text: String) -> Self {
+        Self { is_stderr, text }
     }
 }
 

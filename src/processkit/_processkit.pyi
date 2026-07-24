@@ -573,7 +573,10 @@ class Finished:
 
 @final
 class OutputEvent:
-    """One captured line and the stream it came from."""
+    """One captured line and the stream it came from.
+
+    Value semantics: `==`/`hash()` compare `is_stderr`/`text`; picklable.
+    """
 
     @property
     def stream(self) -> Literal["stdout", "stderr"]: ...
@@ -582,6 +585,12 @@ class OutputEvent:
     @property
     def text(self) -> str: ...
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    # `__reduce__`'s factory (see the class docstring on pickling); private,
+    # not for direct use — declared only so stubtest sees the real member.
+    @staticmethod
+    def _unpickle(is_stderr: bool, text: str) -> OutputEvent: ...
 
 @final
 class StdoutLines:

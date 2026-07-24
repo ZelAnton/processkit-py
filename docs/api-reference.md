@@ -2162,6 +2162,16 @@ fixed event-loop tick (or a smaller caller-supplied ``interval``), never left
 uncapped. A **negative** ``timeout`` is rejected outright — raises
 `ValueError`, same as NaN — as is a non-positive ``interval``.
 
+``host`` and ``path`` are validated up front, before any connection is
+attempted (fail-fast, not "after one retry cycle"): an IPv6 literal
+``host`` (e.g. ``"::1"``) is bracketed in the ``Host`` header per RFC
+9112/3986 (``Host: [::1]:8080``, never the ambiguous ``Host: ::1:8080``);
+a ``path`` containing whitespace or a control character (including
+CR/LF — which could otherwise inject extra request/header lines from an
+untrusted ``path``) raises `ValueError`; and a ``host``/``path`` with a
+character that can't be encoded as latin-1 (required for the request
+line) raises `ValueError` instead of a raw `UnicodeEncodeError`.
+
 ### `wait_for_path`
 
 ```text

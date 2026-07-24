@@ -34,7 +34,7 @@ import os
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, cast, overload
 
 from ._processkit import (
     BytesResult,
@@ -831,13 +831,20 @@ _Result = TypeVar("_Result")
 
 def _resolve_concurrency(concurrency: int | None) -> int:
     """Shared ``concurrency`` handling for the streaming batch iterators:
-    ``None`` means "as many at once as the machine has CPUs" (`os.cpu_count()`,
-    floored at 1), matching the `output_all` family's default; a non-positive
-    explicit value raises `ValueError` rather than being silently clamped to 1
-    — the same contract the compiled batch verbs enforce.
+    ``None`` means the process-available CPU count (respecting CPU affinity and
+    cgroup quotas where Python exposes them through `os.process_cpu_count()`),
+    with `os.cpu_count()` as the Python 3.10-3.12 fallback and ``4`` if neither
+    can determine a count. This matches the compiled batch family's
+    `available_parallelism()` default. A non-positive explicit value raises
+    `ValueError` rather than being silently clamped to 1 — the same contract the
+    compiled batch verbs enforce.
     """
     if concurrency is None:
-        return os.cpu_count() or 1
+        process_cpu_count = cast(
+            Callable[[], int | None] | None, getattr(os, "process_cpu_count", None)
+        )
+        count = process_cpu_count() if process_cpu_count is not None else os.cpu_count()
+        return count or 4
     if concurrency < 1:
         raise ValueError("concurrency must be a positive integer")
     return concurrency
@@ -958,8 +965,10 @@ def aoutput_as_completed(
     once (an `asyncio.Semaphore` gates each `Command.aoutput()`), so fanning out
     hundreds of commands can't exhaust file descriptors or the process table —
     the same bound `aoutput_all` gives, held *while* streaming. ``concurrency``
-    defaults to the CPU count (`os.cpu_count()`), matching the batch family; a
-    non-positive value raises `ValueError` rather than being silently clamped.
+    defaults to the process-available CPU count (CPU affinity/cgroup-aware on
+    Python 3.13+), falling back to `os.cpu_count()` and then ``4``; this matches
+    the batch family. A non-positive value raises `ValueError` rather than being
+    silently clamped.
 
     **No orphans on cancellation or early exit.** Cancelling the task consuming
     this iterator — or simply ``break``ing out of the ``async for`` early — tears
@@ -988,6 +997,8 @@ def aoutput_as_completed_bytes(
     each finished command yields a `BytesResult` — its stdout/stderr as undecoded
     ``bytes``, for non-UTF-8 or binary output — in place of a text
     `ProcessResult`, mirroring how `aoutput_all_bytes` relates to `aoutput_all`.
-    See `aoutput_as_completed` for the full contract.
+    With ``concurrency=None``, it uses the same process-available CPU-count
+    default (and fallbacks) as every other batch entry point. See
+    `aoutput_as_completed` for the full contract.
     """
     return _stream_as_completed(commands, concurrency, _aoutput_bytes_slot)

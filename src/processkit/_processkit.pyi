@@ -1337,25 +1337,34 @@ def output_all(
     *,
     concurrency: int | None = ...,
     runner: RunnerLike | None = ...,
-) -> list[ProcessResult | ProcessError]: ...
+) -> list[ProcessResult | ProcessError]:
+    """Run a collect-all batch in input order. With ``concurrency=None``, use
+    the process-available CPU count (CPU affinity/cgroup-aware), falling back to
+    ``4`` if it cannot be determined. A non-positive value raises `ValueError`."""
+
 def aoutput_all(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
     runner: RunnerLike | None = ...,
-) -> Awaitable[list[ProcessResult | ProcessError]]: ...
+) -> Awaitable[list[ProcessResult | ProcessError]]:
+    """Async `output_all` with the same concurrency default and validation."""
+
 def output_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
     runner: RunnerLike | None = ...,
-) -> list[BytesResult | ProcessError]: ...
+) -> list[BytesResult | ProcessError]:
+    """Raw-bytes `output_all` with the same concurrency default and validation."""
+
 def aoutput_all_bytes(
     commands: Sequence[Command],
     *,
     concurrency: int | None = ...,
     runner: RunnerLike | None = ...,
-) -> Awaitable[list[BytesResult | ProcessError]]: ...
+) -> Awaitable[list[BytesResult | ProcessError]]:
+    """Async raw-bytes batch with the same concurrency default and validation."""
 
 # Opt-in observability: install a process-global subscriber that forwards the
 # core's per-run `tracing` events to Python `logging` (a `processkit` logger).

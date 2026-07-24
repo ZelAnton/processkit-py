@@ -1907,6 +1907,10 @@ def output_all(
 ) -> list[ProcessResult | ProcessError]
 ```
 
+Run a collect-all batch in input order. With ``concurrency=None``, use
+the process-available CPU count (CPU affinity/cgroup-aware), falling back to
+``4`` if it cannot be determined. A non-positive value raises `ValueError`.
+
 ### `output_all_bytes`
 
 ```text
@@ -1917,6 +1921,8 @@ def output_all_bytes(
     runner: RunnerLike | None = ...,
 ) -> list[BytesResult | ProcessError]
 ```
+
+Raw-bytes `output_all` with the same concurrency default and validation.
 
 ### `aoutput_all`
 
@@ -1929,6 +1935,8 @@ def aoutput_all(
 ) -> Awaitable[list[ProcessResult | ProcessError]]
 ```
 
+Async `output_all` with the same concurrency default and validation.
+
 ### `aoutput_all_bytes`
 
 ```text
@@ -1939,6 +1947,8 @@ def aoutput_all_bytes(
     runner: RunnerLike | None = ...,
 ) -> Awaitable[list[BytesResult | ProcessError]]
 ```
+
+Async raw-bytes batch with the same concurrency default and validation.
 
 ### `aoutput_as_completed`
 
@@ -1978,8 +1988,10 @@ timeout, and a signal-kill are, as everywhere in this library, *data* on a
 once (an `asyncio.Semaphore` gates each `Command.aoutput()`), so fanning out
 hundreds of commands can't exhaust file descriptors or the process table —
 the same bound `aoutput_all` gives, held *while* streaming. ``concurrency``
-defaults to the CPU count (`os.cpu_count()`), matching the batch family; a
-non-positive value raises `ValueError` rather than being silently clamped.
+defaults to the process-available CPU count (CPU affinity/cgroup-aware on
+Python 3.13+), falling back to `os.cpu_count()` and then ``4``; this matches
+the batch family. A non-positive value raises `ValueError` rather than being
+silently clamped.
 
 **No orphans on cancellation or early exit.** Cancelling the task consuming
 this iterator — or simply ``break``ing out of the ``async for`` early — tears
@@ -2010,7 +2022,9 @@ concurrency-cap, per-slot-error, and no-orphan-on-cancellation contract, but
 each finished command yields a `BytesResult` — its stdout/stderr as undecoded
 ``bytes``, for non-UTF-8 or binary output — in place of a text
 `ProcessResult`, mirroring how `aoutput_all_bytes` relates to `aoutput_all`.
-See `aoutput_as_completed` for the full contract.
+With ``concurrency=None``, it uses the same process-available CPU-count
+default (and fallbacks) as every other batch entry point. See
+`aoutput_as_completed` for the full contract.
 
 ## Readiness helpers
 

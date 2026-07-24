@@ -243,9 +243,12 @@ def test_output_all_rejects_zero_concurrency() -> None:
 
 @given(n=st.integers(min_value=-(2**63), max_value=-1))
 def test_output_all_rejects_negative_concurrency(n: int) -> None:
-    try:
-        output_all([], concurrency=n)
-    except OverflowError:
-        pass
-    else:
-        raise AssertionError(f"output_all(concurrency={n}) should have raised OverflowError")
+    for output in (output_all, output_all_bytes):
+        try:
+            output([], concurrency=n)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"{output.__name__}(concurrency={n}) should have raised ValueError"
+            )

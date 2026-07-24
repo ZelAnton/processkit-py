@@ -6,6 +6,7 @@ twins run many commands with bounded concurrency, returning each result — or a
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import sys
 import threading
@@ -14,6 +15,7 @@ from collections.abc import Callable
 
 import pytest
 
+import processkit._aio as aio
 from processkit import (
     BytesResult,
     Command,
@@ -94,6 +96,50 @@ def test_output_all_rejects_zero_concurrency() -> None:
             await aoutput_all_bytes(cmds, concurrency=0)
 
     asyncio.run(scenario())
+
+
+def test_output_all_rejects_negative_concurrency() -> None:
+    """All compiled batch entry points normalize negative values to ValueError."""
+    cmds = [Command(PY, ["-c", "print(1)"])]
+    with pytest.raises(ValueError, match="concurrency"):
+        output_all(cmds, concurrency=-1)
+    with pytest.raises(ValueError, match="concurrency"):
+        output_all_bytes(cmds, concurrency=-1)
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="concurrency"):
+            await aoutput_all(cmds, concurrency=-1)
+        with pytest.raises(ValueError, match="concurrency"):
+            await aoutput_all_bytes(cmds, concurrency=-1)
+
+    asyncio.run(scenario())
+
+
+def test_streaming_default_concurrency_prefers_process_cpu_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 2, raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 99)
+
+    assert aio._resolve_concurrency(None) == 2
+
+
+def test_streaming_default_concurrency_falls_back_to_cpu_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 3)
+
+    assert aio._resolve_concurrency(None) == 3
+
+
+def test_streaming_default_concurrency_uses_shared_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(os, "process_cpu_count", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+
+    assert aio._resolve_concurrency(None) == 4
 
 
 def test_output_all_puts_spawn_failure_in_its_slot() -> None:
@@ -533,6 +579,20 @@ def test_aoutput_as_completed_rejects_zero_concurrency() -> None:
                 pass
         with pytest.raises(ValueError, match="concurrency"):
             async for _ in aoutput_as_completed_bytes([Command(PY, ["-c", "pass"])], concurrency=0):
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_aoutput_as_completed_rejects_negative_concurrency() -> None:
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="concurrency"):
+            async for _ in aoutput_as_completed([Command(PY, ["-c", "pass"])], concurrency=-1):
+                pass
+        with pytest.raises(ValueError, match="concurrency"):
+            async for _ in aoutput_as_completed_bytes(
+                [Command(PY, ["-c", "pass"])], concurrency=-1
+            ):
                 pass
 
     asyncio.run(scenario())

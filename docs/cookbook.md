@@ -374,10 +374,11 @@ per-stage `env`/`cwd` on each `Command` before piping.
 
 ## Run many commands at once
 
-`output_all` runs a batch with bounded concurrency (default: CPU count) and
-returns each result in input order. A command that fails to *spawn* (or hits an
-I/O error) appears as a `ProcessError` in its slot (a non-zero exit is still data
-on a `ProcessResult`):
+`output_all` runs a batch with bounded concurrency (default: the CPU count
+available to the process, respecting affinity/cgroup quotas where the platform
+reports them; fallback: `4`) and returns each result in input order. A command
+that fails to *spawn* (or hits an I/O error) appears as a `ProcessError` in its
+slot (a non-zero exit is still data on a `ProcessResult`):
 
 ```python
 from processkit import Command, ProcessResult, output_all   # or: await aoutput_all(...)

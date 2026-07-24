@@ -1457,6 +1457,8 @@ class OutputEvent
 
 One captured line and the stream it came from.
 
+Value semantics: `==`/`hash()` compare `is_stderr`/`text`; picklable.
+
 #### `stream`
 
 ```text

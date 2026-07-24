@@ -32,6 +32,7 @@ from processkit import (
     Finished,
     NonZeroExit,
     Outcome,
+    OutputEvent,
     OutputTooLarge,
     PermissionDenied,
     Priority,
@@ -2245,3 +2246,86 @@ def test_run_profile_pickle_raises_type_error() -> None:
     profile = proc.profile(0.02)
     with pytest.raises(TypeError, match="RunProfile cannot be pickled"):
         pickle.dumps(profile)
+
+
+# --- value semantics: OutputEvent (T-151) ------------------------------------
+#
+# `OutputEvent` completes the value-type family above: it gets `__eq__`/`__hash__`
+# over its two exact fields (`is_stderr`/`text`) and — unlike ProcessResult /
+# BytesResult / RunProfile — supports pickle with an exact round trip. It is the
+# simplest picklable type here: it wraps no crate value (it derives and keeps its
+# own pair in `from_event`), so unpickling is a plain field copy, no
+# `ScriptedRunner` detour. Only produced by streaming, so these collect real
+# events off `output_events()`.
+
+
+def _output_events(code: str) -> list[OutputEvent]:
+    async def scenario() -> list[OutputEvent]:
+        proc = await Command(PY, ["-c", code]).astart()
+        events = [event async for event in proc.output_events()]
+        await proc.aoutcome()
+        return events
+
+    return asyncio.run(scenario())
+
+
+def test_output_event_eq_and_hash_compare_by_value() -> None:
+    # Same single stdout line from two independent runs -> two distinct objects
+    # that compare equal by value (and hash consistently), not by identity.
+    first = _output_events("print('same-line')")
+    second = _output_events("print('same-line')")
+    assert first == second  # element-wise OutputEvent.__eq__
+    a, b = first[0], second[0]
+    assert isinstance(a, OutputEvent)
+    assert a is not b
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_output_event_not_equal_when_a_field_differs() -> None:
+    # Differ by `text`.
+    a = _output_events("print('one')")[0]
+    b = _output_events("print('two')")[0]
+    assert a != b
+
+    # Differ only by `stream`/`is_stderr`: identical text, opposite stream, so
+    # still unequal (both fields participate in equality, not just the text).
+    on_stdout = _output_events("print('x')")[0]
+    on_stderr = _output_events("import sys; print('x', file=sys.stderr)")[0]
+    assert on_stdout.text == on_stderr.text
+    assert on_stdout.is_stderr != on_stderr.is_stderr
+    assert on_stdout != on_stderr
+
+
+def test_output_event_eq_against_an_unrelated_type_is_false() -> None:
+    # Comparing against a non-`OutputEvent` must return `False` (via the
+    # `NotImplemented` protocol), not raise `TypeError`.
+    event = _output_events("print('x')")[0]
+    assert event != 5
+    assert (event == "not an event") is False
+
+
+def test_output_event_is_hashable_in_a_set_and_as_a_dict_key() -> None:
+    a = _output_events("print('same')")[0]
+    b = _output_events("print('same')")[0]
+    assert {a, b} == {a}
+    cache = {a: "cached"}
+    assert cache[b] == "cached"
+
+
+def test_output_event_pickle_round_trip() -> None:
+    # Unlike ProcessResult/BytesResult/RunProfile (which refuse), OutputEvent
+    # round-trips exactly: it stores its own two exact fields directly, so
+    # reconstruction is a plain field copy — text is already decoded, so nothing
+    # can fail to reconstruct. Cover both streams (stdout and stderr) so the
+    # `is_stderr` half round-trips too.
+    on_stdout = _output_events("print('round-trip')")[0]
+    on_stderr = _output_events("import sys; print('to-stderr', file=sys.stderr)")[0]
+    for original in (on_stdout, on_stderr):
+        restored = pickle.loads(pickle.dumps(original))
+        assert isinstance(restored, OutputEvent)
+        assert restored == original
+        assert hash(restored) == hash(original)
+        assert restored.stream == original.stream
+        assert restored.is_stderr == original.is_stderr
+        assert restored.text == original.text

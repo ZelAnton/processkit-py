@@ -14,7 +14,8 @@ import gc
 import inspect
 import socket
 import sys
-from collections.abc import AsyncIterator
+import tempfile
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
@@ -799,12 +800,28 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
     assert called, "wait_for_port should route cleanup through _close_pending_connection"
 
 
+@pytest.fixture
+def unix_socket_path() -> Iterator[Path]:
+    """A bindable Unix-domain socket path guaranteed short enough for
+    ``sockaddr_un.sun_path`` on every platform.
+
+    macOS/BSD cap ``sun_path`` at 104 bytes (Linux allows 108). pytest's
+    ``tmp_path`` nests each test under a long per-test base directory, which
+    overflows that limit on GitHub's macOS runners (deep
+    ``/Users/runner/work/...`` working dirs) even though the same path fits on
+    Linux and Windows. Rooting a short-lived directory directly under the OS
+    temp root with a minimal filename keeps the bound path well under the limit.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        yield Path(directory) / "r.sock"
+
+
 @pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
-def test_wait_for_unix_socket_ready(tmp_path: Path) -> None:
-    socket_path = tmp_path / "ready.sock"
+def test_wait_for_unix_socket_ready(unix_socket_path: Path) -> None:
+    socket_path = unix_socket_path
 
     async def scenario() -> None:
-        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+        server = await asyncio.start_unix_server(  # type: ignore[attr-defined,unused-ignore]
             lambda _r, w: w.close(), path=socket_path
         )
         try:
@@ -817,11 +834,11 @@ def test_wait_for_unix_socket_ready(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
-def test_wait_for_unix_socket_ready_at_zero_timeout(tmp_path: Path) -> None:
-    socket_path = tmp_path / "ready.sock"
+def test_wait_for_unix_socket_ready_at_zero_timeout(unix_socket_path: Path) -> None:
+    socket_path = unix_socket_path
 
     async def scenario() -> None:
-        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+        server = await asyncio.start_unix_server(  # type: ignore[attr-defined,unused-ignore]
             lambda _r, w: w.close(), path=socket_path
         )
         try:
@@ -876,7 +893,7 @@ def test_wait_for_unix_socket_rejects_invalid_timeout_and_interval(tmp_path: Pat
 
 @pytest.mark.skipif(not _HAS_UNIX_SOCKETS, reason="AF_UNIX is unavailable on this platform")
 def test_wait_for_unix_socket_honors_success_that_raced_the_deadline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unix_socket_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def racing_wait_for(
         future: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]], timeout: float
@@ -884,10 +901,10 @@ def test_wait_for_unix_socket_honors_success_that_raced_the_deadline(
         await future
         raise asyncio.TimeoutError
 
-    socket_path = tmp_path / "ready.sock"
+    socket_path = unix_socket_path
 
     async def scenario() -> None:
-        server = await asyncio.start_unix_server(  # type: ignore[attr-defined]
+        server = await asyncio.start_unix_server(  # type: ignore[attr-defined,unused-ignore]
             lambda _r, w: w.close(), path=socket_path
         )
         try:
@@ -903,6 +920,16 @@ def test_wait_for_unix_socket_honors_success_that_raced_the_deadline(
 def test_wait_for_unix_socket_without_af_unix_raises_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Simulate a platform without Unix-domain-socket support the way CPython
+    # actually presents it. asyncio binds ``open_unix_connection`` /
+    # ``start_unix_server`` once, at import, gated on ``socket.AF_UNIX`` (see
+    # asyncio.streams), so a genuinely AF_UNIX-less platform also lacks the
+    # asyncio connector. Deleting ``socket.AF_UNIX`` alone does not remove the
+    # already-bound ``asyncio.open_unix_connection`` the probe actually calls, so
+    # remove all three: this makes the simulated "unsupported" faithful and
+    # exercises the connector-availability gate the probe now keys on.
+    monkeypatch.delattr(asyncio, "open_unix_connection", raising=False)
+    monkeypatch.delattr(asyncio, "start_unix_server", raising=False)
     monkeypatch.delattr(socket, "AF_UNIX", raising=False)
 
     async def scenario() -> None:

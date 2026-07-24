@@ -432,13 +432,21 @@ async def wait_for_unix_socket(
     elapse, in which case `WaitTimeout` (also a `TimeoutError`) is raised,
     carrying ``path`` and chained from the last connection failure.
 
-    Platforms whose Python socket module has no ``AF_UNIX`` support raise
-    `Unsupported` instead of silently downgrading to a filesystem-existence
-    check. At ``timeout=0`` one bounded connection attempt still runs, so an
-    already-ready socket succeeds; negative and NaN timeouts are rejected with
-    `ValueError`.
+    Platforms lacking Unix-domain-socket support — no ``socket.AF_UNIX`` or no
+    ``asyncio.open_unix_connection`` (asyncio binds the latter only when the
+    former existed at import) — raise `Unsupported` instead of silently
+    downgrading to a filesystem-existence check. At ``timeout=0`` one bounded
+    connection attempt still runs, so an already-ready socket succeeds; negative
+    and NaN timeouts are rejected with `ValueError`.
     """
-    if not hasattr(socket, "AF_UNIX"):
+    # A platform supports this probe only if BOTH the AF_UNIX address family and
+    # asyncio's Unix-socket connector exist. asyncio.streams binds
+    # ``open_unix_connection`` once, at import time, gated on ``socket.AF_UNIX``;
+    # that connector is the authoritative gate for the ``asyncio.open_unix_connection``
+    # call below, and a bare ``socket.AF_UNIX`` check does not reliably reflect
+    # the connector's availability (the connector's binding is fixed at import
+    # and independent of the live ``socket.AF_UNIX`` attribute).
+    if not hasattr(socket, "AF_UNIX") or not hasattr(asyncio, "open_unix_connection"):
         exc = Unsupported("Unix-domain sockets are not supported on this platform")
         exc.operation = "wait_for_unix_socket"
         raise exc
@@ -464,12 +472,15 @@ async def wait_for_unix_socket(
         first_attempt = False
         # Keep ownership of the connect task so timeout/cancellation cannot lose
         # a successfully established transport in a same-tick deadline race.
-        # Typeshed hides this Unix-only asyncio API on Windows even though
-        # modern Windows supports AF_UNIX; the runtime socket capability check
-        # above is the portability contract, not a static platform branch.
+        # Typeshed exposes this Unix-only asyncio API conditionally on
+        # ``sys.platform`` (visible on POSIX stubs, hidden on Windows stubs), so
+        # the ignore is needed on a Windows mypy run yet unused on a POSIX one;
+        # ``unused-ignore`` in the same comment keeps both platforms green. The
+        # runtime capability check above (AF_UNIX + the asyncio connector) is the
+        # portability contract, not a static platform branch.
         open_unix_connection = cast(
             Callable[[StrPath], Awaitable[_Connection]],
-            asyncio.open_unix_connection,  # type: ignore[attr-defined]
+            asyncio.open_unix_connection,  # type: ignore[attr-defined,unused-ignore]
         )
         conn = asyncio.ensure_future(open_unix_connection(path))
         try:

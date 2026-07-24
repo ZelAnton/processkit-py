@@ -80,7 +80,26 @@ jobs:
     # comparable (a matrix would split the trend across differently-noisy
     # hosts). Never gates a PR — same `schedule`/`workflow_dispatch`-only
     # triggers as `stress` above.
+    #
+    # History/regression-alert decision (see benchmarks/README.md for the
+    # user-facing writeup): each run's `benchmark.json` is appended as a data
+    # point on the orphan `gh-pages` branch via `github-action-benchmark`
+    # (dev/bench/data.js), rather than a scratch external service or a
+    # committed-to-main history file — this is the tool's own designed-for
+    # storage model and keeps benchmark history entirely out of `main`'s
+    # commit history. A >=30%-slower run trips an informative-only commit
+    # comment (never a job failure — `fail-on-alert: false`, consistent with
+    # this workflow's "never a traceback" philosophy above); it does not gate
+    # `ci.yml`/any PR.
     name: bench
+    # Job-scoped write access (least privilege): only this job needs to push
+    # to `gh-pages`, so the write grant is local to it rather than widening
+    # the workflow-level `permissions:` (which stays `contents: read` for
+    # `stress`/`mutmut` above). Job-level `permissions:` fully replaces the
+    # workflow-level block for this job (not additive), so this is also the
+    # complete permission set `bench` runs with.
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -125,6 +144,54 @@ jobs:
                   f"| {stats['rounds']} |"
               )
           EOF
+      # `github-action-benchmark` (below) reads/writes `dev/bench/data.js` on
+      # this orphan branch via a plain `git fetch`/`git switch` — it does not
+      # create the branch itself if missing, only pushes updates to an
+      # already-existing one. Self-heal here instead of requiring a human to
+      # run `git checkout --orphan gh-pages && git push` out-of-band once
+      # before the first nightly run.
+      - name: Ensure the gh-pages branch exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            echo "gh-pages already exists, nothing to do"
+            exit 0
+          fi
+          echo "gh-pages missing, creating an empty orphan branch"
+          git checkout --orphan gh-pages
+          git rm -rf . > /dev/null
+          git commit --allow-empty -m "Initialize gh-pages branch for benchmark history"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" gh-pages:gh-pages
+          git checkout -
+      # Appends this run's result as a new data point on `gh-pages`
+      # (`dev/bench/data.js`) and compares it against the previous point,
+      # leaving an informative-only commit comment on regression — see the
+      # `bench` job's header comment above and benchmarks/README.md for the
+      # storage/threshold decision. Pinned per K-002 (full commit SHA +
+      # version comment, not a floating tag).
+      - name: Track benchmark history and alert on regression
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: processkit benchmarks
+          tool: 'pytest'
+          output-file-path: benchmark.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # 130%: this run's mean is >=30% slower than the previous run's.
+          # Deliberately looser than the tool's 200% default but well above
+          # ordinary shared-runner noise, since a single-night jump this
+          # large is worth a look even though it never blocks anything --
+          # see benchmarks/README.md for what to do when it fires and how
+          # smaller, slower creep across many nights is instead caught by
+          # eyeballing the trend chart, not this per-run threshold.
+          alert-threshold: '130%'
+          comment-on-alert: true
+          fail-on-alert: false
+          summary-always: true
 
   mutmut:
     # Mutation testing for the pure-Python binding layer -- see `[tool.mutmut]` in

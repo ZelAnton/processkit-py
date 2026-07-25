@@ -50,6 +50,17 @@ requirements-audit.txt
 .env.local
 
 ## -------
+## Per-developer agent instruction files
+## -------
+# On-disk instructions for coding-agent tooling. Each developer keeps their own
+# copy; they are never pushed. Repository-wide guidance belongs in the tracked
+# docs (README.md, CONTRIBUTING.md, RELEASING.md) instead.
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+## -------
 ## macOS
 ## -------
 .DS_Store

@@ -154,18 +154,21 @@ following the same convention GNU coreutils' `timeout` and POSIX shells use:
 | Exit code | Meaning |
 |---|---|
 | *(the child's own code)* | Normal completion — passed through unchanged. |
+| `119` | This wrapper could not deliver its own buffered output (see [How the wrapper terminates](#how-the-wrapper-terminates)). Shared by every subcommand. |
 | `123` | `--idle-timeout` expired; the child produced no output line in time and was killed. Distinct from `124`. |
 | `124` | `--timeout` expired; the tree was killed. |
 | `125` | An internal / containment failure (see below). |
 | `126` | The program was found but could not be executed. |
 | `127` | The program could not be found. |
 | `128 + N` | The child was killed by signal `N` (POSIX only). |
-| `128 + SIGINT` (`130`) | `python -m processkit` itself was interrupted (Ctrl+C). |
+| `128 + SIGINT` (`130`) | `python -m processkit` itself was interrupted (Ctrl+C) — anywhere, including during startup, argument parsing, or `doctor`. |
 
 None of these ever surface as a raw Python traceback — every documented
 processkit exception (`Timeout`, `Signalled`, `ProcessNotFound`,
 `PermissionDenied`, `ResourceLimit`, `Unsupported`) is caught and turned into
-one of the codes above, with a one-line message on stderr.
+one of the codes above, with a one-line message on stderr. Ctrl+C is part of
+that promise too: it always ends as `128 + SIGINT` with a single
+`processkit: interrupted` line, never a `KeyboardInterrupt` traceback.
 
 ### How the wrapper terminates
 
@@ -189,6 +192,25 @@ the `ProcessGroup` was torn down by its own `with` block rather than by a
 finalizer, and a `--profile` file is written and closed before the exit. It
 would only matter if you *embedded* the CLI in your own process — don't; spawn
 `python -m processkit` as you would any other program.
+
+What interpreter shutdown *did* still do, and so this wrapper now does
+explicitly:
+
+- **The final flush of its own stdout/stderr.** Redirected into a pipe,
+  stdout is block-buffered, so this is what makes the last lines arrive at
+  all. If that flush fails in a way that *loses* output — a full or failing
+  disk, a stream closed underneath the process — the wrapper exits **119**
+  with one line on stderr instead of the code it was about to report. That is
+  deliberate: reporting the child's own code would claim a complete,
+  faithfully relayed run. A receiver that simply went away
+  (`BrokenPipeError`, e.g. `python -m processkit run ... | head`) is *not*
+  that case and stays silent — no exit code can deliver output to a closed
+  pipe.
+- **Ctrl+C that lands outside `run`/`supervise`'s own guarded blocks** — during
+  startup, argument parsing, or `doctor`. It exits `128 + SIGINT` (`130`) with
+  the same one-line `processkit: interrupted` message the guarded paths print,
+  on every platform. For `doctor` this matters beyond tidiness: `1` is a valid
+  `doctor` verdict, so an interrupted probe must never be reported as one.
 
 ## supervise
 
@@ -229,6 +251,7 @@ python -m processkit supervise --restart always --max-restarts 5 -- some_command
 | Exit code | Meaning |
 |---|---|
 | *(the final child result's code)* | Supervision stopped because the restart policy was satisfied. |
+| `119` | This wrapper could not deliver its own buffered output — the entry-point-wide code from [How the wrapper terminates](#how-the-wrapper-terminates), not a `supervise` one. |
 | `120` | An internal command/supervisor failure, including a missing or unexecutable program. |
 | `121` | The restart policy required another attempt, but `--max-restarts` was exhausted. |
 | `122` | Supervision gave up due to a `give_up_when` condition (reserved for API-driven outcomes). |
@@ -304,6 +327,13 @@ of the codes below:
 | `2` | *(not returned by `doctor` itself)* — a usage error, e.g. an unknown flag or `doctor`'s disallowed trailing command; reserved to keep it unambiguous from a real diagnostic result. |
 | `3` | Containment itself is unavailable (should not happen on any supported platform). |
 | `4` | A probe raised an unexpected operational error (`OSError`/`PermissionError`, e.g. failing to read cgroup state) rather than a definitive result — the environment's actual availability could not be determined. |
+
+The two entry-point-wide codes from
+[How the wrapper terminates](#how-the-wrapper-terminates) — `119` (output the
+wrapper could not deliver) and `128 + SIGINT` (`130`, interrupted) — are
+disjoint from those verdicts by construction, so a CI gate reading `doctor`'s
+code never has to disambiguate them from a diagnosis. In particular an
+interrupted `doctor` reports `130`, never `1`.
 
 For CI, `doctor --json` replaces that text report with one JSON object on
 stdout while preserving the same exit code. Its stable base schema is:

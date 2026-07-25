@@ -209,6 +209,26 @@ Prioritised by Python demand, not crate order.
   left implicit; native-trio reach is deferred (not "never" — see the reconsider
   triggers in Open decision #2), since it means rewriting the highest-risk bridge
   component against trio's different cancellation model.
+- **Interpreter finalization vs. the async bridge — known limitation,
+  accepted for now (T-161).** `pyo3-async-runtimes` resolves each awaited
+  `a`-verb from a tokio runtime thread that is still inside the interpreter
+  briefly *after* the awaiting coroutine has resumed. A program whose last act
+  is an `await` can therefore start `Py_FinalizeEx` underneath that thread and
+  die by signal, with all its real work already done (~1.6% of runs on a
+  heavily oversubscribed 16-CPU box; once in this project's CI). The CLI is
+  fixed outright — `python -m processkit` never finalizes the interpreter — but
+  the defect remains for the public async surface. It is **not** patchable from
+  this side: the interpreter attach happens inside `future_into_py`, dispatched
+  to a `spawn_blocking` thread that upstream never awaits, so there is no point
+  at which this binding could learn "the bridge thread has left" and no metric
+  that reflects it; an in-library counter plus an `atexit` drain — the obvious
+  fix — cannot be decremented at the right moment. Mitigation *now*: documented
+  honestly with a deterministic user-side remedy and its full cost
+  (`docs/event-loops.md`, "Interpreter shutdown and the async bridge").
+  Resolution *later*: an upstream completion hook in `pyo3-async-runtimes`, or
+  replacing the completion path with a loop-thread (fd wake-up) resolution —
+  a redesign of the highest-risk component, tracked as its own task rather
+  than folded into a fix cycle.
 - **Binding tracks the `processkit` crate.** Mitigation: pin an exact version
   (`=1.2.0`); keep the binding thin so churn is cheap to absorb.
 - **Distribution.** cdylib + platform FFI across the wheel matrix is fiddly.

@@ -9,6 +9,21 @@ source of truth.
 
 from __future__ import annotations
 
+#: Shared by *every* subcommand, and produced by the entry point itself rather
+#: than by any one of them: the command finished, but this process could not
+#: deliver its own buffered stdout/stderr (`_flush_std_streams` in
+#: `processkit._cli`) — a full or failing disk (`ENOSPC`/`EIO`), or a stream a
+#: caller closed underneath it. Output this wrapper produced is gone, so the
+#: code it would otherwise have exited with (the child's own code included) is
+#: not reported: that code would claim a complete, faithfully-relayed run,
+#: which is exactly what did not happen. A vanished *receiver*
+#: (`BrokenPipeError`/`EPIPE`, e.g. ``... | head``) is deliberately **not**
+#: this case — no exit code can deliver output to an end that is already gone.
+#: One shared code rather than a per-subcommand one, and disjoint from all
+#: three namespaces (K-027): `run`'s 123-127 / 128+signal, `supervise`'s
+#: 120-122, `doctor`'s 0/1/3/4, and argparse's 2 — so it means exactly the same
+#: thing wherever it surfaces.
+EXIT_OUTPUT_LOST = 119
 #: `supervise` uses 120-122, deliberately disjoint from argparse's usage-error
 #: code 2, `doctor`'s 0/1/3/4 verdicts, and `run`'s 124-127 reservation below
 #: (it reuses the shared `EXIT_SIGNAL_BASE` + signal-number convention below

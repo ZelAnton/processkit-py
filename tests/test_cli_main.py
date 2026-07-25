@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 
@@ -224,6 +225,176 @@ def test_idle_timeout_streams_more_output_than_one_stdio_buffer() -> None:
     result = _run_cli("run", "--idle-timeout", "10", "--", PY, "-c", code)
     assert result.returncode == 0
     assert result.stdout.splitlines() == [f"line {i}" for i in range(lines)]
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_failed_final_flush_is_reported_instead_of_a_clean_exit_code() -> None:
+    """A final flush that *lost* output must not exit as if the run were fine.
+
+    `os._exit` puts this wrapper, not interpreter shutdown, in charge of the
+    last flush of its own stdout — and swallowing a failure there would report
+    the child's own exit code for a run whose output was silently truncated (a
+    full or failing disk, a stream closed underneath it). The
+    ``sys.exit(main())`` path this replaced was loud about exactly that
+    failure: CPython printed ``Exception ignored`` and a failing
+    ``Py_FinalizeEx`` turned the status into 120. So the replacement stays
+    loud in its own vocabulary — exit 119 (`EXIT_OUTPUT_LOST`) and one line on
+    stderr, never the child's 0 (which here would be a *false success*, the
+    most dangerous direction for a wrapper whose only contract is an exact
+    exit code plus a faithful output relay).
+
+    A vanished receiver (`BrokenPipeError`, e.g. ``... | head``) is
+    deliberately not this case and stays silent — see
+    `test_broken_stdout_pipe_still_reports_the_child_code` below.
+    """
+    probe = (
+        "import runpy, sys\n"
+        "class _FullDisk:\n"
+        "    def __init__(self, wrapped): self._wrapped = wrapped\n"
+        "    def __getattr__(self, name): return getattr(self._wrapped, name)\n"
+        "    def flush(self): raise OSError(28, 'No space left on device')\n"
+        "sys.stdout = _FullDisk(sys.stdout)\n"
+        f"sys.argv = ['processkit', 'run', '--', {PY!r}, '-c', 'raise SystemExit(0)']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 119
+    assert "processkit: could not flush stdout" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_broken_stdout_pipe_still_reports_the_child_code() -> None:
+    """The other half of the flush contract: a receiver that already walked
+    away is *not* an error.
+
+    No exit code can deliver output to a closed pipe, and ``python -m
+    processkit run ... | head`` is an ordinary way to use this wrapper — so a
+    `BrokenPipeError` from the final flush stays silent and the child's own
+    code still comes through, exactly as it did when interpreter shutdown
+    performed that flush.
+    """
+    probe = (
+        "import runpy, sys\n"
+        "class _BrokenPipe:\n"
+        "    def __init__(self, wrapped): self._wrapped = wrapped\n"
+        "    def __getattr__(self, name): return getattr(self._wrapped, name)\n"
+        "    def flush(self): raise BrokenPipeError(32, 'Broken pipe')\n"
+        "sys.stdout = _BrokenPipe(sys.stdout)\n"
+        f"sys.argv = ['processkit', 'run', '--', {PY!r}, '-c', 'raise SystemExit(3)']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 3
+    assert result.stderr == ""
+
+
+def test_child_exit_code_survives_absent_standard_streams() -> None:
+    """`sys.stdout` / `sys.stderr` are `None` whenever the interpreter has no
+    usable standard streams — ``pythonw.exe`` on Windows, a service or
+    launcher that closed fd 0-2 before exec, an embedded interpreter. The CLI
+    itself works in that configuration (`print` to a `None` stream is a
+    no-op), so the exit path must not be the one thing that breaks there: an
+    `AttributeError` out of ``None.flush()`` would lose the child's documented
+    exit code *and* hand the process back to the interpreter finalization this
+    entry point exists to skip — reopening, for exactly the configurations
+    that run this tool without a console, the crash window T-161 closed.
+    CPython's own shutdown flush (``flush_std_files``) skips a `None` stream
+    for the same reason.
+    """
+    probe = (
+        "import runpy, sys\n"
+        f"sys.argv = ['processkit', 'run', '--', {PY!r}, '-c', 'raise SystemExit(7)']\n"
+        "sys.stdout = sys.stderr = None\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 7
+
+
+def test_out_of_range_exit_status_does_not_escape_the_exit_path() -> None:
+    """The final `os._exit` must not be the one statement that can still throw.
+
+    It takes a C ``int`` and raises `OverflowError` outside that range — from
+    the last line of the exit path, past every guard, which would land the
+    process back in the interpreter finalization this entry point exists to
+    skip (and lose the status on the way). No subcommand produces such a
+    status today, so the probe supplies one directly; what is pinned is that
+    the wrapper folds it the way the OS would (low 32 bits: ``2**40 + 7`` →
+    ``7``) instead of crashing.
+    """
+    probe = (
+        "import runpy, sys\n"
+        "import processkit._cli as cli\n"
+        "cli._doctor = lambda *args, **kwargs: 2**40 + 7\n"
+        "sys.argv = ['processkit', 'doctor']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 7
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_interrupt_outside_a_guarded_block_exits_128_plus_sigint() -> None:
+    """Ctrl+C anywhere in the entry point reports the documented
+    ``128 + SIGINT``, not a traceback and exit 1.
+
+    ``run`` and ``supervise`` catch `KeyboardInterrupt` around their own
+    blocks, but an interrupt during imports, argparse, or `doctor` lands
+    outside all of them — and `os._exit` means CPython's own
+    unhandled-Ctrl+C path, which used to end such a run, never gets to. For
+    `doctor` the generic traceback-and-1 fallback would be worse than untidy:
+    1 is a *valid* `doctor` verdict ("containment enforced, limits not"), so
+    an interrupted probe would be indistinguishable from a DEGRADED answer to
+    the CI gate reading that code.
+
+    The interrupt is injected by making the `doctor` implementation raise
+    `KeyboardInterrupt` — precisely what CPython's SIGINT handler does at that
+    point — because delivering a real Ctrl+C to a child process is
+    platform-specific (Windows has no per-process SIGINT), while the code path
+    under test is identical either way.
+    """
+    probe = (
+        "import runpy, sys\n"
+        "import processkit._cli as cli\n"
+        "def _interrupt(*args, **kwargs):\n"
+        "    raise KeyboardInterrupt\n"
+        "cli._doctor = _interrupt\n"
+        "sys.argv = ['processkit', 'doctor']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 128 + signal.SIGINT
+    assert "processkit: interrupted" in result.stderr
     assert "Traceback (most recent call last)" not in result.stderr
 
 

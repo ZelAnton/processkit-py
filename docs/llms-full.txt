@@ -172,6 +172,11 @@ also bounds the raw stdout of `output_bytes()` / `aoutput_bytes()` (since proces
 2.1.0): over the byte ceiling it either raises `OutputTooLarge` (`on_overflow="error"`)
 or keeps a bounded head/tail with `BytesResult.truncated` set.
 
+`max_bytes` (and `OutputTooLarge.total_bytes`) count **raw bytes read from the
+pipe** — line terminators and invalid-UTF-8 bytes included — not the bytes of the
+decoded text; see
+[Bounding captured output](commands.md#what-max_bytes-actually-counts).
+
 ## Stream output line by line (async)
 
 ```python
@@ -1400,6 +1405,24 @@ Over the byte cap an `output_bytes()` run either raises `OutputTooLarge` (with
 `max_lines=None`) under `on_overflow="error"`, or keeps a bounded head/tail with
 `BytesResult.truncated` set under a drop mode.
 
+### What `max_bytes` actually counts
+
+`max_bytes` — and the `total_bytes` an `OutputTooLarge` reports — count the **raw
+bytes read from the child's output pipe**, not the bytes of the decoded text you
+get back in `ProcessResult.stdout`. Concretely, the cap is also charged for:
+
+- the **line terminator** each line arrived with (`\n`, or *both* bytes of a
+  `\r\n`), which the decoded line no longer carries;
+- bytes that are **not valid UTF-8**, which decoding replaces or drops.
+
+For plain, newline-terminated UTF-8 output the two measures differ only by one
+byte per line. For CRLF output (a Windows tool) or binary-ish output they diverge
+more, and a cap sized against decoded text trips slightly sooner than it used to.
+That is deliberate: the raw count is the amount actually read, which is what makes
+`max_bytes` a genuine bound on the parent's memory — the reason to prefer it over
+`max_lines` for an untrusted child in the first place. (Raw-byte accounting since
+processkit 3.0.0; earlier the ceiling counted decoded line content.)
+
 ## Timeouts
 
 ```python
@@ -2188,9 +2211,12 @@ on top: [Environment and sandboxing](commands.md#environment-and-sandboxing).
 
 Cap `max_bytes` so a chatty or malicious tool cannot grow the parent's memory
 without bound (a `max_lines`-only cap does not — one newline-free flood is a
-single, unbounded line). `on_overflow="error"` turns hitting the cap into a
-failure rather than a silent drop, which is usually what you want for a tool
-you don't trust. Full treatment: [Bounding captured output](commands.md#bounding-captured-output).
+single, unbounded line). The cap counts the raw bytes read from the child's pipe,
+which is exactly the quantity that grows the parent's memory — so it holds even
+for output that is binary or not valid UTF-8. `on_overflow="error"` turns hitting
+the cap into a failure rather than a silent drop, which is usually what you want
+for a tool you don't trust. Full treatment:
+[Bounding captured output](commands.md#bounding-captured-output).
 
 ### 3. Whole-tree resource limits
 
@@ -2537,6 +2563,36 @@ Each `OutputEvent` has `stream: Literal["stdout", "stderr"]`, `is_stderr: bool`,
 and `text: str`. Like
 `stdout_lines()`, this consumes the pipes once — pick `stdout_lines()` *or*
 `output_events()`, not both.
+
+Things to know:
+
+- **Only output lines are yielded.** Underneath, the core stream carries the
+  child's whole lifecycle (it reports process start and exit as well as output),
+  but those non-line events are filtered out here rather than handed to you as an
+  `OutputEvent` with an empty `text` — which would be indistinguishable from a
+  real blank line the child printed, and would quietly corrupt anything that
+  counts or joins lines. What they carry is already on surfaces you have: the
+  start is `proc.pid`, the exit is what the finisher below returns.
+- **Iterate fully, then finish.** Draining the iterator also drives the run to
+  completion, so the usual order terminates:
+
+  ```python
+  async for ev in proc.output_events():
+      ...
+  finished = await proc.afinish()   # or: await proc.aoutcome()
+  ```
+
+  `finish()`/`afinish()` reports the outcome (its `stderr` is empty — you already
+  received stderr as events), and `outcome()`/`aoutcome()` reports the exit alone.
+- **The capture verbs do not apply to such a run.** `output()` / `output_bytes()`
+  / `profile()` (and their `a`-twins) raise a `ProcessError` naming
+  `output_events()` after you have streamed events: stdout was consumed by the
+  iterator and stderr was delivered as events, so there is nothing left for them
+  to capture, and the run is already complete so there is nothing left to sample.
+  Reach for `finish()` / `outcome()` instead.
+- **Leaving the loop early is fine.** `break` out whenever you like; the
+  following consuming verb still reports the run, and dropping the handle (or
+  exiting its `with` block) still tears the tree down.
 
 ## Interactive stdin
 
@@ -3490,7 +3546,10 @@ as a diagnostic tail, not a complete transcript. Widen or re-bound the cap with
 constructor kwargs (mirroring `Command.output_limit`'s kwargs — set at least one
 of the two cap sizes), or give the base `Command` an explicit
 [`output_limit`](commands.md) (respected as-is) before wrapping it in a
-`Supervisor`; otherwise stream the process yourself.
+`Supervisor`; otherwise stream the process yourself. `capture_max_bytes` uses the
+same unit as `output_limit(max_bytes=...)` — raw bytes read from the pipe, line
+terminators and invalid-UTF-8 bytes included, not decoded text; see
+[what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).
 
 ## The failure-storm guard
 
@@ -6150,6 +6209,14 @@ def stdout_lines() -> StdoutLines
 def output_events() -> OutputEvents
 ```
 
+Interleaved stdout+stderr lines as an async iterator (call once).
+
+Consumes both pipes, so pick this **or** ``stdout_lines()``. Report the
+run afterwards with ``finish()``/``afinish()`` (outcome + stderr) or
+``outcome()``/``aoutcome()``; ``output()``/``output_bytes()``/``profile()``
+raise for such a run — its stdout was streamed away and its stderr was
+delivered as events, so they have nothing left to capture or sample.
+
 #### `take_stdin`
 
 ```text
@@ -6655,6 +6722,17 @@ class OutputEvents
 ```
 
 Async iterator over stdout + stderr as interleaved `OutputEvent`s.
+
+Yields **output lines only**. The underlying core stream is the child's whole
+lifecycle (it also reports process start and exit), but those non-line events
+are filtered out here rather than surfaced as an `OutputEvent` with an empty
+``text`` — which would be indistinguishable from a real blank output line.
+Process start is `RunningProcess.pid`; the exit is what the finisher you call
+afterwards returns.
+
+Draining this iterator to its end also drives the run to completion, so the
+documented order — iterate fully, then ``await proc.afinish()`` (or
+``aoutcome()``) — terminates. The finisher then reports that same run.
 
 ### `OutputEvent`
 
@@ -7878,6 +7956,13 @@ class OutputTooLarge
 ```
 
 Captured output hit an `output_limit(..., on_overflow="error")` ceiling.
+
+``total_bytes`` (and the ``max_bytes`` ceiling it crossed) count **raw bytes
+read from the child's output pipe** — line terminators and invalid-UTF-8
+bytes included — not the bytes of the decoded text on
+``ProcessResult.stdout``, so ``total_bytes`` can exceed
+``len(stdout.encode())`` for the same run. ``total_lines`` is the line count
+of the line-captured output.
 
 #### `program`
 

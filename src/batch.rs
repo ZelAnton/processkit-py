@@ -7,8 +7,16 @@
 
 use std::sync::Arc;
 
-use processkit::output_all as pk_output_all;
-use processkit::output_all_bytes as pk_output_all_bytes;
+use processkit::prelude::StreamExt;
+// The *streaming* fan-out (`output_stream`), not the buffering `output_all`, is
+// what this binding drives: it is the same engine with the same bounded
+// concurrency, no-short-circuit and cancellation semantics (since crate 3.0.0
+// `output_all` is literally this stream collected in order), but each completion
+// arrives tagged with its **input index**. That index is what pairs a command's
+// result with the `when`-predicate error its own run recorded — see
+// [`WhenCaptureRunner`] for why a positional counter cannot do that job any more.
+use processkit::output_stream as pk_output_stream;
+use processkit::output_stream_bytes as pk_output_stream_bytes;
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
@@ -65,45 +73,81 @@ fn take_commands(py: Python<'_>, commands: &[Py<PyCommand>]) -> PyResult<Vec<pro
         .collect()
 }
 
-/// Turn the driver's per-command results into the Python result list, in input
-/// order. `predicate_errors[i]` — the error command `i`'s injected
-/// `ScriptedRunner.when` predicate raised (or `None`) — overrides that slot: a
-/// broken match predicate surfaces in its own slot (the batch analogue of a
-/// direct verb aborting) instead of the reply a fallthrough would have masked it
-/// behind. `results` and `predicate_errors` are the same length and both in
-/// input order (see [`WhenCaptureRunner`]).
-fn string_results_to_pylist(
-    py: Python<'_>,
-    results: Vec<processkit::Result<PkProcessResult<String>>>,
-    predicate_errors: Vec<Option<PyErr>>,
-) -> PyResult<Vec<Py<PyAny>>> {
-    results
+/// One command's outcome as the fan-out reported it: either the error its
+/// injected `ScriptedRunner.when` predicate raised, or the crate's own
+/// per-command `Result`. A broken match predicate takes precedence and surfaces
+/// in its own slot (the batch analogue of a direct verb aborting) instead of the
+/// reply a fallthrough would have masked it behind.
+enum Slot<T> {
+    PredicateError(PyErr),
+    Result(processkit::Result<PkProcessResult<T>>),
+}
+
+/// Drive the fan-out to exhaustion, routing each completion into its **input**
+/// slot and pairing it with the predicate error that command's own run recorded.
+///
+/// `capture.take_completed_error()` is called immediately after each item, while
+/// that item's verb future is the one that just resolved — the pairing
+/// [`WhenCaptureRunner`] documents. This is also where the crate's own
+/// `collect_in_order` reassembly lives for this binding: same routing (`slots[idx]`
+/// keyed on the input index), just carrying the extra per-command error alongside.
+///
+/// The stream is bound through `processkit::prelude::StreamExt` (which the crate
+/// re-exports precisely so a consumer needs no direct `tokio-stream`/`futures`
+/// dependency of its own) rather than by naming `Stream`, keeping this binding's
+/// dependency set unchanged.
+async fn collect_in_input_order<T, S>(
+    stream: S,
+    capture: &WhenCaptureRunner,
+    total: usize,
+) -> Vec<Slot<T>>
+where
+    S: StreamExt<Item = (usize, processkit::Result<PkProcessResult<T>>)>,
+{
+    let mut slots: Vec<Option<Slot<T>>> = (0..total).map(|_| None).collect();
+    let mut stream = std::pin::pin!(stream);
+    while let Some((idx, result)) = stream.next().await {
+        let slot = match capture.take_completed_error() {
+            Some(err) => Slot::PredicateError(err),
+            None => Slot::Result(result),
+        };
+        if let Some(cell) = slots.get_mut(idx) {
+            *cell = Some(slot);
+        }
+    }
+    slots
         .into_iter()
-        .zip(predicate_errors)
-        .map(|(r, predicate_err)| match predicate_err {
-            Some(err) => Ok(err.into_value(py).into_any()),
-            None => match r {
-                Ok(inner) => Ok(Py::new(py, PyProcessResult { inner })?.into_any()),
-                Err(err) => Ok(map_err(err).into_value(py).into_any()),
-            },
+        .map(|slot| {
+            slot.unwrap_or_else(|| {
+                // Unreachable: the fan-out fills every input slot before it ends.
+                // Reported as data rather than panicking across the FFI boundary.
+                Slot::PredicateError(PyValueError::new_err(
+                    "the batch driver ended without reporting this command",
+                ))
+            })
         })
         .collect()
 }
 
-fn bytes_results_to_pylist(
-    py: Python<'_>,
-    results: Vec<processkit::Result<PkProcessResult<Vec<u8>>>>,
-    predicate_errors: Vec<Option<PyErr>>,
-) -> PyResult<Vec<Py<PyAny>>> {
-    results
+/// Turn the driver's per-command slots into the Python result list, in input order.
+fn string_results_to_pylist(py: Python<'_>, slots: Vec<Slot<String>>) -> PyResult<Vec<Py<PyAny>>> {
+    slots
         .into_iter()
-        .zip(predicate_errors)
-        .map(|(r, predicate_err)| match predicate_err {
-            Some(err) => Ok(err.into_value(py).into_any()),
-            None => match r {
-                Ok(inner) => Ok(Py::new(py, PyBytesResult { inner })?.into_any()),
-                Err(err) => Ok(map_err(err).into_value(py).into_any()),
-            },
+        .map(|slot| match slot {
+            Slot::PredicateError(err) => Ok(err.into_value(py).into_any()),
+            Slot::Result(Ok(inner)) => Ok(Py::new(py, PyProcessResult { inner })?.into_any()),
+            Slot::Result(Err(err)) => Ok(map_err(err).into_value(py).into_any()),
+        })
+        .collect()
+}
+
+fn bytes_results_to_pylist(py: Python<'_>, slots: Vec<Slot<Vec<u8>>>) -> PyResult<Vec<Py<PyAny>>> {
+    slots
+        .into_iter()
+        .map(|slot| match slot {
+            Slot::PredicateError(err) => Ok(err.into_value(py).into_any()),
+            Slot::Result(Ok(inner)) => Ok(Py::new(py, PyBytesResult { inner })?.into_any()),
+            Slot::Result(Err(err)) => Ok(map_err(err).into_value(py).into_any()),
         })
         .collect()
 }
@@ -123,13 +167,16 @@ pub(crate) fn output_all(
 ) -> PyResult<Vec<Py<PyAny>>> {
     let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
+    let total = cmds.len();
     // Wrap the runner so each command runs under its own `when`-predicate error
     // sink (see `WhenCaptureRunner`): a raising `when` predicate then surfaces in
     // that command's own result slot, like a direct verb aborting.
-    let capture = WhenCaptureRunner::new(resolve_runner(runner)?, cmds.len());
-    let fut = async { pk_output_all(cmds, n, &capture).await };
-    let results = block_on_interruptible(py, fut)?;
-    string_results_to_pylist(py, results, capture.take_errors())
+    let capture = WhenCaptureRunner::new(resolve_runner(runner)?);
+    let fut = async {
+        collect_in_input_order(pk_output_stream(cmds, n, &capture), &capture, total).await
+    };
+    let slots = block_on_interruptible(py, fut)?;
+    string_results_to_pylist(py, slots)
 }
 
 /// Async counterpart of `output_all`, including its process-available default,
@@ -145,12 +192,12 @@ pub(crate) fn aoutput_all<'py>(
     let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
-    let count = cmds.len();
+    let total = cmds.len();
     drive_async_py(py, async move {
-        let capture = WhenCaptureRunner::new(runner, count);
-        let results = pk_output_all(cmds, n, &capture).await;
-        let errors = capture.take_errors();
-        Python::attach(|py| string_results_to_pylist(py, results, errors))
+        let capture = WhenCaptureRunner::new(runner);
+        let slots =
+            collect_in_input_order(pk_output_stream(cmds, n, &capture), &capture, total).await;
+        Python::attach(|py| string_results_to_pylist(py, slots))
     })
 }
 
@@ -166,10 +213,13 @@ pub(crate) fn output_all_bytes(
 ) -> PyResult<Vec<Py<PyAny>>> {
     let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
-    let capture = WhenCaptureRunner::new(resolve_runner(runner)?, cmds.len());
-    let fut = async { pk_output_all_bytes(cmds, n, &capture).await };
-    let results = block_on_interruptible(py, fut)?;
-    bytes_results_to_pylist(py, results, capture.take_errors())
+    let total = cmds.len();
+    let capture = WhenCaptureRunner::new(resolve_runner(runner)?);
+    let fut = async {
+        collect_in_input_order(pk_output_stream_bytes(cmds, n, &capture), &capture, total).await
+    };
+    let slots = block_on_interruptible(py, fut)?;
+    bytes_results_to_pylist(py, slots)
 }
 
 /// Async counterpart of `output_all_bytes`, including its process-available
@@ -185,12 +235,13 @@ pub(crate) fn aoutput_all_bytes<'py>(
     let cmds = take_commands(py, &commands)?;
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
-    let count = cmds.len();
+    let total = cmds.len();
     drive_async_py(py, async move {
-        let capture = WhenCaptureRunner::new(runner, count);
-        let results = pk_output_all_bytes(cmds, n, &capture).await;
-        let errors = capture.take_errors();
-        Python::attach(|py| bytes_results_to_pylist(py, results, errors))
+        let capture = WhenCaptureRunner::new(runner);
+        let slots =
+            collect_in_input_order(pk_output_stream_bytes(cmds, n, &capture), &capture, total)
+                .await;
+        Python::attach(|py| bytes_results_to_pylist(py, slots))
     })
 }
 

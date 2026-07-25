@@ -873,6 +873,19 @@ impl PyCommand {
     /// set. This carries through every inherited `output_bytes` consumer
     /// (`CliClient`, `Pipeline`, `RunningProcess`, `ProcessGroup`, the runner
     /// doubles) that runs a `Command` built with this policy.
+    ///
+    /// `max_bytes` counts **raw bytes read from the output pipe**, not the bytes
+    /// of the decoded text that ends up in `ProcessResult.stdout` — so the line
+    /// terminator each line arrived with (`\n`, or both bytes of a CRLF) and any
+    /// byte that failed to decode as UTF-8 are all charged against the cap. The
+    /// `total_bytes` an `OutputTooLarge` reports is that same raw count. For
+    /// ordinary single-byte-terminated UTF-8 output the two measures differ only
+    /// by the terminators; for CRLF or non-UTF-8 output the raw count is
+    /// noticeably higher, so a cap sized against decoded text now trips slightly
+    /// sooner. Raw-byte accounting is what makes the cap a real *memory* bound
+    /// (it is the amount actually read), which is the reason to prefer it over
+    /// `max_lines` for an untrusted child. (Since processkit 3.0.0 — earlier the
+    /// ceiling counted decoded line content.)
     #[pyo3(signature = (*, max_bytes=None, max_lines=None, on_overflow="drop_oldest"))]
     fn output_limit(
         &self,

@@ -1005,6 +1005,14 @@ def stdout_lines() -> StdoutLines
 def output_events() -> OutputEvents
 ```
 
+Interleaved stdout+stderr lines as an async iterator (call once).
+
+Consumes both pipes, so pick this **or** ``stdout_lines()``. Report the
+run afterwards with ``finish()``/``afinish()`` (outcome + stderr) or
+``outcome()``/``aoutcome()``; ``output()``/``output_bytes()``/``profile()``
+raise for such a run — its stdout was streamed away and its stderr was
+delivered as events, so they have nothing left to capture or sample.
+
 #### `take_stdin`
 
 ```text
@@ -1510,6 +1518,17 @@ class OutputEvents
 ```
 
 Async iterator over stdout + stderr as interleaved `OutputEvent`s.
+
+Yields **output lines only**. The underlying core stream is the child's whole
+lifecycle (it also reports process start and exit), but those non-line events
+are filtered out here rather than surfaced as an `OutputEvent` with an empty
+``text`` — which would be indistinguishable from a real blank output line.
+Process start is `RunningProcess.pid`; the exit is what the finisher you call
+afterwards returns.
+
+Draining this iterator to its end also drives the run to completion, so the
+documented order — iterate fully, then ``await proc.afinish()`` (or
+``aoutcome()``) — terminates. The finisher then reports that same run.
 
 ### `OutputEvent`
 
@@ -2733,6 +2752,13 @@ class OutputTooLarge
 ```
 
 Captured output hit an `output_limit(..., on_overflow="error")` ceiling.
+
+``total_bytes`` (and the ``max_bytes`` ceiling it crossed) count **raw bytes
+read from the child's output pipe** — line terminators and invalid-UTF-8
+bytes included — not the bytes of the decoded text on
+``ProcessResult.stdout``, so ``total_bytes`` can exceed
+``len(stdout.encode())`` for the same run. ``total_lines`` is the line count
+of the line-captured output.
 
 #### `program`
 

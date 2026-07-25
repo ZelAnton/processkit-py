@@ -155,6 +155,195 @@ def test_output_events_cover_both_streams() -> None:
     assert all(is_err == (stream == "stderr") for stream, _, is_err in events)
 
 
+# --- the documented drain-then-finish order (processkit 3.0.0) ---------------
+#
+# In the Rust core, the merged event stream became the process's whole lifecycle
+# in 3.0.0, and its terminal event is delivered at the moment the run is *reaped*.
+# The crate therefore tells a Rust caller to drive the stream and its finisher
+# together, and warns that draining the stream first and only then calling
+# `finish()`/`wait()` parks forever waiting for a reap nobody started.
+#
+# This library's documented Python order is exactly that "forbidden" shape
+# (`docs/streaming.md`, `docs/cookbook.md`, the `RunningProcess` docstrings, and
+# `processkit run --idle-timeout`'s own implementation in `_cli/run.py`), and it
+# stays that way: the binding drives the finisher itself, so the deadlock is
+# closed inside the extension rather than pushed onto the Python caller.
+#
+# Every test below is bounded by an explicit deadline (`asyncio.wait_for`, the
+# 3.10-compatible form this suite already uses — `asyncio.timeout` is 3.11+), so a
+# regression FAILS the run instead of hanging it: a hung worker would stall the
+# whole suite and report nothing useful about the cause.
+
+_EVENTS_DEADLINE_SECONDS = 30.0
+
+
+def test_output_events_drain_then_afinish_terminates() -> None:
+    # The headline order: `async for` to exhaustion, THEN `await proc.afinish()`.
+    # Both halves must complete — the iterator must end on its own (no external
+    # cancellation) and the following finisher must report the real run.
+    async def scenario() -> tuple[list[str], Finished]:
+        proc = await Command(PY, ["-c", _BOTH_STREAMS]).astart()
+        texts = [ev.text.rstrip() async for ev in proc.output_events()]
+        finished = await proc.afinish()
+        return texts, finished
+
+    texts, finished = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert {"out1", "out2", "err1"} <= set(texts)
+    assert finished.exited_zero
+    assert finished.code == 0
+
+
+def test_output_events_drain_then_aoutcome_terminates() -> None:
+    # The same order with the other finisher: `aoutcome()` must report the run
+    # too, not raise "handle consumed" because the binding drove the reap.
+    async def scenario() -> Outcome:
+        proc = await Command(PY, ["-c", _PRINT_LINES]).astart()
+        async for _ev in proc.output_events():
+            pass
+        return await proc.aoutcome()
+
+    outcome = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert outcome.exited_zero
+    assert outcome.timed_out is False
+
+
+def test_output_events_drain_then_finish_reports_a_nonzero_exit() -> None:
+    # The finisher after a drained stream must carry the real exit status, not a
+    # fabricated success — the run's outcome travels through the binding's own
+    # finisher unchanged.
+    code = "import sys; print('bye', flush=True); sys.exit(3)"
+
+    async def scenario() -> Finished:
+        proc = await Command(PY, ["-c", code]).astart()
+        async for _ev in proc.output_events():
+            pass
+        return await proc.afinish()
+
+    finished = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert finished.code == 3
+    assert not finished.exited_zero
+
+
+def test_output_events_drain_then_afinish_terminates_for_a_slow_child() -> None:
+    # A child that keeps the stream open across several seconds: the binding must
+    # not decide the run is over early (truncating output) just because the stream
+    # went quiet between lines, and must still terminate once the child exits.
+    code = "import time\nfor i in range(4):\n print(i, flush=True); time.sleep(0.3)\n"
+
+    async def scenario() -> tuple[list[str], Finished]:
+        proc = await Command(PY, ["-c", code]).astart()
+        texts = [ev.text.rstrip() async for ev in proc.output_events()]
+        finished = await proc.afinish()
+        return texts, finished
+
+    texts, finished = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert texts == ["0", "1", "2", "3"]
+    assert finished.exited_zero
+
+
+def test_output_events_yields_only_line_events_never_empty_lifecycle_items() -> None:
+    # What the Python iterator sees for the crate's NON-LINE lifecycle events
+    # (`Started { pid }` leads the 3.0.0 stream, `Exited(outcome)` ends it, and the
+    # enum is non-exhaustive so more may follow): nothing at all. They are filtered
+    # out in `PyOutputEvent::from_event`, never surfaced as an `OutputEvent` with
+    # an empty `text` — which would be indistinguishable from a real blank output
+    # line and would corrupt any consumer that counts or joins lines.
+    #
+    # The child prints three non-empty lines and one deliberately EMPTY one, so the
+    # assertions below separate the two failure modes: a leaked lifecycle event
+    # would add empty-text items (count > 4), while over-eager filtering would drop
+    # the child's own blank line (count < 4).
+    code = (
+        "import sys; "
+        "print('a', flush=True); "
+        "print('', flush=True); "
+        "sys.stderr.write('b\\n'); sys.stderr.flush(); "
+        "print('c', flush=True)"
+    )
+
+    async def scenario() -> list[tuple[str, str]]:
+        proc = await Command(PY, ["-c", code]).astart()
+        events = [(str(ev.stream), ev.text.rstrip("\r\n")) async for ev in proc.output_events()]
+        await proc.afinish()
+        return events
+
+    events = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    # Interleaving between the two streams is best-effort, so compare as a
+    # multiset; the per-stream order is pinned by the other tests here.
+    assert sorted(events) == sorted(
+        [("stdout", "a"), ("stdout", ""), ("stderr", "b"), ("stdout", "c")]
+    ), events
+    # Exactly one empty-text item: the child's own blank line. Anything more is a
+    # lifecycle event leaking through as a phantom blank line.
+    assert sum(1 for _stream, text in events if text == "") == 1
+    # And no item is a stand-in for the terminal event: every item names a real
+    # stream, and the count matches the four lines the child actually wrote.
+    assert len(events) == 4
+    assert all(stream in {"stdout", "stderr"} for stream, _text in events)
+
+
+def test_running_process_stays_live_while_events_stream() -> None:
+    # The binding starts the run's finisher itself so the stream can end, but only
+    # once the child has been observed to exit — so while output is still flowing
+    # the handle is untouched: `pid` reads and the live line counters tick. Pins
+    # that the joint drive did not quietly spend the handle for the whole streamed
+    # run (which would make every getter read `None` and `kill()` raise).
+    code = "import time\nfor i in range(3):\n print(i, flush=True); time.sleep(0.2)\n"
+
+    async def scenario() -> tuple[list[int | None], list[int | None]]:
+        proc = await Command(PY, ["-c", code]).astart()
+        pids: list[int | None] = []
+        counts: list[int | None] = []
+        async for _ev in proc.output_events():
+            pids.append(proc.pid)
+            counts.append(proc.stdout_line_count)
+        await proc.afinish()
+        return pids, counts
+
+    pids, counts = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert len(pids) == 3
+    # The pid is readable for every observed line (never `None`, which is what a
+    # prematurely-consumed handle would report), and is the same process each time.
+    assert all(isinstance(p, int) for p in pids), pids
+    assert len({p for p in pids if p is not None}) == 1
+    # The live counter is readable too, and never goes backwards.
+    assert all(isinstance(c, int) for c in counts), counts
+    assert counts == sorted(c for c in counts if c is not None)
+
+
+def test_output_events_break_early_then_afinish_still_reports_the_run() -> None:
+    # Leaving the loop early (the common "stream until I see X" shape) must still
+    # let the following finisher report the run rather than hang or raise.
+    async def scenario() -> Finished:
+        proc = await Command(PY, ["-c", _PRINT_LINES]).astart()
+        async for ev in proc.output_events():
+            if "line0" in ev.text:
+                break
+        return await proc.afinish()
+
+    finished = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert isinstance(finished, Finished)
+
+
+@pytest.mark.parametrize("verb", ["aoutput", "aoutput_bytes", "aprofile"])
+def test_capture_verbs_after_a_drained_events_stream_are_diagnosed(verb: str) -> None:
+    # `output()`/`output_bytes()`/`profile()` cannot report a run whose output was
+    # streamed away and whose completion the events stream already drove: stdout
+    # was consumed by the stream and stderr was delivered as events, so they never
+    # had anything to capture (they returned empty ones). They now say so instead
+    # of raising the generic "handle has been consumed", and the message names the
+    # verbs that DO report such a run.
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", _PRINT_LINES]).astart()
+        async for _ev in proc.output_events():
+            pass
+        args = [0.05] if verb == "aprofile" else []
+        await getattr(proc, verb)(*args)
+
+    with pytest.raises(ProcessError, match="output_events"):
+        asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+
+
 def test_interactive_stdin_echo() -> None:
     async def scenario() -> list[str]:
         proc = await Command(PY, ["-c", _ECHO_UPPER]).keep_stdin_open().astart()

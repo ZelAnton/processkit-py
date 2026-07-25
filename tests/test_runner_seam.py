@@ -89,6 +89,32 @@ def test_scripted_runner_streams_lines() -> None:
     assert asyncio.run(scenario()) == ["listening", "ready"]
 
 
+def test_scripted_runner_streams_events_then_finishes() -> None:
+    # The hermetic twin of `test_output_events_drain_then_afinish_terminates`
+    # (tests/test_streaming.py): a scripted handle owns no OS process, so it takes
+    # a different path through the core's exit observation than a real child does
+    # — but the binding's "drain the merged event stream, THEN finish" order must
+    # terminate here too, and the finisher must still report the scripted reply's
+    # outcome. Bounded by an explicit deadline so a regression fails instead of
+    # hanging the suite.
+    runner = ScriptedRunner()
+    runner.on(["server"], Reply.lines(["listening", "ready"]))
+
+    async def scenario() -> tuple[list[tuple[str, str]], int | None]:
+        proc = runner.start(Command("server"))
+        events = [(str(ev.stream), ev.text.rstrip()) async for ev in proc.output_events()]
+        finished = await proc.afinish()
+        return events, finished.code
+
+    events, code = asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+    assert [text for _stream, text in events] == ["listening", "ready"]
+    assert all(stream == "stdout" for stream, _text in events)
+    # No phantom empty-text item from a lifecycle event (see
+    # `PyOutputEvent::from_event`), and the scripted exit is reported faithfully.
+    assert all(text for _stream, text in events)
+    assert code == 0
+
+
 def test_dependency_injection_pattern() -> None:
     # Code is written against a runner; tests pass a ScriptedRunner.
     def latest_commit(runner: Runner | ScriptedRunner) -> str:

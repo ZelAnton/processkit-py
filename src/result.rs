@@ -69,7 +69,13 @@ use processkit::testing::{Reply as PkReply, ScriptedRunner as PkScriptedRunner};
 use processkit::Command as PkCommand;
 use processkit::Finished as PkFinished;
 use processkit::Outcome as PkOutcome;
-use processkit::OutputEvent as PkOutputEvent;
+// Crate 3.0.0 renamed the merged output stream's event enum `OutputEvent` ->
+// `ProcessEvent` (it widened from "an output line" to "an event in the process's
+// life"). The rename is an internal detail of this binding: the Python class
+// stays `OutputEvent`, with the same fields and the same meaning — one captured
+// output line — because the non-line lifecycle variants are filtered out before
+// they ever reach Python (see `PyOutputEvent::from_event`).
+use processkit::ProcessEvent as PkProcessEvent;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner as _;
 use processkit::RunProfile as PkRunProfile;
@@ -663,21 +669,57 @@ pub(crate) struct PyOutputEvent {
 }
 
 impl PyOutputEvent {
-    pub(crate) fn from_event(event: PkOutputEvent) -> Self {
+    /// Project one crate `ProcessEvent` onto the Python `OutputEvent`, or `None`
+    /// for an event that carries no output line.
+    ///
+    /// # What the Python iterator sees for a non-line event (crate 3.0.0)
+    ///
+    /// Since crate 3.0.0 this stream is the process's whole **lifecycle**, not
+    /// just its output: `Started { pid }` leads it and `Exited(Outcome)` ends it,
+    /// interleaved stdout/stderr lines in between — and the enum is
+    /// `#[non_exhaustive]`, so more non-line kinds may be added later (the
+    /// graceful-teardown phases are the named candidates upstream).
+    ///
+    /// Python's `OutputEvent` is, and stays, exactly "one captured line and which
+    /// stream it came from" (`stream` / `is_stderr` / `text: str`). It has no
+    /// representation for a lifecycle event, and `text` is typed `str`, not
+    /// `str | None`. So **every non-line variant is skipped outright**: it is
+    /// never handed to Python as an `OutputEvent` with an empty `text`, which
+    /// would be indistinguishable from a real blank output line (a child printing
+    /// `"\n"`) and would silently corrupt any consumer that counts lines, joins
+    /// them, or compares two runs' event lists for equality. `None` here means
+    /// "keep pulling"; `src/running.rs`'s `EventsDrive` loops on it, so the
+    /// filtering is invisible from Python — `async for ev in proc.output_events()`
+    /// yields output lines only, exactly as it did before 3.0.0.
+    ///
+    /// The information in those variants is not lost, it is simply reported
+    /// through the surfaces that already own it: `Started.pid` is
+    /// `RunningProcess.pid`, and `Exited(outcome)` is the `Outcome` the following
+    /// `finish()`/`afinish()` (or `outcome()`/`aoutcome()`) returns — the crate
+    /// documents `ProcessEvent::Exited` as carrying the *same* value the finisher
+    /// reports, not a parallel one.
+    ///
+    /// The `_ =>` arm is deliberate and load-bearing (not just `#[non_exhaustive]`
+    /// boilerplate): a future crate release adding, say, a `SoftSignal` phase must
+    /// keep this iterator yielding output lines only, rather than leaking a new
+    /// empty-text element into an existing consumer's loop. Adopting a new
+    /// lifecycle variant into the Python surface is a deliberate API decision, and
+    /// this is the single place it would be made.
+    ///
+    /// Covered by `tests/test_streaming.py::
+    /// test_output_events_yields_only_line_events_never_empty_lifecycle_items`.
+    pub(crate) fn from_event(event: PkProcessEvent) -> Option<Self> {
         match event {
-            PkOutputEvent::Stdout(line) => Self {
+            PkProcessEvent::Stdout(line) => Some(Self {
                 is_stderr: false,
                 text: line.into_text(),
-            },
-            PkOutputEvent::Stderr(line) => Self {
+            }),
+            PkProcessEvent::Stderr(line) => Some(Self {
                 is_stderr: true,
                 text: line.into_text(),
-            },
-            // `OutputEvent` is `#[non_exhaustive]`; degrade gracefully.
-            other => Self {
-                is_stderr: false,
-                text: other.text().unwrap_or_default().to_string(),
-            },
+            }),
+            // `Started` / `Exited` / any future non-line kind — see the doc above.
+            _ => None,
         }
     }
 }
@@ -768,6 +810,19 @@ impl From<PkFinished> for PyFinished {
         Self {
             outcome: finished.outcome,
             stderr: finished.stderr,
+        }
+    }
+}
+
+impl PyFinished {
+    /// The run's `Outcome`, taking ownership. Used where a verb that reports an
+    /// `Outcome` (`outcome()`/`shutdown()` & co.) is answered from a `Finished` a
+    /// finisher elsewhere in the binding already collected — the crate reports the
+    /// same single `Outcome` through either shape, so this is a projection, not a
+    /// conversion (see `src/running.rs`'s `EventsDrive`).
+    pub(crate) fn into_outcome(self) -> PyOutcome {
+        PyOutcome {
+            inner: self.outcome,
         }
     }
 }

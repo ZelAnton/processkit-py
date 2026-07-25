@@ -5,7 +5,6 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use processkit::testing::{
@@ -179,57 +178,65 @@ where
 /// command's result slot — the batch analogue of a direct `runner.output(cmd)`
 /// aborting.
 ///
-/// Slot correlation: the driver invokes the verb (`output_string`/`output_bytes`)
-/// for input command 0, 1, 2, … in strictly increasing order. The slot index is
-/// therefore taken at **call time** — the synchronous head of the verb, before
-/// the returned future is polled — so it maps 1:1 to the input index no matter
-/// how the driver later interleaves or completes the futures. (Taking it inside
-/// the future instead would tie it to first-poll order, which the driver's
-/// `swap_remove` reorders the instant a scripted verb completes synchronously,
-/// misattributing errors to the wrong slot.) `batch.rs` pre-sizes `errors` to
-/// the command count and, after the batch, reads slot i to override command i's
-/// result with its predicate error when present.
+/// Slot correlation, and why it is a **hand-off at completion** rather than a
+/// call-order index (changed for crate 3.0.0): the driver no longer calls the
+/// verb when it launches a command. Its per-command future is now
+/// `async move { (idx, runner.output_string(&command).await) }`, so the verb is
+/// invoked at the future's *first poll*, and the driver's `swap_remove` reshuffles
+/// the active list the instant a command completes — with a synchronously-replying
+/// `ScriptedRunner` the first polls therefore run in the order 0, 7, 1, 6, …, not
+/// 0, 1, 2, …. A counter bumped in the verb (at call time or at first poll — since
+/// 3.0.0 they are the same moment) no longer identifies the input command, and
+/// silently attributed one command's predicate error to another's slot.
+///
+/// What the driver *does* still guarantee, structurally rather than by ordering,
+/// is that its stream yields **the item of the one command whose verb future just
+/// resolved**: `Fanout::poll_next` returns the moment a per-command future is
+/// `Ready` and never polls a sibling past it. So this wrapper stashes the error in
+/// a single hand-off cell at the *tail* of the verb's own future — the last thing
+/// that runs before that command's `(idx, result)` reaches the consumer — and
+/// `batch.rs` takes it right after receiving that item, pairing it with the input
+/// index the crate itself supplies. No assumption about call order, first-poll
+/// order or completion order survives in this correlation.
 ///
 /// The `ProcessRunner` trait is `#[async_trait]` (each verb returns a boxed
-/// future); this is the same desugaring written by hand, so the `fetch_add` can
-/// run in the synchronous head before `Box::pin`. `start` is left to the trait
-/// default — the batch driver only ever calls `output_string`/`output_bytes`.
+/// future); this is the same desugaring written by hand. `start` is left to the
+/// trait default — the batch driver only ever calls `output_string`/`output_bytes`.
 pub(crate) struct WhenCaptureRunner {
     inner: Arc<dyn ProcessRunner + Send + Sync>,
-    /// One slot per input command, indexed by call order (== input index).
-    errors: Mutex<Vec<Option<PyErr>>>,
-    /// The next slot index to hand out, bumped once at the synchronous head of
-    /// each verb call.
-    next: AtomicUsize,
+    /// The `when`-predicate error of the command whose verb future resolved most
+    /// recently, waiting to be paired with that command's stream item.
+    completed: Mutex<Option<PyErr>>,
 }
 
 impl WhenCaptureRunner {
-    /// Wrap `inner`, pre-sizing the per-command error log to `count` commands.
-    pub(crate) fn new(inner: Arc<dyn ProcessRunner + Send + Sync>, count: usize) -> Self {
+    /// Wrap `inner` for one batch.
+    pub(crate) fn new(inner: Arc<dyn ProcessRunner + Send + Sync>) -> Self {
         Self {
             inner,
-            errors: Mutex::new((0..count).map(|_| None).collect()),
-            next: AtomicUsize::new(0),
+            completed: Mutex::new(None),
         }
     }
 
-    /// Take the per-command predicate errors after the batch has finished; slot
-    /// `i` is input command `i` (see the type doc). Must be called only once the
-    /// driving future has resolved, so no verb future is still writing.
-    pub(crate) fn take_errors(&self) -> Vec<Option<PyErr>> {
-        std::mem::take(&mut self.errors.lock().unwrap_or_else(PoisonError::into_inner))
+    /// Take the predicate error recorded by the command whose result the driver
+    /// just yielded, if it raised one. Call once per yielded item, immediately
+    /// after receiving it (see the type doc for why that pairing is exact).
+    pub(crate) fn take_completed_error(&self) -> Option<PyErr> {
+        self.completed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
-    /// Record command `idx`'s predicate error (first write wins within a command).
-    /// An out-of-range `idx` — impossible for a correctly pre-sized log — is
-    /// dropped defensively rather than panicking across the batch's FFI boundary.
-    fn record(&self, idx: usize, err: PyErr) {
-        let mut errors = self.errors.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(slot) = errors.get_mut(idx) {
-            if slot.is_none() {
-                *slot = Some(err);
-            }
-        }
+    /// Publish the just-finished command's predicate error for its stream item.
+    /// The cell is drained per item, so a leftover would mean the driver yielded
+    /// nothing for a resolved command; overwriting rather than keeping the older
+    /// value keeps the hand-off tied to the *current* command either way.
+    fn record(&self, err: PyErr) {
+        *self
+            .completed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(err);
     }
 }
 
@@ -246,14 +253,13 @@ impl ProcessRunner for WhenCaptureRunner {
         'life1: 'async_trait,
         Self: 'async_trait,
     {
-        // Take the slot index in the synchronous head (see the type doc), then run
-        // the inner verb under a fresh per-command `when`-predicate sink.
-        let idx = self.next.fetch_add(1, Ordering::Relaxed);
+        // Run the inner verb under a fresh per-command `when`-predicate sink, then
+        // hand any error off for this command's stream item (see the type doc).
         Box::pin(async move {
             let sink = new_when_sink();
             let result = scope_when(sink.clone(), self.inner.output_string(command)).await;
             if let Some(err) = take_when_error(&sink) {
-                self.record(idx, err);
+                self.record(err);
             }
             result
         })
@@ -268,12 +274,11 @@ impl ProcessRunner for WhenCaptureRunner {
         'life1: 'async_trait,
         Self: 'async_trait,
     {
-        let idx = self.next.fetch_add(1, Ordering::Relaxed);
         Box::pin(async move {
             let sink = new_when_sink();
             let result = scope_when(sink.clone(), self.inner.output_bytes(command)).await;
             if let Some(err) = take_when_error(&sink) {
-                self.record(idx, err);
+                self.record(err);
             }
             result
         })

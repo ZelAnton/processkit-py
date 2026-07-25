@@ -19,6 +19,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminates" in `docs/cli.md`.
 
 ### Changed
+- Migrate the Rust core to **processkit 3.0.0** (a breaking major release;
+  `Cargo.toml` now requires `3`, resolved to 3.0.1). The **Python API is
+  unchanged**: `OutputEvent`, `OutputEvents` and `RunningProcess.output_events()`
+  keep their names, signatures and meaning — the core's rename of those types
+  (`OutputEvent` → `ProcessEvent`, `OutputEvents` → `ProcessEvents`,
+  `output_events()` → `events()`) stays an internal detail of the binding, and
+  its `Error` → `Error`/`ErrorReason` split changes nothing about the exception
+  classes or their structured fields. The enabled feature set is unchanged; 3.0's
+  optional new surface (the PTY launch mode, Linux I/O priority, PTY window-size
+  control, the capture-redaction hook, the flat error classifier) is **not**
+  adopted here.
+
+  Two user-visible consequences, both confined to `output_events()`:
+
+  - The merged event stream became the child's whole **lifecycle** in the core,
+    so it now also reports process start and exit. Those non-line events are
+    **filtered out** rather than yielded as an `OutputEvent` with an empty
+    `text` — which would be indistinguishable from a real blank line the child
+    printed. `async for ev in proc.output_events()` therefore yields exactly what
+    it always did: output lines. What the lifecycle events carry is already
+    available: process start is `RunningProcess.pid`, and the exit is what the
+    finisher you call afterwards returns.
+  - The core now delivers that stream's terminal event only when the run is
+    reaped, which means a consumer that drains the stream and *then* finishes
+    would deadlock. The documented Python order — iterate fully, then
+    `await proc.afinish()` (or `aoutcome()`) — is unaffected: the binding drives
+    the run's completion itself once the child is observed to exit, so the
+    iterator ends on its own and the finisher afterwards reports that same run.
+    The one narrowing: `output()` / `output_bytes()` / `profile()` (and their
+    `a`-twins) now raise a `ProcessError` naming `output_events()` when called
+    after streaming events, instead of returning the empty captures they used to
+    — stdout was consumed by the iterator, stderr was delivered as events, and
+    the run is already complete. Use `finish()`/`afinish()` or
+    `outcome()`/`aoutcome()`.
+- `output_limit(max_bytes=...)` — and the `total_bytes` an `OutputTooLarge`
+  reports, and `Supervisor`'s `capture_max_bytes=` — now count the **raw bytes
+  read from the child's output pipe** rather than the bytes of the decoded text,
+  following the same change in the Rust core. Line terminators (`\n`, or both
+  bytes of a CRLF) and bytes that are not valid UTF-8 are charged against the cap
+  too, so a given ceiling truncates or raises marginally sooner: by one byte per
+  line for ordinary UTF-8 output, and by more for CRLF or binary-ish output. This
+  is what makes the cap a true bound on the parent's memory — it counts what was
+  actually read. No API change; re-check any threshold you sized against decoded
+  text. See "Bounding captured output" in `docs/commands.md`.
 - `python -m processkit` now terminates with `os._exit` after flushing its own
   stdout/stderr, instead of returning a code to `sys.exit`. Every line the
   wrapper printed still arrives, and the exit code for every documented outcome

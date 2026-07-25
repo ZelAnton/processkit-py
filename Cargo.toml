@@ -33,18 +33,25 @@ pyo3 = { version = "0.29", features = ["abi3-py310"] }
 # runtime we reuse for BOTH the sync surface (`block_on`) and the async surface
 # (`future_into_py`), so the binding owns exactly one runtime. Tracks pyo3 0.29.
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
-# The Rust core. Compatible-version requirement `2.3` (>=2.3.0, <3.0.0) — the
-# binding tracks API/behaviour churn deliberately, not transitively. 1.3.0 (a
-# semver-broken minor) and 2.0.0 (a mistaken publish) were yanked upstream, so
-# 2.3.0 is the floor; the requirement stays within the 2.x major on purpose.
-# Cargo.lock is pinned to 2.3.2 (`cargo update -p processkit --precise 2.3.2`);
-# the requirement below deliberately stays at the broad `2.3` range rather than
-# floor-pinning to the exact patch. Each upstream patch release's new public
-# surface is adopted in this binding as it lands — 2.3.1 (Command file-redirect
-# sinks, windows_graceful_ctrl_break, ProcessGroup::members_info/MemberInfo,
-# Supervisor health checks) and 2.3.2 (Command::kill_on_parent_death_scope /
-# ParentDeathCleanup) are all wired up; see CHANGELOG.md for the per-version
-# detail.
+# The Rust core. Compatible-version requirement `3` (>=3.0.0, <4.0.0) — the
+# binding tracks API/behaviour churn deliberately, not transitively, so the
+# requirement names the major it was migrated to and nothing narrower: no patch
+# pin, no floor-pinned minor. Cargo.lock resolves the exact version actually
+# built (3.0.0 at the time of the migration) and is the only place a precise
+# version lives.
+#
+# History that still shapes this line: 1.3.0 (a semver-broken minor) and 2.0.0
+# (a mistaken publish) were yanked upstream, which is why the pre-3.0
+# requirement carried a `2.3` floor rather than a bare `2`. Neither yank is
+# reachable from a `3` requirement, so the range needs no floor above the major
+# any more. 3.0.0 is a deliberate, hand-migrated major (`Error` became a thin
+# wrapper over `ErrorReason`; the merged output stream became a process
+# lifecycle stream: `output_events()`/`OutputEvent`/`OutputEvents` →
+# `events()`/`ProcessEvent`/`ProcessEvents`); see CHANGELOG.md for the
+# per-version detail. Each upstream release's new public surface keeps being
+# adopted here as it lands, so treat a bump as a deliberate review step (see the
+# `public-api.txt` diffing habit noted in CONTRIBUTING.md) rather than a
+# transitive pickup.
 #
 # Features are listed EXPLICITLY with `default-features = false`, so a change to
 # the crate's default set can never silently alter our public surface:
@@ -59,8 +66,11 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # Deliberately NOT enabled: `mock` — a Rust-only `mockall` `MockRunner` for Rust
 # tests; it has no Python value (the Python test doubles come from the crate's
 # always-on `doubles` surface — ScriptedRunner / RecordingRunner — plus the
-# `record`-gated cassette RecordReplayRunner enabled above).
-processkit = { version = "2.3", default-features = false, features = [
+# `record`-gated cassette RecordReplayRunner enabled above); `pty` (3.0.0) — the
+# opt-in pseudo-terminal launch mode, a separate product decision with its own
+# Python surface, not a consequence of the 3.x migration; `metrics` (3.0.0) —
+# a Rust-side `metrics` crate exporter with no Python consumer.
+processkit = { version = "3", default-features = false, features = [
   "process-control",
   "limits",
   "record",

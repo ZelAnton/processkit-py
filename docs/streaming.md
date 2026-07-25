@@ -267,6 +267,36 @@ and `text: str`. Like
 `stdout_lines()`, this consumes the pipes once — pick `stdout_lines()` *or*
 `output_events()`, not both.
 
+Things to know:
+
+- **Only output lines are yielded.** Underneath, the core stream carries the
+  child's whole lifecycle (it reports process start and exit as well as output),
+  but those non-line events are filtered out here rather than handed to you as an
+  `OutputEvent` with an empty `text` — which would be indistinguishable from a
+  real blank line the child printed, and would quietly corrupt anything that
+  counts or joins lines. What they carry is already on surfaces you have: the
+  start is `proc.pid`, the exit is what the finisher below returns.
+- **Iterate fully, then finish.** Draining the iterator also drives the run to
+  completion, so the usual order terminates:
+
+  ```python
+  async for ev in proc.output_events():
+      ...
+  finished = await proc.afinish()   # or: await proc.aoutcome()
+  ```
+
+  `finish()`/`afinish()` reports the outcome (its `stderr` is empty — you already
+  received stderr as events), and `outcome()`/`aoutcome()` reports the exit alone.
+- **The capture verbs do not apply to such a run.** `output()` / `output_bytes()`
+  / `profile()` (and their `a`-twins) raise a `ProcessError` naming
+  `output_events()` after you have streamed events: stdout was consumed by the
+  iterator and stderr was delivered as events, so there is nothing left for them
+  to capture, and the run is already complete so there is nothing left to sample.
+  Reach for `finish()` / `outcome()` instead.
+- **Leaving the loop early is fine.** `break` out whenever you like; the
+  following consuming verb still reports the run, and dropping the handle (or
+  exiting its `with` block) still tears the tree down.
+
 ## Interactive stdin
 
 Conversational tools — write a request, read the response, repeat. Keep stdin

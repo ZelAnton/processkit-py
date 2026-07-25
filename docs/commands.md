@@ -448,6 +448,24 @@ Over the byte cap an `output_bytes()` run either raises `OutputTooLarge` (with
 `max_lines=None`) under `on_overflow="error"`, or keeps a bounded head/tail with
 `BytesResult.truncated` set under a drop mode.
 
+### What `max_bytes` actually counts
+
+`max_bytes` — and the `total_bytes` an `OutputTooLarge` reports — count the **raw
+bytes read from the child's output pipe**, not the bytes of the decoded text you
+get back in `ProcessResult.stdout`. Concretely, the cap is also charged for:
+
+- the **line terminator** each line arrived with (`\n`, or *both* bytes of a
+  `\r\n`), which the decoded line no longer carries;
+- bytes that are **not valid UTF-8**, which decoding replaces or drops.
+
+For plain, newline-terminated UTF-8 output the two measures differ only by one
+byte per line. For CRLF output (a Windows tool) or binary-ish output they diverge
+more, and a cap sized against decoded text trips slightly sooner than it used to.
+That is deliberate: the raw count is the amount actually read, which is what makes
+`max_bytes` a genuine bound on the parent's memory — the reason to prefer it over
+`max_lines` for an untrusted child in the first place. (Raw-byte accounting since
+processkit 3.0.0; earlier the ceiling counted decoded line content.)
+
 ## Timeouts
 
 ```python

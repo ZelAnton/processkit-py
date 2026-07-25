@@ -281,7 +281,16 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
 /// (it wraps a `std::io::Error`). `map_err` delegates here, so the owned and the
 /// borrowed path share one faithful mapping.
 pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
-    use processkit::Error as E;
+    // Since crate 3.0.0 `Error` is a thin, pointer-sized wrapper around a boxed
+    // `ErrorReason`, and `ErrorReason` *is* the enum every variant used to live
+    // on (same variants, same fields). Every read accessor below
+    // (`is_timeout()`/`program()`/`code()`/`stdout()`/…) still works on `Error`
+    // itself and is unchanged; only the two direct variant matches had to move
+    // onto the borrowed `error.reason()` — deliberately borrowed, not
+    // `into_reason()`, so `map_err_ref` keeps working from a `&Error` a caller
+    // cannot hand over (the supervisor's `give_up_when` classifier, whose
+    // `Error` is not `Clone`).
+    use processkit::ErrorReason as E;
 
     Python::attach(|py| {
         let message = error.to_string();
@@ -307,7 +316,7 @@ pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
             // classification would mislead a caller.
             PyErr::from_type(cached(&PERMISSION_DENIED, py), message)
         } else {
-            match error {
+            match error.reason() {
                 E::Exit { .. } => NonZeroExit::new_err(message),
                 E::Signalled { .. } => Signalled::new_err(message),
                 E::ResourceLimit { .. } => ResourceLimit::new_err(message),
@@ -359,8 +368,9 @@ pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
             );
         }
 
-        // The handful of fields with no `Error` accessor still need a direct match.
-        match error {
+        // The handful of fields with no `Error` accessor still need a direct
+        // match — on `reason()` since 3.0.0 (see the note at the top).
+        match error.reason() {
             E::Signalled { signal, .. } => {
                 // Unlike `program`/`stdout`/`stderr`/`code` (attached above via the
                 // accessor block, `if let Some(...)`), `signal` must be set

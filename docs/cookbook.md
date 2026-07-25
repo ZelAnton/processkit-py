@@ -172,6 +172,11 @@ also bounds the raw stdout of `output_bytes()` / `aoutput_bytes()` (since proces
 2.1.0): over the byte ceiling it either raises `OutputTooLarge` (`on_overflow="error"`)
 or keeps a bounded head/tail with `BytesResult.truncated` set.
 
+`max_bytes` (and `OutputTooLarge.total_bytes`) count **raw bytes read from the
+pipe** — line terminators and invalid-UTF-8 bytes included — not the bytes of the
+decoded text; see
+[Bounding captured output](commands.md#what-max_bytes-actually-counts).
+
 ## Stream output line by line (async)
 
 ```python

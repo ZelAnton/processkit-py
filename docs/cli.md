@@ -167,6 +167,29 @@ processkit exception (`Timeout`, `Signalled`, `ProcessNotFound`,
 `PermissionDenied`, `ResourceLimit`, `Unsupported`) is caught and turned into
 one of the codes above, with a one-line message on stderr.
 
+### How the wrapper terminates
+
+`python -m processkit` flushes its own stdout/stderr and then exits with
+`os._exit` — it deliberately does **not** run interpreter finalization. Every
+line it printed still arrives; what it skips is the interpreter's shutdown
+sequence (`atexit` hooks, garbage-collected finalizers, module teardown).
+
+That is a correctness requirement, not an optimisation. `--idle-timeout` is
+the one path that drives the async surface, and that bridge resolves each
+awaited call from a tokio worker thread which is still briefly inside the
+interpreter *after* the awaiting coroutine has already resumed (see
+[Async runtimes & event loops](event-loops.md)). Finalizing the interpreter
+inside that window raced the worker over interpreter state, and could kill the
+wrapper with a signal — reporting `-11` instead of the child's real exit code,
+with every byte of the child's output already delivered. Not finalizing
+removes the window rather than narrowing it.
+
+Nothing this wrapper does needs the skipped shutdown: the child has exited,
+the `ProcessGroup` was torn down by its own `with` block rather than by a
+finalizer, and a `--profile` file is written and closed before the exit. It
+would only matter if you *embedded* the CLI in your own process — don't; spawn
+`python -m processkit` as you would any other program.
+
 ## supervise
 
 **Basic usage:**

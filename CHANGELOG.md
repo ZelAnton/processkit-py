@@ -11,10 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Changed
--
+- `python -m processkit` now terminates with `os._exit` after flushing its own
+  stdout/stderr, instead of returning a code to `sys.exit`. Every line the
+  wrapper printed still arrives and every documented exit code is unchanged;
+  what it no longer runs is interpreter finalization (`atexit` hooks,
+  garbage-collected finalizers, module teardown). Nothing in the wrapper needs
+  that shutdown — the child has exited, the `ProcessGroup` was torn down by its
+  own `with` block, and a `--profile` file is written and closed beforehand —
+  and skipping it is what closes the crash below. See "How the wrapper
+  terminates" in `docs/cli.md`.
 
 ### Fixed
--
+- Fix an intermittent crash of `python -m processkit run --idle-timeout` at
+  exit: the wrapper could die from SIGSEGV (reported as `-11`) instead of
+  returning the child's real exit code, *after* the child had already exited
+  cleanly and all of its output had been streamed, with an empty stderr and no
+  Python traceback. `--idle-timeout` is the one CLI path that drives the async
+  bridge, which resolves each awaited call from a tokio worker thread; that
+  worker is still inside the interpreter briefly after the awaiting coroutine
+  has resumed, so interpreter finalization could start underneath it and
+  corrupt the state its final `PyGC_Collect` pass then walked. The wrapper no
+  longer finalizes the interpreter, removing the window rather than narrowing
+  it. The same hazard for programs that `await` a processkit verb and then
+  terminate immediately is now documented in `docs/event-loops.md`.
 
 ## [1.4.1] - 2026-07-24
 

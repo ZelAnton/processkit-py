@@ -149,6 +149,82 @@ def test_idle_timeout_lets_a_chatty_child_finish_and_passes_its_code_through() -
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["line 0", "line 1", "line 2"]
     assert "Traceback (most recent call last)" not in result.stderr
+    # The `== 0` above is load-bearing beyond the exit-code passthrough it
+    # reads as: this exact invocation intermittently returned -11 (SIGSEGV)
+    # from the *wrapper* — all three lines already streamed, stderr empty — in
+    # a teardown race at interpreter finalization. See
+    # `test_cli_never_runs_interpreter_finalization` below for the mechanism
+    # and the deterministic guard against its return.
+
+
+def test_cli_never_runs_interpreter_finalization() -> None:
+    """Regression guard (T-161) for an intermittent SIGSEGV at CLI exit.
+
+    ``run --idle-timeout`` is the one CLI path that drives the binding's async
+    surface, and that bridge resolves each awaited future from a **tokio worker
+    thread**: the worker attaches to the interpreter and calls
+    ``loop.call_soon_threadsafe(...)``, which queues the completion handle and
+    only then wakes the loop through its self-pipe — a write that releases the
+    GIL. The main thread can therefore finish ``asyncio.run``, tear the group
+    down and return from ``main`` while that worker is *still inside* the
+    interpreter. Running interpreter finalization in that window let
+    ``Py_FinalizeEx``'s last ``PyGC_Collect`` walk an object whose refcount the
+    worker had corrupted underneath it — a SIGSEGV after every byte of output
+    was already written and the child's exit code already known, reported as
+    ``returncode == -11`` with an empty stderr (no traceback: the crash is
+    below the interpreter). Observed once in CI on a loaded ``pytest-xdist``
+    worker, and reproduced locally at ~1.6% of runs on a 16-CPU Linux box
+    oversubscribed 4x.
+
+    The fix (`processkit._cli.main_and_exit`) removes the window instead of
+    narrowing it: the wrapper terminates with `os._exit`, so finalization never
+    runs and a still-live worker has nothing to race. That is what this test
+    pins, deterministically — a stress loop over the racy invocation could only
+    ever pin it statistically.
+
+    The probe drives the CLI in-process exactly as ``python -m processkit``
+    does (`runpy` on the package's ``__main__``) with an `atexit` hook armed.
+    Under the previous ``sys.exit(main())`` the `SystemExit` propagated into
+    normal interpreter shutdown and the hook ran; under `os._exit` neither the
+    hook nor anything else after it can.
+    """
+    probe = (
+        "import atexit, runpy, sys\n"
+        "atexit.register(lambda: sys.stderr.write('FINALIZATION-RAN\\n'))\n"
+        f"sys.argv = ['processkit', 'run', '--idle-timeout', '2', '--', {PY!r}, "
+        "'-c', 'print(\"from child\", flush=True)']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+        "sys.stderr.write('RETURNED-TO-CALLER\\n')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["from child"]
+    assert "FINALIZATION-RAN" not in result.stderr
+    assert "RETURNED-TO-CALLER" not in result.stderr
+
+
+def test_idle_timeout_streams_more_output_than_one_stdio_buffer() -> None:
+    """`os._exit` (see `test_cli_never_runs_interpreter_finalization`) skips the
+    interpreter shutdown that would otherwise flush `sys.stdout` — and this
+    process's stdout is **block**-buffered whenever it is redirected into a
+    pipe, exactly as it is here. So the wrapper has to flush by hand, and this
+    pins that: the child emits far more than one 8 KiB stdio buffer through the
+    re-emitting ``--idle-timeout`` path, and every line must still arrive. The
+    three-line sibling test above fits inside a single buffer and so cannot
+    tell a missing flush from a working one.
+    """
+    lines = 3000
+    code = f"for i in range({lines}):\n    print('line', i, flush=True)\n"
+    result = _run_cli("run", "--idle-timeout", "10", "--", PY, "-c", code)
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == [f"line {i}" for i in range(lines)]
+    assert "Traceback (most recent call last)" not in result.stderr
 
 
 def test_idle_timeout_with_profile_is_a_usage_error() -> None:

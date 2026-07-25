@@ -125,6 +125,33 @@ anyio primitives first (cheap, and it makes `wait_for_port` / `wait_until`
 loop-agnostic), then evaluate a loop-agnostic compiled bridge once
 `pyo3-async-runtimes` grows a trio backend or a concrete demand signal appears.
 
+## Interpreter shutdown and the async bridge
+
+The bridge resolves each awaited `a`-verb from a **tokio worker thread**: the
+worker attaches to the interpreter and hands the result to your event loop via
+`loop.call_soon_threadsafe(...)`. That call queues the completion and *then*
+wakes the loop — so your coroutine can resume, and your program can run all
+the way to its end, while the worker is still inside the interpreter finishing
+up and releasing the GIL.
+
+While the interpreter is alive that is harmless; the worker gets its GIL slot
+back in microseconds. While the interpreter is being **finalized** it is not:
+CPython's shutdown assumes no foreign thread is still touching interpreter
+state. A program that awaits a processkit verb and then terminates
+*immediately* can race the two, and the symptom is a crash at exit — a signal,
+no Python traceback, *after* all the program's real work has completed. The
+window is narrow and needs a loaded machine to open, but it is real.
+
+What this does and does not affect:
+
+- A program that keeps running, or that does any real teardown after its last
+  `await`, is not exposed: the worker is long finished before shutdown starts.
+- A short-lived wrapper process whose work is genuinely complete — the shape
+  `python -m processkit` itself has — should skip finalization outright: flush
+  your own streams and terminate with `os._exit(code)`. That removes the
+  window instead of narrowing it, and is exactly what this project's own CLI
+  does (see [Command-line usage](cli.md)).
+
 ## The readiness helpers
 
 The readiness helpers ([`wait_for_port`](streaming.md#readiness-probes),

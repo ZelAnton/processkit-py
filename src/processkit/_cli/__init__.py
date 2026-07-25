@@ -149,12 +149,19 @@ argparse parsers and splits the ``--`` separator, `run` implements the
 `supervise` implements the ``supervise`` subcommand, and `exit_codes`
 holds the shared exit-code constants all subcommands use.
 Nothing here is part of the public ``processkit`` package surface.
+
+How this process *terminates* is part of the contract too, and deliberately
+unusual: see `main_and_exit`.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
 import sys
+import traceback
 from collections.abc import Sequence
+from typing import NoReturn
 
 from processkit._cli.doctor import _doctor
 from processkit._cli.parser import _build_parser, _split_child_argv
@@ -188,3 +195,98 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not child_argv:
         run_parser.error("run: missing command to execute after '--'")
     return _run(run_parser, args, child_argv)
+
+
+def _flush_std_streams() -> None:
+    """Push this process's own buffered stdout/stderr out before a
+    finalization-free exit (`main_and_exit`).
+
+    Skipping interpreter shutdown also skips its automatic flush, and
+    `sys.stdout` is **block**-buffered whenever it is redirected into a pipe
+    rather than a terminal — exactly how a caller (or the test suite) captures
+    this wrapper. Everything this process prints itself goes through it:
+    ``run --idle-timeout``'s re-emitted child lines, ``supervise``'s teed
+    lines, `doctor`'s report, and every `_fail` diagnostic.
+
+    A stream whose far end is already gone (`BrokenPipeError`, an `OSError`)
+    or that a caller detached/closed (`ValueError`) holds output this wrapper
+    can no longer deliver either way — that must not turn an otherwise
+    finished run into a crash, so it is swallowed here exactly as the normal
+    interpreter shutdown swallows it.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(OSError, ValueError):
+            stream.flush()
+
+
+def main_and_exit(argv: Sequence[str] | None = None) -> NoReturn:
+    """Run `main` and terminate this process **without running interpreter
+    finalization** — the entry point `src/processkit/__main__.py` calls.
+
+    Why not the ordinary ``sys.exit(main())``
+    -----------------------------------------
+    ``run --idle-timeout`` is the one CLI path that drives the binding's
+    *async* surface (`asyncio.run` around `RunningProcess.output_events()` and
+    `afinish()`). That bridge resolves each awaited future from a **tokio
+    worker thread**, not from the interpreter's main thread: the worker
+    attaches to the interpreter and calls ``loop.call_soon_threadsafe(...)``,
+    which first queues the completion handle and only *then* wakes the loop by
+    writing to its self-pipe — a write that releases the GIL. From that instant
+    the main thread is free to run the callback, resolve the future, finish
+    ``asyncio.run``, tear the `ProcessGroup` down and return here, while the
+    worker thread is still inside the interpreter with work left to do (return
+    through those Python frames, drop its object references, release the GIL).
+
+    If this process began interpreter finalization inside that window, the
+    still-live worker and ``Py_FinalizeEx`` raced over the same interpreter
+    state, and finalization's last ``PyGC_Collect`` pass walked an object whose
+    reference count had been corrupted underneath it. The result was a SIGSEGV
+    *after* every byte of the child's output had already been written and its
+    exit code already determined — so the wrapper reported ``-11`` instead of
+    the child's real code, with an empty stderr (the crash is below the
+    interpreter, so there is no Python traceback to print). Confirmed under
+    gdb: the faulting thread is the main one, in
+    ``Py_FinalizeEx -> PyGC_Collect -> tupletraverse``.
+
+    Exiting through `os._exit` **removes** that window rather than narrowing
+    it: interpreter finalization never runs, so there is nothing left for a
+    still-live tokio worker to race, on any platform and any Python version.
+    It is sound here specifically because this wrapper's work is genuinely
+    complete by the time `main` returns — the child has exited, the
+    `ProcessGroup` was torn down deterministically by its own ``with`` block
+    (not by a garbage-collected finalizer), and any ``--profile`` file was
+    already written and closed. The only shutdown duty left is flushing this
+    process's own stdout/stderr, which `_flush_std_streams` does explicitly.
+    Nothing in this package registers an `atexit` hook or relies on one.
+
+    This applies to the whole entry point, not just ``run --idle-timeout``:
+    one exit path is far easier to keep correct than a per-subcommand split,
+    and it stays correct if another subcommand starts using the async surface.
+
+    `SystemExit` is caught rather than left to propagate because argparse
+    reports usage errors and ``--help`` by raising it from inside `main`
+    (having already printed its own message), and its code still has to reach
+    the exit status. Any other escaping exception keeps the interpreter's own
+    observable behaviour — its traceback on stderr, exit status 1.
+    """
+    try:
+        code: object = main(argv)
+    except SystemExit as exc:
+        code = exc.code
+    except BaseException:
+        traceback.print_exc()
+        code = 1
+
+    if code is None:
+        status = 0
+    elif isinstance(code, int):
+        status = code
+    else:
+        # `SystemExit("some message")`: the interpreter prints the value and
+        # exits 1. Nothing in this package raises that shape, but matching it
+        # keeps the swap to `os._exit` invisible if anything ever does.
+        print(code, file=sys.stderr)
+        status = 1
+
+    _flush_std_streams()
+    os._exit(status)

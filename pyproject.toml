@@ -237,6 +237,42 @@ timeout_method = "thread"
 # sees it) but this comment exists so the percentage below is never read as
 # "how well the Rust core is tested".
 source = ["src/processkit", "scripts/release"]
+# Carved back out of that scope: the CLI (`src/processkit/_cli/`) and the
+# `python -m processkit` entry point that calls into it. This is the same
+# "coverage.py structurally cannot see it" exclusion as the compiled extension
+# above, not a "not tested yet" one -- the CLI is in fact exercised end to end
+# by `tests/test_cli_main.py` (the exit-code contract of `run`/`supervise`/
+# `doctor`, the `--idle-timeout` streaming path, the final-flush/`os._exit`
+# path), but every one of those tests drives it in a **child process**
+# (`subprocess.run([PY, "-m", "processkit", ...])`, or a `runpy.run_module`
+# probe), and nothing in the test session ever imports `_cli` in-process.
+# Subprocess coverage (`COVERAGE_PROCESS_START` + coverage's .pth startup
+# hook) cannot recover those lines either, and can never be made to: since
+# T-161 this entry point terminates through `os._exit` (see
+# `processkit._cli.main_and_exit` for why -- an interpreter-finalization race
+# with the binding's async bridge), and `os._exit` skips exactly the
+# interpreter shutdown at which coverage.py writes its data file. A child
+# would collect the data and then die without ever writing it.
+#
+# So these files can only ever be reported at 0.00%, however well they are
+# tested -- 440 statements and 140 branches of permanent, information-free
+# zero. Left inside `source` they made the percentage below a function of *how
+# much CLI code exists* rather than of how well the code is tested, and they
+# dragged the whole gate down on every CLI change: integration review of batch
+# B-20260725T170739Z caught the threshold being eaten from the inside, the
+# 65 statements T-161 added taking the total from 46.08% to 43.56% against a
+# `fail_under` of 43, with no test having been lost. Excluding them makes the
+# number both honest and stable, and (having shed ~40% of the denominator to
+# constant zero) sharper: a real regression in the measured modules now moves
+# it ~1.6x further.
+#
+# If a `_cli` helper ever does grow in-process unit tests -- imported and
+# called directly by a test, rather than reached through a child -- revisit
+# this: the omit would silently hide that coverage.
+omit = [
+  "src/processkit/_cli/*",
+  "src/processkit/__main__.py",
+]
 branch = true
 # One data file per pytest-xdist worker (`.coverage.<host>.<pid>.<rand>`),
 # combined by pytest-cov at session end — without this, concurrent workers
@@ -247,13 +283,28 @@ parallel = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# Current actual coverage (pure-Python scope above) is ~47% as of 2026-07-21
-# (see the `test` job's "Run tests with coverage" step in ci.yml, and
-# CI run history). `fail_under` is set a few points below that measured
-# baseline -- enough margin to absorb xdist/platform measurement noise
-# without flapping, while still catching a real regression (e.g. a big
-# chunk of `_cli/` or `_aio.py` losing its tests outright).
-fail_under = 43
+# Measured coverage of the scope above (`source` minus `omit` -- 903
+# statements and branches): 67.11% on a Windows dev box, and 71.54% on the CI
+# leg that actually enforces this gate (`test (ubuntu-latest, abi3)`, the "Run
+# tests with coverage" step in ci.yml). Both are that same 903-unit
+# denominator; the ~4-point spread is the POSIX-only tests that skip on
+# Windows. Measured 2026-07-25 -- the Windows figure directly, the ubuntu one
+# by recomputing that leg's own last measured total (46.08% in CI run
+# 30160360320) over this scope, the omitted files having contributed nothing
+# but denominator there too.
+#
+# `fail_under` sits a couple of points below the *lower* of the two, so an
+# ordinary local `uv run pytest --cov` is not a false alarm either: 2.1 points
+# of margin on Windows and 6.5 on the enforcing leg (~19 and ~59 of the 903
+# units) absorb measurement noise. It still catches what this gate is for -- a
+# real chunk of `_aio.py`, `pytest_plugin.py`, `scripts/release/` or the
+# package `__init__.py` losing its tests outright.
+#
+# What it deliberately no longer tracks is *growth of the subprocess-only CLI*
+# (see the `omit` note above): that used to eat this margin on every batch
+# without a single test being lost, which is how the previous threshold of 43
+# went from 3.08 points of headroom to 0.56 in one batch (T-161).
+fail_under = 65
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",

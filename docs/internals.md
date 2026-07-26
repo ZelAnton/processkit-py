@@ -110,9 +110,11 @@ crate future (processkit::Command::output_string(&cmd), etc. — async-throughou
   ▼
 runtime.rs: block_on(...) [sync verbs]  or  drive_async(...) [async verbs]
   │                                            │
-  │  block_on_interruptible: GIL released,      │  future_into_py bridges the
-  │  polls the future on a fixed tick so a       │  future onto the caller's
-  │  blocked Ctrl+C still raises on the main      │  running asyncio loop
+  │  block_on_interruptible: GIL released,      │  PyLazyFuture starts work on
+  │  polls the future on a fixed tick so a       │  tokio; completion writes to a
+  │  blocked Ctrl+C still raises on the main      │  socket and loop.sock_recv
+  │  thread; a reentrant call from inside the     │  resolves the Python Future on
+  │  runtime (e.g. a Supervisor stop_when         │  the event-loop thread
   │  thread; a reentrant call from inside the     │
   │  runtime (e.g. a Supervisor stop_when         │
   │  callback) is rejected with a clear error      │
@@ -177,12 +179,15 @@ Two invariants worth internalizing when adding a new verb:
   `Command`/`Pipeline`, every runner (real and test doubles), `RunningProcess`,
   `ProcessGroup`, `Supervisor`, and `CliClient`. A new verb should ship both
   halves together, wired through `block_on`/`drive_async` respectively.
-  `drive_async` returns a **lazy** awaitable (`PyLazyFuture`): it does not hand
-  the work to `future_into_py` — and so spawns nothing — until the first
-  `await`, so an `a`-verb built but never awaited starts no work and, when
-  dropped, releases what it captured (and tears down a process it already owns);
-  once awaited it delegates to the real `asyncio.Future` for cancellation, so
-  `Future.cancel()` behaves exactly as before.
+  `drive_async` returns a **lazy** awaitable (`PyLazyFuture`): it schedules
+  nothing until the first `await`, so an `a`-verb built but never awaited starts
+  no work and, when dropped, releases what it captured (and tears down a process
+  it already owns). Once awaited it delegates to a real `asyncio.Future` for
+  cancellation. Tokio stores the completed outcome in Rust memory and wakes
+  one shared per-loop `sock_recv` dispatcher; value conversion and Future
+  resolution happen on the event-loop thread, so completion never attaches to
+  Python from a foreign runtime thread and repeated stream steps do not allocate
+  a socket each.
 - **`gil_used = false`.** See the free-threading note above — a deliberate,
   narrowly-justified opt-in, not a default to imitate carelessly in a module
   that *does* need shared mutable state outside PyO3's own guarding.

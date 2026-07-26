@@ -27,8 +27,10 @@ mod supervisor;
 // `gil_used = false` opts the module into PEP 703 free-threaded CPython: on a
 // free-threaded build importing it does NOT re-enable the GIL. Sound here because
 // the binding holds no unsynchronized shared state — the tokio runtime is a
-// managed singleton, the exception caches use `PyOnceLock`, stream handles are
-// `Arc<Mutex<…>>`, the opt-in `tracing` subscriber is a stateless ZST layer over
+// managed singleton, the exception caches and per-loop completion-hub weak map
+// use `PyOnceLock`, each hub guards its registrations/socket with `Mutex` plus
+// atomic ids, stream handles are `Arc<Mutex<…>>`, and the opt-in `tracing`
+// subscriber is a stateless ZST layer over
 // `tracing`'s internally-synchronized global dispatch (installed once via an
 // `OnceLock`, forwarding to thread-safe `logging`), and the stateful pyclasses
 // that carry consumable/reconfigurable state (`ProcessGroup`, `RunningProcess`,

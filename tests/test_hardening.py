@@ -9,6 +9,7 @@ import os
 import pathlib
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from processkit import Command, ProcessGroup
 
@@ -91,3 +92,48 @@ def test_no_silly_per_call_overhead() -> None:
     for _ in range(3 * _SCALE):
         assert Command(PY, ["-c", "pass"]).output().is_success
     assert time.monotonic() - start < 20.0 * _SCALE
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def test_last_async_await_survives_interpreter_finalization() -> None:
+    """A completed a-verb may be the interpreter's literal last useful act.
+
+    The ordinary suite runs one smoke probe. CI raises both environment knobs
+    below and starts many interpreters concurrently, reproducing the loaded
+    short-lived shape in which the old detached completion attach failed.
+    """
+    workers = _positive_int_env("PROCESSKIT_FINALIZATION_WORKERS", 1)
+    rounds = _positive_int_env("PROCESSKIT_FINALIZATION_ROUNDS", 1)
+    program = (
+        "import asyncio, sys\n"
+        "from processkit import Command\n"
+        "async def main():\n"
+        "    await Command(sys.executable, ['-c', 'pass']).aexit_code()\n"
+        "asyncio.run(main())\n"
+    )
+
+    def probe(_index: int) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [PY, "-c", program],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    for round_index in range(rounds):
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(probe, range(workers)))
+        failures = [result for result in results if result.returncode != 0]
+        assert not failures, (
+            f"async finalization stress round {round_index + 1}/{rounds} had "
+            f"{len(failures)}/{workers} failed interpreters; first return code "
+            f"{failures[0].returncode}, stderr={failures[0].stderr!r}"
+        )

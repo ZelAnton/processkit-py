@@ -172,29 +172,18 @@ that promise too: it always ends as `128 + SIGINT` with a single
 
 ### How the wrapper terminates
 
-`python -m processkit` flushes its own stdout/stderr and then exits with
-`os._exit` — it deliberately does **not** run interpreter finalization. Every
-line it printed still arrives; what it skips is the interpreter's shutdown
-sequence (`atexit` hooks, garbage-collected finalizers, module teardown).
+`python -m processkit` flushes its own stdout/stderr, raises `SystemExit` with
+the selected code, and then runs ordinary interpreter finalization (`atexit`
+hooks, garbage-collected finalizers, and module teardown included).
 
-That is a correctness requirement, not an optimisation. `--idle-timeout` is
-the one path that drives the async surface, and that bridge resolves each
-awaited call from a tokio worker thread which is still briefly inside the
-interpreter *after* the awaiting coroutine has already resumed (see
-[Async runtimes & event loops](event-loops.md)). Finalizing the interpreter
-inside that window raced the worker over interpreter state, and could kill the
-wrapper with a signal — reporting `-11` instead of the child's real exit code,
-with every byte of the child's output already delivered. Not finalizing
-removes the window rather than narrowing it.
+`--idle-timeout` is the one path that drives the async surface. Its completion
+handoff wakes the event loop through a socket and resolves the Future on the
+loop thread, so no detached tokio thread remains inside Python after the await
+resumes; normal finalization cannot race the bridge. See
+[Async runtimes & event loops](event-loops.md#interpreter-shutdown-and-the-async-bridge).
 
-Nothing this wrapper does needs the skipped shutdown: the child has exited,
-the `ProcessGroup` was torn down by its own `with` block rather than by a
-finalizer, and a `--profile` file is written and closed before the exit. It
-would only matter if you *embedded* the CLI in your own process — don't; spawn
-`python -m processkit` as you would any other program.
-
-What interpreter shutdown *did* still do, and so this wrapper now does
-explicitly:
+Two exit duties remain explicit so their outcomes stay part of the CLI's
+documented contract rather than depending on CPython's fallback behavior:
 
 - **The final flush of its own stdout/stderr.** Redirected into a pipe,
   stdout is block-buffered, so this is what makes the last lines arrive at

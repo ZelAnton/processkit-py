@@ -24,12 +24,15 @@ from __future__ import annotations
 import asyncio
 import gc
 import pathlib
+import socket
 import weakref
 
-from processkit import Supervisor
+import pytest
+
+from processkit import Command, Supervisor
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead
-from .conftest import spawn_grandchild_command
+from .conftest import PY, spawn_grandchild_command
 
 # A grandchild-spawning child writes its grandchild PID to the pid file as its
 # very first act, then sleeps -- so "the pid file never appears" is proof the
@@ -38,6 +41,56 @@ from .conftest import spawn_grandchild_command
 # started its child (and written the pid file) within this window, so a still-
 # empty pid file after it proves the work never started.
 _START_GRACE = 1.5
+
+
+def test_completion_never_calls_into_the_loop_from_a_runtime_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The completion handoff must stay off ``call_soon_threadsafe``.
+
+    The old bridge called it while attached to Python on a tokio thread. The
+    call wakes the loop after queuing the result, so the awaiting coroutine
+    could resume and start interpreter finalization before that thread had
+    left Python. The socket wakeup path has no reason to call this method at
+    all; making it fail pins that architectural safety property directly.
+    """
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+
+        def forbidden(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("async completion used call_soon_threadsafe")
+
+        monkeypatch.setattr(loop, "call_soon_threadsafe", forbidden)
+        result = await asyncio.wait_for(Command(PY, ["-c", "print('done')"]).aoutput(), 10.0)
+        assert result.stdout.strip() == "done"
+
+    asyncio.run(scenario())
+
+
+def test_completion_reuses_one_wakeup_socket_per_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming-style repeated awaits must not allocate a socket each time."""
+
+    async def scenario() -> None:
+        real_socketpair = socket.socketpair
+        calls = 0
+
+        def recording_socketpair() -> tuple[socket.socket, socket.socket]:
+            nonlocal calls
+            calls += 1
+            return real_socketpair()
+
+        # Patch after asyncio.run created its own loop/self-pipe; only bridge
+        # socketpairs are counted.
+        monkeypatch.setattr(socket, "socketpair", recording_socketpair)
+        for _ in range(3):
+            result = await Command(PY, ["-c", "pass"]).aexit_code()
+            assert result == 0
+        assert calls == 1
+
+    asyncio.run(scenario())
 
 
 def test_dropped_aoutput_without_await_never_spawns(pid_file: pathlib.Path) -> None:

@@ -172,7 +172,6 @@ unusual: see `main_and_exit`.
 from __future__ import annotations
 
 import contextlib
-import os
 import signal
 import sys
 import traceback
@@ -228,10 +227,8 @@ def _write_stderr(text: str) -> None:
     nowhere to report to, so nothing is written at all — the same conclusion
     CPython reaches for its own shutdown messages.
 
-    Failures are swallowed on purpose: this runs while the process is already
-    on its way to `os._exit`, and an undeliverable diagnostic must not replace
-    the exit status being reported — nor escape and resume the interpreter
-    finalization this entry point exists to skip.
+    Failures are swallowed on purpose: an undeliverable diagnostic must not
+    replace the exit status it was trying to report.
     """
     stream = sys.stderr
     write = getattr(stream, "write", None)
@@ -243,11 +240,9 @@ def _write_stderr(text: str) -> None:
 
 
 def _flush_std_streams() -> str | None:
-    """Push this process's own buffered stdout/stderr out before a
-    finalization-free exit (`main_and_exit`), reporting — not hiding — a
-    failure that lost output.
+    """Push this process's own buffered stdout/stderr out before exit,
+    reporting — not hiding — a failure that lost output.
 
-    Skipping interpreter shutdown also skips its automatic flush, and
     `sys.stdout` is **block**-buffered whenever it is redirected into a pipe
     rather than a terminal — exactly how a caller (or the test suite) captures
     this wrapper. Everything this process prints itself goes through it:
@@ -285,8 +280,15 @@ def _flush_std_streams() -> str | None:
         try:
             flush()
         except BrokenPipeError:
+            # Do not let interpreter finalization retry the same dead pipe and
+            # replace the child's status with CPython's flush-failure code 120.
+            setattr(sys, name, None)
             continue
         except Exception as exc:
+            # The explicit exit contract reports this as 119. Detach only the
+            # failed stream so Py_FinalizeEx cannot retry it and overwrite that
+            # verdict with its generic 120.
+            setattr(sys, name, None)
             if problem is None:
                 problem = f"could not flush {name}: {exc!r}"
     return problem
@@ -303,17 +305,14 @@ def _render(value: object) -> str:
 
 
 def _truncate_status(status: int) -> int:
-    """Fold an exit status into the range `os._exit` accepts — a C ``int``.
+    """Fold an exit status to a signed 32-bit value before `SystemExit`.
 
-    `os._exit` raises `OverflowError` outside it, and that call is necessarily
-    the last statement of `_exit_now`, past every guard: an exception there
-    would escape into exactly the interpreter finalization this entry point
-    exists to skip. The operating system truncates an exit status anyway (a
-    POSIX `wait` sees the low 8 bits, Windows the low 32), so folding here
-    reports the value the caller would have observed regardless. Nothing in
-    this package produces such a status — `Outcome.code` is a 32-bit signed
-    integer, and every reserved code is small — which is exactly why it is
-    handled here rather than left as a latent crash if that ever changes.
+    The operating system truncates an exit status anyway (a POSIX `wait` sees
+    the low 8 bits, Windows the low 32), so normalizing here reports the value
+    the caller would observe without leaving platform-specific overflow
+    behavior at the final statement. Nothing in this package produces an
+    out-of-range status today — `Outcome.code` is already a 32-bit signed
+    integer and every reserved code is small.
     """
     if -(2**31) <= status < 2**31:
         return status
@@ -322,15 +321,11 @@ def _truncate_status(status: int) -> int:
 
 def _exit_now(code: object) -> NoReturn:
     """Turn `main`'s result into an exit status, deliver this process's own
-    buffered output, and terminate — the single path to `os._exit`.
+    buffered output, and terminate through the single `SystemExit` path.
 
-    Nothing here may raise: an exception escaping this tail would both lose
-    the exit status and hand the process back to the interpreter finalization
-    `main_and_exit` exists to skip (`sys.stdout`/`sys.stderr` being `None` is
-    exactly how the first revision of this code did that). The defensive
-    fallback reports `EXIT_OUTPUT_LOST` rather than a success or the child's
-    own code, for the same reason a failed flush does: at that point nothing
-    can vouch for this wrapper having delivered what it printed.
+    The defensive fallback reports `EXIT_OUTPUT_LOST` rather than a success or
+    the child's own code, for the same reason a failed flush does: at that
+    point nothing can vouch for this wrapper having delivered what it printed.
     """
     try:
         if code is None:
@@ -340,7 +335,7 @@ def _exit_now(code: object) -> NoReturn:
         else:
             # `SystemExit("some message")`: the interpreter prints the value and
             # exits 1. Nothing in this package raises that shape, but matching it
-            # keeps the swap to `os._exit` invisible if anything ever does.
+            # keeps the centralized exit path consistent if anything ever does.
             _write_stderr(f"{_render(code)}\n")
             status = 1
         problem = _flush_std_streams()
@@ -349,60 +344,13 @@ def _exit_now(code: object) -> NoReturn:
             status = EXIT_OUTPUT_LOST
     except BaseException:
         status = EXIT_OUTPUT_LOST
-    os._exit(_truncate_status(status))
+    raise SystemExit(_truncate_status(status))
 
 
 def main_and_exit(argv: Sequence[str] | None = None) -> NoReturn:
-    """Run `main` and terminate this process **without running interpreter
-    finalization** — the entry point `src/processkit/__main__.py` calls.
+    """Run `main`, normalize top-level outcomes, flush output, and exit.
 
-    Why not the ordinary ``sys.exit(main())``
-    -----------------------------------------
-    ``run --idle-timeout`` is the one CLI path that drives the binding's
-    *async* surface (`asyncio.run` around `RunningProcess.output_events()` and
-    `afinish()`). That bridge resolves each awaited future from a **tokio
-    runtime thread**, not from the interpreter's main thread: the thread
-    attaches to the interpreter and calls ``loop.call_soon_threadsafe(...)``,
-    which first queues the completion handle and only *then* wakes the loop by
-    writing to its self-pipe — a write that releases the GIL. From that instant
-    the main thread is free to run the callback, resolve the future, finish
-    ``asyncio.run``, tear the `ProcessGroup` down and return here, while the
-    bridge thread is still inside the interpreter with work left to do
-    (re-acquire the GIL, return through those Python frames, drop its object
-    references, release the GIL). See
-    ``docs/event-loops.md#interpreter-shutdown-and-the-async-bridge`` for the
-    same window as it affects any program on the async surface.
-
-    If this process began interpreter finalization inside that window, the
-    still-live bridge thread and ``Py_FinalizeEx`` raced over the same interpreter
-    state, and finalization's last ``PyGC_Collect`` pass walked an object whose
-    reference count had been corrupted underneath it. The result was a SIGSEGV
-    *after* every byte of the child's output had already been written and its
-    exit code already determined — so the wrapper reported ``-11`` instead of
-    the child's real code, with an empty stderr (the crash is below the
-    interpreter, so there is no Python traceback to print). Confirmed under
-    gdb: the faulting thread is the main one, in
-    ``Py_FinalizeEx -> PyGC_Collect -> tupletraverse``.
-
-    Exiting through `os._exit` **removes** that window rather than narrowing
-    it: interpreter finalization never runs, so there is nothing left for a
-    still-live bridge thread to race, on any platform and any Python version.
-    It is sound here specifically because this wrapper's work is genuinely
-    complete by the time `main` returns — the child has exited, the
-    `ProcessGroup` was torn down deterministically by its own ``with`` block
-    (not by a garbage-collected finalizer), and any ``--profile`` file was
-    already written and closed. The only shutdown duty left is flushing this
-    process's own stdout/stderr, which `_flush_std_streams` does explicitly.
-    Nothing in this package registers an `atexit` hook or relies on one.
-
-    This applies to the whole entry point, not just ``run --idle-timeout``:
-    one exit path is far easier to keep correct than a per-subcommand split,
-    and it stays correct if another subcommand starts using the async surface.
-
-    What skipping finalization means for the exit contract
-    -----------------------------------------------------
-    Interpreter shutdown used to be the last handler for three things this
-    function now owns outright, because `os._exit` runs none of them:
+    The entry point deliberately keeps one exit path for every subcommand:
 
     * **`SystemExit`.** Caught rather than left to propagate: argparse reports
       usage errors and ``--help`` by raising it from inside `main` (having
@@ -425,7 +373,10 @@ def main_and_exit(argv: Sequence[str] | None = None) -> NoReturn:
       than the silent success interpreter shutdown never gave it either.
 
     Any other escaping exception keeps the interpreter's own observable
-    behaviour: its traceback on stderr, exit status 1.
+    behaviour: its traceback on stderr, exit status 1. The final `SystemExit`
+    then runs ordinary interpreter finalization. That is safe because the
+    async bridge resolves completions on the event-loop thread through its
+    socket wakeup, with no detached Python attach left after an await resumes.
     """
     try:
         code: object = main(argv)
@@ -435,7 +386,7 @@ def main_and_exit(argv: Sequence[str] | None = None) -> NoReturn:
         _write_stderr("processkit: interrupted\n")
         code = EXIT_SIGNAL_BASE + signal.SIGINT
     except BaseException:
-        # Reporting must not itself throw on the way to `os._exit`, and must
+        # Reporting must not itself throw on the way to `SystemExit`, and must
         # not fall back to `sys.stdout` when there is no stderr (see
         # `_write_stderr`) — which is what plain `traceback.print_exc()` does.
         with contextlib.suppress(Exception):

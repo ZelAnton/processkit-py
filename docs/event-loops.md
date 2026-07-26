@@ -127,129 +127,30 @@ loop-agnostic), then evaluate a loop-agnostic compiled bridge once
 
 ## Interpreter shutdown and the async bridge
 
-**Known limitation.** A program that `await`s a processkit verb and then
-terminates *immediately* can crash at exit — a signal, no Python traceback,
-*after* all of its real work has completed. This is a defect in the bridge,
-not in your code; the mechanism, the exposure, and the way to avoid it are
-below. It is documented rather than fixed because the fix is not available
-inside this library today ("Why this isn't fixed here yet").
+Completed async operations are handed back on the **event-loop thread**. The
+tokio task stores a type-erased outcome in Rust memory and wakes one shared
+socket per event loop; `loop.sock_recv(...)` receives the wakeup and performs
+the Python value conversion plus `Future.set_result()` / `set_exception()` on
+the loop itself. Repeated stream steps reuse that same dispatcher rather than
+opening a socket for every `__anext__`.
+`sock_recv` is supported by the standard selector and Windows proactor loops,
+uvloop, and anyio's asyncio backend, so this safety property does not narrow
+the supported event-loop set.
 
-### The window
+This design matters at process exit. The previous upstream completion path
+entered Python from a detached tokio blocking thread and called
+`loop.call_soon_threadsafe(...)`. The awaiting coroutine could resume while
+that foreign thread was still returning through Python frames; a short-lived
+program whose last act was the `await` could then begin `Py_FinalizeEx`
+underneath it and intermittently die from SIGSEGV after all useful work had
+finished. The socket handoff never enters Python from the completing runtime
+thread, so once the await resumes there is no bridge thread left inside the
+interpreter. Ordinary interpreter finalization is safe; no `os._exit` or
+post-await delay is required.
 
-The bridge resolves each awaited `a`-verb from a **tokio runtime thread**, not
-from the thread running your event loop. That thread attaches to the
-interpreter and hands the result over with `loop.call_soon_threadsafe(...)`,
-which queues the completion and *then* wakes the loop by writing to its
-self-pipe — a write that releases the GIL. From that instant your coroutine
-can resume and your program can run all the way to its end, while the bridge
-thread is still inside the interpreter with a little work left: re-acquire the
-GIL, return through those frames, drop its object references, release the GIL.
-
-While the interpreter is alive that is harmless — the bridge thread gets its
-GIL slot back in microseconds. While the interpreter is being **finalized** it
-is not: CPython's shutdown assumes no foreign thread is still touching
-interpreter state, and a thread that asks for the GIL after finalization has
-begun is torn out from under itself. The observed symptom is a SIGSEGV inside
-`Py_FinalizeEx`'s last `PyGC_Collect` pass, walking an object whose reference
-count was corrupted underneath it. The window is narrow and needs a loaded
-machine to open — reproduced at ~1.6% of runs on a 16-CPU Linux box
-oversubscribed 4x, and once in this project's own CI — but it is real.
-
-### Who is exposed
-
-- **A program that keeps running, or does any real teardown after its last
-  `await`.** Not exposed in practice: the bridge thread is long finished
-  before shutdown starts.
-- **A short-lived program whose last act is an `await`** — a script, a CI
-  step, a `python -c` one-liner. This is the exposed shape, and the more
-  loaded the machine, the wider the window.
-- **The `python -m processkit` CLI itself.** Not exposed: it does not finalize
-  the interpreter at all (see [How the wrapper
-  terminates](cli.md#how-the-wrapper-terminates)).
-
-### Avoiding it
-
-The one *deterministic* remedy is to not finalize the interpreter: do your own
-cleanup and terminate with `os._exit(code)`. Interpreter shutdown never runs,
-so there is nothing for the bridge thread to race — on any platform and any
-Python version. That is exactly what this project's own CLI does.
-
-`os._exit` is a blunt instrument, though: it skips **everything** the
-interpreter would otherwise do on the way out. Take over by hand whatever your
-program actually relies on:
-
-- **`ProcessGroup` teardown that has not happened yet.** On Linux/macOS the
-  no-orphan guarantee is dispatched from the `with` / `async with` exit path;
-  `os._exit` inside a still-open group leaks the tree (Windows Job Objects
-  survive this — the kernel reaps on the last handle close). Exit your groups
-  *before* exiting the process. This is the one item on this list that
-  processkit itself cares about.
-- `atexit` hooks — including ones libraries registered for you.
-- `logging.shutdown()`, and with it every buffered `FileHandler` /
-  `SMTPHandler` / queue handler.
-- Buffered writes on any file object you have not flushed and closed —
-  including `sys.stdout` / `sys.stderr`, which are block-buffered whenever
-  they are redirected into a pipe.
-- Coverage data (`coverage`, `pytest-cov`) for that process — measurement is
-  written at shutdown.
-- `tempfile.TemporaryDirectory` / `NamedTemporaryFile` cleanup, and any other
-  `__del__` / `weakref` finalizer.
-- `multiprocessing`'s own atexit join and the `resource_tracker` handoff.
-
-So the honest shape is "clean up, then exit", not "call `os._exit` and hope":
-
-```python
-import asyncio
-import logging
-import os
-import sys
-
-from processkit import Command, ProcessGroup
-
-
-async def main() -> int:
-    async with ProcessGroup() as group:  # teardown happens here, not at exit
-        result = await group.aoutput(Command("git", ["rev-parse", "HEAD"]))
-    print(result.stdout.strip())
-    return result.code or 0
-
-
-if __name__ == "__main__":
-    code = asyncio.run(main())
-    logging.shutdown()  # from here down: what interpreter shutdown would
-    sys.stdout.flush()  # otherwise have done for you, done by hand instead
-    sys.stderr.flush()
-    os._exit(code)
-```
-
-If that is too heavy for your program — and for most programs it is — the
-practical alternative is simply **not exiting instantly after the last
-`await`**: any real work after it (writing a report, closing resources,
-`asyncio.run` returning into a longer-lived process) closes the window in
-practice. That is a mitigation, not a guarantee.
-
-### Why this isn't fixed here yet
-
-The obvious in-library fix — count completions in flight and have an `atexit`
-hook wait for the count to drain before finalization — needs a signal this
-library cannot get today. The completion runs *inside*
-`pyo3-async-runtimes`: `future_into_py` awaits the bridged future and then
-dispatches the interpreter attach to a `spawn_blocking` thread without
-awaiting it (`generic.rs` in 0.29.0). Everything processkit controls — the
-future it hands over, the value that future produces — is finished *before*
-that attach starts, so there is no point at which a counter could be
-decremented to mean "the bridge thread has left the interpreter". Tokio's task
-metrics do not see it either: the dispatching task completes immediately, and
-blocking-pool work is not counted there.
-
-Closing it properly therefore means either an upstream hook in
-`pyo3-async-runtimes` or replacing the completion path with one that never
-attaches from a foreign thread (resolve on the loop's own thread through a
-file-descriptor wake-up) — a redesign of the single highest-risk component of
-this binding, not a patch. Until then this is a recorded, documented
-limitation with a deterministic user-side remedy, and the CLI — the one
-short-lived program this project ships — already takes it. See the *Risk
-register* in the project ROADMAP.
+Cancellation keeps the same contract: cancelling the backing asyncio Future
+signals the tokio work to drop and cancels the private socket receive, which
+preserves `asyncio.CancelledError` and process-tree teardown.
 
 ## The readiness helpers
 

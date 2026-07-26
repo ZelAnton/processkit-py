@@ -202,6 +202,21 @@ jobs:
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-report=html
+      - name: Stress the last-await interpreter-finalization boundary
+        if: matrix.os == 'ubuntu-latest' && matrix.python == ''
+        # The former bridge failed only in a narrow loaded window: its detached
+        # completion thread could still be inside Python after the await resumed.
+        # Sixteen concurrent short-lived interpreters over sixteen rounds keeps
+        # the exact "last act is await" shape under sustained scheduler pressure
+        # without making the entire cross-platform test matrix pay for it.
+        env:
+          PROCESSKIT_FINALIZATION_WORKERS: '16'
+          PROCESSKIT_FINALIZATION_ROUNDS: '16'
+        run: >-
+          uv run pytest
+          tests/test_hardening.py::test_last_async_await_survives_interpreter_finalization
+          -p no:xdist
+          -o addopts="-ra --strict-markers --strict-config --import-mode=importlib"
       # Coverage measures Python only -- see the `[tool.coverage.run]` comment in
       # pyproject.toml. A blocking threshold (`fail_under`, see
       # `[tool.coverage.report]` in pyproject.toml) is enforced: `--cov` fails

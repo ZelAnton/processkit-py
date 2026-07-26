@@ -82,53 +82,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its cap is unchanged in every mode. No API change; re-check any
   `on_overflow="error"` threshold you sized against decoded text. See "What
   `max_bytes` actually counts" in `docs/commands.md`.
-- `python -m processkit` now terminates with `os._exit` after flushing its own
-  stdout/stderr, instead of returning a code to `sys.exit`. Every line the
-  wrapper printed still arrives, and the exit code for every documented outcome
-  is unchanged — with one deliberate addition (the new code 119 above, for the
-  case where the wrapper's own output could *not* be delivered; that failure
-  was never silent before either — CPython reported it and `Py_FinalizeEx`
-  turned the status into 120). What the wrapper no longer runs is interpreter
-  finalization (`atexit` hooks, garbage-collected finalizers, module teardown).
-  Nothing in it needs that shutdown — the child has exited, the `ProcessGroup`
-  was torn down by its own `with` block, and a `--profile` file is written and
-  closed beforehand — and skipping it is what closes the crash below. See "How
-  the wrapper terminates" in `docs/cli.md`.
 - `Ctrl+C` that interrupts `python -m processkit` outside `run`/`supervise`'s
   own guarded blocks — during startup, argument parsing, or `doctor` — now
   reports the documented `128 + SIGINT` (`130`) with the same one-line
   `processkit: interrupted` message those paths print, instead of ending
-  through the interpreter's own unhandled-`KeyboardInterrupt` path (which
-  `os._exit` no longer reaches). This makes the Ctrl+C contract uniform across
-  the entry point and platforms; for `doctor` it also keeps an interrupted run
+  through the interpreter's own unhandled-`KeyboardInterrupt` path. This makes
+  the Ctrl+C contract uniform across the entry point and platforms; for
+  `doctor` it also keeps an interrupted run
   distinguishable from its valid `1` verdict ("containment enforced, limits
   not").
 
 ### Fixed
-- Fix an intermittent crash of `python -m processkit run --idle-timeout` at
-  exit: the wrapper could die from SIGSEGV (reported as `-11`) instead of
-  returning the child's real exit code, *after* the child had already exited
-  cleanly and all of its output had been streamed, with an empty stderr and no
-  Python traceback. `--idle-timeout` is the one CLI path that drives the async
-  bridge, which resolves each awaited call from a tokio runtime thread; that
-  thread is still inside the interpreter briefly after the awaiting coroutine
-  has resumed, so interpreter finalization could start underneath it and
-  corrupt the state its final `PyGC_Collect` pass then walked. The wrapper no
-  longer finalizes the interpreter, removing the window rather than narrowing
-  it.
-
-### Known issues
-- The same bridge race remains **open for the public async surface**: a program
-  that `await`s a processkit verb and then terminates immediately can still
-  crash at exit. It is not fixable from this side — the interpreter attach
-  happens inside `pyo3-async-runtimes`' `future_into_py`, dispatched to a
-  `spawn_blocking` thread it never awaits, so nothing here can observe when
-  that thread leaves the interpreter — and closing it properly needs an
-  upstream hook or a redesigned completion path. `docs/event-loops.md`
-  ("Interpreter shutdown and the async bridge") documents the exposure, the
-  deterministic `os._exit` remedy, and the full list of what that remedy skips
-  (including `ProcessGroup` teardown still owed on POSIX); the project ROADMAP
-  records the decision in its risk register.
+- Fix an intermittent SIGSEGV at interpreter exit after a program's final
+  processkit `await`. The async bridge no longer completes Python Futures from
+  a detached tokio thread through `call_soon_threadsafe`; tokio stores the
+  outcome and wakes one shared `loop.sock_recv` dispatcher per event loop, then
+  the event-loop thread converts and resolves it. Repeated stream steps reuse
+  that socket. A short-lived script can now end immediately
+  after any `a`-prefixed verb without racing `Py_FinalizeEx`. This also restores
+  ordinary interpreter finalization for `python -m processkit` — including
+  `atexit` hooks and finalizers — instead of the temporary `os._exit` workaround.
 
 ## [1.4.1] - 2026-07-24
 

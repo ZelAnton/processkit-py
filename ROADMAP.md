@@ -209,26 +209,15 @@ Prioritised by Python demand, not crate order.
   left implicit; native-trio reach is deferred (not "never" — see the reconsider
   triggers in Open decision #2), since it means rewriting the highest-risk bridge
   component against trio's different cancellation model.
-- **Interpreter finalization vs. the async bridge — known limitation,
-  accepted for now (T-161).** `pyo3-async-runtimes` resolves each awaited
-  `a`-verb from a tokio runtime thread that is still inside the interpreter
-  briefly *after* the awaiting coroutine has resumed. A program whose last act
-  is an `await` can therefore start `Py_FinalizeEx` underneath that thread and
-  die by signal, with all its real work already done (~1.6% of runs on a
-  heavily oversubscribed 16-CPU box; once in this project's CI). The CLI is
-  fixed outright — `python -m processkit` never finalizes the interpreter — but
-  the defect remains for the public async surface. It is **not** patchable from
-  this side: the interpreter attach happens inside `future_into_py`, dispatched
-  to a `spawn_blocking` thread that upstream never awaits, so there is no point
-  at which this binding could learn "the bridge thread has left" and no metric
-  that reflects it; an in-library counter plus an `atexit` drain — the obvious
-  fix — cannot be decremented at the right moment. Mitigation *now*: documented
-  honestly with a deterministic user-side remedy and its full cost
-  (`docs/event-loops.md`, "Interpreter shutdown and the async bridge").
-  Resolution *later*: an upstream completion hook in `pyo3-async-runtimes`, or
-  replacing the completion path with a loop-thread (fd wake-up) resolution —
-  a redesign of the highest-risk component, tracked as its own task rather
-  than folded into a fix cycle.
+- **Interpreter finalization vs. the async bridge — resolved (P-001).** The
+  binding no longer uses `pyo3-async-runtimes::future_into_py` for completion.
+  Tokio stores the outcome in Rust memory and wakes a shared per-loop socket;
+  `loop.sock_recv` converts and resolves the Future on the event-loop thread.
+  No foreign thread remains inside Python after the await resumes, including
+  when that await is a short-lived program's last act. Cancellation and task
+  locals remain explicit parts of the custom bridge, and a loaded Linux CI
+  stress probe repeatedly exercises the finalization boundary. The CLI can
+  therefore use ordinary `SystemExit` and interpreter finalization again.
 - **Binding tracks the `processkit` crate.** Mitigation: pin an exact version
   (`=1.2.0`); keep the binding thin so churn is cheap to absorb.
 - **Distribution.** cdylib + platform FFI across the wheel matrix is fiddly.

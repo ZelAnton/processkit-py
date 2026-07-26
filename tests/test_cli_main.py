@@ -153,41 +153,19 @@ def test_idle_timeout_lets_a_chatty_child_finish_and_passes_its_code_through() -
     # The `== 0` above is load-bearing beyond the exit-code passthrough it
     # reads as: this exact invocation intermittently returned -11 (SIGSEGV)
     # from the *wrapper* — all three lines already streamed, stderr empty — in
-    # a teardown race at interpreter finalization. See
-    # `test_cli_never_runs_interpreter_finalization` below for the mechanism
-    # and the deterministic guard against its return.
+    # a teardown race at interpreter finalization. The bridge now completes on
+    # the loop thread, and the stress coverage in test_hardening exercises this
+    # same last-await shape under load.
 
 
-def test_cli_never_runs_interpreter_finalization() -> None:
-    """Regression guard (T-161) for an intermittent SIGSEGV at CLI exit.
+def test_cli_runs_interpreter_finalization_after_async_bridge_is_done() -> None:
+    """The root bridge fix restores ordinary CLI interpreter shutdown.
 
-    ``run --idle-timeout`` is the one CLI path that drives the binding's async
-    surface, and that bridge resolves each awaited future from a **tokio worker
-    thread**: the worker attaches to the interpreter and calls
-    ``loop.call_soon_threadsafe(...)``, which queues the completion handle and
-    only then wakes the loop through its self-pipe — a write that releases the
-    GIL. The main thread can therefore finish ``asyncio.run``, tear the group
-    down and return from ``main`` while that worker is *still inside* the
-    interpreter. Running interpreter finalization in that window let
-    ``Py_FinalizeEx``'s last ``PyGC_Collect`` walk an object whose refcount the
-    worker had corrupted underneath it — a SIGSEGV after every byte of output
-    was already written and the child's exit code already known, reported as
-    ``returncode == -11`` with an empty stderr (no traceback: the crash is
-    below the interpreter). Observed once in CI on a loaded ``pytest-xdist``
-    worker, and reproduced locally at ~1.6% of runs on a 16-CPU Linux box
-    oversubscribed 4x.
-
-    The fix (`processkit._cli.main_and_exit`) removes the window instead of
-    narrowing it: the wrapper terminates with `os._exit`, so finalization never
-    runs and a still-live worker has nothing to race. That is what this test
-    pins, deterministically — a stress loop over the racy invocation could only
-    ever pin it statistically.
-
-    The probe drives the CLI in-process exactly as ``python -m processkit``
-    does (`runpy` on the package's ``__main__``) with an `atexit` hook armed.
-    Under the previous ``sys.exit(main())`` the `SystemExit` propagated into
-    normal interpreter shutdown and the hook ran; under `os._exit` neither the
-    hook nor anything else after it can.
+    The temporary T-161 workaround used ``os._exit`` to avoid finalization
+    while a detached completion thread might still be inside Python. The
+    completion now runs on the event-loop thread, so the wrapper can use
+    `SystemExit` again. This probe arms an `atexit` hook around the one CLI path
+    that drives the async surface and proves normal finalization really runs.
     """
     probe = (
         "import atexit, runpy, sys\n"
@@ -206,19 +184,15 @@ def test_cli_never_runs_interpreter_finalization() -> None:
     )
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["from child"]
-    assert "FINALIZATION-RAN" not in result.stderr
+    assert result.stderr == "FINALIZATION-RAN\n"
     assert "RETURNED-TO-CALLER" not in result.stderr
 
 
 def test_idle_timeout_streams_more_output_than_one_stdio_buffer() -> None:
-    """`os._exit` (see `test_cli_never_runs_interpreter_finalization`) skips the
-    interpreter shutdown that would otherwise flush `sys.stdout` — and this
-    process's stdout is **block**-buffered whenever it is redirected into a
-    pipe, exactly as it is here. So the wrapper has to flush by hand, and this
-    pins that: the child emits far more than one 8 KiB stdio buffer through the
-    re-emitting ``--idle-timeout`` path, and every line must still arrive. The
-    three-line sibling test above fits inside a single buffer and so cannot
-    tell a missing flush from a working one.
+    """The explicit final flush delivers block-buffered redirected output.
+
+    The child emits far more than one 8 KiB stdio buffer through the re-emitting
+    ``--idle-timeout`` path, and every line must arrive before `SystemExit`.
     """
     lines = 3000
     code = f"for i in range({lines}):\n    print('line', i, flush=True)\n"
@@ -231,14 +205,14 @@ def test_idle_timeout_streams_more_output_than_one_stdio_buffer() -> None:
 def test_failed_final_flush_is_reported_instead_of_a_clean_exit_code() -> None:
     """A final flush that *lost* output must not exit as if the run were fine.
 
-    `os._exit` puts this wrapper, not interpreter shutdown, in charge of the
-    last flush of its own stdout — and swallowing a failure there would report
+    The wrapper checks its own final flush before `SystemExit`, and swallowing
+    a failure there would report
     the child's own exit code for a run whose output was silently truncated (a
     full or failing disk, a stream closed underneath it). The
-    ``sys.exit(main())`` path this replaced was loud about exactly that
-    failure: CPython printed ``Exception ignored`` and a failing
-    ``Py_FinalizeEx`` turned the status into 120. So the replacement stays
-    loud in its own vocabulary — exit 119 (`EXIT_OUTPUT_LOST`) and one line on
+    ordinary interpreter shutdown is loud about exactly that failure too:
+    CPython prints ``Exception ignored`` and can turn the status into 120. The
+    explicit check stays loud in this CLI's vocabulary — exit 119
+    (`EXIT_OUTPUT_LOST`) and one line on
     stderr, never the child's 0 (which here would be a *false success*, the
     most dangerous direction for a wrapper whose only contract is an exact
     exit code plus a faithful output relay).
@@ -307,9 +281,7 @@ def test_child_exit_code_survives_absent_standard_streams() -> None:
     itself works in that configuration (`print` to a `None` stream is a
     no-op), so the exit path must not be the one thing that breaks there: an
     `AttributeError` out of ``None.flush()`` would lose the child's documented
-    exit code *and* hand the process back to the interpreter finalization this
-    entry point exists to skip — reopening, for exactly the configurations
-    that run this tool without a console, the crash window T-161 closed.
+    exit code.
     CPython's own shutdown flush (``flush_std_files``) skips a `None` stream
     for the same reason.
     """
@@ -330,15 +302,12 @@ def test_child_exit_code_survives_absent_standard_streams() -> None:
 
 
 def test_out_of_range_exit_status_does_not_escape_the_exit_path() -> None:
-    """The final `os._exit` must not be the one statement that can still throw.
+    """The final `SystemExit` receives a normalized, portable status.
 
-    It takes a C ``int`` and raises `OverflowError` outside that range — from
-    the last line of the exit path, past every guard, which would land the
-    process back in the interpreter finalization this entry point exists to
-    skip (and lose the status on the way). No subcommand produces such a
-    status today, so the probe supplies one directly; what is pinned is that
-    the wrapper folds it the way the OS would (low 32 bits: ``2**40 + 7`` →
-    ``7``) instead of crashing.
+    No subcommand produces an out-of-range status today, so the probe supplies
+    one directly; what is pinned is that the wrapper folds it the way the OS
+    would (low 32 bits: ``2**40 + 7`` → ``7``) instead of leaving the result to
+    platform-specific overflow behavior.
     """
     probe = (
         "import runpy, sys\n"
@@ -364,9 +333,8 @@ def test_interrupt_outside_a_guarded_block_exits_128_plus_sigint() -> None:
 
     ``run`` and ``supervise`` catch `KeyboardInterrupt` around their own
     blocks, but an interrupt during imports, argparse, or `doctor` lands
-    outside all of them — and `os._exit` means CPython's own
-    unhandled-Ctrl+C path, which used to end such a run, never gets to. For
-    `doctor` the generic traceback-and-1 fallback would be worse than untidy:
+    outside all of them. For `doctor` the generic traceback-and-1 fallback
+    would be worse than untidy:
     1 is a *valid* `doctor` verdict ("containment enforced, limits not"), so
     an interrupted probe would be indistinguishable from a DEGRADED answer to
     the CI gate reading that code.

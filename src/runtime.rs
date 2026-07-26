@@ -325,6 +325,10 @@ impl CompletionHub {
     fn is_closed(&self) -> bool {
         self.lock_state().closed
     }
+
+    fn has_entries(&self) -> bool {
+        !self.lock_state().entries.is_empty()
+    }
 }
 
 /// Python-owned anchor stored in a weak-key map by event loop. It keeps the
@@ -339,6 +343,16 @@ struct PyCompletionHub {
 /// completion on the event-loop thread, then rearms the receive for later work.
 #[pyclass]
 struct PyHubWakeCallback {
+    hub: Arc<CompletionHub>,
+    event_loop: Py<PyAny>,
+    reader: Py<PyAny>,
+}
+
+/// Close an idle hub after resumed awaiters have had one event-loop turn to
+/// register their next operation. This retains one socket for sequential
+/// stream awaits without leaving a pending receive behind when the loop ends.
+#[pyclass]
+struct PyHubIdleCallback {
     hub: Arc<CompletionHub>,
     event_loop: Py<PyAny>,
     reader: Py<PyAny>,
@@ -418,12 +432,35 @@ impl PyHubWakeCallback {
             }
             return Ok(());
         }
-        arm_hub_receive(
-            py,
-            self.event_loop.bind(py),
-            self.reader.bind(py),
-            Arc::clone(&self.hub),
-        )
+        self.event_loop.bind(py).call_method1(
+            intern!(py, "call_soon"),
+            (PyHubIdleCallback {
+                hub: Arc::clone(&self.hub),
+                event_loop: self.event_loop.clone_ref(py),
+                reader: self.reader.clone_ref(py),
+            },),
+        )?;
+        Ok(())
+    }
+}
+
+#[pymethods]
+impl PyHubIdleCallback {
+    fn __call__(&self, py: Python<'_>) -> PyResult<()> {
+        if self.hub.has_entries() {
+            return arm_hub_receive(
+                py,
+                self.event_loop.bind(py),
+                self.reader.bind(py),
+                Arc::clone(&self.hub),
+            );
+        }
+
+        self.reader.bind(py).call_method0(intern!(py, "close"))?;
+        for entry in self.hub.close() {
+            entry.future.bind(py).call_method0(intern!(py, "cancel"))?;
+        }
+        Ok(())
     }
 }
 

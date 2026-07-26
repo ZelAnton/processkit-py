@@ -98,10 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a detached tokio thread through `call_soon_threadsafe`; tokio stores the
   outcome and wakes one shared `loop.sock_recv` dispatcher per event loop, then
   the event-loop thread converts and resolves it. Repeated stream steps reuse
-  that socket. A short-lived script can now end immediately
-  after any `a`-prefixed verb without racing `Py_FinalizeEx`. This also restores
-  ordinary interpreter finalization for `python -m processkit` — including
-  `atexit` hooks and finalizers — instead of the temporary `os._exit` workaround.
+  that socket, and the dispatcher closes it after the loop becomes idle rather
+  than leaving a pending receive behind at loop teardown. A short-lived script
+  can now end immediately after any `a`-prefixed verb without racing
+  `Py_FinalizeEx`. This also restores ordinary interpreter finalization for
+  `python -m processkit` — including `atexit` hooks and finalizers — instead of
+  the temporary `os._exit` workaround.
 
 ## [1.4.1] - 2026-07-24
 

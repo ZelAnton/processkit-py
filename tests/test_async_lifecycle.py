@@ -93,6 +93,32 @@ def test_completion_reuses_one_wakeup_socket_per_event_loop(
     asyncio.run(scenario())
 
 
+def test_completion_closes_wakeup_socket_when_event_loop_goes_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared receiver must not survive as a pending task at loop teardown."""
+
+    readers: list[socket.socket] = []
+
+    async def scenario() -> None:
+        real_socketpair = socket.socketpair
+
+        def recording_socketpair() -> tuple[socket.socket, socket.socket]:
+            reader, writer = real_socketpair()
+            readers.append(reader)
+            return reader, writer
+
+        monkeypatch.setattr(socket, "socketpair", recording_socketpair)
+        assert await Command(PY, ["-c", "pass"]).aexit_code() == 0
+        # The completed awaiter runs before the hub's idle callback. Yield once
+        # more so that callback can close the otherwise-pending sock_recv task.
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert len(readers) == 1
+    assert readers[0].fileno() == -1
+
+
 def test_dropped_aoutput_without_await_never_spawns(pid_file: pathlib.Path) -> None:
     # Building the awaitable and dropping it without ever awaiting must start
     # nothing: a Rust future is inert until polled, and the lazy bridge does not

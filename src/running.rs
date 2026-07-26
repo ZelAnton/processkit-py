@@ -33,8 +33,12 @@ use crate::runtime::{
 
 /// The shared process slot: `None` once a consuming verb has taken ownership.
 /// Shared (via `Arc`) between the `RunningProcess` handle and any idle-timeout
-/// watchdog living in one of its streams, so both address the one process
-/// through the one `StdMutex` (no second, racing kill channel).
+/// watchdog or events drive living in one of its streams, so all of them address
+/// the one process through the one `StdMutex` (no second, racing kill channel).
+///
+/// Shared for *reach*, never for ownership: the handle empties this slot as it is
+/// dropped, so a stream object that outlives its handle cannot extend the child's
+/// life (see `impl Drop for PyRunningProcess`).
 type SharedProcess = Arc<StdMutex<Option<PkRunningProcess>>>;
 
 /// The idle-timeout watchdog carried by a `stdout_lines()` / `output_events()`
@@ -78,15 +82,17 @@ enum JointFinish {
     NotStarted,
     /// The events stream handed the run to this background `finish()` task.
     Running(JoinHandle<processkit::Result<PkFinished>>),
-    /// A consuming verb already took the joint finisher's result.
+    /// The joint finisher is no longer this slot's to give: a consuming verb took
+    /// it to report the run, or a context-manager exit took it to tear the tree
+    /// down (see [`teardown`]). Either way the handle is spent from here on.
     Taken,
 }
 
 type FinishSlot = Arc<StdMutex<JointFinish>>;
 
-/// What a consuming verb (`finish`/`outcome`/`shutdown` & co.) found when it
-/// claimed the run: either the live process, or the joint finisher the events
-/// stream started.
+/// What a consuming verb (`finish`/`outcome`/`shutdown` & co.) — or a context
+/// manager's teardown — found when it claimed the run: either the live process,
+/// or the joint finisher the events stream started.
 enum Claimed {
     // Boxed: `RunningProcess` is a few hundred bytes while a `JoinHandle` is one
     // pointer, so an unboxed enum would make every `claim()` return path pay the
@@ -458,8 +464,11 @@ fn start_joint_finish(process: &SharedProcess, finish: &FinishSlot) -> bool {
     };
     // Spawned, not merely stored in this drive, so it makes progress even if the
     // consumer stops iterating (`break`s out of the loop) — the handle's verb can
-    // then await it, and the handle's `Drop` aborts it, dropping the process and
+    // then await it, and both of the handle's teardown paths (`__exit__`/
+    // `__aexit__` via `teardown`, and `Drop`) abort it, dropping the process and
     // taking the tree down exactly as dropping an un-finished handle always did.
+    // Every one of those paths goes through the `finish` slot, so this task is
+    // never left as the only thing standing between a `break` and an orphaned tree.
     *slot = JointFinish::Running(tokio::spawn(async move { running.finish().await }));
     true
 }
@@ -606,12 +615,19 @@ impl PyRunningProcess {
             .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))
     }
 
-    /// Claim the run for a consuming verb: normally the live process, but — after
-    /// an `output_events()` stream handed the run to its own finisher so the
-    /// crate's lifecycle stream could complete (see `EventsDrive`) — that
-    /// finisher's task instead, so the verb reports the real run rather than
-    /// raising "already consumed" for work the binding itself started.
-    fn claim(&self) -> PyResult<Claimed> {
+    /// Take whatever this handle still owns, leaving it spent: normally the live
+    /// process, but — after an `output_events()` stream handed the run to its own
+    /// finisher so the crate's lifecycle stream could complete (see
+    /// `EventsDrive`) — that finisher's task instead. `None` once the handle has
+    /// nothing left (a consuming verb, or a context-manager exit, already took
+    /// it).
+    ///
+    /// Both callers below must go through here rather than reaching for the
+    /// process slot alone: [`claim`](Self::claim) so a consuming verb reports the
+    /// real run instead of raising "already consumed" for work the binding itself
+    /// started, and the context-manager exits so their teardown is not silently
+    /// skipped for exactly the same reason (see [`teardown`]).
+    fn take_claim(&self) -> Option<Claimed> {
         {
             let mut slot = self.finish.lock().unwrap_or_else(PoisonError::into_inner);
             if let JointFinish::Running(_) = &*slot {
@@ -619,11 +635,18 @@ impl PyRunningProcess {
                 else {
                     unreachable!("just matched JointFinish::Running")
                 };
-                return Ok(Claimed::Joint(task));
+                return Some(Claimed::Joint(task));
             }
         }
-        self.take_running()
+        self.take()
             .map(|running| Claimed::Process(Box::new(running)))
+    }
+
+    /// Claim the run for a consuming verb — [`take_claim`](Self::take_claim) with
+    /// the "already consumed" error every other consuming path raises.
+    fn claim(&self) -> PyResult<Claimed> {
+        self.take_claim()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))
     }
 
     /// Like [`claim`](Self::claim), but for the verbs that cannot be answered from
@@ -697,6 +720,49 @@ async fn kill_and_reap(mut running: PkRunningProcess) -> processkit::Result<()> 
     Ok(())
 }
 
+/// Tear down whatever [`PyRunningProcess::take_claim`] handed over, for `__exit__`
+/// and `__aexit__`.
+///
+/// The `Joint` arm is the one crate-3.0 added, and it is load-bearing rather than
+/// a formality: once an `output_events()` stream has observed the child exit it
+/// moves the run into a background `finish()` (see `start_joint_finish`), so from
+/// that moment the process slot is empty. A teardown that only looked at the slot
+/// would find nothing and become a silent no-op — the *exact* failure mode
+/// `probe_exit_now`'s doc calls the worst one ("an orphaned tree until the objects
+/// were collected"), reintroduced through the finisher instead of the probe. It is
+/// reachable from ordinary code: `break` out of the loop over a command that
+/// already exited but left a grandchild holding the pipe, and the finisher parks
+/// on that pipe — for as long as the grandchild lives — with the block long since
+/// exited.
+///
+/// Aborting the finisher is what tears the tree down: its task owns the
+/// `RunningProcess`, and dropping one kills its whole private tree (the same
+/// kill-on-drop that has always backed this context manager). The result the
+/// finisher would have produced is discarded, which is correct for a teardown —
+/// `__exit__` never reported an outcome, and a caller who wants one calls
+/// `finish()`/`outcome()` *inside* the block, which claims the same task and
+/// leaves this a no-op.
+///
+/// `await`ing the aborted handle is what makes it *deterministic*: `abort()` only
+/// schedules cancellation, so returning right after it would hand back to Python
+/// with the process not yet dropped. The join resolves only once the task has been
+/// dropped — process included — so by the time the `with` block is left the tree
+/// is gone, not merely doomed. (A finisher that already completed is not
+/// cancellable, and its join returns at once; that is the common drained-to-the-end
+/// case, where the process was dropped by the finisher itself.) A `JoinError` is
+/// deliberately ignored: cancellation *is* the expected outcome here, and a
+/// panicked finisher has already dropped its process too.
+async fn teardown(claimed: Claimed) -> processkit::Result<()> {
+    match claimed {
+        Claimed::Process(running) => kill_and_reap(*running).await,
+        Claimed::Joint(task) => {
+            task.abort();
+            let _ = task.await;
+            Ok(())
+        }
+    }
+}
+
 #[pymethods]
 impl PyRunningProcess {
     /// The OS process id, or `None` once the handle has been consumed/reaped.
@@ -756,6 +822,11 @@ impl PyRunningProcess {
     /// no-op if a consuming verb (`outcome`/`finish`/`output`/`output_bytes`/
     /// `profile`/`shutdown`, or their `a`-prefixed twins) already took the
     /// handle. Never suppresses an exception raised inside the block.
+    ///
+    /// Goes through `take_claim`, not the process slot alone, so a run an
+    /// `output_events()` stream handed to its own background finisher is torn down
+    /// here too rather than left to that finisher (and, failing it, to the GC) —
+    /// see [`teardown`].
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
         &self,
@@ -766,13 +837,13 @@ impl PyRunningProcess {
     ) -> PyResult<bool> {
         // Check before taking: a reentrant-runtime error from `block_on` after the
         // handle is taken would drop (kill-on-drop) a process the caller could
-        // otherwise have torn down correctly from the right context. `take()`
-        // releases the lock before `block_on`, so a concurrent getter/`__repr__`
+        // otherwise have torn down correctly from the right context. `take_claim()`
+        // releases both locks before `block_on`, so a concurrent getter/`__repr__`
         // on another thread reads back `None` cleanly rather than blocking on the
         // teardown wait.
         reject_reentrant_runtime()?;
-        if let Some(running) = self.take() {
-            block_on(py, kill_and_reap(running))?;
+        if let Some(claimed) = self.take_claim() {
+            block_on(py, teardown(claimed))?;
         }
         Ok(false)
     }
@@ -795,10 +866,10 @@ impl PyRunningProcess {
         // is kill-on-drop, silently spending it instead of leaving it in place
         // for the caller to retry correctly. See `require_event_loop`.
         require_event_loop(py)?;
-        let running = self.take();
+        let claimed = self.take_claim();
         drive_async(py, async move {
-            if let Some(running) = running {
-                kill_and_reap(running).await?;
+            if let Some(claimed) = claimed {
+                teardown(claimed).await?;
             }
             Ok::<bool, processkit::Error>(false)
         })
@@ -1027,6 +1098,22 @@ impl PyRunningProcess {
     /// sync/async pairing convention, unlike the pre-1.1 `RunningProcess`
     /// where `shutdown()` was itself a coroutine (a trap: the same verb name
     /// meant "call it" on a `ProcessGroup` but "await it" here).
+    ///
+    /// **Why the joint arm reports instead of escalating**, since it is the one
+    /// place `grace_seconds` stops bounding the call: that arm is only reachable
+    /// once the events stream observed the child *exit*, so there is nothing left
+    /// to signal, and the escalation the grace would trigger has nothing to kill
+    /// but pipe-holding descendants. Awaiting the finisher is what yields the real
+    /// `Outcome` — and it drops the process (tearing the tree down) as it returns.
+    /// Cutting it short instead would kill the remnant tree sooner but leave this
+    /// verb with no outcome to return at all: the run's exit status lives only
+    /// inside that finisher (the crate exposes none on a reaped-but-unfinished
+    /// handle), so a bounded variant could only raise. `finish()`/`afinish()` wait
+    /// on the same descendants for the same reason, before and after crate 3.0 —
+    /// so this stays consistent with them, and the *bounded* teardown is the
+    /// context manager (`with`/`async with`), which hard-kills the tree without
+    /// reporting an outcome. `block_on_interruptible` keeps `Ctrl+C` working
+    /// throughout.
     fn shutdown(&self, py: Python<'_>, grace_seconds: f64) -> PyResult<PyOutcome> {
         let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
         reject_reentrant_runtime()?;
@@ -1034,9 +1121,6 @@ impl PyRunningProcess {
             Claimed::Process(running) => {
                 block_on(py, async move { running.shutdown(grace).await }).map(PyOutcome::from)
             }
-            // The events stream's finisher only starts once the child has been
-            // observed to exit, so there is nothing left to signal or escalate:
-            // a graceful teardown of an already-exited run *is* its outcome.
             Claimed::Joint(task) => {
                 block_on_interruptible(py, joint_finished(task))?.map(|f| f.into_outcome())
             }
@@ -1065,15 +1149,25 @@ impl PyRunningProcess {
     }
 }
 
-/// Preserve kill-on-drop for a run whose process this binding moved into the
-/// events stream's background finisher (see `EventsDrive`).
+/// Preserve kill-on-drop — "dropping the handle tears its tree down" — through
+/// both places crate 3.0's streaming rework can otherwise strand the process.
 ///
-/// Dropping a `RunningProcess` tears its tree down; that guarantee must not be
-/// lost just because the process now lives inside a spawned task. Aborting the
-/// task drops the process it owns, which restores exactly that behaviour. It is a
-/// no-op in every ordinary case: a task that already completed cannot be
-/// cancelled, and a consuming verb that claimed the result left `JointFinish::
-/// Taken` behind.
+/// 1. **The events stream's background finisher** (see `EventsDrive`): the run may
+///    live inside a spawned task rather than this handle's slot. Aborting the task
+///    drops the process it owns, which restores exactly the old behaviour. A no-op
+///    in every ordinary case — a task that already completed cannot be cancelled,
+///    and a consuming verb (or a context-manager exit) that claimed it left
+///    `JointFinish::Taken` behind.
+/// 2. **The shared process slot itself.** The slot is an `Arc` so a stream's idle
+///    watchdog and events drive can address the one process through the one lock —
+///    but it is this handle's *own* slot, not shared ownership, so the drop must
+///    empty it explicitly instead of letting the last `Arc` holder decide when the
+///    child dies. Without this, a live `output_events()` (or idle-timeout
+///    `stdout_lines()`) object outliving the handle would keep the whole tree alive
+///    past the drop, silently downgrading kill-on-drop to "…once the last stream
+///    object is collected too". The other holders already handle an empty slot:
+///    `IdleGuard::kill` becomes a no-op, the drive's probe reads `NoProcess` and
+///    just drains a stream that is about to hit EOF anyway (the tree is gone).
 impl Drop for PyRunningProcess {
     fn drop(&mut self) {
         if let JointFinish::Running(task) =
@@ -1081,6 +1175,9 @@ impl Drop for PyRunningProcess {
         {
             task.abort();
         }
+        // Taken (and dropped) *after* the finish guard above is released, keeping
+        // the one lock order every other path uses: `finish` then `process`.
+        drop(self.take());
     }
 }
 

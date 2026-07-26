@@ -1014,7 +1014,10 @@ end or ``break`` out early. ``output()``/``output_bytes()``/``profile()``
 raise once this stream has taken the run over, which it does as soon as
 it observes the child exit: its stdout was streamed away and its stderr
 was delivered as events, so they have nothing left to capture or
-sample.
+sample. Teardown is unaffected — leaving the handle's context-manager
+block (or dropping it) hard-kills the whole tree even after the stream
+has taken the run over, which is what stops a grandchild still holding
+the pipe from outliving the block.
 
 #### `take_stdin`
 
@@ -1142,6 +1145,13 @@ returning the `Outcome`; consumes the handle. Only for a standalone
 ``start()``/``astart()`` handle — a handle from ``ProcessGroup.start()``
 raises `Unsupported`; tear such a child down via the group (or `kill()`).
 Named to match ``ProcessGroup.shutdown()``/``ashutdown()``.
+
+After an ``output_events()`` stream has taken the run over the child has
+already exited, so there is nothing to signal: this reports that run's
+real outcome, waiting for its output to finish draining just as
+``finish()`` does, rather than escalating against surviving
+grandchildren. Leave the handle's context-manager block instead when a
+hard bound matters more than the outcome.
 
 #### `ashutdown`
 

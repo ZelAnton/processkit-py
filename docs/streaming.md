@@ -299,8 +299,11 @@ Things to know:
 - **Leaving the loop early is fine — with one boundary.** `break` out whenever
   you like: `finish()`/`afinish()` and `outcome()`/`aoutcome()` report the run
   either way, and dropping the handle (or exiting its `with` block) still tears
-  the tree down. The three capture verbs above are the exception, and *when* you
-  stopped decides which of two behaviours you get:
+  the tree down — including after the stream has taken the run over, where the
+  teardown claims the run *from* it (see
+  [Deterministic teardown](#deterministic-teardown)). The three capture verbs
+  above are the exception, and *when* you stopped decides which of two behaviours
+  you get:
 
   | when you stopped iterating | `finish()` / `outcome()` | `output()` / `output_bytes()` / `profile()` |
   |---|---|---|
@@ -552,17 +555,31 @@ async with await Command("tail", ["-f", "app.log"]).astart() as proc:
 # context-manager exit kills the tree on the way out
 ```
 
-Two rules close the loop:
+Three rules close the loop:
 
 - **A consumed handle is spent.** If you consume inside the block (`await
   proc.output()` / `.outcome()` / `.finish()` / `.shutdown(...)` — or their
   `a`-prefixed async twins), the exit is a
   no-op — the verb already settled the run. Afterward the getters return `None`
   and a second consuming verb raises.
+- **Streaming events does not weaken it.** Once an `output_events()` stream has
+  [taken the run over](#interleaved-stdout-and-stderr) the completion of that run
+  is being driven for you in the background — and leaving the block still ends
+  the tree *there*, by claiming that work back rather than waiting on it. This is
+  the case that matters after an early `break`: the child may be gone while a
+  grandchild still holds its pipe, and the block's exit is what stops that
+  grandchild from outliving it (on Windows, that also means the files and
+  directories it holds open are released before the `with` returns, not moments
+  later).
 - **Prefer `shutdown()`/`ashutdown()` for a graceful stop.** `await proc.ashutdown(grace_seconds=5)`
   signals the tree, waits up to `grace_seconds`, then hard-kills — and returns
   the `Outcome`. Reach for the context manager when you just want the tree
   *gone*; reach for `shutdown()` when the child deserves a chance to flush.
+  (After an `output_events()` stream has taken the run over there is nothing left
+  to signal — the child has exited — so `shutdown()` reports that run's real
+  outcome, waiting for its output to finish draining exactly as `finish()` does,
+  rather than escalating against surviving grandchildren. When the *bound*
+  matters more than the outcome, leave the block.)
 
 Cancellation is plain asyncio here: `task.cancel()` on the task awaiting a
 consuming verb tears the tree down and propagates `CancelledError`. The full

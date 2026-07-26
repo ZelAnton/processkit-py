@@ -75,6 +75,20 @@ _EXIT_LEAVING_A_TALKING_GRANDCHILD = (
     "print('parent-done', flush=True)\n"
 )
 
+# The same shape, with two changes that make it a *teardown* probe rather than an
+# iteration one: the grandchild's PID goes to argv[1] (so `wait_dead` can watch it
+# die) and it lingers far longer than any assertion window, so "the tree came
+# down" cannot be confused with "the grandchild happened to finish".
+_EXIT_LEAVING_A_TALKING_GRANDCHILD_PID_FILE = (
+    "import subprocess, sys\n"
+    "child = subprocess.Popen([sys.executable, '-c', "
+    "\"import time; time.sleep(1.5); print('late', flush=True); time.sleep(60)\"])\n"
+    "with open(sys.argv[1], 'w') as f:\n"
+    "    f.write(str(child.pid))\n"
+    "    f.flush()\n"
+    "print('parent-done', flush=True)\n"
+)
+
 # Spawns a grandchild (sleeps), records its PID to argv[1], then streams forever.
 _STREAM_AND_SPAWN = """
 import subprocess, sys, time
@@ -417,6 +431,111 @@ def test_async_with_reaps_tree_when_a_streamed_events_loop_is_cancelled(
     grandchild = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
     assert wait_dead(grandchild, timeout=10.0), (
         "grandchild survived the async-with exit after a cancelled event stream"
+    )
+
+
+def test_async_with_reaps_the_tree_after_an_early_break_from_an_exited_child(
+    pid_file: pathlib.Path,
+) -> None:
+    # The other half of the teardown promise, on the branch the crate-3.0 joint
+    # finisher opened: once the events stream has observed the child exit it moves
+    # the run into a background `finish()`, so the handle's own slot is empty from
+    # then on. A `__aexit__` that only looked at that slot would find nothing and
+    # return silently, leaving the surviving tree to whenever that background
+    # finisher gave up on the pipe (see the assertion below) or the objects were
+    # collected — the orphaned-tree failure mode this context manager exists to
+    # prevent.
+    #
+    # Deterministic by construction, like the capture-verb boundary tests below:
+    # the child exits right after its first line while its grandchild holds the
+    # inherited stdout pipe and speaks a second later, so the `__anext__` that
+    # fetches that late line parks with the child already gone — the drive's probe
+    # arms the finisher — and the `break` afterwards is a genuine mid-stream exit
+    # with the pipe still open. `proc.pid` reading `None` inside the block pins
+    # that the joint finisher really was armed, so this cannot silently degrade
+    # into "an ordinary handle was torn down".
+    #
+    # The handle is deliberately kept referenced past the block (`keep_alive`):
+    # dropping it kills the tree on its own, which would let a `__aexit__` that
+    # quietly did nothing still pass.
+    keep_alive: list[object] = []
+
+    async def scenario() -> tuple[int, list[str], int | None]:
+        command = Command(PY, ["-c", _EXIT_LEAVING_A_TALKING_GRANDCHILD_PID_FILE, str(pid_file)])
+        proc = await command.astart()
+        keep_alive.append(proc)
+        texts: list[str] = []
+        async with proc:
+            grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+            async for ev in proc.output_events():
+                texts.append(ev.text.rstrip())
+                if texts[-1] == "late":
+                    break
+            pid_after_break = proc.pid
+            assert is_alive(grandchild), "the grandchild died before the block was left"
+        return grandchild, texts, pid_after_break
+
+    grandchild, texts, pid_after_break = asyncio.run(
+        asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS)
+    )
+    # Premises: the loop was left early (mid-stream, pipe still held), and the
+    # events stream had taken the run over by then — an un-taken run would still
+    # report a live `pid` here.
+    assert texts == ["parent-done", "late"], texts
+    assert pid_after_break is None, "the events stream never took the run over"
+    # A deliberately SHORT window, and the reason is the whole point of the test:
+    # a teardown that no-ops here does not leak the tree forever — the background
+    # finisher gives up joining the pipe after the crate's 5 s `PUMP_TEARDOWN` and
+    # drops the process then — so an orphan is only visible as a *delay*. Anything
+    # at or past that grace would pass with the regression in place; this window
+    # must stay well under it. It is not tight: the exit kills synchronously, so
+    # all this absorbs is the OS reaping the tree (measured at 0.00-0.02 s here),
+    # against 5 s for the regression it has to catch.
+    assert wait_dead(grandchild, timeout=2.0), (
+        "grandchild outlived the async-with exit after an early break from an exited "
+        "child — the tree was left to the background finisher, not torn down by the block"
+    )
+
+
+@pytest.mark.parametrize("stream_verb", ["output_events", "stdout_lines"])
+def test_dropping_the_handle_kills_the_tree_while_a_stream_is_live(
+    pid_file: pathlib.Path, stream_verb: str
+) -> None:
+    # Kill-on-drop must not be delegated to whoever else is holding the handle's
+    # shared process slot. Both live streams here hold an `Arc` on that slot — the
+    # events drive always, `stdout_lines()` whenever the command set an
+    # `idle_timeout` (its watchdog kills through the same lock) — so a handle that
+    # let the last `Arc` holder decide when the child dies would keep the whole
+    # tree alive for as long as the stream object happened to live, silently
+    # turning "dropping the handle tears the tree down" into "…once everything
+    # referencing it is collected too".
+    #
+    # The stream deliberately outlives the handle, and is then drained: it must
+    # simply END (its pipes died with the tree), promptly and without a hang.
+    async def scenario() -> int:
+        command = spawn_grandchild_command(pid_file)
+        if stream_verb == "stdout_lines":
+            # What makes *this* stream hold the shared slot; far longer than the
+            # drain below, so an idle lapse can never be what ends the stream.
+            command = command.idle_timeout(30.0)
+        proc = await command.astart()
+        stream = getattr(proc, stream_verb)()
+        grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+        assert is_alive(grandchild)
+
+        del proc
+        gc.collect()
+
+        async def drain() -> None:
+            async for _item in stream:
+                pass
+
+        await asyncio.wait_for(drain(), timeout=10.0)
+        return grandchild
+
+    grandchild = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert wait_dead(grandchild, timeout=10.0), (
+        f"grandchild survived the handle drop while a live {stream_verb}() stream held the slot"
     )
 
 

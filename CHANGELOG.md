@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+
+## [1.4.2] - 2026-07-26
+
+### Added
 - New `python -m processkit` exit code **119**, shared by `run`, `supervise`,
   and `doctor`: the command finished, but the wrapper could not deliver its own
   buffered output (a final flush that failed with e.g. `ENOSPC`/`EIO`, or on a
@@ -1173,7 +1184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/ZelAnton/processkit-py/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/ZelAnton/processkit-py/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/ZelAnton/processkit-py/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ZelAnton/processkit-py/compare/v1.2.4...v1.3.0

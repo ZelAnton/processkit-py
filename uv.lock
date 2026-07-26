@@ -719,7 +719,7 @@ wheels = [
 
 [[package]]
 name = "processkit-py"
-version = "1.4.1"
+version = "1.4.2"
 source = { editable = "." }
 
 [package.dev-dependencies]

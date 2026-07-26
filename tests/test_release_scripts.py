@@ -25,12 +25,69 @@ from scripts.release.changelog import (
     promote_unreleased,
     unreleased_has_bullets,
 )
+from scripts.release.pull_cibuildwheel_images import (
+    _parse_pinned_images,
+    _pull_with_retry,
+)
 
 CLIFF_TOML = pathlib.Path(__file__).resolve().parents[1] / "cliff.toml"
 
 _PARSER_ENTRY_RE = re.compile(
     r'\{\s*message\s*=\s*"((?:[^"\\]|\\.)*)"\s*,\s*(skip\s*=\s*true|group\s*=\s*"[^"]*")\s*\}'
 )
+
+
+# --- cibuildwheel image pre-pull --------------------------------------------
+
+
+def test_parse_pinned_images_uses_exact_digest_for_native_architecture() -> None:
+    config = """\
+[x86_64]
+manylinux_2_28 = quay.io/example/many@sha256:111 # release pin
+musllinux_1_2 = quay.io/example/musl@sha256:222 # release pin
+"""
+    assert _parse_pinned_images(config, "AMD64") == (
+        "quay.io/example/many@sha256:111",
+        "quay.io/example/musl@sha256:222",
+    )
+
+
+def test_pull_with_retry_retries_a_transient_registry_failure() -> None:
+    failed: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+        ["docker", "pull"], returncode=1
+    )
+    succeeded: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+        ["docker", "pull"], returncode=0
+    )
+    with (
+        mock.patch(
+            "scripts.release.pull_cibuildwheel_images.subprocess.run",
+            side_effect=[failed, succeeded],
+        ) as run,
+        mock.patch("scripts.release.pull_cibuildwheel_images.time.sleep") as sleep,
+    ):
+        _pull_with_retry("quay.io/example/image@sha256:123")
+
+    assert run.call_count == 2
+    sleep.assert_called_once_with(10)
+
+
+def test_pull_with_retry_fails_after_three_attempts() -> None:
+    failed: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(
+        ["docker", "pull"], returncode=1
+    )
+    with (
+        mock.patch(
+            "scripts.release.pull_cibuildwheel_images.subprocess.run",
+            return_value=failed,
+        ) as run,
+        mock.patch("scripts.release.pull_cibuildwheel_images.time.sleep") as sleep,
+        pytest.raises(RuntimeError, match="after 3 attempts"),
+    ):
+        _pull_with_retry("quay.io/example/image@sha256:123")
+
+    assert run.call_count == 3
+    assert sleep.call_args_list == [mock.call(10), mock.call(20)]
 
 
 def _cliff_commit_parsers() -> list[tuple[str, bool]]:

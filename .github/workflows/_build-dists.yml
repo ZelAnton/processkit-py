@@ -87,6 +87,17 @@ jobs:
         with:
           name: release-meta
           path: .
+      # cibuildwheel normally pulls a missing manylinux/musllinux image once as
+      # part of `docker create`. A transient registry timeout then discards the
+      # entire native Linux job after its earlier wheels have already built.
+      # Pre-pull the exact image digests pinned by the resolved cibuildwheel
+      # version with bounded retries. Once present, cibuildwheel verifies their
+      # platform and deliberately uses `--pull=never` for the actual build.
+      - if: runner.os == 'Linux'
+        name: Pre-pull Linux build images with retry
+        run: >-
+          uvx --from 'cibuildwheel>=4,<5' python
+          scripts/release/pull_cibuildwheel_images.py
       - name: Build wheels
         run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
       # `if-no-files-found: error` below only fails when wheelhouse/ is entirely

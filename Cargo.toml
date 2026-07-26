@@ -37,8 +37,8 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # binding tracks API/behaviour churn deliberately, not transitively, so the
 # requirement names the major it was migrated to and nothing narrower: no patch
 # pin, no floor-pinned minor. Cargo.lock resolves the exact version actually
-# built (3.0.0 at the time of the migration) and is the only place a precise
-# version lives.
+# built and is the ONLY place a precise version lives — deliberately not
+# repeated here, where it would silently go stale on the next `cargo update`.
 #
 # History that still shapes this line: 1.3.0 (a semver-broken minor) and 2.0.0
 # (a mistaken publish) were yanked upstream, which is why the pre-3.0
@@ -49,9 +49,10 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # lifecycle stream: `output_events()`/`OutputEvent`/`OutputEvents` →
 # `events()`/`ProcessEvent`/`ProcessEvents`); see CHANGELOG.md for the
 # per-version detail. Each upstream release's new public surface keeps being
-# adopted here as it lands, so treat a bump as a deliberate review step (see the
-# `public-api.txt` diffing habit noted in CONTRIBUTING.md) rather than a
-# transitive pickup.
+# adopted here as it lands, so treat a bump as a deliberate review step — diff
+# the crate's shipped `public-api.txt` between the old and new versions in the
+# registry cache before believing the release notes (CONTRIBUTING.md,
+# "Upgrading the `processkit` core") — rather than a transitive pickup.
 #
 # Features are listed EXPLICITLY with `default-features = false`, so a change to
 # the crate's default set can never silently alter our public surface:

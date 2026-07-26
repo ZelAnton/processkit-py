@@ -47,22 +47,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `await proc.afinish()` (or `aoutcome()`) — is unaffected: the binding drives
     the run's completion itself once the child is observed to exit, so the
     iterator ends on its own and the finisher afterwards reports that same run.
-    The one narrowing: `output()` / `output_bytes()` / `profile()` (and their
-    `a`-twins) now raise a `ProcessError` naming `output_events()` when called
-    after streaming events, instead of returning the empty captures they used to
-    — stdout was consumed by the iterator, stderr was delivered as events, and
-    the run is already complete. Use `finish()`/`afinish()` or
-    `outcome()`/`aoutcome()`.
-- `output_limit(max_bytes=...)` — and the `total_bytes` an `OutputTooLarge`
-  reports, and `Supervisor`'s `capture_max_bytes=` — now count the **raw bytes
-  read from the child's output pipe** rather than the bytes of the decoded text,
+    One deliberate narrowing comes with it — see the **BREAKING** entry below.
+- **BREAKING** — `output()` / `output_bytes()` / `profile()` (and their
+  `a`-twins) now raise a `ProcessError` naming `output_events()` when called on a
+  handle whose events were streamed to the end, instead of returning the empty
+  captures they used to: that stream consumed stdout, delivered stderr as events,
+  and (since the 3.0 migration above) completed the run, so there is nothing left
+  for them to capture or to sample. Use `finish()`/`afinish()` (outcome +
+  stderr) or `outcome()`/`aoutcome()` instead. Code that called `output()` after
+  `output_events()` and used the result got an empty `stdout`/`stderr` with a
+  real outcome; it now has to read that outcome from a finisher.
+- `output_limit(max_bytes=...)` under **`on_overflow="error"`** — and with it the
+  `total_bytes` an `OutputTooLarge` reports — now counts the **raw bytes read
+  from the child's output pipe** rather than the bytes of the decoded text,
   following the same change in the Rust core. Line terminators (`\n`, or both
-  bytes of a CRLF) and bytes that are not valid UTF-8 are charged against the cap
-  too, so a given ceiling truncates or raises marginally sooner: by one byte per
-  line for ordinary UTF-8 output, and by more for CRLF or binary-ish output. This
-  is what makes the cap a true bound on the parent's memory — it counts what was
-  actually read. No API change; re-check any threshold you sized against decoded
-  text. See "Bounding captured output" in `docs/commands.md`.
+  bytes of a CRLF) and bytes that are not valid UTF-8 are charged against the
+  ceiling too, so a cap sized against decoded text raises marginally sooner: by
+  one byte per line for ordinary UTF-8 output, and by more for CRLF or binary-ish
+  output. The **drop modes are unaffected** — `drop_oldest` (the default) and
+  `drop_newest` still bound the *retained* output by decoded line content, as
+  does `Supervisor`'s `capture_max_bytes=`, whose `capture_on_overflow` defaults
+  to `drop_oldest`. Raw stdout captured by `output_bytes()` is never decoded, so
+  its cap is unchanged in every mode. No API change; re-check any
+  `on_overflow="error"` threshold you sized against decoded text. See "What
+  `max_bytes` actually counts" in `docs/commands.md`.
 - `python -m processkit` now terminates with `os._exit` after flushing its own
   stdout/stderr, instead of returning a code to `sys.exit`. Every line the
   wrapper printed still arrives, and the exit code for every documented outcome

@@ -570,13 +570,15 @@ impl PySupervisor {
         // output only; there is no raw-stdout path for the new byte ceiling to
         // newly bound, and `final_result.truncated` keeps its existing meaning.
         //
-        // processkit 3.0.0 DOES reach here, but only as a change of *unit*, not
-        // of which streams are bounded: `capture_max_bytes` now counts the raw
-        // bytes read from the incarnation's pipes (line terminators and
-        // invalid-UTF-8 bytes included) rather than the decoded line content, so
-        // a given cap truncates marginally sooner. Same knob, same streams, same
-        // `truncated` meaning — see `Command.output_limit`'s docstring for the
-        // full accounting note.
+        // processkit 3.0.0's byte-accounting change reaches here only through the
+        // `capture_on_overflow="error"` branch, whose ceiling now counts the raw
+        // bytes read from the incarnation's pipes (terminators and invalid-UTF-8
+        // bytes included) instead of the decoded line content. The default below
+        // is `drop_oldest`, and drop-mode retention still measures decoded line
+        // content exactly as it did in 2.x — so the common `capture_max_bytes=`
+        // call bounds the captured tail on the same unit as before, and
+        // `final_result.truncated` keeps its existing meaning either way. See
+        // `Command.output_limit`'s docstring for the full accounting note.
         if capture_max_bytes.is_some()
             || capture_max_lines.is_some()
             || capture_on_overflow.is_some()

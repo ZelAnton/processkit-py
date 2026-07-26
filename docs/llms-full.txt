@@ -172,9 +172,10 @@ also bounds the raw stdout of `output_bytes()` / `aoutput_bytes()` (since proces
 2.1.0): over the byte ceiling it either raises `OutputTooLarge` (`on_overflow="error"`)
 or keeps a bounded head/tail with `BytesResult.truncated` set.
 
-`max_bytes` (and `OutputTooLarge.total_bytes`) count **raw bytes read from the
-pipe** — line terminators and invalid-UTF-8 bytes included — not the bytes of the
-decoded text; see
+Under `on_overflow="error"` the ceiling (and the `total_bytes` an
+`OutputTooLarge` reports) counts **raw bytes read from the pipe** — line
+terminators and invalid-UTF-8 bytes included — not the bytes of the decoded text;
+a drop-mode cap still bounds the retained decoded content. See
 [Bounding captured output](commands.md#what-max_bytes-actually-counts).
 
 ## Stream output line by line (async)
@@ -1407,21 +1408,33 @@ Over the byte cap an `output_bytes()` run either raises `OutputTooLarge` (with
 
 ### What `max_bytes` actually counts
 
-`max_bytes` — and the `total_bytes` an `OutputTooLarge` reports — count the **raw
-bytes read from the child's output pipe**, not the bytes of the decoded text you
-get back in `ProcessResult.stdout`. Concretely, the cap is also charged for:
+Which bytes the cap counts depends on `on_overflow` — the asymmetry is deliberate
+upstream, so check which half applies to you before sizing a cap:
 
-- the **line terminator** each line arrived with (`\n`, or *both* bytes of a
-  `\r\n`), which the decoded line no longer carries;
-- bytes that are **not valid UTF-8**, which decoding replaces or drops.
+- **`on_overflow="error"`** — the ceiling counts the **raw bytes read from the
+  child's output pipe**, before decoding and *cumulatively* over the whole run
+  (a streaming consumer draining lines frees buffer space but does not reset it).
+  The line terminator each line arrived with (`\n`, or *both* bytes of a `\r\n`)
+  and bytes that are **not valid UTF-8** are charged against it, even though
+  neither survives into `ProcessResult.stdout`. `OutputTooLarge.total_bytes`
+  reports that same raw count, so it can exceed `len(result.stdout.encode())` for
+  the same output. **Changed in processkit 3.0.0**: this ceiling used to count
+  decoded line content, so a cap sized against decoded text now trips slightly
+  sooner — by one byte per line for ordinary UTF-8 output, more for CRLF or
+  binary-ish output.
+- **`on_overflow="drop_oldest"` / `"drop_newest"`** — the cap bounds what is
+  **retained**, measured in the bytes of the decoded line *content*, terminators
+  excluded. Unchanged in 3.0.0: a drop-mode cap keeps exactly the head/tail it
+  always did.
 
-For plain, newline-terminated UTF-8 output the two measures differ only by one
-byte per line. For CRLF output (a Windows tool) or binary-ish output they diverge
-more, and a cap sized against decoded text trips slightly sooner than it used to.
-That is deliberate: the raw count is the amount actually read, which is what makes
-`max_bytes` a genuine bound on the parent's memory — the reason to prefer it over
-`max_lines` for an untrusted child in the first place. (Raw-byte accounting since
-processkit 3.0.0; earlier the ceiling counted decoded line content.)
+Either way `max_bytes` is a real bound on the parent's memory — the reason to
+prefer it over `max_lines` for an untrusted child — the two modes just measure at
+different points: what was *read* for the fail-loud ceiling, what is *kept* for
+the ring buffers.
+
+Raw stdout captured by `output_bytes()` is never decoded, so there is no
+distinction to draw there: its byte cap counts the bytes as they were read, in
+every mode, exactly as it did before 3.0.0.
 
 ## Timeouts
 
@@ -2211,12 +2224,13 @@ on top: [Environment and sandboxing](commands.md#environment-and-sandboxing).
 
 Cap `max_bytes` so a chatty or malicious tool cannot grow the parent's memory
 without bound (a `max_lines`-only cap does not — one newline-free flood is a
-single, unbounded line). The cap counts the raw bytes read from the child's pipe,
-which is exactly the quantity that grows the parent's memory — so it holds even
-for output that is binary or not valid UTF-8. `on_overflow="error"` turns hitting
-the cap into a failure rather than a silent drop, which is usually what you want
-for a tool you don't trust. Full treatment:
-[Bounding captured output](commands.md#bounding-captured-output).
+single, unbounded line). `on_overflow="error"` turns hitting the cap into a
+failure rather than a silent drop, which is usually what you want for a tool you
+don't trust — and in that mode the ceiling counts the raw bytes read from the
+child's pipe, so it holds even for output that is binary or not valid UTF-8. (A
+drop mode bounds the *retained* output instead, measured in decoded line content;
+see [what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).) Full
+treatment: [Bounding captured output](commands.md#bounding-captured-output).
 
 ### 3. Whole-tree resource limits
 
@@ -2589,7 +2603,9 @@ Things to know:
   `output_events()` after you have streamed events: stdout was consumed by the
   iterator and stderr was delivered as events, so there is nothing left for them
   to capture, and the run is already complete so there is nothing left to sample.
-  Reach for `finish()` / `outcome()` instead.
+  Reach for `finish()` / `outcome()` instead. (A **breaking** change that came
+  with the processkit 3.0 migration: those verbs used to return empty captures
+  alongside the run's real outcome.)
 - **Leaving the loop early is fine.** `break` out whenever you like; the
   following consuming verb still reports the run, and dropping the handle (or
   exiting its `with` block) still tears the tree down.
@@ -3547,8 +3563,11 @@ constructor kwargs (mirroring `Command.output_limit`'s kwargs — set at least o
 of the two cap sizes), or give the base `Command` an explicit
 [`output_limit`](commands.md) (respected as-is) before wrapping it in a
 `Supervisor`; otherwise stream the process yourself. `capture_max_bytes` uses the
-same unit as `output_limit(max_bytes=...)` — raw bytes read from the pipe, line
-terminators and invalid-UTF-8 bytes included, not decoded text; see
+same unit as `output_limit(max_bytes=...)`, which depends on the overflow mode:
+`capture_on_overflow` defaults to `"drop_oldest"`, where the cap bounds the
+retained decoded line content (unchanged in processkit 3.0.0); pass
+`capture_on_overflow="error"` and it becomes a fail-loud ceiling on the raw bytes
+read from the pipe instead. See
 [what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).
 
 ## The failure-storm guard
@@ -6266,11 +6285,22 @@ def afinish() -> Awaitable[Finished]
 def output() -> ProcessResult
 ```
 
+Wait for exit and capture the full `ProcessResult`; consumes the handle.
+
+Raises `ProcessError` on a handle whose ``output_events()`` stream was
+drained: that stream consumed stdout, delivered stderr as events and
+completed the run, so there is nothing left to capture. Read such a run
+with ``finish()``/``afinish()`` or ``outcome()``/``aoutcome()`` instead.
+(Before the processkit 3.0 migration this returned empty captures with a
+real outcome.)
+
 #### `aoutput`
 
 ```text
 def aoutput() -> Awaitable[ProcessResult]
 ```
+
+Async counterpart of `output` — same ``output_events()`` restriction.
 
 #### `output_bytes`
 
@@ -6278,11 +6308,17 @@ def aoutput() -> Awaitable[ProcessResult]
 def output_bytes() -> BytesResult
 ```
 
+Wait for exit and capture raw stdout as a `BytesResult`; consumes the
+handle. Raises `ProcessError` after a drained ``output_events()`` stream
+for the same reason as `output`.
+
 #### `aoutput_bytes`
 
 ```text
 def aoutput_bytes() -> Awaitable[BytesResult]
 ```
+
+Async counterpart of `output_bytes` — same ``output_events()`` restriction.
 
 #### `profile`
 
@@ -6290,11 +6326,21 @@ def aoutput_bytes() -> Awaitable[BytesResult]
 def profile(every_seconds: float) -> RunProfile
 ```
 
+Wait for exit while sampling resource usage every ``every_seconds``,
+returning a `RunProfile`; consumes the handle.
+
+Raises `ProcessError` on a handle whose ``output_events()`` stream was
+drained: completing that stream completed the run, so there is no live run
+left to sample. Use ``finish()``/``afinish()`` or ``outcome()``/
+``aoutcome()`` for its outcome.
+
 #### `aprofile`
 
 ```text
 def aprofile(every_seconds: float) -> Awaitable[RunProfile]
 ```
+
+Async counterpart of `profile` — same ``output_events()`` restriction.
 
 #### `shutdown`
 

@@ -1,7 +1,9 @@
 //! The async streaming/interactive handles: `RunningProcess` plus its
 //! `ProcessStdin`, `StdoutLines`, and `OutputEvents`.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use processkit::prelude::StreamExt;
@@ -108,85 +110,74 @@ async fn joint_finished(task: JoinHandle<processkit::Result<PkFinished>>) -> PyR
     }
 }
 
-/// Borrow the process out of the shared slot for the duration of one `&mut`
-/// operation, putting it back when the borrow ends — **including when the future
-/// holding this guard is cancelled mid-await**.
-///
-/// This is what lets the events stream run the crate's non-consuming exit probe
-/// (which needs `&mut RunningProcess`) without spending the handle: the process
-/// is out of the slot only while a `__anext__` future is actually parked, and it
-/// is back in place the instant that future resolves or is dropped — so the idle
-/// watchdog's `start_kill` (see [`IdleGuard`]) and the handle's own verbs find it
-/// exactly where they expect.
-struct ProcessLoan {
-    slot: SharedProcess,
-    running: Option<PkRunningProcess>,
-}
-
-impl ProcessLoan {
-    fn take(slot: &SharedProcess) -> Self {
-        let running = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-        Self {
-            slot: slot.clone(),
-            running,
-        }
-    }
-}
-
-impl Drop for ProcessLoan {
-    fn drop(&mut self) {
-        if let Some(running) = self.running.take() {
-            let mut guard = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
-            // The slot is empty for exactly as long as this loan lives — every
-            // other taker leaves it empty and never refills it, and this type is
-            // the only thing that puts a process back — so the guard below always
-            // restores. It is checked rather than assumed because the alternative
-            // (blindly overwriting) would drop, and therefore hard-kill, a tree
-            // whichever owner resurrected the slot still means to drive. Not a
-            // `debug_assert!`: this runs in a `Drop`, where a panic during an
-            // unwind aborts the interpreter outright.
-            if guard.is_none() {
-                *guard = Some(running);
-            }
-        }
-    }
-}
-
 /// What the non-consuming exit probe observed.
 enum ProbeVerdict {
     /// The child has exited (and been reaped by the probe): its output pipes are
     /// at EOF, so the event stream is heading for its terminal park.
     Exited,
+    /// The child is still running — nothing to do but keep reading output and
+    /// ask again on the next tick.
+    Running,
     /// There is no process to probe — a consuming verb (or a concurrent joint
     /// finisher) already owns the reap, so it will publish the terminal event.
     NoProcess,
 }
 
-/// Wait, **without consuming the handle**, until the child is observed to have
-/// exited.
+/// Ask, **without consuming the handle and without moving the process anywhere
+/// the rest of the binding cannot see it**, whether the child has exited *yet*.
 ///
 /// `RunningProcess::wait_for` is the crate's own readiness driver: it polls the
 /// caller's predicate and, between polls, fails fast the moment the child is seen
 /// to have exited ("An exited child can never become ready"). With a predicate
-/// that is never ready and a horizon far past any real run, that fail-fast path
-/// is the *only* way it returns — which makes it a public, non-consuming "has the
-/// child exited yet?" wait. It takes `&mut self`, never `self`, and while an
-/// `events()` stream is live its background-drain setup is a no-op (stdout is
-/// already consumed by the stream, stderr's drain is idempotent), so it cannot
-/// steal a line from the stream.
-async fn await_child_exit(slot: SharedProcess) -> ProbeVerdict {
-    let mut loan = ProcessLoan::take(&slot);
-    let Some(running) = loan.running.as_mut() else {
+/// that is never ready and a horizon far past any real run (`Duration::MAX`,
+/// clamped by the crate to ~10 years), that fail-fast path is the *only* way it
+/// can return — and it takes that path **on its first poll**, without suspending
+/// on the way: the predicate future is already-ready, and the exit check runs
+/// before the loop's first `sleep`. So polling that future exactly once answers
+/// "has the child exited *now*?" — `Ready` is yes, `Pending` is not yet — with no
+/// dependence on timing, and identically for a real child and a scripted double
+/// (whose `pid` is `None` from the start, so no pid-based inference could work).
+///
+/// Answering in a single poll is what lets the probe run **under the same
+/// `StdMutex` every other method on this handle takes, with the process left in
+/// the slot**. An earlier shape borrowed the process *out* of the slot for as
+/// long as the `__anext__` future was parked — for a quiet child, an arbitrarily
+/// long stretch — during which `pid`/the live line counters read `None`,
+/// `kill()`/`take_stdin()` raised "the process handle has been consumed" for a
+/// perfectly live handle, and, worst of all, the context manager's deterministic
+/// teardown found an empty slot and became a silent no-op (an orphaned tree until
+/// the objects were collected). Here the slot is never observably empty: a
+/// concurrent getter, `kill()`, or `__exit__` on another thread waits microseconds
+/// on the mutex and then sees the live process, exactly as it would with no events
+/// stream in play at all.
+///
+/// The probe takes `&mut RunningProcess`, never `self`, and while an `events()`
+/// stream is live its background-drain setup is a no-op (stdout is already
+/// consumed by the stream, stderr's drain is idempotent), so it cannot steal a
+/// line from the stream. It *does* reap the child once it finds it exited — which
+/// is the point: the joint finisher armed right afterwards reports that run.
+///
+/// The one assumption to re-check on a crate upgrade is the "first poll reaches
+/// the exit check" one above: were the check ever moved behind an await, this
+/// would stop observing exits and the documented drain-then-finish order would
+/// park forever. That is why every test of that order in `tests/test_streaming.py`
+/// carries an explicit deadline — a regression there fails the suite instead of
+/// hanging it.
+fn probe_exit_now(slot: &SharedProcess) -> ProbeVerdict {
+    let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(running) = guard.as_mut() else {
         return ProbeVerdict::NoProcess;
     };
-    // The horizon is clamped by the crate to ~10 years, so the deadline branch is
-    // unreachable in practice and the return means "the child exited". Treating a
-    // (hypothetical) deadline return the same way is still safe: it only starts
-    // the finisher, which waits for the child rather than killing it.
-    let _ = running
-        .wait_for(|| std::future::ready(false), Duration::MAX)
-        .await;
-    ProbeVerdict::Exited
+    let mut probe = std::pin::pin!(running.wait_for(|| std::future::ready(false), Duration::MAX));
+    // A no-op waker is sound here because nothing waits to be woken: the future
+    // is dropped at the end of this call and built afresh on the next tick, so
+    // there is no wakeup to lose. Dropping it is likewise harmless — the only
+    // thing it may have set up is the crate's idempotent background drain, which
+    // lives in its own spawned task.
+    match probe.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(_) => ProbeVerdict::Exited,
+        Poll::Pending => ProbeVerdict::Running,
+    }
 }
 
 /// A writable handle to a running process's stdin. Obtain it once via
@@ -343,7 +334,22 @@ struct EventsDrive {
     /// Whether the reap is already someone's job (this drive started it, or a
     /// consuming verb owns it) — once true the stream is simply drained.
     reap_started: bool,
+    /// How long to wait for the next event before running the exit probe again:
+    /// zero on the first park after an event — so a child that exits while its
+    /// last lines are being drained is noticed immediately, at no added latency —
+    /// then [`EXIT_POLL_INTERVAL`] for as long as the stream stays quiet.
+    probe_after: Duration,
 }
+
+/// Steady-state cadence of the events drive's exit probe while the stream is
+/// quiet and the child is still running.
+///
+/// Matches the crate's own readiness-poll tick, and costs one `try_wait`-shaped
+/// check per tick per streaming handle. It bounds only the *idle* case: the first
+/// park after every event probes immediately (see `EventsDrive::probe_after`), so
+/// the end of a run is observed as soon as its output stops, not up to a tick
+/// later.
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 impl EventsDrive {
     /// Pull the next *output line* event, driving the run's finisher alongside the
@@ -362,7 +368,14 @@ impl EventsDrive {
     ///    `kill()`/`take_stdin()` would raise, the idle watchdog would lose its
     ///    kill channel, and `finish()`'s own "close an untaken stdin" step would
     ///    send a `keep_stdin_open` child a premature EOF. Waiting for the exit
-    ///    keeps every one of those observable behaviours exactly as it was.
+    ///    keeps every one of those observable behaviours exactly as it was — and
+    ///    the probe itself (see [`probe_exit_now`]) is a single synchronous poll
+    ///    under the shared slot's lock, so it never takes the process *out* of the
+    ///    slot either, not even for the moment it is being asked.
+    ///
+    /// The probe is driven from the wait for the next event: whenever the stream
+    /// has nothing ready, ask once immediately, then once per
+    /// [`EXIT_POLL_INTERVAL`] until either output resumes or the child is gone.
     ///
     /// No output can be lost by reaping here: the crate's stream yields every
     /// buffered line before it even looks at the terminal event, and `finish()`
@@ -375,6 +388,7 @@ impl EventsDrive {
             process,
             finish,
             reap_started,
+            probe_after,
         } = self;
         loop {
             if *reap_started {
@@ -389,24 +403,35 @@ impl EventsDrive {
                 }
             }
             // Both branches are cancel-safe: `next()` pops from the shared sink
-            // only when it resolves, and the probe hands the process back to the
-            // slot when its future is dropped (see `ProcessLoan`).
+            // only when it resolves, and the timer branch owns nothing at all —
+            // the probe it runs is synchronous, so no await point in this drive
+            // ever holds the process (or the slot's lock).
             tokio::select! {
                 biased;
-                event = stream.next() => match event {
-                    Some(event) => match PyOutputEvent::from_event(event) {
-                        Some(line) => return Some(line),
-                        None => continue,
-                    },
-                    None => return None,
+                event = stream.next() => {
+                    // Output is flowing again: the next quiet moment gets an
+                    // immediate probe rather than waiting out the idle cadence.
+                    *probe_after = Duration::ZERO;
+                    match event {
+                        Some(event) => match PyOutputEvent::from_event(event) {
+                            Some(line) => return Some(line),
+                            None => continue,
+                        },
+                        None => return None,
+                    }
                 },
-                verdict = await_child_exit(process.clone()) => {
-                    *reap_started = match verdict {
-                        ProbeVerdict::Exited => start_joint_finish(process, finish),
+                _ = tokio::time::sleep(*probe_after) => {
+                    match probe_exit_now(process) {
+                        ProbeVerdict::Exited => {
+                            *reap_started = start_joint_finish(process, finish);
+                        }
                         // Nothing to reap here — whoever took the process will
                         // publish the terminal event.
-                        ProbeVerdict::NoProcess => true,
-                    };
+                        ProbeVerdict::NoProcess => *reap_started = true,
+                        // Still running and still quiet: settle into the idle
+                        // cadence instead of spinning on a zero-length wait.
+                        ProbeVerdict::Running => *probe_after = EXIT_POLL_INTERVAL,
+                    }
                     continue;
                 }
             }
@@ -470,11 +495,12 @@ impl PyOutputEvents {
             match idle {
                 Some(guard_idle) => {
                     // Bound the wait in a `let`, not directly as a `match`
-                    // scrutinee: that drops the timed-out `next_line` future — and
-                    // with it the exit probe's `ProcessLoan`, returning the process
-                    // to the shared slot — *before* the watchdog's `kill()` below
-                    // looks for it. As a match scrutinee the future would outlive
-                    // the arm and the kill would silently find an empty slot.
+                    // scrutinee, so the timed-out `next_line` future is dropped
+                    // before the watchdog's `kill()` runs below rather than
+                    // outliving the arm: nothing half-driven is left in flight
+                    // while the kill is issued. (The drive holds no part of the
+                    // process — see `probe_exit_now` — so the kill finds the slot
+                    // populated either way; this just keeps the ordering obvious.)
                     let step = tokio::time::timeout(guard_idle.window, guard.next_line()).await;
                     match step {
                         Ok(Some(line)) => Ok(line),
@@ -607,6 +633,17 @@ impl PyRunningProcess {
     /// was already a degenerate call — stdout was consumed by the stream and
     /// stderr was delivered as events, so both returned empty captures — and it is
     /// now diagnosed instead, naming the verbs that do report the run.
+    ///
+    /// This **is** a narrowing of the public contract, deliberately taken rather
+    /// than papered over, and recorded as such: BREAKING in `CHANGELOG.md`, on
+    /// each of the six verbs' docstrings, and in `docs/streaming.md`. Reproducing
+    /// the old return values is not simply a matter of reshaping `Finished`: a
+    /// `ProcessResult` rebuilt from it would have to fabricate the telemetry the
+    /// run no longer carries here (`total_lines`/`total_bytes`, `timeout`,
+    /// `ok_codes`), and the crate's `RunProfile` is `#[non_exhaustive]`, so a
+    /// profile of an already-finished run cannot be constructed at all. A clear
+    /// error naming the verbs that *do* report the run beats a value that is
+    /// empty for reasons the caller cannot see.
     fn take_running_uncaptured(&self, verb: &str) -> PyResult<PkRunningProcess> {
         if let JointFinish::Running(_) | JointFinish::Taken =
             &*self.finish.lock().unwrap_or_else(PoisonError::into_inner)
@@ -788,6 +825,9 @@ impl PyRunningProcess {
                 process: self.inner.clone(),
                 finish: self.finish.clone(),
                 reap_started: false,
+                // Probe on the first quiet moment: a command that finishes before
+                // (or while) its output is drained is then noticed at once.
+                probe_after: Duration::ZERO,
             })),
             idle,
         })
@@ -890,13 +930,18 @@ impl PyRunningProcess {
     }
 
     /// Wait for exit and capture the full `ProcessResult`. Consumes the handle.
+    ///
+    /// Raises `ProcessError` on a handle whose `output_events()` stream was
+    /// drained: that stream consumed stdout, delivered stderr as events and
+    /// completed the run, so there is nothing left to capture — report such a run
+    /// with `finish()`/`afinish()` or `outcome()`/`aoutcome()`.
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
         reject_reentrant_runtime()?;
         let running = self.take_running_uncaptured("output")?;
         block_on(py, async move { running.output_string().await }).map(PyProcessResult::from)
     }
 
-    /// Async counterpart of `output()`.
+    /// Async counterpart of `output()` — same `output_events()` restriction.
     fn aoutput<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running_uncaptured("aoutput")?;
@@ -905,14 +950,16 @@ impl PyRunningProcess {
         })
     }
 
-    /// Wait for exit and capture the full raw-bytes `BytesResult`. Consumes the handle.
+    /// Wait for exit and capture the full raw-bytes `BytesResult`. Consumes the
+    /// handle. Raises `ProcessError` after a drained `output_events()` stream,
+    /// for the same reason as `output()`.
     fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
         reject_reentrant_runtime()?;
         let running = self.take_running_uncaptured("output_bytes")?;
         block_on(py, async move { running.output_bytes().await }).map(PyBytesResult::from)
     }
 
-    /// Async counterpart of `output_bytes()`.
+    /// Async counterpart of `output_bytes()` — same `output_events()` restriction.
     fn aoutput_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         require_event_loop(py)?;
         let running = self.take_running_uncaptured("aoutput_bytes")?;
@@ -923,6 +970,10 @@ impl PyRunningProcess {
 
     /// Wait for exit while sampling resource usage every `every_seconds`,
     /// returning a `RunProfile`. Consumes the handle.
+    ///
+    /// Raises `ProcessError` on a handle whose `output_events()` stream was
+    /// drained: completing that stream completed the run, so there is no live run
+    /// left to sample — use `finish()`/`afinish()` or `outcome()`/`aoutcome()`.
     fn profile(&self, py: Python<'_>, every_seconds: f64) -> PyResult<PyRunProfile> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         reject_reentrant_runtime()?;
@@ -930,7 +981,7 @@ impl PyRunningProcess {
         block_on(py, async move { running.profile(every).await }).map(PyRunProfile::from)
     }
 
-    /// Async counterpart of `profile()`.
+    /// Async counterpart of `profile()` — same `output_events()` restriction.
     fn aprofile<'py>(&self, py: Python<'py>, every_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         require_event_loop(py)?;

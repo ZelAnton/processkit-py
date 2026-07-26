@@ -292,7 +292,9 @@ Things to know:
   `output_events()` after you have streamed events: stdout was consumed by the
   iterator and stderr was delivered as events, so there is nothing left for them
   to capture, and the run is already complete so there is nothing left to sample.
-  Reach for `finish()` / `outcome()` instead.
+  Reach for `finish()` / `outcome()` instead. (A **breaking** change that came
+  with the processkit 3.0 migration: those verbs used to return empty captures
+  alongside the run's real outcome.)
 - **Leaving the loop early is fine.** `break` out whenever you like; the
   following consuming verb still reports the run, and dropping the handle (or
   exiting its `with` block) still tears the tree down.

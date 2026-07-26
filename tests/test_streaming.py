@@ -6,6 +6,7 @@ Tests drive asyncio with ``asyncio.run`` so no pytest-asyncio plugin is needed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import io
 import pathlib
@@ -309,6 +310,99 @@ def test_running_process_stays_live_while_events_stream() -> None:
     # The live counter is readable too, and never goes backwards.
     assert all(isinstance(c, int) for c in counts), counts
     assert counts == sorted(c for c in counts if c is not None)
+
+
+def test_handle_serves_another_task_while_the_events_stream_is_parked() -> None:
+    # The harder half of the test above: not "while output flows" (where the
+    # iterator is between `__anext__` calls anyway) but *while `__anext__` itself
+    # is parked* on a child that has gone quiet — the state a `tail -f`-shaped
+    # child spends nearly all its time in. A second asyncio task must still see a
+    # live handle there: `pid` and the live counters read real values and
+    # `kill()` reaches the child, instead of raising "the process handle has been
+    # consumed" for a process that is very much running.
+    #
+    # (The drive's exit probe answers in one synchronous poll under the handle's
+    # own lock, leaving the process in its slot; a probe that borrowed the process
+    # out of the slot across the park would fail every assertion below.)
+    code = "import time; print('ready', flush=True); time.sleep(60)"
+
+    async def scenario() -> tuple[int | None, int | None, list[str]]:
+        proc = await Command(PY, ["-c", code]).astart()
+        texts: list[str] = []
+        first_line = asyncio.Event()
+
+        async def drain() -> None:
+            async for ev in proc.output_events():
+                texts.append(ev.text.rstrip())
+                first_line.set()
+
+        streaming = asyncio.create_task(drain())
+        # From here the child is silent for a minute: `__anext__` is parked.
+        await asyncio.wait_for(first_line.wait(), timeout=10.0)
+        await asyncio.sleep(0.3)
+        pid, lines = proc.pid, proc.stdout_line_count
+        # Reaches the live child (a consumed handle would raise here) and ends
+        # the stream, so the drain task can finish.
+        proc.kill()
+        await asyncio.wait_for(streaming, timeout=10.0)
+        await proc.afinish()
+        return pid, lines, texts
+
+    pid, lines, texts = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert isinstance(pid, int) and pid > 0
+    assert lines == 1
+    assert texts == ["ready"]
+    assert wait_dead(pid, timeout=10.0), "the concurrent kill() did not reach the child"
+
+
+def test_async_with_reaps_tree_when_a_streamed_events_loop_is_cancelled(
+    pid_file: pathlib.Path,
+) -> None:
+    # Cancelling a parked `async for … output_events()` must not cost the
+    # deterministic teardown the context manager promises (docs/streaming.md,
+    # "Deterministic teardown" and the `asyncio.timeout` pattern): leaving the
+    # block still hard-kills the whole private tree, grandchild included.
+    #
+    # The child here is silent (it spawns a grandchild and sleeps), so the
+    # cancellation lands while `__anext__` is parked, and the block is left with
+    # the cancellation still *in flight* — `task.cancel()` only schedules it, and
+    # nothing is awaited in between, which is exactly what `asyncio.wait_for`'s
+    # own timeout does to the stream. An events drive that had borrowed the
+    # process out of the handle's slot for the duration of that park would leave
+    # `__aexit__` with nothing to kill (a silent no-op), and the tree would live
+    # on until the interpreter got around to collecting the objects.
+    #
+    # Deliberately keeps the handle referenced past the block: dropping it would
+    # kill the tree on its own (kill-on-drop), which would let a `__aexit__` that
+    # quietly did nothing still pass this test. Holding it means only the
+    # context-manager exit can be what kills the tree.
+    keep_alive: list[object] = []
+
+    async def scenario() -> int:
+        proc = await spawn_grandchild_command(pid_file).astart()
+        keep_alive.append(proc)
+
+        async def drain() -> None:
+            async for _ev in proc.output_events():
+                pass
+
+        streaming = asyncio.create_task(drain())
+        async with proc:
+            grandchild = read_pid_when_ready(pid_file, timeout=10.0)
+            # Let the iterator reach its parked state on the silent child.
+            await asyncio.sleep(0.3)
+            assert is_alive(grandchild)
+            streaming.cancel()
+            # No await here: the block is left while the cancellation is still
+            # in flight.
+        with contextlib.suppress(asyncio.CancelledError):
+            await streaming
+        return grandchild
+
+    grandchild = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert wait_dead(grandchild, timeout=10.0), (
+        "grandchild survived the async-with exit after a cancelled event stream"
+    )
 
 
 def test_output_events_break_early_then_afinish_still_reports_the_run() -> None:

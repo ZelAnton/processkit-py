@@ -737,12 +737,38 @@ class RunningProcess:
     def aoutcome(self) -> Awaitable[Outcome]: ...
     def finish(self) -> Finished: ...
     def afinish(self) -> Awaitable[Finished]: ...
-    def output(self) -> ProcessResult: ...
-    def aoutput(self) -> Awaitable[ProcessResult]: ...
-    def output_bytes(self) -> BytesResult: ...
-    def aoutput_bytes(self) -> Awaitable[BytesResult]: ...
-    def profile(self, every_seconds: float) -> RunProfile: ...
-    def aprofile(self, every_seconds: float) -> Awaitable[RunProfile]: ...
+    def output(self) -> ProcessResult:
+        """Wait for exit and capture the full `ProcessResult`; consumes the handle.
+
+        Raises `ProcessError` on a handle whose ``output_events()`` stream was
+        drained: that stream consumed stdout, delivered stderr as events and
+        completed the run, so there is nothing left to capture. Read such a run
+        with ``finish()``/``afinish()`` or ``outcome()``/``aoutcome()`` instead.
+        (Before the processkit 3.0 migration this returned empty captures with a
+        real outcome.)"""
+
+    def aoutput(self) -> Awaitable[ProcessResult]:
+        """Async counterpart of `output` — same ``output_events()`` restriction."""
+
+    def output_bytes(self) -> BytesResult:
+        """Wait for exit and capture raw stdout as a `BytesResult`; consumes the
+        handle. Raises `ProcessError` after a drained ``output_events()`` stream
+        for the same reason as `output`."""
+
+    def aoutput_bytes(self) -> Awaitable[BytesResult]:
+        """Async counterpart of `output_bytes` — same ``output_events()`` restriction."""
+
+    def profile(self, every_seconds: float) -> RunProfile:
+        """Wait for exit while sampling resource usage every ``every_seconds``,
+        returning a `RunProfile`; consumes the handle.
+
+        Raises `ProcessError` on a handle whose ``output_events()`` stream was
+        drained: completing that stream completed the run, so there is no live run
+        left to sample. Use ``finish()``/``afinish()`` or ``outcome()``/
+        ``aoutcome()`` for its outcome."""
+
+    def aprofile(self, every_seconds: float) -> Awaitable[RunProfile]:
+        """Async counterpart of `profile` — same ``output_events()`` restriction."""
     def shutdown(self, grace_seconds: float) -> Outcome:
         """Graceful teardown (signal -> wait ``grace_seconds`` -> hard kill),
         returning the `Outcome`; consumes the handle. Only for a standalone

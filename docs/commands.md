@@ -450,21 +450,33 @@ Over the byte cap an `output_bytes()` run either raises `OutputTooLarge` (with
 
 ### What `max_bytes` actually counts
 
-`max_bytes` — and the `total_bytes` an `OutputTooLarge` reports — count the **raw
-bytes read from the child's output pipe**, not the bytes of the decoded text you
-get back in `ProcessResult.stdout`. Concretely, the cap is also charged for:
+Which bytes the cap counts depends on `on_overflow` — the asymmetry is deliberate
+upstream, so check which half applies to you before sizing a cap:
 
-- the **line terminator** each line arrived with (`\n`, or *both* bytes of a
-  `\r\n`), which the decoded line no longer carries;
-- bytes that are **not valid UTF-8**, which decoding replaces or drops.
+- **`on_overflow="error"`** — the ceiling counts the **raw bytes read from the
+  child's output pipe**, before decoding and *cumulatively* over the whole run
+  (a streaming consumer draining lines frees buffer space but does not reset it).
+  The line terminator each line arrived with (`\n`, or *both* bytes of a `\r\n`)
+  and bytes that are **not valid UTF-8** are charged against it, even though
+  neither survives into `ProcessResult.stdout`. `OutputTooLarge.total_bytes`
+  reports that same raw count, so it can exceed `len(result.stdout.encode())` for
+  the same output. **Changed in processkit 3.0.0**: this ceiling used to count
+  decoded line content, so a cap sized against decoded text now trips slightly
+  sooner — by one byte per line for ordinary UTF-8 output, more for CRLF or
+  binary-ish output.
+- **`on_overflow="drop_oldest"` / `"drop_newest"`** — the cap bounds what is
+  **retained**, measured in the bytes of the decoded line *content*, terminators
+  excluded. Unchanged in 3.0.0: a drop-mode cap keeps exactly the head/tail it
+  always did.
 
-For plain, newline-terminated UTF-8 output the two measures differ only by one
-byte per line. For CRLF output (a Windows tool) or binary-ish output they diverge
-more, and a cap sized against decoded text trips slightly sooner than it used to.
-That is deliberate: the raw count is the amount actually read, which is what makes
-`max_bytes` a genuine bound on the parent's memory — the reason to prefer it over
-`max_lines` for an untrusted child in the first place. (Raw-byte accounting since
-processkit 3.0.0; earlier the ceiling counted decoded line content.)
+Either way `max_bytes` is a real bound on the parent's memory — the reason to
+prefer it over `max_lines` for an untrusted child — the two modes just measure at
+different points: what was *read* for the fail-loud ceiling, what is *kept* for
+the ring buffers.
+
+Raw stdout captured by `output_bytes()` is never decoded, so there is no
+distinction to draw there: its byte cap counts the bytes as they were read, in
+every mode, exactly as it did before 3.0.0.
 
 ## Timeouts
 

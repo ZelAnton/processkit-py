@@ -132,12 +132,13 @@ on top: [Environment and sandboxing](commands.md#environment-and-sandboxing).
 
 Cap `max_bytes` so a chatty or malicious tool cannot grow the parent's memory
 without bound (a `max_lines`-only cap does not — one newline-free flood is a
-single, unbounded line). The cap counts the raw bytes read from the child's pipe,
-which is exactly the quantity that grows the parent's memory — so it holds even
-for output that is binary or not valid UTF-8. `on_overflow="error"` turns hitting
-the cap into a failure rather than a silent drop, which is usually what you want
-for a tool you don't trust. Full treatment:
-[Bounding captured output](commands.md#bounding-captured-output).
+single, unbounded line). `on_overflow="error"` turns hitting the cap into a
+failure rather than a silent drop, which is usually what you want for a tool you
+don't trust — and in that mode the ceiling counts the raw bytes read from the
+child's pipe, so it holds even for output that is binary or not valid UTF-8. (A
+drop mode bounds the *retained* output instead, measured in decoded line content;
+see [what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).) Full
+treatment: [Bounding captured output](commands.md#bounding-captured-output).
 
 ### 3. Whole-tree resource limits
 

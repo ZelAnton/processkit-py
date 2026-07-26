@@ -637,6 +637,36 @@ def test_output_bytes_byte_cap_drop_truncates_and_bounds_stdout() -> None:
     assert len(result.stdout) <= 1024
 
 
+def test_byte_cap_unit_differs_between_error_and_drop_modes() -> None:
+    # processkit 3.0.0 made the byte accounting deliberately asymmetric, and the
+    # documentation (`docs/commands.md`, "What `max_bytes` actually counts") says
+    # so per mode. Pinned here so a future core bump that quietly unifies the two
+    # units is caught by this suite rather than by a user whose cap moved:
+    #   - `on_overflow="error"`: the ceiling counts the RAW bytes read from the
+    #     pipe, line terminators included, cumulatively over the run;
+    #   - the drop modes: the cap bounds the RETAINED decoded line *content*,
+    #     terminators excluded — unchanged from 2.x.
+    # Four 4-byte lines = 16 bytes of content, 20 bytes on the wire, so a cap of
+    # 18 sits exactly between the two units. Written through `stdout.buffer` so
+    # the line endings are LF on every platform (`print()` would emit CRLF on
+    # Windows and change the arithmetic).
+    code = "import sys; sys.stdout.buffer.write(b'aaaa\\n' * 4)"
+
+    # Raw count (20) is over the cap, so the fail-loud ceiling fires. Under the
+    # old decoded-content accounting (16) it would not have.
+    with pytest.raises(OutputTooLarge) as excinfo:
+        Command(PY, ["-c", code]).output_limit(max_bytes=18, on_overflow="error").run()
+    assert excinfo.value.max_bytes == 18
+    assert excinfo.value.total_bytes == 20
+
+    # Same output, same cap, drop mode: 16 retained content bytes fit, so nothing
+    # is dropped. A drop mode that had switched to raw counting would truncate.
+    result = Command(PY, ["-c", code]).output_limit(max_bytes=18).output()
+    assert result.is_success
+    assert not result.truncated
+    assert result.stdout.split() == ["aaaa"] * 4
+
+
 def test_output_limit_requires_a_cap() -> None:
     with pytest.raises(ValueError):
         Command(PY, ["-c", "pass"]).output_limit()

@@ -93,6 +93,17 @@ native `uv run pytest`, which is faster for day-to-day work.
   formatting; don't reformat code you are not changing.
 - **Dependencies** are declared in `pyproject.toml` and pinned in `uv.lock`
   (commit the lockfile). Add them with `uv add`, not by hand.
+- **Upgrading the `processkit` core** (the Rust crate this binding wraps) is a
+  deliberate review step, never a transitive pickup: the crate has historically
+  grown public surface and changed behaviour even in patch releases, so the
+  release notes alone are not a sufficient basis for a bump. The crate ships a
+  `public-api.txt` in its sources, so diff the two versions in the registry
+  cache — `~/.cargo/registry/src/*/processkit-<old>/public-api.txt` against
+  `.../processkit-<new>/public-api.txt` (`$env:USERPROFILE\.cargo\...` on
+  Windows) — and read the accompanying `CHANGELOG.md` there; then check the
+  actual signatures in `src/` for anything the diff flags. Update
+  `Cargo.toml`'s requirement and comment, commit the resulting `Cargo.lock`, and
+  give the change its own CHANGELOG entry when any of it is user-visible.
 - The authoritative bar is simply what CI enforces — `ruff`, `mypy --strict`, and
   warning-free `pytest`, plus `cargo fmt` / `clippy` on the Rust side — all
   configured in [`pyproject.toml`](pyproject.toml); run the

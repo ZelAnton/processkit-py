@@ -874,18 +874,26 @@ impl PyCommand {
     /// (`CliClient`, `Pipeline`, `RunningProcess`, `ProcessGroup`, the runner
     /// doubles) that runs a `Command` built with this policy.
     ///
-    /// `max_bytes` counts **raw bytes read from the output pipe**, not the bytes
-    /// of the decoded text that ends up in `ProcessResult.stdout` — so the line
-    /// terminator each line arrived with (`\n`, or both bytes of a CRLF) and any
-    /// byte that failed to decode as UTF-8 are all charged against the cap. The
-    /// `total_bytes` an `OutputTooLarge` reports is that same raw count. For
-    /// ordinary single-byte-terminated UTF-8 output the two measures differ only
-    /// by the terminators; for CRLF or non-UTF-8 output the raw count is
-    /// noticeably higher, so a cap sized against decoded text now trips slightly
-    /// sooner. Raw-byte accounting is what makes the cap a real *memory* bound
-    /// (it is the amount actually read), which is the reason to prefer it over
-    /// `max_lines` for an untrusted child. (Since processkit 3.0.0 — earlier the
-    /// ceiling counted decoded line content.)
+    /// What `max_bytes` counts depends on `on_overflow`:
+    ///
+    /// * `on_overflow="error"` — the ceiling counts **raw bytes read from the
+    ///   output pipe**, before decoding and cumulatively over the run, so the
+    ///   line terminator each line arrived with (`\n`, or both bytes of a CRLF)
+    ///   and any byte that failed to decode as UTF-8 are charged against it even
+    ///   though none of them reach `ProcessResult.stdout`. The `total_bytes` an
+    ///   `OutputTooLarge` reports is that same raw count. Since processkit 3.0.0
+    ///   — this ceiling used to count decoded line content, so a cap sized
+    ///   against decoded text now trips slightly sooner (by one byte per line for
+    ///   ordinary UTF-8 output, more for CRLF or non-UTF-8 output).
+    /// * `on_overflow="drop_oldest"`/`"drop_newest"` — the cap bounds the
+    ///   *retained* output, measured in decoded line-content bytes with
+    ///   terminators excluded. Unchanged in 3.0.0.
+    ///
+    /// Both are real *memory* bounds — which is the reason to prefer `max_bytes`
+    /// over `max_lines` for an untrusted child — they just measure at different
+    /// points: what was read for the fail-loud ceiling, what is kept for the ring
+    /// buffers. Raw stdout captured by `output_bytes()` is never decoded, so its
+    /// byte cap counts the bytes as read in every mode (also unchanged).
     #[pyo3(signature = (*, max_bytes=None, max_lines=None, on_overflow="drop_oldest"))]
     fn output_limit(
         &self,

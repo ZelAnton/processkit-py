@@ -156,8 +156,11 @@ constructor kwargs (mirroring `Command.output_limit`'s kwargs — set at least o
 of the two cap sizes), or give the base `Command` an explicit
 [`output_limit`](commands.md) (respected as-is) before wrapping it in a
 `Supervisor`; otherwise stream the process yourself. `capture_max_bytes` uses the
-same unit as `output_limit(max_bytes=...)` — raw bytes read from the pipe, line
-terminators and invalid-UTF-8 bytes included, not decoded text; see
+same unit as `output_limit(max_bytes=...)`, which depends on the overflow mode:
+`capture_on_overflow` defaults to `"drop_oldest"`, where the cap bounds the
+retained decoded line content (unchanged in processkit 3.0.0); pass
+`capture_on_overflow="error"` and it becomes a fail-loud ceiling on the raw bytes
+read from the pipe instead. See
 [what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).
 
 ## The failure-storm guard

@@ -49,14 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     iterator ends on its own and the finisher afterwards reports that same run.
     One deliberate narrowing comes with it — see the **BREAKING** entry below.
 - **BREAKING** — `output()` / `output_bytes()` / `profile()` (and their
-  `a`-twins) now raise a `ProcessError` naming `output_events()` when called on a
-  handle whose events were streamed to the end, instead of returning the empty
-  captures they used to: that stream consumed stdout, delivered stderr as events,
-  and (since the 3.0 migration above) completed the run, so there is nothing left
-  for them to capture or to sample. Use `finish()`/`afinish()` (outcome +
-  stderr) or `outcome()`/`aoutcome()` instead. Code that called `output()` after
-  `output_events()` and used the result got an empty `stdout`/`stderr` with a
-  real outcome; it now has to read that outcome from a finisher.
+  `a`-twins) now raise a `ProcessError` naming `output_events()` once that stream
+  has taken the run over, instead of returning the empty captures they used to:
+  it consumed stdout, delivered stderr as events, and (since the 3.0 migration
+  above) completed the run, so there is nothing left for them to capture or to
+  sample. Use `finish()`/`afinish()` (outcome + stderr) or
+  `outcome()`/`aoutcome()` instead — those report such a run either way. Code
+  that called `output()` after `output_events()` and used the result got an empty
+  `stdout`/`stderr` with a real outcome; it now has to read that outcome from a
+  finisher.
+
+  The stream takes the run over as soon as it observes the child exit. Iterating
+  to the end always reaches that point, but an early `break` can too — out of a
+  command that finished while you were reading it. Break out while the child is
+  **still running** and nothing has been taken over: the old behaviour stands
+  there (empty captures with a real outcome; `profile()` samples the rest of the
+  run). Which side of that line a given `break` falls on is a matter of the
+  child's timing, not of how the loop is written, so after streaming events reach
+  for a finisher rather than a capture verb. See "Interleaved stdout and stderr"
+  in `docs/streaming.md`.
 - `output_limit(max_bytes=...)` under **`on_overflow="error"`** — and with it the
   `total_bytes` an `OutputTooLarge` reports — now counts the **raw bytes read
   from the child's output pipe** rather than the bytes of the decoded text,

@@ -289,15 +289,27 @@ Things to know:
   received stderr as events), and `outcome()`/`aoutcome()` reports the exit alone.
 - **The capture verbs do not apply to such a run.** `output()` / `output_bytes()`
   / `profile()` (and their `a`-twins) raise a `ProcessError` naming
-  `output_events()` after you have streamed events: stdout was consumed by the
-  iterator and stderr was delivered as events, so there is nothing left for them
-  to capture, and the run is already complete so there is nothing left to sample.
-  Reach for `finish()` / `outcome()` instead. (A **breaking** change that came
-  with the processkit 3.0 migration: those verbs used to return empty captures
-  alongside the run's real outcome.)
-- **Leaving the loop early is fine.** `break` out whenever you like; the
-  following consuming verb still reports the run, and dropping the handle (or
-  exiting its `with` block) still tears the tree down.
+  `output_events()` once that stream has **taken the run over** — which it does
+  as soon as it sees the child exit, and always by the time the iterator ends:
+  stdout was consumed by the iterator and stderr was delivered as events, so
+  there is nothing left for them to capture, and the run is already complete so
+  there is nothing left to sample. Reach for `finish()` / `outcome()` instead.
+  (A **breaking** change that came with the processkit 3.0 migration: those verbs
+  used to return empty captures alongside the run's real outcome.)
+- **Leaving the loop early is fine — with one boundary.** `break` out whenever
+  you like: `finish()`/`afinish()` and `outcome()`/`aoutcome()` report the run
+  either way, and dropping the handle (or exiting its `with` block) still tears
+  the tree down. The three capture verbs above are the exception, and *when* you
+  stopped decides which of two behaviours you get:
+
+  | when you stopped iterating | `finish()` / `outcome()` | `output()` / `output_bytes()` / `profile()` |
+  |---|---|---|
+  | the stream had already seen the child exit — always so once the iterator ended, and possible after a `break` too, out of a command that finished while you were reading it | report the run | raise `ProcessError` |
+  | the child was still running | report the run | as before 3.0: wait for exit and return empty captures (`profile()` samples the rest of the run) |
+
+  Which row a given `break` lands in follows the child's timing rather than how
+  you wrote the loop, so treat the capture verbs as unavailable once you have
+  streamed events and use a finisher.
 
 ## Interactive stdin
 

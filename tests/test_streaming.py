@@ -60,6 +60,21 @@ _BOTH_STREAMS = (
     "print('out2', flush=True)"
 )
 
+# Prints one line and exits at once, but leaves behind a grandchild that holds
+# the inherited stdout pipe open and speaks up over a second later. So the merged
+# event stream keeps running well past the child's exit — the one shape in which
+# "the stream has observed the exit" and "the consumer is still mid-iteration"
+# are true at the same time, deterministically (see the early-`break` tests).
+# The grandchild's delay is the margin the child gets to actually exit in, and
+# the trailing sleep keeps the pipe open past the `break` (the handle's teardown
+# kills the tree; the sleep only bounds a leak if it ever failed to).
+_EXIT_LEAVING_A_TALKING_GRANDCHILD = (
+    "import subprocess, sys\n"
+    "subprocess.Popen([sys.executable, '-c', "
+    "\"import time; time.sleep(1.5); print('late', flush=True); time.sleep(5)\"])\n"
+    "print('parent-done', flush=True)\n"
+)
+
 # Spawns a grandchild (sleeps), records its PID to argv[1], then streams forever.
 _STREAM_AND_SPAWN = """
 import subprocess, sys, time
@@ -427,6 +442,9 @@ def test_capture_verbs_after_a_drained_events_stream_are_diagnosed(verb: str) ->
     # had anything to capture (they returned empty ones). They now say so instead
     # of raising the generic "handle has been consumed", and the message names the
     # verbs that DO report such a run.
+    #
+    # Draining is the COMMON way to get here, not the condition — the two tests
+    # below pin the actual boundary on both of its sides.
     async def scenario() -> None:
         proc = await Command(PY, ["-c", _PRINT_LINES]).astart()
         async for _ev in proc.output_events():
@@ -436,6 +454,74 @@ def test_capture_verbs_after_a_drained_events_stream_are_diagnosed(verb: str) ->
 
     with pytest.raises(ProcessError, match="output_events"):
         asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+
+
+@pytest.mark.parametrize("verb", ["aoutput", "aoutput_bytes", "aprofile"])
+def test_capture_verbs_after_an_early_break_from_an_exited_child_are_diagnosed(verb: str) -> None:
+    # The boundary the docs state, from the side that is easy to get wrong: what
+    # spends the run for these three verbs is the events stream having TAKEN THE
+    # RUN OVER — which it does the moment its exit probe sees the child gone — not
+    # the iterator having reached its end. An early `break` out of a command that
+    # finished while it was being read lands on this side too, so "raises after a
+    # drained stream" would be a promise narrower than the code (a user who broke
+    # out early and got the error would read it as a bug).
+    #
+    # Deterministic, not a race: the child exits right after its first line, but
+    # its grandchild keeps stdout open and prints a second later. The `__anext__`
+    # that fetches that late line therefore has to park with the child already
+    # gone — the drive probes every 50 ms while parked, so the finisher is armed —
+    # and it still returns a line rather than ending the stream, so the `break`
+    # below really is early, with the pipe still held open by the grandchild.
+    async def scenario() -> tuple[list[str], bool, str | None]:
+        proc = await Command(PY, ["-c", _EXIT_LEAVING_A_TALKING_GRANDCHILD]).astart()
+        texts: list[str] = []
+        broke_early = False
+        async for ev in proc.output_events():
+            texts.append(ev.text.rstrip())
+            if texts[-1] == "late":
+                broke_early = True
+                break
+        args = [0.05] if verb == "aprofile" else []
+        try:
+            await getattr(proc, verb)(*args)
+        except ProcessError as exc:
+            return texts, broke_early, str(exc)
+        return texts, broke_early, None
+
+    texts, broke_early, message = asyncio.run(
+        asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS)
+    )
+    # The premise first: the loop was left early (mid-stream), not exhausted —
+    # otherwise this would silently degenerate into the drained test above.
+    assert broke_early, f"the grandchild's late line never arrived: {texts}"
+    assert texts == ["parent-done", "late"], texts
+    assert message is not None, f"{verb}() did not raise after an early break"
+    assert "output_events" in message
+
+
+def test_capture_verbs_still_report_a_run_left_while_the_child_was_running() -> None:
+    # The other side of that boundary, pinned so it cannot drift unnoticed: break
+    # out while the child is STILL RUNNING and nothing has been taken over —
+    # nothing polls the events drive after the `break`, so its exit probe never
+    # runs again and the run stays with the handle. `output()` then does exactly
+    # what it did before the processkit 3.0 migration: waits for the exit and
+    # returns the run with empty captures (stdout went to the iterator, stderr was
+    # delivered as events). The narrowing above is only what the joint finisher
+    # forces, never a wider "you streamed events, so no capture verbs" rule — and
+    # `docs/streaming.md` documents both rows of the table because which one a
+    # given `break` hits depends on the child's timing.
+    code = "import time; print('first', flush=True); time.sleep(0.8)"
+
+    async def scenario() -> ProcessResult:
+        proc = await Command(PY, ["-c", code]).astart()
+        async for _ev in proc.output_events():
+            break  # the child sleeps on for a while yet
+        return await proc.aoutput()
+
+    result = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert result.outcome.exited_zero
 
 
 def test_interactive_stdin_echo() -> None:

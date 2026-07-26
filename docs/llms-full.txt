@@ -2600,15 +2600,27 @@ Things to know:
   received stderr as events), and `outcome()`/`aoutcome()` reports the exit alone.
 - **The capture verbs do not apply to such a run.** `output()` / `output_bytes()`
   / `profile()` (and their `a`-twins) raise a `ProcessError` naming
-  `output_events()` after you have streamed events: stdout was consumed by the
-  iterator and stderr was delivered as events, so there is nothing left for them
-  to capture, and the run is already complete so there is nothing left to sample.
-  Reach for `finish()` / `outcome()` instead. (A **breaking** change that came
-  with the processkit 3.0 migration: those verbs used to return empty captures
-  alongside the run's real outcome.)
-- **Leaving the loop early is fine.** `break` out whenever you like; the
-  following consuming verb still reports the run, and dropping the handle (or
-  exiting its `with` block) still tears the tree down.
+  `output_events()` once that stream has **taken the run over** — which it does
+  as soon as it sees the child exit, and always by the time the iterator ends:
+  stdout was consumed by the iterator and stderr was delivered as events, so
+  there is nothing left for them to capture, and the run is already complete so
+  there is nothing left to sample. Reach for `finish()` / `outcome()` instead.
+  (A **breaking** change that came with the processkit 3.0 migration: those verbs
+  used to return empty captures alongside the run's real outcome.)
+- **Leaving the loop early is fine — with one boundary.** `break` out whenever
+  you like: `finish()`/`afinish()` and `outcome()`/`aoutcome()` report the run
+  either way, and dropping the handle (or exiting its `with` block) still tears
+  the tree down. The three capture verbs above are the exception, and *when* you
+  stopped decides which of two behaviours you get:
+
+  | when you stopped iterating | `finish()` / `outcome()` | `output()` / `output_bytes()` / `profile()` |
+  |---|---|---|
+  | the stream had already seen the child exit — always so once the iterator ended, and possible after a `break` too, out of a command that finished while you were reading it | report the run | raise `ProcessError` |
+  | the child was still running | report the run | as before 3.0: wait for exit and return empty captures (`profile()` samples the rest of the run) |
+
+  Which row a given `break` lands in follows the child's timing rather than how
+  you wrote the loop, so treat the capture verbs as unavailable once you have
+  streamed events and use a finisher.
 
 ## Interactive stdin
 
@@ -6232,9 +6244,12 @@ Interleaved stdout+stderr lines as an async iterator (call once).
 
 Consumes both pipes, so pick this **or** ``stdout_lines()``. Report the
 run afterwards with ``finish()``/``afinish()`` (outcome + stderr) or
-``outcome()``/``aoutcome()``; ``output()``/``output_bytes()``/``profile()``
-raise for such a run — its stdout was streamed away and its stderr was
-delivered as events, so they have nothing left to capture or sample.
+``outcome()``/``aoutcome()`` — they report it whether you iterate to the
+end or ``break`` out early. ``output()``/``output_bytes()``/``profile()``
+raise once this stream has taken the run over, which it does as soon as
+it observes the child exit: its stdout was streamed away and its stderr
+was delivered as events, so they have nothing left to capture or
+sample.
 
 #### `take_stdin`
 
@@ -6287,12 +6302,17 @@ def output() -> ProcessResult
 
 Wait for exit and capture the full `ProcessResult`; consumes the handle.
 
-Raises `ProcessError` on a handle whose ``output_events()`` stream was
-drained: that stream consumed stdout, delivered stderr as events and
-completed the run, so there is nothing left to capture. Read such a run
-with ``finish()``/``afinish()`` or ``outcome()``/``aoutcome()`` instead.
-(Before the processkit 3.0 migration this returned empty captures with a
-real outcome.)
+Raises `ProcessError` once an ``output_events()`` stream has taken this
+run over — which that stream does as soon as it observes the child exit,
+whether or not you iterated to the end: it consumed stdout, delivered
+stderr as events and completed the run, so there is nothing left to
+capture. Read such a run with ``finish()``/``afinish()`` or
+``outcome()``/``aoutcome()`` instead. Stopping the iteration while the
+child is still running leaves the run with this handle, and this still
+does what it did before the processkit 3.0 migration: returns empty
+captures with a real outcome. Which of the two a given ``break`` gets
+depends on the child's timing, so after streaming events prefer a
+finisher.
 
 #### `aoutput`
 
@@ -6309,8 +6329,9 @@ def output_bytes() -> BytesResult
 ```
 
 Wait for exit and capture raw stdout as a `BytesResult`; consumes the
-handle. Raises `ProcessError` after a drained ``output_events()`` stream
-for the same reason as `output`.
+handle. Raises `ProcessError` once an ``output_events()`` stream has
+taken the run over, under the same condition and for the same reason as
+`output`.
 
 #### `aoutput_bytes`
 
@@ -6329,10 +6350,13 @@ def profile(every_seconds: float) -> RunProfile
 Wait for exit while sampling resource usage every ``every_seconds``,
 returning a `RunProfile`; consumes the handle.
 
-Raises `ProcessError` on a handle whose ``output_events()`` stream was
-drained: completing that stream completed the run, so there is no live run
-left to sample. Use ``finish()``/``afinish()`` or ``outcome()``/
-``aoutcome()`` for its outcome.
+Raises `ProcessError` once an ``output_events()`` stream has taken this
+run over — which that stream does as soon as it observes the child exit,
+whether or not you iterated to the end: the run is over, so there is no
+live run left to sample. Use ``finish()``/``afinish()`` or ``outcome()``/
+``aoutcome()`` for its outcome. Stopping the iteration while the child is
+still running leaves the run with this handle, and this still profiles
+the rest of it.
 
 #### `aprofile`
 

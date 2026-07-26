@@ -629,10 +629,32 @@ impl PyRunningProcess {
     /// Like [`claim`](Self::claim), but for the verbs that cannot be answered from
     /// a joint finisher's `Finished` — `output`/`output_bytes` (they capture
     /// streams this run already streamed away) and `profile` (it must sample a
-    /// *live* run). Reaching them after a fully drained `output_events()` stream
-    /// was already a degenerate call — stdout was consumed by the stream and
-    /// stderr was delivered as events, so both returned empty captures — and it is
-    /// now diagnosed instead, naming the verbs that do report the run.
+    /// *live* run). Reaching them once an `output_events()` stream has taken the
+    /// run over was already a degenerate call — stdout was consumed by the stream
+    /// and stderr was delivered as events, so both returned empty captures — and
+    /// it is now diagnosed instead, naming the verbs that do report the run.
+    ///
+    /// **Where the boundary actually is**, since the public docs state it and
+    /// tests pin it: the slot leaves `JointFinish::NotStarted` the moment the
+    /// drive's probe first observes the child exited (see `start_joint_finish`) —
+    /// *not* when the iterator is exhausted. Draining to the end always gets
+    /// there in the ordinary single-consumer flow (the stream cannot reach its
+    /// terminal event before the run is reaped, and with no other verb in play
+    /// this drive is what reaps it), but so does a `break` out of a command that
+    /// exited while it was being read — the `__anext__` that handed over the last
+    /// line may well be the one that armed the finisher. A `break` taken while
+    /// the child is **still running** does not get there: nothing polls the drive
+    /// afterwards, so the probe never runs again, the run stays in this handle's
+    /// slot, and these verbs keep their pre-3.0 behaviour (`output`/`output_bytes`
+    /// wait for exit and return empty captures with a real outcome; `profile`
+    /// samples the rest of the run). Deliberately left that way — the narrowing is
+    /// only what the joint finisher forces, never a wider rule applied for
+    /// tidiness. Both sides are covered in `tests/test_streaming.py`
+    /// (`test_capture_verbs_after_an_early_break_from_an_exited_child_are_diagnosed`,
+    /// `test_capture_verbs_still_report_a_run_left_while_the_child_was_running`).
+    /// (A consuming verb on another task that claimed the process first leaves
+    /// this slot untouched — `ProbeVerdict::NoProcess`, so the drive just drains —
+    /// and these verbs then raise the ordinary "handle has been consumed".)
     ///
     /// This **is** a narrowing of the public contract, deliberately taken rather
     /// than papered over, and recorded as such: BREAKING in `CHANGELOG.md`, on
@@ -650,8 +672,8 @@ impl PyRunningProcess {
         {
             return Err(ProcessError::new_err(format!(
                 "{verb}() cannot report a run whose output was streamed with \
-                 output_events(): that stream consumed stdout and delivered stderr \
-                 as events, and completing it finished the run. Use finish()/\
+                 output_events(): that stream consumed stdout, delivered stderr \
+                 as events, and took over finishing the run. Use finish()/\
                  afinish() (outcome + stderr) or outcome()/aoutcome() instead."
             )));
         }
@@ -931,10 +953,14 @@ impl PyRunningProcess {
 
     /// Wait for exit and capture the full `ProcessResult`. Consumes the handle.
     ///
-    /// Raises `ProcessError` on a handle whose `output_events()` stream was
-    /// drained: that stream consumed stdout, delivered stderr as events and
-    /// completed the run, so there is nothing left to capture — report such a run
-    /// with `finish()`/`afinish()` or `outcome()`/`aoutcome()`.
+    /// Raises `ProcessError` once an `output_events()` stream has taken this run
+    /// over — which it does as soon as it observes the child exit, whether or not
+    /// the caller iterated to the end: that stream consumed stdout, delivered
+    /// stderr as events and completed the run, so there is nothing left to
+    /// capture — report such a run with `finish()`/`afinish()` or
+    /// `outcome()`/`aoutcome()`. Stopping the iteration while the child still
+    /// runs leaves the run here, and this behaves as it did before crate 3.0
+    /// (empty captures with a real outcome).
     fn output(&self, py: Python<'_>) -> PyResult<PyProcessResult> {
         reject_reentrant_runtime()?;
         let running = self.take_running_uncaptured("output")?;
@@ -951,8 +977,9 @@ impl PyRunningProcess {
     }
 
     /// Wait for exit and capture the full raw-bytes `BytesResult`. Consumes the
-    /// handle. Raises `ProcessError` after a drained `output_events()` stream,
-    /// for the same reason as `output()`.
+    /// handle. Raises `ProcessError` once an `output_events()` stream has taken
+    /// the run over, under the same condition and for the same reason as
+    /// `output()`.
     fn output_bytes(&self, py: Python<'_>) -> PyResult<PyBytesResult> {
         reject_reentrant_runtime()?;
         let running = self.take_running_uncaptured("output_bytes")?;
@@ -971,9 +998,12 @@ impl PyRunningProcess {
     /// Wait for exit while sampling resource usage every `every_seconds`,
     /// returning a `RunProfile`. Consumes the handle.
     ///
-    /// Raises `ProcessError` on a handle whose `output_events()` stream was
-    /// drained: completing that stream completed the run, so there is no live run
+    /// Raises `ProcessError` once an `output_events()` stream has taken this run
+    /// over — which it does as soon as it observes the child exit, whether or not
+    /// the caller iterated to the end: the run is over, so there is no live run
     /// left to sample — use `finish()`/`afinish()` or `outcome()`/`aoutcome()`.
+    /// Stopping the iteration while the child still runs leaves the run here, and
+    /// this still profiles the rest of it.
     fn profile(&self, py: Python<'_>, every_seconds: f64) -> PyResult<PyRunProfile> {
         let every = positive_duration(every_seconds, "every_seconds")?;
         reject_reentrant_runtime()?;

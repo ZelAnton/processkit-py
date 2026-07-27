@@ -18,9 +18,10 @@ sync-and-async-pairs semantics — instead of guessing from the README:
 
 Two membership rules, kept identical here and in `tests/test_llms_txt.py`:
 
-* The three DRAFT prefix entries in `docs/SUMMARY.md` — the implementation switchers
-  `[Rust version]()` / `[Python wrapper]()` / `[.NET version]()` — have no chapter
-  file (empty `()` link targets) and are excluded from *both* files.
+* The four DRAFT prefix entries in `docs/SUMMARY.md` — the implementation switchers
+  `[Rust version]()` / `[CLI Runner]()` / `[Python wrapper]()` /
+  `[.NET version]()` — have no chapter file (empty `()` link targets) and are
+  excluded from *both* files.
 * `docs/README.md` (the "Overview" landing page) is *listed* in `llms.txt` — it is a
   real rendered chapter worth pointing an assistant at — but its *body* is excluded
   from `llms-full.txt`. That page is the site frontispiece (cover image, CI/PyPI
@@ -91,7 +92,7 @@ class Chapter:
 
 def parse_summary(summary: pathlib.Path = _SUMMARY) -> list[Chapter]:
     """The ordered real chapters of `docs/SUMMARY.md` — every `[Title](file.md)`
-    entry in document order, with the three fileless DRAFT switcher links
+    entry in document order, with the four fileless DRAFT switcher links
     (`[Rust version]()` etc.) dropped. Comments are stripped first so the format
     documentation inside SUMMARY.md's own comment can't be read as a chapter."""
     text = _COMMENT.sub("", summary.read_text(encoding="utf-8"))

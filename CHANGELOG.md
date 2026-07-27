@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+- Add a **CLI Runner** link immediately after the Rust version in the Pages
+  navigation.
 
 ### Changed
 -

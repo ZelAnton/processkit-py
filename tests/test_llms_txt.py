@@ -18,9 +18,9 @@ _DOCS = pathlib.Path(gen_llms_txt.__file__).resolve().parents[1] / "docs"
 _LLMS = _DOCS / "llms.txt"
 _LLMS_FULL = _DOCS / "llms-full.txt"
 
-# The three implementation-switcher DRAFT entries in SUMMARY.md — bare `[Title]()`
+# The four implementation-switcher DRAFT entries in SUMMARY.md — bare `[Title]()`
 # links with no chapter file — which both artifacts exclude.
-_DRAFT_TITLES = ("Rust version", "Python wrapper", ".NET version")
+_DRAFT_TITLES = ("Rust version", "CLI Runner", "Python wrapper", ".NET version")
 
 
 def test_llms_files_are_up_to_date() -> None:

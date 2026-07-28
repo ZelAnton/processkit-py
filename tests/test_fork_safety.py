@@ -137,6 +137,46 @@ os._exit(0)
 """
 
 
+_PICKLE_DRIVER = r"""
+import os
+import pickle
+import sys
+import time
+
+import processkit
+
+outcome = processkit.Command(sys.executable, ["-c", "import sys; sys.exit(3)"]).output().outcome
+finished = processkit.Command(sys.executable, ["-c", "pass"]).start().finish()
+payload = pickle.dumps((outcome, finished))
+
+pid = os.fork()
+if pid == 0:
+    try:
+        restored_outcome, restored_finished = pickle.loads(payload)
+        valid = restored_outcome == outcome and restored_finished == finished
+        os._exit(0 if valid else 41)
+    except BaseException:
+        os._exit(42)
+
+deadline = time.monotonic() + 15.0
+while time.monotonic() < deadline:
+    waited, status = os.waitpid(pid, os.WNOHANG)
+    if waited == pid:
+        code = os.waitstatus_to_exitcode(status)
+        if code != 0:
+            sys.stderr.write("pickle child exit code " + str(code) + "\n")
+            os._exit(11)
+        print("OK", flush=True)
+        os._exit(0)
+    time.sleep(0.05)
+
+os.kill(pid, 9)
+os.waitpid(pid, 0)
+sys.stderr.write("pickle child hung\n")
+os._exit(10)
+"""
+
+
 def test_use_fork_use_refuses_without_hanging_or_orphaning(tmp_path: pathlib.Path) -> None:
     marker = tmp_path / "forked-grandchild.pid"
 
@@ -177,3 +217,21 @@ def test_use_fork_use_refuses_without_hanging_or_orphaning(tmp_path: pathlib.Pat
         f"fork-safety driver did not confirm success with a trailing 'OK'; "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+
+
+def test_pickle_restore_after_fork_does_not_touch_inherited_runtime() -> None:
+    try:
+        result = subprocess.run(
+            [PY, "-c", _PICKLE_DRIVER],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f"pickle fork driver hung: stdout={exc.stdout!r} stderr={exc.stderr!r}")
+
+    assert result.returncode == 0, (
+        f"pickle fork driver failed (code {result.returncode}); "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert result.stdout.strip().splitlines()[-1:] == ["OK"]

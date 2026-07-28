@@ -10,7 +10,6 @@ import asyncio
 import json
 import pathlib
 import signal
-import sys
 
 from processkit import (
     Command,
@@ -33,6 +32,7 @@ from processkit._cli.exit_codes import (
     EXIT_SIGNAL_BASE,
     EXIT_TIMEOUT,
 )
+from processkit._cli.output import emit_stderr, emit_stdout
 from processkit._cli.parser import PROFILE_STDERR_MARKER
 
 #: Sampling period for ``--profile``'s `RunningProcess.profile()` call. Not
@@ -44,7 +44,7 @@ _PROFILE_SAMPLE_INTERVAL_SECONDS = 0.1
 
 
 def _fail(message: str) -> None:
-    print(f"processkit: {message}", file=sys.stderr)
+    emit_stderr(f"processkit: {message}")
 
 
 async def _drive_idle(proc: RunningProcess) -> Outcome:
@@ -63,7 +63,10 @@ async def _drive_idle(proc: RunningProcess) -> Outcome:
     """
     events = proc.output_events()
     async for event in events:
-        print(event.text, file=sys.stderr if event.is_stderr else sys.stdout)
+        if event.is_stderr:
+            emit_stderr(event.text)
+        else:
+            emit_stdout(event.text)
     finished = await proc.afinish()
     return finished.outcome
 
@@ -96,7 +99,7 @@ def _emit_profile(target: object, profile: RunProfile) -> int | None:
     writing to a file fails (never a raw traceback), `None` on success."""
     text = json.dumps(_profile_payload(profile))
     if target is PROFILE_STDERR_MARKER:
-        print(text, file=sys.stderr)
+        emit_stderr(text)
         return None
     assert isinstance(target, str)  # the only other value argparse can produce here
     try:

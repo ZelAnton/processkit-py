@@ -15,6 +15,7 @@ from processkit._cli.exit_codes import (
     EXIT_DOCTOR_OK,
     EXIT_DOCTOR_PROBE_ERROR,
 )
+from processkit._cli.output import emit_stdout
 
 #: Deliberately tiny probe values for `doctor`'s three independent
 #: resource-limit checks — small enough to be a meaningful "would a real cap
@@ -71,11 +72,11 @@ def _doctor_json_payload(
 
 def _emit_doctor_json(payload: dict[str, object]) -> None:
     """Write one complete ``doctor --json`` payload to stdout."""
-    print(json.dumps(payload))
+    emit_stdout(json.dumps(payload))
 
 
 def _print_doctor_caveat() -> None:
-    print(f"  note: {_DOCTOR_CAVEAT}")
+    emit_stdout(f"  note: {_DOCTOR_CAVEAT}")
 
 
 def _doctor(json_output: bool = False) -> int:
@@ -92,7 +93,7 @@ def _doctor(json_output: bool = False) -> int:
     traceback rather than being misreported as one of the diagnostic
     verdicts above."""
     if not json_output:
-        print("processkit doctor")
+        emit_stdout("processkit doctor")
     try:
         plain_group = ProcessGroup()
     except (ResourceLimit, Unsupported) as exc:
@@ -110,10 +111,12 @@ def _doctor(json_output: bool = False) -> int:
                 )
             )
         else:
-            print(f"  containment mechanism : unavailable ({exc})")
-            print("  resource limits        : unavailable (no containment mechanism to test)")
+            emit_stdout(f"  containment mechanism : unavailable ({exc})")
+            emit_stdout("  resource limits        : unavailable (no containment mechanism to test)")
             _print_doctor_caveat()
-            print("  verdict: UNAVAILABLE - no containment mechanism in this environment (exit 3)")
+            emit_stdout(
+                "  verdict: UNAVAILABLE - no containment mechanism in this environment (exit 3)"
+            )
         return EXIT_DOCTOR_NO_CONTAINMENT
     except OSError as exc:
         if json_output:
@@ -131,14 +134,14 @@ def _doctor(json_output: bool = False) -> int:
                 )
             )
         else:
-            print(f"  containment mechanism : error probing ({exc})")
-            print("  resource limits        : unknown (mechanism probe failed)")
-            print("  verdict: ERROR - could not determine containment availability (exit 4)")
+            emit_stdout(f"  containment mechanism : error probing ({exc})")
+            emit_stdout("  resource limits        : unknown (mechanism probe failed)")
+            emit_stdout("  verdict: ERROR - could not determine containment availability (exit 4)")
         return EXIT_DOCTOR_PROBE_ERROR
 
     mechanism = str(plain_group.mechanism)
     if not json_output:
-        print(f"  containment mechanism : {mechanism}")
+        emit_stdout(f"  containment mechanism : {mechanism}")
     del plain_group  # drop the throwaway probe before the (separate) limits probes
 
     # Probe each of the three resource-limit controllers independently: on
@@ -179,11 +182,13 @@ def _doctor(json_output: bool = False) -> int:
                 )
             )
         else:
-            print(f"  resource limits        : error probing {'; '.join(probe_errors)}")
+            emit_stdout(f"  resource limits        : error probing {'; '.join(probe_errors)}")
             if unavailable:
-                print(f"  resource limits        : also unavailable {'; '.join(unavailable)}")
+                emit_stdout(f"  resource limits        : also unavailable {'; '.join(unavailable)}")
             _print_doctor_caveat()
-            print("  verdict: ERROR - could not determine resource-limit availability (exit 4)")
+            emit_stdout(
+                "  verdict: ERROR - could not determine resource-limit availability (exit 4)"
+            )
         return EXIT_DOCTOR_PROBE_ERROR
 
     if unavailable:
@@ -197,9 +202,9 @@ def _doctor(json_output: bool = False) -> int:
                 )
             )
         else:
-            print(f"  resource limits        : unavailable {'; '.join(unavailable)}")
+            emit_stdout(f"  resource limits        : unavailable {'; '.join(unavailable)}")
             _print_doctor_caveat()
-            print(
+            emit_stdout(
                 "  verdict: DEGRADED - containment is enforced, but resource limits are not "
                 "(exit 1)"
             )
@@ -215,6 +220,6 @@ def _doctor(json_output: bool = False) -> int:
             )
         )
     else:
-        print("  resource limits        : available")
-        print("  verdict: OK - containment and resource limits are both available (exit 0)")
+        emit_stdout("  resource limits        : available")
+        emit_stdout("  verdict: OK - containment and resource limits are both available (exit 0)")
     return EXIT_DOCTOR_OK

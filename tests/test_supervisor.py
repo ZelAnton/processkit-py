@@ -67,6 +67,23 @@ def test_supervisor_stop_when_predicate() -> None:
     assert calls  # the predicate was actually invoked
 
 
+def test_pickle_restore_inside_stop_when_does_not_reenter_runtime() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.fail(3, "boom"))
+    outcome = runner.output(Command("tool")).outcome
+    finished = Command(PY, ["-c", "pass"]).start().finish()
+    payload = pickle.dumps((outcome, finished))
+
+    def stop(_result: object) -> bool:
+        restored_outcome, restored_finished = pickle.loads(payload)
+        assert restored_outcome == outcome
+        assert restored_finished == finished
+        return True
+
+    result = Supervisor(Command(PY, ["-c", "pass"]), restart="always", stop_when=stop).run()
+    assert result.stopped == "predicate"
+
+
 def test_supervisor_run_is_once() -> None:
     # `run()` consumes the supervisor: a second call raises the typed
     # `ProcessError` with its stable message (pinned so the frozen-Mutex rework

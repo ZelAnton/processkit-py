@@ -20,7 +20,7 @@ use crate::convert::{build_retry_policy, parse_retry_if, positive_duration};
 use crate::errors::{invalid_json_err, map_err};
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::runner::{extract_runner, scope_when_capture, with_when_capture_sync};
-use crate::runtime::drive_async_py;
+use crate::runtime::{drive_async_py, drive_async_py_convert};
 
 /// Either the per-call `args` list, or a fully-customized `Command` built via
 /// `CliClient.command(args)` and further chained (`.timeout(...)`, `.stdin(...)`,
@@ -514,8 +514,8 @@ impl PyCliClient {
     /// the awaited result: a non-zero exit propagates `NonZeroExit`, invalid JSON
     /// propagates `InvalidJson`, both out of the `await` — and a raising injected
     /// `when` predicate aborts it via `scope_when_capture`, exactly like `arun`.
-    /// The JSON parse runs under a re-attached GIL on the completing worker, the
-    /// one JSON-specific step in an otherwise crate-driven future.
+    /// The JSON parse runs in the event-loop completion callback, so no runtime
+    /// worker enters Python merely to hand the completed value over.
     fn arun_json<'py>(
         &self,
         py: Python<'py>,
@@ -523,7 +523,7 @@ impl PyCliClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.inner.clone();
         let call = ClientCall::from_py(call)?;
-        drive_async_py(
+        drive_async_py_convert(
             py,
             scope_when_capture(async move {
                 let command = build_command(&client, call)?;
@@ -531,11 +531,9 @@ impl PyCliClient {
                 // consumes the command.
                 let program = command.program().to_string_lossy().into_owned();
                 let text = client.run(command).await.map_err(map_err)?;
-                // `json.loads` needs the GIL; re-attach to parse, then `unbind` so
-                // the parsed object leaves the attach scope as the future's owned
-                // `Py<PyAny>` result.
-                Python::attach(|py| parse_json(py, &program, &text).map(Bound::unbind))
+                Ok((program, text))
             }),
+            |py, (program, text)| parse_json(py, &program, &text).map(Bound::unbind),
         )
     }
 

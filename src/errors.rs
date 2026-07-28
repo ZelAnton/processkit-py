@@ -165,21 +165,20 @@ fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// synthesized entirely on the binding's streaming surface (`running.rs`) when a
 /// run produces no stdout/stderr line for its `Command.idle_timeout(...)` window.
 ///
-/// Self-attaching (acquires the GIL itself, a cheap re-entrant no-op when one is
-/// already held), so the streaming `__anext__` — which runs on a tokio worker
-/// with the GIL released across the await — can build the error without a
-/// caller-threaded `py` token, exactly like `map_err`.
+/// The structured field is attached only while the interpreter still accepts
+/// attachments. During finalization the typed exception remains usable without
+/// that optional field rather than a runtime worker panicking in `attach`.
 pub(crate) fn idle_timeout_err(seconds: f64) -> PyErr {
-    Python::attach(|py| {
-        let err = IdleTimeout::new_err(format!(
-            "no stdout/stderr line for {seconds}s (idle timeout); the child produced \
-             no output within its Command.idle_timeout({seconds}) window and was killed"
-        ));
+    let err = IdleTimeout::new_err(format!(
+        "no stdout/stderr line for {seconds}s (idle timeout); the child produced \
+         no output within its Command.idle_timeout({seconds}) window and was killed"
+    ));
+    let _ = Python::try_attach(|py| {
         // Ignore a `setattr` failure: the typed exception with its message is
         // already a faithful error (same tolerance as `map_err`'s field attach).
         let _ = err.value(py).setattr("idle_timeout_seconds", seconds);
-        err
-    })
+    });
+    err
 }
 
 /// Character cap for the `stdout` fragment carried on an [`InvalidJson`]. A
@@ -255,9 +254,9 @@ fn cached<'py>(lock: &PyOnceLock<Py<PyType>>, py: Python<'py>) -> Bound<'py, PyT
 /// so callers can inspect a failure programmatically, not just read its
 /// message.
 ///
-/// Self-attaching: it acquires the GIL itself (a cheap re-entrant no-op when one
-/// is already held), so both the sync surface and the async futures can map an
-/// error with a uniform `.map_err(map_err)` — no caller-threaded `py` token.
+/// Uses `try_attach` because async error paths can run on a tokio worker while
+/// the interpreter is finalizing. If attachment is no longer possible, it
+/// degrades to the generic `ProcessError` message instead of panicking.
 ///
 /// Since crate 1.2.0, exception-type selection and field attachment are driven
 /// by `Error`'s own accessors (`program()`/`stdout()`/`stderr()`/`code()`/
@@ -292,8 +291,9 @@ pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
     // `Error` is not `Clone`).
     use processkit::ErrorReason as E;
 
-    Python::attach(|py| {
-        let message = error.to_string();
+    let fallback_message = error.to_string();
+    Python::try_attach(|py| {
+        let message = fallback_message.clone();
         let err = if error.is_timeout() {
             PyErr::from_type(cached(&TIMEOUT, py), message)
         } else if error.is_not_found() {
@@ -431,4 +431,5 @@ pub(crate) fn map_err_ref(error: &processkit::Error) -> PyErr {
         }
         err
     })
+    .unwrap_or_else(|| ProcessError::new_err(fallback_message))
 }

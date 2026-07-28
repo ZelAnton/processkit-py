@@ -180,6 +180,7 @@ from typing import NoReturn
 
 from processkit._cli.doctor import _doctor
 from processkit._cli.exit_codes import EXIT_OUTPUT_LOST, EXIT_SIGNAL_BASE
+from processkit._cli.output import OutputWriteError
 from processkit._cli.parser import _build_parser, _split_child_argv
 from processkit._cli.run import _run
 from processkit._cli.supervise import _supervise
@@ -382,6 +383,9 @@ def main_and_exit(argv: Sequence[str] | None = None) -> NoReturn:
         code: object = main(argv)
     except SystemExit as exc:
         code = exc.code
+    except OutputWriteError as exc:
+        _write_stderr(f"processkit: {exc}\n")
+        code = EXIT_OUTPUT_LOST
     except KeyboardInterrupt:
         _write_stderr("processkit: interrupted\n")
         code = EXIT_SIGNAL_BASE + signal.SIGINT

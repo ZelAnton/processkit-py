@@ -22,12 +22,13 @@ use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::IntoPyObjectExt;
 
 use crate::command::PyCommand;
 use crate::errors::map_err;
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::runner::{extract_runner, WhenCaptureRunner};
-use crate::runtime::{block_on_interruptible, drive_async_py};
+use crate::runtime::{block_on_interruptible, drive_async_py_convert};
 
 /// Resolve an optional Python `runner=` argument to the runner every command in
 /// the batch is driven through: the real `JobRunner` by default, or whatever
@@ -193,12 +194,14 @@ pub(crate) fn aoutput_all<'py>(
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     let total = cmds.len();
-    drive_async_py(py, async move {
-        let capture = WhenCaptureRunner::new(runner);
-        let slots =
-            collect_in_input_order(pk_output_stream(cmds, n, &capture), &capture, total).await;
-        Python::attach(|py| string_results_to_pylist(py, slots))
-    })
+    drive_async_py_convert(
+        py,
+        async move {
+            let capture = WhenCaptureRunner::new(runner);
+            Ok(collect_in_input_order(pk_output_stream(cmds, n, &capture), &capture, total).await)
+        },
+        |py, slots| string_results_to_pylist(py, slots)?.into_py_any(py),
+    )
 }
 
 /// Raw-bytes companion to `output_all` (`BytesResult` per command), with the
@@ -236,13 +239,17 @@ pub(crate) fn aoutput_all_bytes<'py>(
     let n = resolve_concurrency(concurrency)?;
     let runner = resolve_runner(runner)?;
     let total = cmds.len();
-    drive_async_py(py, async move {
-        let capture = WhenCaptureRunner::new(runner);
-        let slots =
-            collect_in_input_order(pk_output_stream_bytes(cmds, n, &capture), &capture, total)
-                .await;
-        Python::attach(|py| bytes_results_to_pylist(py, slots))
-    })
+    drive_async_py_convert(
+        py,
+        async move {
+            let capture = WhenCaptureRunner::new(runner);
+            Ok(
+                collect_in_input_order(pk_output_stream_bytes(cmds, n, &capture), &capture, total)
+                    .await,
+            )
+        },
+        |py, slots| bytes_results_to_pylist(py, slots)?.into_py_any(py),
+    )
 }
 
 /// Register this module's functions (`output_all`, `aoutput_all`,

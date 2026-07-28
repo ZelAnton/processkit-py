@@ -139,6 +139,28 @@ where
     })
 }
 
+/// Like [`drive_async_py`], but converts a raw completed value with `convert`
+/// on the event-loop thread. Use this when the success value needs Python APIs
+/// rather than merely implementing `IntoPyObject`.
+pub(crate) fn drive_async_py_convert<F, T, C>(
+    py: Python<'_>,
+    fut: F,
+    convert: C,
+) -> PyResult<Bound<'_, PyAny>>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: Send + 'static,
+    C: for<'py> FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>> + Send + 'static,
+{
+    lazy_bridge(py, async move {
+        let value = fut.await?;
+        Ok(Box::new(WithPyConverter {
+            value: Some(value),
+            convert: Some(convert),
+        }) as CompletionConverter)
+    })
+}
+
 /// Type-erased conversion of a completed Rust value into its Python wrapper.
 /// It is built by the runtime task but invoked only by the event-loop callback,
 /// so even the last `IntoPyObject` step stays on the interpreter-owning thread.
@@ -148,12 +170,32 @@ trait ConvertCompletion: Send {
 
 struct IntoPyConverter<T>(T);
 
+struct WithPyConverter<T, C> {
+    value: Option<T>,
+    convert: Option<C>,
+}
+
 impl<T> ConvertCompletion for IntoPyConverter<T>
 where
     T: for<'py> IntoPyObject<'py> + Send + 'static,
 {
     fn convert(self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.0.into_py_any(py)
+    }
+}
+
+impl<T, C> ConvertCompletion for WithPyConverter<T, C>
+where
+    T: Send + 'static,
+    C: for<'py> FnOnce(Python<'py>, T) -> PyResult<Py<PyAny>> + Send + 'static,
+{
+    fn convert(mut self: Box<Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let value = self.value.take().expect("completion value consumed once");
+        let convert = self
+            .convert
+            .take()
+            .expect("completion converter consumed once");
+        convert(py, value)
     }
 }
 

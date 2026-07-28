@@ -63,7 +63,9 @@
 //! synthesis path outside an actually-monitored run. Every non-picklable type
 //! raises a clear `TypeError` rather than failing silently/confusingly.
 
+use std::future::Future as _;
 use std::hash::{Hash, Hasher};
+use std::task::{Context, Poll, Waker};
 
 use processkit::testing::{Reply as PkReply, ScriptedRunner as PkScriptedRunner};
 use processkit::Command as PkCommand;
@@ -83,7 +85,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::runtime::block_on;
+use crate::errors::{map_err, ProcessError};
 
 /// Reconstruct a genuine `processkit::Outcome` for unpickling `Outcome`/
 /// `Finished` — see the module doc above for *why* this goes through
@@ -98,7 +100,6 @@ use crate::runtime::block_on;
 /// program/stdout/stderr/`ok_codes` are irrelevant to the `Outcome` it yields,
 /// so a bare command and empty streams suffice.
 fn scripted_outcome(
-    py: Python<'_>,
     code: Option<i32>,
     signal: Option<i32>,
     timed_out: bool,
@@ -112,8 +113,17 @@ fn scripted_outcome(
     };
     let command = PkCommand::new("");
     let runner = PkScriptedRunner::new().fallback(reply);
-    let result = block_on(py, async move { runner.output_string(&command).await })?;
-    Ok(result.outcome())
+    let mut future = std::pin::pin!(runner.output_string(&command));
+    match future
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(Ok(result)) => Ok(result.outcome()),
+        Poll::Ready(Err(error)) => Err(map_err(error)),
+        Poll::Pending => Err(ProcessError::new_err(
+            "internal scripted outcome reconstruction unexpectedly required asynchronous I/O",
+        )),
+    }
 }
 
 /// A resource-usage profile sampled across a run (from `RunningProcess.profile`).
@@ -649,14 +659,9 @@ impl PyOutcome {
     /// the stub/API-surface checks instead of needing its own module-level stub
     /// entry. Reconstructs the `Outcome` via `scripted_outcome` (see its doc).
     #[staticmethod]
-    fn _unpickle(
-        py: Python<'_>,
-        code: Option<i32>,
-        signal: Option<i32>,
-        timed_out: bool,
-    ) -> PyResult<Self> {
+    fn _unpickle(code: Option<i32>, signal: Option<i32>, timed_out: bool) -> PyResult<Self> {
         Ok(Self {
-            inner: scripted_outcome(py, code, signal, timed_out)?,
+            inner: scripted_outcome(code, signal, timed_out)?,
         })
     }
 }
@@ -911,13 +916,12 @@ impl PyFinished {
     /// via `scripted_outcome`; `stderr` is carried through as-is.
     #[staticmethod]
     fn _unpickle(
-        py: Python<'_>,
         stderr: String,
         code: Option<i32>,
         signal: Option<i32>,
         timed_out: bool,
     ) -> PyResult<Self> {
-        let outcome = scripted_outcome(py, code, signal, timed_out)?;
+        let outcome = scripted_outcome(code, signal, timed_out)?;
         Ok(Self { outcome, stderr })
     }
 }

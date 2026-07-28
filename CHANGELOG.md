@@ -15,7 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Fixed
--
+- Prevent the command-line wrapper's own intermediate output (`doctor`, idle
+  streaming, diagnostics, and `--profile`) from producing a traceback when a
+  pipe closes or another output write fails. A vanished receiver stays silent;
+  other write failures use exit code 119.
+- Keep async batch result conversion and `CliClient.arun_json()` parsing on the
+  Python event-loop thread, and make worker-side error conversion safe during
+  interpreter finalization.
+- Let `Outcome` and `Finished` pickle payloads be restored without entering the
+  Tokio runtime, including from supervisor callbacks and post-fork children.
 
 ## [1.4.2] - 2026-07-26
 

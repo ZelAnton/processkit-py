@@ -202,6 +202,49 @@ def test_idle_timeout_streams_more_output_than_one_stdio_buffer() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_intermediate_broken_pipe_is_silent_and_preserves_the_cli_verdict() -> None:
+    probe = (
+        "import runpy, sys\n"
+        "class _BrokenPipe:\n"
+        "    def write(self, text): raise BrokenPipeError()\n"
+        "    def flush(self): pass\n"
+        "sys.stdout = _BrokenPipe()\n"
+        "sys.argv = ['processkit', 'doctor']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode in (0, 1, 3, 4)
+    assert result.stderr == ""
+
+
+def test_intermediate_output_oserror_exits_119_without_a_traceback() -> None:
+    probe = (
+        "import runpy, sys\n"
+        "class _FailedOutput:\n"
+        "    def write(self, text): raise OSError(5, 'I/O error')\n"
+        "    def flush(self): pass\n"
+        "sys.stdout = _FailedOutput()\n"
+        "sys.argv = ['processkit', 'doctor']\n"
+        "runpy.run_module('processkit', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 119
+    assert "could not write stdout" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
 def test_failed_final_flush_is_reported_instead_of_a_clean_exit_code() -> None:
     """A final flush that *lost* output must not exit as if the run were fine.
 

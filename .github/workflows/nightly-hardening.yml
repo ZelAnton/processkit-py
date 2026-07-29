@@ -311,7 +311,7 @@ jobs:
         run: |
           {
             echo '## Mutation testing (cargo-mutants)'
-            echo 'Scope: `src/*.rs` without the `extension-module` feature.'
+            echo "Scope: \`src/*.rs\` without the \`extension-module\` feature."
             for outcome in missed timeout; do
               echo
               echo "### ${outcome}"

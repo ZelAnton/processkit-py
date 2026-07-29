@@ -284,6 +284,32 @@ def test_output_events_drain_then_aoutcome_terminates() -> None:
     assert outcome.timed_out is False
 
 
+def test_lifecycle_drive_racing_aoutcome_never_reports_consumed() -> None:
+    async def one_run() -> tuple[Outcome, list[LifecycleEvent]]:
+        proc = await Command(PY, ["-c", "pass"]).astart()
+        stream = proc.lifecycle_events()
+
+        async def drain() -> list[LifecycleEvent]:
+            return [event async for event in stream]
+
+        draining = asyncio.create_task(drain())
+        await asyncio.sleep(0)
+        outcome = await proc.aoutcome()
+        return outcome, await draining
+
+    async def scenario() -> list[tuple[Outcome, list[LifecycleEvent]]]:
+        # Several short runs widen the take_claim/start_joint_finish publication
+        # race without relying on a test-only synchronization hook.
+        return await asyncio.gather(*(one_run() for _ in range(32)))
+
+    results = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    for outcome, events in results:
+        assert outcome.exited_zero
+        assert outcome.timed_out is False
+        assert events[0].kind == "started"
+        assert events[-1].kind == "exited"
+
+
 def test_output_events_drain_then_finish_reports_a_nonzero_exit() -> None:
     # The finisher after a drained stream must carry the real exit status, not a
     # fabricated success — the run's outcome travels through the binding's own

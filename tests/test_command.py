@@ -913,6 +913,20 @@ def test_pty_conflict_can_be_cleared_by_restoring_a_pipe(tmp_path: pathlib.Path)
     assert "pty-ok" in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["piped", "PIPE", "Piped"])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("pty_first", [False, True])
+def test_pty_accepts_every_piped_stdio_spelling(mode: str, stream: str, pty_first: bool) -> None:
+    cmd = Command(PY, ["-c", "print('pty-alias-ok')"])
+    if pty_first:
+        cmd = cmd.pty()
+    cmd = getattr(cmd, stream)(mode)
+    if not pty_first:
+        cmd = cmd.pty()
+
+    assert "pty-alias-ok" in cmd.output().stdout
+
+
 def test_stdout_null_rejects_capture_verbs() -> None:
     # null/inherit are non-capturing: the one-shot capture verbs error clearly
     # rather than silently returning empty output.

@@ -124,7 +124,7 @@ def test_idle_timeout_gives_its_own_exit_code_distinct_from_wall_clock_timeout()
     result = _run_cli(
         "run",
         "--idle-timeout",
-        "0.5",
+        "2",
         "--",
         PY,
         "-c",

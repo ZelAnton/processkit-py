@@ -9,6 +9,7 @@ use processkit::DetachedChild as PkDetachedChild;
 use processkit::ParentDeathCleanup;
 use processkit::Pipeline as PkPipeline;
 use processkit::Stdin as PkStdin;
+use processkit::StdioMode;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -505,11 +506,12 @@ impl PyCommand {
     /// see output only in `"pipe"` mode.
     fn stdout(&self, mode: &str) -> PyResult<Self> {
         let parsed = parse_stdio_mode(mode)?;
-        if self.pty_requested && mode != "pipe" {
+        let is_piped = parsed == StdioMode::Piped;
+        if self.pty_requested && !is_piped {
             self.reject_pty_conflict()?;
         }
         let mut wrapped = self.rewrap(self.inner.clone().stdout(parsed));
-        if mode == "pipe" {
+        if is_piped {
             wrapped.pty_conflicts &= !PTY_CONFLICT_STDOUT;
         } else {
             wrapped.pty_conflicts |= PTY_CONFLICT_STDOUT;
@@ -520,11 +522,12 @@ impl PyCommand {
     /// Where the child's stderr goes: `"pipe"` / `"inherit"` / `"null"`.
     fn stderr(&self, mode: &str) -> PyResult<Self> {
         let parsed = parse_stdio_mode(mode)?;
-        if self.pty_requested && mode != "pipe" {
+        let is_piped = parsed == StdioMode::Piped;
+        if self.pty_requested && !is_piped {
             self.reject_pty_conflict()?;
         }
         let mut wrapped = self.rewrap(self.inner.clone().stderr(parsed));
-        if mode == "pipe" {
+        if is_piped {
             wrapped.pty_conflicts &= !PTY_CONFLICT_STDERR;
         } else {
             wrapped.pty_conflicts |= PTY_CONFLICT_STDERR;

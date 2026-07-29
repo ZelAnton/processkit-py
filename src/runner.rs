@@ -230,6 +230,16 @@ impl WhenCaptureRunner {
             .take()
     }
 
+    /// Whether the just-completed runner verb recorded a predicate error.
+    /// Supervisor installs this as an internal stop condition so an unbounded
+    /// restart policy cannot run another incarnation before surfacing the error.
+    pub(crate) fn has_completed_error(&self) -> bool {
+        self.completed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
     /// Publish the just-finished command's predicate error for its stream item.
     /// The cell is drained per item, so a leftover would mean the driver yielded
     /// nothing for a resolved command; overwriting rather than keeping the older

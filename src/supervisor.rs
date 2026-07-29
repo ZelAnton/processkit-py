@@ -499,6 +499,11 @@ impl PySupervisor {
         // `run`/`arun` after the loop halts. Created even when no predicate is
         // set (harmless: it stays empty) to keep the field unconditional.
         let error_slot: ErrorSlot = Arc::new(Mutex::new(None));
+        let runner: Arc<dyn ProcessRunner + Send + Sync> = match runner {
+            Some(obj) => extract_runner(obj)?,
+            None => Arc::new(JobRunner::new()),
+        };
+        let when_runner = Arc::new(WhenCaptureRunner::new(runner));
         let mut supervisor = PkSupervisor::new(command.inner.clone());
         if let Some(policy) = restart {
             supervisor = supervisor.restart(parse_restart_policy(policy)?);
@@ -529,9 +534,22 @@ impl PySupervisor {
         if let Some(enabled) = jitter {
             supervisor = supervisor.jitter(enabled);
         }
-        if let Some(callback) = stop_when {
-            supervisor = supervisor.stop_when(make_stop_predicate(callback, error_slot.clone()));
-        }
+        // Always stop on a ScriptedRunner.when predicate error. The wrapper
+        // records it before returning the incarnation result, and Supervisor
+        // evaluates this predicate before its restart policy, so even an
+        // unbounded `restart="always"` loop halts on the first bad predicate.
+        // When the caller supplied stop_when, preserve it in the same closure;
+        // the runner error wins and the invalid reply is never shown to the
+        // caller's predicate.
+        let when_stop = when_runner.clone();
+        supervisor = match stop_when {
+            Some(callback) => {
+                let user_stop = make_stop_predicate(callback, error_slot.clone());
+                supervisor
+                    .stop_when(move |result| when_stop.has_completed_error() || user_stop(result))
+            }
+            None => supervisor.stop_when(move |_result| when_stop.has_completed_error()),
+        };
         // Permanent-failure classifier (off unless set): consulted for a crash
         // the policy would otherwise restart, ahead of `max_restarts` and the
         // storm guard. A `Crashed` verdict stops with `stopped == "gave_up"`; a
@@ -633,11 +651,6 @@ impl PySupervisor {
         // (`Supervisor<Arc<dyn ProcessRunner + Send + Sync>>`) — the real
         // `JobRunner` by default, or whatever `extract_runner` resolves an
         // injected `runner=` to.
-        let runner: Arc<dyn ProcessRunner + Send + Sync> = match runner {
-            Some(obj) => extract_runner(obj)?,
-            None => Arc::new(JobRunner::new()),
-        };
-        let when_runner = Arc::new(WhenCaptureRunner::new(runner));
         let wrapped_runner: Arc<dyn ProcessRunner + Send + Sync> = when_runner.clone();
         let supervisor = supervisor.with_runner(wrapped_runner);
         Ok(Self {

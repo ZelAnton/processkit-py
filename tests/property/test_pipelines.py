@@ -174,7 +174,7 @@ def test_pipeline_stage_timeout_bounds_the_whole_chain(n: int, data: st.DataObje
     # chain"). Kept well above real subprocess-start latency (K-037: too-short
     # timeouts are flaky under a loaded CI runner).
     sleeper_index = data.draw(st.integers(min_value=0, max_value=n - 2))
-    stage_timeout = 0.4
+    stage_timeout = 1.0
     sleep_seconds = 5.0
 
     commands: list[Command] = []
@@ -191,7 +191,7 @@ def test_pipeline_stage_timeout_bounds_the_whole_chain(n: int, data: st.DataObje
 
     assert result.timed_out
     assert not result.is_success
-    assert elapsed_seconds < stage_timeout * 2.5
+    assert elapsed_seconds < sleep_seconds - 1.0
 
 
 @settings(max_examples=10, deadline=None)

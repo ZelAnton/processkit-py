@@ -5437,6 +5437,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Fixed
+- Treat every accepted spelling of piped stdout/stderr consistently when
+  combining `Command.stdout()` or `stderr()` with PTY mode.
+- Prevent a concurrent lifecycle-event finisher from making a still-reportable
+  `RunningProcess` appear consumed or letting context-manager teardown become a
+  silent no-op.
+- Stop `Supervisor` immediately on the first failing `ScriptedRunner.when`
+  predicate, including under an unbounded restart policy.
 - Accept bracketed IPv6 literals in `wait_for_http` and keep scoped IPv6 hosts
   from being percent-encoded twice between socket and `Host` header forms.
 - Prevent the command-line wrapper's own intermediate output (`doctor`, idle

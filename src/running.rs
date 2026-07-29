@@ -683,8 +683,24 @@ impl PyRunningProcess {
                 return Some(Claimed::Joint(task));
             }
         }
-        self.take()
-            .map(|running| Claimed::Process(Box::new(running)))
+        if let Some(running) = self.take() {
+            return Some(Claimed::Process(Box::new(running)));
+        }
+        // `start_joint_finish` publishes `Running` while holding the finish lock,
+        // but takes the process under that same lock first. It can therefore win
+        // between our first finish check and `take()` above, leaving the process
+        // empty only because the joint finisher now owns it. Re-check once after
+        // an empty take: the NotStarted -> Running transition is one-shot, so this
+        // closes that publication race without spinning or changing lock order.
+        let mut slot = self.finish.lock().unwrap_or_else(PoisonError::into_inner);
+        if let JointFinish::Running(_) = &*slot {
+            let JointFinish::Running(task) = std::mem::replace(&mut *slot, JointFinish::Taken)
+            else {
+                unreachable!("just matched JointFinish::Running")
+            };
+            return Some(Claimed::Joint(task));
+        }
+        None
     }
 
     /// Claim the run for a consuming verb — [`take_claim`](Self::take_claim) with

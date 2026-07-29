@@ -133,8 +133,9 @@ def test_supervision_session_waits_for_scripted_run() -> None:
 
     session = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner).start()
     assert isinstance(session, SupervisionSession)
-    assert isinstance(session.status, SupervisionStatus)
-    assert session.status.is_active
+    status = session.status
+    assert isinstance(status, SupervisionStatus)
+    assert status.restarts == 0
     outcome = session.wait()
 
     assert outcome.final_result.stdout == "done"
@@ -869,6 +870,26 @@ def test_supervisor_when_raising_predicate_aborts_run() -> None:
 
     with pytest.raises(ValueError, match="supervisor predicate exploded"):
         sup.run()
+
+
+def test_supervisor_when_error_stops_unbounded_restart_on_first_incarnation() -> None:
+    calls = 0
+
+    def boom(_cmd: Command) -> bool:
+        nonlocal calls
+        calls += 1
+        raise ValueError("unbounded supervisor predicate exploded")
+
+    async def scenario() -> SupervisionOutcome:
+        runner = ScriptedRunner()
+        runner.when(boom, Reply.ok("masked success"))
+        runner.fallback(Reply.ok("fallback"))
+        supervisor = Supervisor(Command(NO_SUCH_PROGRAM), restart="always", runner=runner)
+        return await asyncio.wait_for(supervisor.arun(), timeout=2.0)
+
+    with pytest.raises(ValueError, match="unbounded supervisor predicate exploded"):
+        asyncio.run(scenario())
+    assert calls == 1
 
 
 def test_supervisor_awhen_raising_predicate_aborts_run() -> None:

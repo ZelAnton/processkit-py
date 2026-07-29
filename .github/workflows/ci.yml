@@ -254,8 +254,9 @@ jobs:
             echo '## Coverage (Python only)'
             # Literal Markdown backticks inside single quotes, not command substitution.
             # shellcheck disable=SC2016
-            echo 'Not measured here: the compiled `_processkit` extension (see its Rust tests).'
-            echo 'Subprocess-only CLI driver modules are excluded; see `[tool.coverage.run]` in pyproject.toml.'
+            printf '%s\n' \
+              'Not measured here: the compiled `_processkit` extension (see its Rust tests).' \
+              'Subprocess-only CLI drivers are excluded; see `[tool.coverage.run]` in pyproject.toml.'
             echo '```'
             uv run coverage report
             echo '```'

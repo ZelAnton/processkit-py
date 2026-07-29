@@ -181,11 +181,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: stable
-          # uv currently provisions its x86_64 standalone CPython for 3.14t on
-          # the Windows ARM runner. Install the matching Rust target for this
-          # emulated free-threaded compatibility leg; the abi3 leg and the
-          # cibuildwheel release matrix still validate native win_arm64 output.
-          targets: ${{ matrix.os == 'windows-11-arm' && matrix.python == '3.14t' && 'x86_64-pc-windows-msvc' || '' }}
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
@@ -202,8 +197,31 @@ jobs:
       # plus pytest-cov's built-in xdist support combine each `-n auto` worker's
       # data so the total isn't undercounted.
       - name: Run tests
-        if: matrix.os != 'ubuntu-latest' || matrix.python != ''
+        if: >-
+          (matrix.os != 'ubuntu-latest' || matrix.python != '') &&
+          (matrix.os != 'windows-11-arm' || matrix.python != '3.14t')
         run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
+      - name: Build and test the native Windows ARM64 free-threaded wheel
+        if: matrix.os == 'windows-11-arm' && matrix.python == '3.14t'
+        env:
+          CIBW_ARCHS_WINDOWS: ARM64
+          CIBW_BUILD: cp314t-win_arm64
+          CIBW_TEST_COMMAND: >-
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py
+          CIBW_TEST_REQUIRES: >-
+            pytest~=9.1
+            pytest-timeout~=2.4
+            pytest-xdist~=3.8
+            hypothesis~=6.156
+            griffelib~=2.0
+        # uv has no native Windows ARM64 3.14t standalone build. cibuildwheel
+        # provisions the ARM64 NuGet interpreter used by the release matrix, so
+        # this tests the actual wheel instead of an x86_64 build under emulation.
+        # The ignored documentation guards require an editable source package
+        # and remain enforced by every ordinary test leg.
+        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-report=html

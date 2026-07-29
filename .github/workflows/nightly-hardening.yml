@@ -51,9 +51,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: stable
-          # Keep parity with ci.yml: uv's Windows 3.14t standalone interpreter
-          # is x86_64 on the ARM runner, so its Rust extension needs that target.
-          targets: ${{ matrix.os == 'windows-11-arm' && matrix.python == '3.14t' && 'x86_64-pc-windows-msvc' || '' }}
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
@@ -64,6 +61,7 @@ jobs:
       # `shell: bash` runs the same POSIX loop on every OS in the matrix,
       # including both Windows architectures (Actions ships Git Bash there).
       - name: Run the suite repeatedly with scaled-up stress iterations
+        if: matrix.os != 'windows-11-arm' || matrix.python != '3.14t'
         shell: bash
         run: |
           set -e
@@ -72,6 +70,34 @@ jobs:
             uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
             echo "::endgroup::"
           done
+      - name: Stress the native Windows ARM64 free-threaded wheel
+        if: matrix.os == 'windows-11-arm' && matrix.python == '3.14t'
+        env:
+          CIBW_ARCHS_WINDOWS: ARM64
+          CIBW_BUILD: cp314t-win_arm64
+          CIBW_TEST_COMMAND: >-
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py
+          CIBW_TEST_REQUIRES: >-
+            pytest~=9.1
+            pytest-timeout~=2.4
+            pytest-xdist~=3.8
+            hypothesis~=6.156
+            griffelib~=2.0
+        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
 
   bench:
     # `benchmarks/` (pytest-benchmark: overhead vs subprocess/asyncio.subprocess,

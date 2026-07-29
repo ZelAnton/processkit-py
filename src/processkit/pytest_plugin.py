@@ -55,7 +55,7 @@ import os
 import pathlib
 import re
 from collections.abc import Callable, Iterator
-from typing import Literal, NoReturn
+from typing import Literal, NoReturn, cast
 
 import pytest
 
@@ -211,7 +211,8 @@ def record_replay_runner(
     runs and saves the cassette to disk on teardown. The cassette path is
     ``<processkit_cassette_dir or tmp_path>/<safe-node-id>-<hash>.json``."""
     config = request.config
-    cassette = _cassette_dir(config, tmp_path) / _cassette_name(request.node.nodeid)
+    node = cast(pytest.Item, request.node)  # pyright: ignore[reportUnknownMemberType]
+    cassette = _cassette_dir(config, tmp_path) / _cassette_name(node.nodeid)
     if _is_record_mode(config):
         cassette.parent.mkdir(parents=True, exist_ok=True)
         runner = RecordReplayRunner.record(str(cassette), scrub=processkit_cassette_scrubber)
@@ -332,7 +333,8 @@ def _processkit_no_real_spawn(
     run verbs on ``Command`` / ``Pipeline`` / ``Runner`` / ``ProcessGroup`` with a
     loud ``pytest.fail``. A no-op (and essentially free) for every other test.
     ``monkeypatch`` restores the originals at teardown."""
-    if request.node.get_closest_marker(_NO_SPAWN_MARKER) is None:
+    node = cast(pytest.Item, request.node)  # pyright: ignore[reportUnknownMemberType]
+    if node.get_closest_marker(_NO_SPAWN_MARKER) is None:
         return
     for cls, verbs in _SPAWN_VERBS:
         for verb in verbs:

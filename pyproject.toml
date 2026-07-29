@@ -175,13 +175,17 @@ namespace_packages = true
 [tool.pyright]
 include = ["src/processkit", "tests/_typing_pins.py", "examples"]
 pythonVersion = "3.12"
-# `basic` (pyright's own default) is the deliberate starting strictness: a
-# fresh second tool on an existing, mypy-`strict`-clean surface should not
-# also have to clear pyright's full `strict` bar (which turns on stricter
-# checks mypy's strict mode does not require, e.g. reportMissingTypeStubs /
-# reportUnknownMemberType) in the same task that first wires it up. Revisit
-# once this gate has run for a while.
-typeCheckingMode = "basic"
+# The public surface has cleared both mypy strict and the independent pyright
+# gate long enough to enforce pyright's full strict diagnostics too, including
+# unknown values leaking through overloads, protocols, and example code.
+typeCheckingMode = "strict"
+# These two diagnostics are naming/reachability checks rather than type-safety
+# checks. Private helpers intentionally cross module boundaries inside the
+# private `_cli` package, while pytest fixtures/hooks, CLI entry functions, and
+# declarative typing pins are discovered dynamically instead of called in the
+# module that defines them. Ruff still guards ordinary unused imports.
+reportPrivateUsage = "none"
+reportUnusedFunction = "none"
 
 [tool.pytest.ini_options]
 # `-n auto` (pytest-xdist): the suite is dominated by sequential interpreter

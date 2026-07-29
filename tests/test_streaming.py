@@ -26,6 +26,7 @@ from processkit import (
     Runner,
     RunProfile,
     Supervisor,
+    Unsupported,
 )
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
@@ -655,6 +656,52 @@ def test_interactive_stdin_echo() -> None:
         return lines
 
     assert asyncio.run(scenario()) == ["HELLO", "WORLD"]
+
+
+def test_pty_interactive_input_round_trips_over_terminal_master() -> None:
+    async def scenario() -> ProcessResult:
+        code = "import sys; line=sys.stdin.readline(); print('reply:' + line.strip(), flush=True)"
+        proc = await Command(PY, ["-c", code]).pty().keep_stdin_open().astart()
+        stdin = proc.take_stdin()
+        await stdin.write_line("hello")
+        return await proc.aoutput()
+
+    result = asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+    assert "reply:hello" in result.stdout
+
+
+def test_pty_send_control_interrupts_the_child() -> None:
+    async def scenario() -> Outcome:
+        code = "import time; print('ready', flush=True); time.sleep(30)"
+        proc = await Command(PY, ["-c", code]).pty().keep_stdin_open().astart()
+        lines = proc.stdout_lines()
+        assert (await anext(lines)).strip().endswith("ready")
+        stdin = proc.take_stdin()
+        await stdin.send_control("c")
+        return await proc.aoutcome()
+
+    outcome = asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+    assert not outcome.exited_zero
+
+
+def test_resize_pty_accepts_live_terminal_and_rejects_plain_run() -> None:
+    code = "import time; print('ready', flush=True); time.sleep(30)"
+    pty_proc = Command(PY, ["-c", code]).pty(cols=100, rows=30).start()
+    try:
+        pty_proc.resize_pty(120, 40)
+        with pytest.raises(ValueError, match="positive"):
+            pty_proc.resize_pty(0, 40)
+    finally:
+        pty_proc.kill()
+        pty_proc.outcome()
+
+    plain_proc = Command(PY, ["-c", code]).start()
+    try:
+        with pytest.raises(Unsupported):
+            plain_proc.resize_pty(120, 40)
+    finally:
+        plain_proc.kill()
+        plain_proc.outcome()
 
 
 def test_stdin_text_feeds_input() -> None:

@@ -238,6 +238,20 @@ def retry(
 def retry_never() -> Command
 ```
 
+#### `pty`
+
+```text
+def pty(*, cols: int | None = ..., rows: int | None = ...) -> Command
+```
+
+Spawn under a pseudo-terminal, optionally with an initial size.
+
+The terminal merges stdout and stderr into the stdout stream. Provide
+``cols`` and ``rows`` together; both must be positive. Combine with
+``keep_stdin_open()`` for interactive input through ``take_stdin()``.
+Inherited or redirected stdio conflicts are rejected while building the
+command, before a child can spawn.
+
 #### `stdout`
 
 ```text
@@ -1029,6 +1043,14 @@ The writable stdin handle. Raises `ProcessError` if stdin was not kept
 open (build the `Command` with ``keep_stdin_open()``) or was already
 taken — so a missing setup fails here, not with a later `AttributeError`.
 
+#### `resize_pty`
+
+```text
+def resize_pty(cols: int, rows: int) -> None
+```
+
+Resize a live pseudo-terminal; reject non-PTY or exited runs.
+
 #### `kill`
 
 ```text
@@ -1635,8 +1657,9 @@ def send_control(control: str) -> Awaitable[None]
 
 Write one mapped control byte, e.g. ``"c"`` -> Ctrl-C (``\x03``).
 
-This writes a byte to the child's stdin pipe, not a terminal signal;
-real SIGINT/SIGTSTP delivery requires a pseudoterminal.
+With ``Command.pty()`` the byte passes through the terminal line
+discipline and can produce a real signal. On an ordinary pipe it remains
+a byte that only a cooperating child interprets.
 
 #### `flush`
 
@@ -2311,8 +2334,11 @@ uncapped. A **negative** ``timeout`` is rejected outright — raises
 
 ``host`` and ``path`` are validated up front, before any connection is
 attempted (fail-fast, not "after one retry cycle"): an IPv6 literal
-``host`` (e.g. ``"::1"``) is bracketed in the ``Host`` header per RFC
-9112/3986 (``Host: [::1]:8080``, never the ambiguous ``Host: ::1:8080``);
+``host`` may be raw or already bracketed (e.g. ``"::1"`` / ``"[::1]"``);
+brackets are removed for the socket connection and present exactly once in
+the ``Host`` header per RFC 9112/3986 (``Host: [::1]:8080``, never the
+ambiguous ``Host: ::1:8080``). An encoded IPv6 scope separator (``%25``)
+is decoded for the socket and encoded exactly once in the header;
 a ``path`` containing whitespace or a control character (including
 CR/LF — which could otherwise inject extra request/header lines from an
 untrusted ``path``) raises `ValueError`; and a ``host``/``path`` with a

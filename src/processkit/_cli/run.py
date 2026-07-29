@@ -24,6 +24,7 @@ from processkit import (
     RunProfile,
     Unsupported,
 )
+from processkit._cli.common import _apply_environment, _fail, _parse_env_flags
 from processkit._cli.exit_codes import (
     EXIT_IDLE_TIMEOUT,
     EXIT_INTERNAL_ERROR,
@@ -41,10 +42,6 @@ from processkit._cli.parser import PROFILE_STDERR_MARKER
 #: granularity for the short-lived CI-step commands this wrapper targets,
 #: without flooding a long-running one with samples.
 _PROFILE_SAMPLE_INTERVAL_SECONDS = 0.1
-
-
-def _fail(message: str) -> None:
-    emit_stderr(f"processkit: {message}")
 
 
 async def _drive_idle(proc: RunningProcess) -> Outcome:
@@ -110,21 +107,6 @@ def _emit_profile(target: object, profile: RunProfile) -> int | None:
     return None
 
 
-def _parse_env_flags(
-    run_parser: argparse.ArgumentParser, raw_pairs: list[str]
-) -> list[tuple[str, str]]:
-    """Parse repeated ``--env KEY=VALUE`` values, reporting a missing ``=`` as
-    a usage error (via `run_parser.error`, which itself exits) rather than
-    letting it surface as an unhandled `ValueError`/traceback."""
-    pairs: list[tuple[str, str]] = []
-    for raw in raw_pairs:
-        if "=" not in raw:
-            run_parser.error(f"--env {raw!r}: expected KEY=VALUE")
-        key, _, value = raw.partition("=")
-        pairs.append((key, value))
-    return pairs
-
-
 def _run(
     run_parser: argparse.ArgumentParser, args: argparse.Namespace, child_argv: list[str]
 ) -> int:
@@ -157,14 +139,13 @@ def _run(
     # call order (docs/commands.md#environment-and-sandboxing), but this is
     # still the natural reading order: clear/allow-list the base environment
     # first, then layer explicit overrides and the working directory on top.
-    if args.env_clear:
-        command = command.env_clear()
-    if args.inherit_env:
-        command = command.inherit_env(args.inherit_env)
-    for key, value in env_pairs:
-        command = command.env(key, value)
-    if args.cwd is not None:
-        command = command.cwd(args.cwd)
+    command = _apply_environment(
+        command,
+        clear=args.env_clear,
+        inherited=args.inherit_env,
+        pairs=env_pairs,
+        cwd=args.cwd,
+    )
     if args.timeout is not None:
         command = command.timeout(args.timeout)
         if args.timeout_grace is not None:

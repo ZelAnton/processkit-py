@@ -386,6 +386,8 @@ impl PyCliClient {
             // command minted from the client starts with none set; chain
             // `.idle_timeout(...)` on the returned `Command` to add one.
             idle_timeout: None,
+            pty_requested: false,
+            pty_conflicts: 0,
         })
     }
 

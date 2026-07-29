@@ -71,6 +71,8 @@ if TYPE_CHECKING:
         assert_type(cmd.exit_code(), int)
         assert_type(cmd.probe(), bool)
         assert_type(cmd.start(), RunningProcess)
+        assert_type(cmd.pty(), Command)
+        assert_type(cmd.pty(cols=120, rows=40), Command)
 
     # The exported aliases are usable as annotations (importable from processkit).
     def _public_aliases(program: StrPath, signal: SignalName) -> None:
@@ -274,6 +276,7 @@ if TYPE_CHECKING:
         assert_type(proc.outcome(), Outcome)
         assert_type(proc.finish(), Finished)
         assert_type(proc.output(), ProcessResult)
+        assert_type(proc.resize_pty(120, 40), None)
 
     async def _running_process_async_return_types(proc: RunningProcess) -> None:
         assert_type(await proc.aoutcome(), Outcome)

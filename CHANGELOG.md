@@ -10,11 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add a **CLI Runner** link immediately after the Rust version in the Pages
   navigation.
+- Add opt-in pseudo-terminal launches with `Command.pty(...)` and live terminal
+  resizing through `RunningProcess.resize_pty(...)`. PTY output is a single
+  merged stdout stream, and interactive stdin uses the existing writer API.
 
 ### Changed
 -
 
 ### Fixed
+- Accept bracketed IPv6 literals in `wait_for_http` and keep scoped IPv6 hosts
+  from being percent-encoded twice between socket and `Host` header forms.
 - Prevent the command-line wrapper's own intermediate output (`doctor`, idle
   streaming, diagnostics, and `--profile`) from producing a traceback when a
   pipe closes or another output write fails. A vanished receiver stays silent;

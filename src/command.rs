@@ -33,7 +33,13 @@ pub(crate) struct PyCommand {
     // Every builder must carry it forward by hand (the crate can't, since it has
     // no field for it) — they all funnel through `rewrap` to do so.
     pub(crate) idle_timeout: Option<Duration>,
+    pub(crate) pty_requested: bool,
+    pub(crate) pty_conflicts: u8,
 }
+
+const PTY_CONFLICT_STDIN: u8 = 1;
+const PTY_CONFLICT_STDOUT: u8 = 2;
+const PTY_CONFLICT_STDERR: u8 = 4;
 
 impl PyCommand {
     /// Rebuild the wrapper around a new crate `Command`, preserving the
@@ -45,7 +51,18 @@ impl PyCommand {
         Self {
             inner,
             idle_timeout: self.idle_timeout,
+            pty_requested: self.pty_requested,
+            pty_conflicts: self.pty_conflicts,
         }
+    }
+
+    fn reject_pty_conflict(&self) -> PyResult<()> {
+        if self.pty_requested {
+            return Err(PyValueError::new_err(
+                "pty() cannot be combined with inherit_stdin(), a non-piped stdout/stderr, or stdout_file()/stderr_file()",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -122,6 +139,8 @@ impl PyCommand {
         Self {
             inner,
             idle_timeout: None,
+            pty_requested: false,
+            pty_conflicts: 0,
         }
     }
 
@@ -252,8 +271,11 @@ impl PyCommand {
     /// identically on the live `Runner` and the test doubles (`ScriptedRunner`),
     /// since every runner routes stdin through one shared launch seam. Drop the
     /// other stdin knob to resolve it.
-    fn inherit_stdin(&self) -> Self {
-        self.rewrap(self.inner.clone().inherit_stdin())
+    fn inherit_stdin(&self) -> PyResult<Self> {
+        self.reject_pty_conflict()?;
+        let mut wrapped = self.rewrap(self.inner.clone().inherit_stdin());
+        wrapped.pty_conflicts |= PTY_CONFLICT_STDIN;
+        Ok(wrapped)
     }
 
     /// Set a wall-clock timeout. On expiry the whole tree is killed; `output()`
@@ -320,6 +342,8 @@ impl PyCommand {
         Ok(Self {
             inner: self.inner.clone(),
             idle_timeout: Some(duration),
+            pty_requested: self.pty_requested,
+            pty_conflicts: self.pty_conflicts,
         })
     }
 
@@ -460,12 +484,32 @@ impl PyCommand {
     /// (the parent's stdout), or `"null"` (discard). Capture verbs and streaming
     /// see output only in `"pipe"` mode.
     fn stdout(&self, mode: &str) -> PyResult<Self> {
-        Ok(self.rewrap(self.inner.clone().stdout(parse_stdio_mode(mode)?)))
+        let parsed = parse_stdio_mode(mode)?;
+        if self.pty_requested && mode != "pipe" {
+            self.reject_pty_conflict()?;
+        }
+        let mut wrapped = self.rewrap(self.inner.clone().stdout(parsed));
+        if mode == "pipe" {
+            wrapped.pty_conflicts &= !PTY_CONFLICT_STDOUT;
+        } else {
+            wrapped.pty_conflicts |= PTY_CONFLICT_STDOUT;
+        }
+        Ok(wrapped)
     }
 
     /// Where the child's stderr goes: `"pipe"` / `"inherit"` / `"null"`.
     fn stderr(&self, mode: &str) -> PyResult<Self> {
-        Ok(self.rewrap(self.inner.clone().stderr(parse_stdio_mode(mode)?)))
+        let parsed = parse_stdio_mode(mode)?;
+        if self.pty_requested && mode != "pipe" {
+            self.reject_pty_conflict()?;
+        }
+        let mut wrapped = self.rewrap(self.inner.clone().stderr(parsed));
+        if mode == "pipe" {
+            wrapped.pty_conflicts &= !PTY_CONFLICT_STDERR;
+        } else {
+            wrapped.pty_conflicts |= PTY_CONFLICT_STDERR;
+        }
+        Ok(wrapped)
     }
 
     /// Decode captured stdout *and* stderr with the named encoding instead of
@@ -648,13 +692,16 @@ impl PyCommand {
     /// **clears** this redirect and restores the ordinary stdio mode (the crate
     /// documents the reset explicitly), keeping the builder chain composable.
     #[pyo3(signature = (path, *, append = false))]
-    fn stdout_file(&self, path: PathBuf, append: bool) -> Self {
+    fn stdout_file(&self, path: PathBuf, append: bool) -> PyResult<Self> {
+        self.reject_pty_conflict()?;
         let inner = self.inner.clone();
-        self.rewrap(if append {
+        let mut wrapped = self.rewrap(if append {
             inner.stdout_file_append(path)
         } else {
             inner.stdout_file(path)
-        })
+        });
+        wrapped.pty_conflicts |= PTY_CONFLICT_STDOUT;
+        Ok(wrapped)
     }
 
     /// Redirect the child's stderr **straight to a file**, opened at spawn time.
@@ -671,13 +718,16 @@ impl PyCommand {
     /// `result.stderr` comes back empty. Redirect stdout with `stdout_file` when
     /// you need the capture verbs gated too.
     #[pyo3(signature = (path, *, append = false))]
-    fn stderr_file(&self, path: PathBuf, append: bool) -> Self {
+    fn stderr_file(&self, path: PathBuf, append: bool) -> PyResult<Self> {
+        self.reject_pty_conflict()?;
         let inner = self.inner.clone();
-        self.rewrap(if append {
+        let mut wrapped = self.rewrap(if append {
             inner.stderr_file_append(path)
         } else {
             inner.stderr_file(path)
-        })
+        });
+        wrapped.pty_conflicts |= PTY_CONFLICT_STDERR;
+        Ok(wrapped)
     }
 
     /// Call `callback` with every decoded stdout line as it is produced — the
@@ -798,6 +848,38 @@ impl PyCommand {
     /// `Unsupported` off-platform rather than silently no-op'ing).
     fn windows_graceful_ctrl_break(&self) -> Self {
         self.rewrap(self.inner.clone().windows_graceful_ctrl_break())
+    }
+
+    /// Spawn under a pseudo-terminal instead of three independent pipes.
+    /// stdout and stderr are merged into the stdout stream; `keep_stdin_open()`
+    /// and `take_stdin()` write to the terminal master. The optional initial
+    /// geometry must provide both positive `cols` and `rows`.
+    #[pyo3(signature = (*, cols = None, rows = None))]
+    fn pty(&self, cols: Option<u16>, rows: Option<u16>) -> PyResult<Self> {
+        if self.pty_conflicts != 0 {
+            return Err(PyValueError::new_err(
+                "pty() cannot be combined with inherit_stdin(), a non-piped stdout/stderr, or stdout_file()/stderr_file()",
+            ));
+        }
+        let inner = self.inner.clone().use_pty();
+        let mut wrapped = match (cols, rows) {
+            (None, None) => self.rewrap(inner),
+            (Some(cols), Some(rows)) if cols > 0 && rows > 0 => {
+                self.rewrap(inner.pty_size(cols, rows))
+            }
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err(
+                    "pty cols and rows must both be positive",
+                ));
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "pty cols and rows must be provided together",
+                ));
+            }
+        };
+        wrapped.pty_requested = true;
+        Ok(wrapped)
     }
 
     /// POSIX: run the child as this user id (drop privileges). On a non-POSIX

@@ -859,6 +859,57 @@ def test_per_stream_encoding_overrides() -> None:
 # --- stdout/stderr redirection ----------------------------------------------
 
 
+def test_pty_merges_terminal_output_and_sets_initial_size() -> None:
+    code = (
+        "import os, sys; "
+        "print(f'tty={int(os.isatty(0))}{int(os.isatty(1))}{int(os.isatty(2))}'); "
+        'print(f\'size={os.environ.get("COLUMNS")}x{os.environ.get("LINES")}\'); '
+        "print('from-stderr', file=sys.stderr)"
+    )
+    result = Command(PY, ["-c", code]).pty(cols=101, rows=37).output()
+
+    assert "tty=111" in result.stdout
+    assert "size=101x37" in result.stdout
+    assert "from-stderr" in result.stdout
+    assert result.stderr == ""
+
+
+def test_pty_size_requires_a_positive_pair() -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        Command(PY).pty(cols=80)
+    with pytest.raises(ValueError, match="provided together"):
+        Command(PY).pty(rows=24)
+    with pytest.raises(ValueError, match="positive"):
+        Command(PY).pty(cols=0, rows=24)
+
+
+def test_pty_rejects_conflicting_stdio_builders(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "redirect.txt"
+    with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):
+        Command(PY).inherit_stdin().pty()
+    with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):
+        Command(PY).pty().inherit_stdin()
+    with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):
+        Command(PY).stdout_file(target).pty()
+    with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):
+        Command(PY).pty().stderr_file(target)
+    with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):
+        Command(PY).stdout("inherit").pty()
+    with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):
+        Command(PY).pty().stderr("null")
+
+
+def test_pty_conflict_can_be_cleared_by_restoring_a_pipe(tmp_path: pathlib.Path) -> None:
+    result = (
+        Command(PY, ["-c", "print('pty-ok')"])
+        .stdout_file(tmp_path / "unused.txt")
+        .stdout("pipe")
+        .pty()
+        .output()
+    )
+    assert "pty-ok" in result.stdout
+
+
 def test_stdout_null_rejects_capture_verbs() -> None:
     # null/inherit are non-capturing: the one-shot capture verbs error clearly
     # rather than silently returning empty output.

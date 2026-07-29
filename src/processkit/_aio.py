@@ -601,14 +601,32 @@ def _format_host_header(host: str, port: int) -> str:
     already passed a bracketed literal (``"[::1]"``) is not double-wrapped.
     """
     if host.startswith("[") and host.endswith("]"):
-        return f"{host.replace('%', '%25')}:{port}"
+        literal = host[1:-1].replace("%25", "%")
+        return f"[{literal.replace('%', '%25')}]:{port}"
     try:
         is_ipv6_literal = ipaddress.ip_address(host).version == 6
     except ValueError:
         is_ipv6_literal = False
     if is_ipv6_literal:
-        return f"[{host.replace('%', '%25')}]:{port}"
+        literal = host.replace("%25", "%")
+        return f"[{literal.replace('%', '%25')}]:{port}"
     return f"{host}:{port}"
+
+
+def _http_connection_host(host: str) -> str:
+    """Return the socket-layer form of an HTTP host literal.
+
+    Brackets and RFC 6874's encoded scope separator belong to URI/header
+    syntax, while ``asyncio.open_connection`` expects the raw address.
+    """
+    if host.startswith("[") != host.endswith("]"):
+        raise ValueError("an IPv6 host must use either both brackets or neither")
+    bracketed = host.startswith("[")
+    if bracketed:
+        host = host[1:-1]
+    if bracketed or ":" in host:
+        return host.replace("%25", "%")
+    return host
 
 
 # Every Latin-1 control character: C0 (0x00-0x1F), DEL (0x7F), and C1
@@ -699,8 +717,11 @@ async def wait_for_http(
 
     ``host`` and ``path`` are validated up front, before any connection is
     attempted (fail-fast, not "after one retry cycle"): an IPv6 literal
-    ``host`` (e.g. ``"::1"``) is bracketed in the ``Host`` header per RFC
-    9112/3986 (``Host: [::1]:8080``, never the ambiguous ``Host: ::1:8080``);
+    ``host`` may be raw or already bracketed (e.g. ``"::1"`` / ``"[::1]"``);
+    brackets are removed for the socket connection and present exactly once in
+    the ``Host`` header per RFC 9112/3986 (``Host: [::1]:8080``, never the
+    ambiguous ``Host: ::1:8080``). An encoded IPv6 scope separator (``%25``)
+    is decoded for the socket and encoded exactly once in the header;
     a ``path`` containing whitespace or a control character (including
     CR/LF — which could otherwise inject extra request/header lines from an
     untrusted ``path``) raises `ValueError`; and a ``host``/``path`` with a
@@ -713,6 +734,7 @@ async def wait_for_http(
     if expected_status is None:
         expected_status = range(200, 300)  # default: any 2xx
     status_ok = _status_predicate(expected_status)
+    connection_host = _http_connection_host(host)
     request = _build_http_request(host, port, path)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -747,7 +769,7 @@ async def wait_for_http(
         # the status it read instead of discarding a met condition — the same
         # race ``wait_until`` / ``wait_for_line`` / ``wait_for_port`` all resolve
         # in favor of the success.
-        probe = asyncio.ensure_future(_probe_http(host, port, request))
+        probe = asyncio.ensure_future(_probe_http(connection_host, port, request))
         code: int | None = None
         try:
             code = await asyncio.wait_for(probe, timeout=attempt_timeout)

@@ -220,7 +220,9 @@ impl PyProcessStdin {
         })
     }
 
-    /// Send a single control byte to the child's stdin.
+    /// Send a single control byte to the child's stdin. Under `Command.pty()`
+    /// the terminal line discipline can turn it into a real signal; under an
+    /// ordinary pipe it remains a byte for a cooperating child to interpret.
     fn send_control<'py>(&self, py: Python<'py>, control: String) -> PyResult<Bound<'py, PyAny>> {
         let mut chars = control.chars();
         let c = chars.next().ok_or_else(|| {
@@ -947,6 +949,21 @@ impl PyRunningProcess {
                      provide stdin)",
                 )
             })
+    }
+
+    /// Resize a live pseudo-terminal. Raises `Unsupported` for a non-PTY run or
+    /// a terminal whose child has already exited.
+    fn resize_pty(&self, cols: u16, rows: u16) -> PyResult<()> {
+        if cols == 0 || rows == 0 {
+            return Err(PyValueError::new_err(
+                "resize_pty cols and rows must both be positive",
+            ));
+        }
+        let mut inner = self.lock();
+        let running = inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+        running.resize_pty(cols, rows).map_err(map_err)
     }
 
     /// Begin tearing the tree down without waiting. (Dropping the handle, or the

@@ -445,6 +445,8 @@ fn make_command_predicate(
                     // wrapper the caller built, not on the crate value the runner
                     // matches against), so reconstruct with none set.
                     idle_timeout: None,
+                    pty_requested: false,
+                    pty_conflicts: 0,
                 },
             ) {
                 Ok(py_command) => py_command,

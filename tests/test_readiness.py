@@ -33,7 +33,7 @@ from processkit import (
     wait_for_unix_socket,
     wait_until,
 )
-from processkit._aio import _format_host_header
+from processkit._aio import _format_host_header, _http_connection_host
 
 from ._programs import free_port, refused_port
 
@@ -1280,6 +1280,37 @@ def test_wait_for_http_brackets_ipv6_host_in_header() -> None:
     assert "Host: [::1]:" in received_head
 
 
+def test_wait_for_http_accepts_bracketed_ipv6_host() -> None:
+    received_host = ""
+    server_port = 0
+
+    async def scenario() -> None:
+        nonlocal received_host, server_port
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            nonlocal received_host
+            with contextlib.suppress(Exception):
+                while line := await reader.readline():
+                    if line == b"\r\n":
+                        break
+                    if line.lower().startswith(b"host:"):
+                        received_host = line.decode("latin-1").strip()
+                writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                writer.close()
+
+        try:
+            server = await asyncio.start_server(handle, "::1", 0)
+        except OSError:
+            pytest.skip("IPv6 loopback is not available in this environment")
+        server_port = server.sockets[0].getsockname()[1]
+        async with server:
+            await wait_for_http("[::1]", server_port, timeout=5.0)
+
+    asyncio.run(scenario())
+    assert received_host == f"Host: [::1]:{server_port}"
+
+
 def test_wait_for_http_ipv4_and_dns_hosts_stay_unbracketed() -> None:
     # Regression: existing IPv4/DNS-name behavior must not change.
     received_head = ""
@@ -1311,6 +1342,9 @@ def test_wait_for_http_ipv4_and_dns_hosts_stay_unbracketed() -> None:
 
 def test_format_host_header_percent_encodes_scoped_ipv6_zone_id() -> None:
     assert _format_host_header("fe80::1%eth0", 8080) == "[fe80::1%25eth0]:8080"
+    assert _format_host_header("[fe80::1%25eth0]", 8080) == "[fe80::1%25eth0]:8080"
+    assert _http_connection_host("[fe80::1%25eth0]") == "fe80::1%eth0"
+    assert _http_connection_host("host%25name.example") == "host%25name.example"
 
 
 def test_wait_for_http_rejects_path_with_space() -> None:

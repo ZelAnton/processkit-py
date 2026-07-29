@@ -240,6 +240,15 @@ class Command:
         jitter: bool | None = ...,
     ) -> Command: ...
     def retry_never(self) -> Command: ...
+    def pty(self, *, cols: int | None = ..., rows: int | None = ...) -> Command:
+        """Spawn under a pseudo-terminal, optionally with an initial size.
+
+        The terminal merges stdout and stderr into the stdout stream. Provide
+        ``cols`` and ``rows`` together; both must be positive. Combine with
+        ``keep_stdin_open()`` for interactive input through ``take_stdin()``.
+        Inherited or redirected stdio conflicts are rejected while building the
+        command, before a child can spawn.
+        """
     def stdout(self, mode: Literal["pipe", "inherit", "null"]) -> Command: ...
     def stderr(self, mode: Literal["pipe", "inherit", "null"]) -> Command: ...
     def encoding(self, label: str) -> Command: ...
@@ -656,8 +665,9 @@ class ProcessStdin:
     def send_control(self, control: str) -> Awaitable[None]:
         """Write one mapped control byte, e.g. ``"c"`` -> Ctrl-C (``\\x03``).
 
-        This writes a byte to the child's stdin pipe, not a terminal signal;
-        real SIGINT/SIGTSTP delivery requires a pseudoterminal.
+        With ``Command.pty()`` the byte passes through the terminal line
+        discipline and can produce a real signal. On an ordinary pipe it remains
+        a byte that only a cooperating child interprets.
         """
 
     def flush(self) -> Awaitable[None]: ...
@@ -734,6 +744,9 @@ class RunningProcess:
         """The writable stdin handle. Raises `ProcessError` if stdin was not kept
         open (build the `Command` with ``keep_stdin_open()``) or was already
         taken — so a missing setup fails here, not with a later `AttributeError`."""
+
+    def resize_pty(self, cols: int, rows: int) -> None:
+        """Resize a live pseudo-terminal; reject non-PTY or exited runs."""
 
     def kill(self) -> None:
         """Begin tearing the tree down without waiting (like

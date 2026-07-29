@@ -19,13 +19,13 @@ from processkit import (
     Supervisor,
     Unsupported,
 )
+from processkit._cli.common import _apply_environment, _fail, _parse_env_flags
 from processkit._cli.exit_codes import (
     EXIT_SIGNAL_BASE,
     EXIT_SUPERVISE_GAVE_UP,
     EXIT_SUPERVISE_INTERNAL_ERROR,
     EXIT_SUPERVISE_RESTARTS_EXHAUSTED,
 )
-from processkit._cli.run import _fail, _parse_env_flags
 
 
 class _SupervisorKwargs(TypedDict, total=False):
@@ -75,14 +75,13 @@ def _supervise(
         )
         # Keep the command configuration order identical to `run`: establish
         # the environment base first, then apply explicit overrides and cwd.
-        if args.env_clear:
-            command = command.env_clear()
-        if args.inherit_env:
-            command = command.inherit_env(args.inherit_env)
-        for key, value in env_pairs:
-            command = command.env(key, value)
-        if args.cwd is not None:
-            command = command.cwd(args.cwd)
+        command = _apply_environment(
+            command,
+            clear=args.env_clear,
+            inherited=args.inherit_env,
+            pairs=env_pairs,
+            cwd=args.cwd,
+        )
 
         supervisor_kwargs: _SupervisorKwargs = {}
         if args.restart is not None:

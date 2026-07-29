@@ -19,6 +19,7 @@ from processkit import (
     BytesResult,
     Command,
     Finished,
+    IdleTimeout,
     LifecycleEvent,
     Outcome,
     ProcessError,
@@ -180,6 +181,24 @@ def test_stderr_lines_idle_timeout_resets_on_stdout_activity() -> None:
     lines, outcome = asyncio.run(scenario())
     assert lines == ["ready"]
     assert outcome.exited_zero
+
+
+def test_stdout_lines_idle_timeout_watches_stdout_only() -> None:
+    code = (
+        "import sys, time\n"
+        "for _ in range(20):\n"
+        "    print('progress', file=sys.stderr, flush=True)\n"
+        "    time.sleep(0.1)\n"
+        "print('ready', flush=True)\n"
+    )
+
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", code]).idle_timeout(1.0).astart()
+        with pytest.raises(IdleTimeout, match="no watched output line"):
+            async for _line in proc.stdout_lines():
+                pass
+
+    asyncio.run(scenario())
 
 
 def test_stdout_line_terminator_carriage_return_splits_progress_frames() -> None:

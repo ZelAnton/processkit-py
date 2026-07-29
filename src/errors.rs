@@ -164,15 +164,17 @@ fn init_dual_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// here, the one home for exception construction, even though the binding (not
 /// `map_err`) raises it: the crate has no native idle-timeout, so it is
 /// synthesized entirely on the binding's streaming surface (`running.rs`) when a
-/// run produces no stdout/stderr line for its `Command.idle_timeout(...)` window.
+/// run produces no line on the iterator's watched output channel for its
+/// `Command.idle_timeout(...)` window.
 ///
 /// The structured field is attached only while the interpreter still accepts
 /// attachments. During finalization the typed exception remains usable without
 /// that optional field rather than a runtime worker panicking in `attach`.
 pub(crate) fn idle_timeout_err(seconds: f64) -> PyErr {
     let err = IdleTimeout::new_err(format!(
-        "no stdout/stderr line for {seconds}s (idle timeout); the child produced \
-         no output within its Command.idle_timeout({seconds}) window and was killed"
+        "no watched output line for {seconds}s (idle timeout); the child produced \
+         no activity on this iterator's watched channel within its \
+         Command.idle_timeout({seconds}) window and was killed"
     ));
     let _ = Python::try_attach(|py| {
         // Ignore a `setattr` failure: the typed exception with its message is

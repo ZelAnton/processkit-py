@@ -280,22 +280,98 @@ async def wait_for_path(
 
 
 _Connection = tuple[asyncio.StreamReader, asyncio.StreamWriter]
+_ProbeResult = TypeVar("_ProbeResult")
 
 
-def _close_pending_connection(task: asyncio.Task[_Connection]) -> None:
-    """Close a probe transport that ``open_connection`` produced but that we never
-    took ownership of — e.g. a timeout or cancellation that raced a successful
-    connect (the classic ``asyncio.wait_for`` leak, where the established
-    connection is dropped on the floor). If the task hasn't finished, cancel it so
-    it can't produce an orphan transport later.
-    """
+def _settle_probe(
+    task: asyncio.Task[_ProbeResult], cleanup_result: Callable[[_ProbeResult], None]
+) -> None:
+    """Cancel or retrieve an abandoned probe and release a successful result."""
     if not task.done():
         task.cancel()
+        task.add_done_callback(lambda done: _settle_probe(done, cleanup_result))
         return
     if task.cancelled() or task.exception() is not None:
         return
-    _reader, writer = task.result()
+    cleanup_result(task.result())
+
+
+def _validate_probe_retry(*, timeout: float, interval: float) -> None:
+    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
+        raise ValueError("interval must be a positive number of seconds")
+    _check_timeout(timeout)
+
+
+async def _retry_probe(
+    attempt: Callable[[], Awaitable[_ProbeResult]],
+    evaluate: Callable[[_ProbeResult], Awaitable[BaseException | None]],
+    cleanup_result: Callable[[_ProbeResult], None],
+    timeout_error: Callable[[], WaitTimeout],
+    *,
+    retry_exceptions: tuple[type[BaseException], ...],
+    timeout: float,
+    interval: float,
+) -> None:
+    """Drive one bounded readiness probe until it succeeds or its deadline expires."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_exc: BaseException | None = None
+    first_attempt = True
+    while True:
+        remaining = deadline - loop.time()
+        if not first_attempt and remaining <= 0:
+            raise timeout_error() from last_exc
+        # The first attempt gets a short positive floor. This lets timeout=0
+        # genuinely try once, while preserving monotonicity for tiny positive
+        # timeouts and never leaving an OS connect/DNS operation unbounded.
+        attempt_timeout = (
+            max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
+            if first_attempt
+            else remaining
+        )
+        first_attempt = False
+        task = asyncio.ensure_future(attempt())
+        result: _ProbeResult | None = None
+        try:
+            result = await asyncio.wait_for(task, timeout=attempt_timeout)
+        except retry_exceptions as exc:
+            if (
+                isinstance(exc, asyncio.TimeoutError)
+                and task.done()
+                and not task.cancelled()
+                and task.exception() is None
+            ):
+                # Resolve a deadline/completion race in favor of the readiness
+                # condition that was actually met in that same event-loop tick.
+                result = task.result()
+            else:
+                _settle_probe(task, cleanup_result)
+                last_exc = exc
+        except asyncio.CancelledError:
+            _settle_probe(task, cleanup_result)
+            raise
+        if result is not None:
+            rejection = await evaluate(result)
+            if rejection is None:
+                return
+            last_exc = rejection
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise timeout_error() from last_exc
+        await asyncio.sleep(min(interval, remaining))
+
+
+def _close_connection_now(connection: _Connection) -> None:
+    _reader, writer = connection
     writer.close()
+
+
+async def _accept_connection(connection: _Connection) -> BaseException | None:
+    _reader, writer = connection
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return None
 
 
 async def wait_for_port(
@@ -325,97 +401,25 @@ async def wait_for_port(
     **negative** ``timeout`` is rejected outright — raises `ValueError`, same
     as NaN — rather than being treated as "expired" or silently accepted.
     """
-    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
-        raise ValueError("interval must be a positive number of seconds")
-    _check_timeout(timeout)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    last_exc: BaseException | None = None
-    first_attempt = True
-    while True:
-        remaining = deadline - loop.time()
-        if not first_attempt and remaining <= 0:
-            raise WaitTimeout(
-                f"port {host}:{port} not ready within {timeout}s",
-                timeout_seconds=timeout,
-                host=host,
-                port=port,
-            ) from last_exc
-        # A short fixed tick (never unbounded/`None`) floors ONLY the first
-        # attempt's connect window. Two things it fixes:
-        #  * at ``remaining <= 0`` (e.g. ``timeout=0``, deadline already
-        #    passed) passing the non-positive ``remaining`` straight through
-        #    would hit `asyncio.wait_for`'s own ``timeout<=0`` fast-cancel,
-        #    which cancels the connect before it ever runs and rejects an
-        #    already-ready port before a connection was even attempted; a prior
-        #    version passed `None` (no cap) instead, which let an
-        #    unresolvable/blackhole address block on the OS's own (much longer,
-        #    or absent) timeout — the bounded tick is real enough to let an
-        #    already-listening local port answer, short enough never to scale
-        #    with a caller-supplied retry interval.
-        #  * flooring with ``max(...)`` — rather than switching on
-        #    ``remaining <= 0`` — keeps the first window MONOTONE in ``timeout``:
-        #    a tiny positive ``timeout`` (e.g. ``0.001``) must never give the
-        #    first attempt a SMALLER window than ``timeout=0`` does, or an
-        #    already-ready local port could pass at ``timeout=0`` yet fail at
-        #    ``timeout=0.001``. The floor is ``min(interval, tick)`` so it never
-        #    scales past a smaller caller interval, and is strictly positive so
-        #    `wait_for`'s fast-cancel path never re-triggers.
-        # Every later attempt is bounded by the real ``remaining`` (kept
-        # positive by the deadline guard above).
-        if first_attempt:
-            connect_timeout = max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
-        else:
-            connect_timeout = remaining
-        first_attempt = False
-        # Own the connect as a task: if a timeout or a cancellation races a
-        # successful connect, `asyncio.wait_for` can drop the established transport
-        # on the floor (a known leak). Owning the task lets us close it — or, when
-        # the connect actually completed in that same tick, honor the success.
-        conn = asyncio.ensure_future(asyncio.open_connection(host, port))
-        try:
-            _reader, writer = await asyncio.wait_for(conn, timeout=connect_timeout)
-        except (OSError, asyncio.TimeoutError) as exc:
-            if (
-                isinstance(exc, asyncio.TimeoutError)
-                and conn.done()
-                and not conn.cancelled()
-                and conn.exception() is None
-            ):
-                # Same-tick race: the connect actually established in the very
-                # tick the deadline cancelled it (the classic `wait_for` leak,
-                # where a met success is reported as a timeout). Sibling helpers
-                # `wait_until` / `wait_for_line` already resolve this exact race
-                # in favor of the success ("honor it rather than discarding a
-                # met condition"); keep `wait_for_port` consistent — succeed on
-                # the proven-ready port instead of closing the live transport
-                # and raising `WaitTimeout`.
-                _reader, writer = conn.result()
-                writer.close()
-                with contextlib.suppress(OSError):
-                    await writer.wait_closed()
-                return
-            _close_pending_connection(conn)
-            last_exc = exc
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise WaitTimeout(
-                    f"port {host}:{port} not ready within {timeout}s",
-                    timeout_seconds=timeout,
-                    host=host,
-                    port=port,
-                ) from last_exc
-            # Don't overshoot the deadline by a full interval on the last retry.
-            await asyncio.sleep(min(interval, remaining))
-            continue
-        except asyncio.CancelledError:
-            _close_pending_connection(conn)
-            raise
-        # Connected — close the probe socket (best-effort) and succeed.
-        writer.close()
-        with contextlib.suppress(OSError):
-            await writer.wait_closed()
-        return
+    _validate_probe_retry(timeout=timeout, interval=interval)
+
+    def timeout_error() -> WaitTimeout:
+        return WaitTimeout(
+            f"port {host}:{port} not ready within {timeout}s",
+            timeout_seconds=timeout,
+            host=host,
+            port=port,
+        )
+
+    await _retry_probe(
+        lambda: asyncio.open_connection(host, port),
+        _accept_connection,
+        _close_connection_now,
+        timeout_error,
+        retry_exceptions=(OSError, asyncio.TimeoutError),
+        timeout=timeout,
+        interval=interval,
+    )
 
 
 async def wait_for_unix_socket(
@@ -450,71 +454,30 @@ async def wait_for_unix_socket(
         exc = Unsupported("Unix-domain sockets are not supported on this platform")
         exc.operation = "wait_for_unix_socket"
         raise exc
-    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
-        raise ValueError("interval must be a positive number of seconds")
-    _check_timeout(timeout)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    last_exc: BaseException | None = None
-    first_attempt = True
-    while True:
-        remaining = deadline - loop.time()
-        if not first_attempt and remaining <= 0:
-            raise WaitTimeout(
-                f"unix socket {path!s} not ready within {timeout}s",
-                timeout_seconds=timeout,
-                path=path,
-            ) from last_exc
-        if first_attempt:
-            connect_timeout = max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
-        else:
-            connect_timeout = remaining
-        first_attempt = False
-        # Keep ownership of the connect task so timeout/cancellation cannot lose
-        # a successfully established transport in a same-tick deadline race.
-        # Typeshed exposes this Unix-only asyncio API conditionally on
-        # ``sys.platform`` (visible on POSIX stubs, hidden on Windows stubs), so
-        # the ignore is needed on a Windows mypy run yet unused on a POSIX one;
-        # ``unused-ignore`` in the same comment keeps both platforms green. The
-        # runtime capability check above (AF_UNIX + the asyncio connector) is the
-        # portability contract, not a static platform branch.
-        open_unix_connection = cast(
-            Callable[[StrPath], Awaitable[_Connection]],
-            asyncio.open_unix_connection,  # type: ignore[attr-defined,unused-ignore]
+    _validate_probe_retry(timeout=timeout, interval=interval)
+
+    def timeout_error() -> WaitTimeout:
+        return WaitTimeout(
+            f"unix socket {path!s} not ready within {timeout}s",
+            timeout_seconds=timeout,
+            path=path,
         )
-        conn = asyncio.ensure_future(open_unix_connection(path))
-        try:
-            _reader, writer = await asyncio.wait_for(conn, timeout=connect_timeout)
-        except (OSError, asyncio.TimeoutError) as exc:
-            if (
-                isinstance(exc, asyncio.TimeoutError)
-                and conn.done()
-                and not conn.cancelled()
-                and conn.exception() is None
-            ):
-                _reader, writer = conn.result()
-                writer.close()
-                with contextlib.suppress(OSError):
-                    await writer.wait_closed()
-                return
-            _close_pending_connection(conn)
-            last_exc = exc
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise WaitTimeout(
-                    f"unix socket {path!s} not ready within {timeout}s",
-                    timeout_seconds=timeout,
-                    path=path,
-                ) from last_exc
-            await asyncio.sleep(min(interval, remaining))
-            continue
-        except asyncio.CancelledError:
-            _close_pending_connection(conn)
-            raise
-        writer.close()
-        with contextlib.suppress(OSError):
-            await writer.wait_closed()
-        return
+
+    # Typeshed exposes this Unix-only asyncio API conditionally on
+    # ``sys.platform``. The runtime capability check above is authoritative.
+    open_unix_connection = cast(
+        Callable[[StrPath], Awaitable[_Connection]],
+        asyncio.open_unix_connection,  # type: ignore[attr-defined,unused-ignore]
+    )
+    await _retry_probe(
+        lambda: open_unix_connection(path),
+        _accept_connection,
+        _close_connection_now,
+        timeout_error,
+        retry_exceptions=(OSError, asyncio.TimeoutError),
+        timeout=timeout,
+        interval=interval,
+    )
 
 
 class _HttpProbeError(ProcessError):
@@ -575,19 +538,6 @@ async def _probe_http(host: str, port: int, request: bytes) -> int:
     with contextlib.suppress(OSError):
         await writer.wait_closed()
     return code
-
-
-def _discard_probe(task: asyncio.Task[int]) -> None:
-    """Settle a probe task we own but no longer want — a failed, raced, or
-    cancelled attempt. Cancel it if still running (its own ``finally`` then closes
-    the socket); otherwise retrieve its result/exception so a finished-with-error
-    task doesn't trip asyncio's 'exception never retrieved' warning."""
-    if not task.done():
-        task.cancel()
-        return
-    if task.cancelled():
-        return
-    task.exception()
 
 
 def _format_host_header(host: str, port: int) -> str:
@@ -728,82 +678,36 @@ async def wait_for_http(
     character that can't be encoded as latin-1 (required for the request
     line) raises `ValueError` instead of a raw `UnicodeEncodeError`.
     """
-    if not interval > 0:  # rejects NaN too (every NaN comparison is False)
-        raise ValueError("interval must be a positive number of seconds")
-    _check_timeout(timeout)
+    _validate_probe_retry(timeout=timeout, interval=interval)
     if expected_status is None:
         expected_status = range(200, 300)  # default: any 2xx
     status_ok = _status_predicate(expected_status)
     connection_host = _http_connection_host(host)
     request = _build_http_request(host, port, path)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    last_exc: BaseException | None = None
-    first_attempt = True
-    while True:
-        remaining = deadline - loop.time()
-        if not first_attempt and remaining <= 0:
-            raise WaitTimeout(
-                f"http://{host}:{port}{path} not ready within {timeout}s",
-                timeout_seconds=timeout,
-                host=host,
-                port=port,
-                path=path,
-            ) from last_exc
-        # The first attempt is floored to a short positive tick (never the
-        # non-positive ``remaining`` that ``timeout=0`` yields, which would trip
-        # ``asyncio.wait_for``'s fast-cancel and reject an already-ready endpoint
-        # before a request ever ran), and kept MONOTONE in ``timeout`` via
-        # ``max(...)`` — the exact same reasoning as ``wait_for_port``'s first
-        # connect window (see its docstring/comments). Every later attempt is
-        # bounded by the real ``remaining`` (kept positive by the guard above).
-        if first_attempt:
-            attempt_timeout = max(remaining, min(interval, _ZERO_TIMEOUT_CONNECT_TICK))
-        else:
-            attempt_timeout = remaining
-        first_attempt = False
-        # Own the whole probe (connect + request + status read) as a task so a
-        # deadline/cancellation racing its completion can be told apart from a
-        # real timeout (K-030): on ``asyncio.wait_for``'s TimeoutError we check
-        # whether the probe actually finished in that same tick and, if so, honor
-        # the status it read instead of discarding a met condition — the same
-        # race ``wait_until`` / ``wait_for_line`` / ``wait_for_port`` all resolve
-        # in favor of the success.
-        probe = asyncio.ensure_future(_probe_http(connection_host, port, request))
-        code: int | None = None
-        try:
-            code = await asyncio.wait_for(probe, timeout=attempt_timeout)
-        except (OSError, _HttpProbeError, asyncio.TimeoutError) as exc:
-            if (
-                isinstance(exc, asyncio.TimeoutError)
-                and probe.done()
-                and not probe.cancelled()
-                and probe.exception() is None
-            ):
-                code = probe.result()  # same-tick success: recover the status
-            else:
-                _discard_probe(probe)
-                last_exc = exc
-        except asyncio.CancelledError:
-            _discard_probe(probe)
-            raise
-        if code is not None:
-            if status_ok(code):
-                return
-            last_exc = _HttpProbeError(
-                f"HTTP status {code} is not in the expected set", status=code
-            )
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise WaitTimeout(
-                f"http://{host}:{port}{path} not ready within {timeout}s",
-                timeout_seconds=timeout,
-                host=host,
-                port=port,
-                path=path,
-            ) from last_exc
-        # Don't overshoot the deadline by a full interval on the last retry.
-        await asyncio.sleep(min(interval, remaining))
+
+    def timeout_error() -> WaitTimeout:
+        return WaitTimeout(
+            f"http://{host}:{port}{path} not ready within {timeout}s",
+            timeout_seconds=timeout,
+            host=host,
+            port=port,
+            path=path,
+        )
+
+    async def evaluate_status(code: int) -> BaseException | None:
+        if status_ok(code):
+            return None
+        return _HttpProbeError(f"HTTP status {code} is not in the expected set", status=code)
+
+    await _retry_probe(
+        lambda: _probe_http(connection_host, port, request),
+        evaluate_status,
+        lambda _code: None,
+        timeout_error,
+        retry_exceptions=(OSError, _HttpProbeError, asyncio.TimeoutError),
+        timeout=timeout,
+        interval=interval,
+    )
 
 
 _Item = TypeVar("_Item")

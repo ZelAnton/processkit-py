@@ -144,7 +144,7 @@ def idle_timeout(seconds: float) -> Command
 ```
 
 Set an idle (inactivity) timeout: tear the child down if it produces
-no stdout/stderr *line* for ``seconds`` (finite, ``> 0`` — else
+no watched output *line* for ``seconds`` (finite, ``> 0`` — else
 ``ValueError``, exactly like ``timeout``). For the "hung tool" case a
 plain ``timeout`` handles poorly: a legitimately long job keeps emitting
 progress, so you bound its *silence* instead of guessing a generous
@@ -161,7 +161,9 @@ it).
 Enforced on the streaming/interactive surface only — ``start()`` /
 ``astart()`` + one of the output iterators (``stdout_lines()``,
 ``stderr_lines()``, ``output_events()``, or ``lifecycle_events()``) — since idle
-monitoring rides that per-line channel. The one-shot capture verbs
+monitoring rides that per-line channel. ``stdout_lines()`` watches only
+stdout activity; the other three use the merged event stream, so either
+piped stream resets their window. The one-shot capture verbs
 (``output``/``run``/``exit_code``/``probe`` and their ``a``-twins), the
 ``Pipeline``, and ``Supervisor`` run entirely inside the crate, which has
 no native idle-timeout to enforce, so they do **not** honor it (that needs
@@ -2163,7 +2165,10 @@ Keep a command alive: restart per policy with backoff until a stop condition.
 ``max_memory``, ``max_processes``, and ``cpu_quota`` apply whole-tree
 resource caps to the fresh private process group created for every real-run
 incarnation. They cannot be combined with ``runner`` because an injected
-runner owns its execution semantics.
+runner owns its execution semantics. These caps use a capture-only runner:
+``start()``/``astart()`` sessions still support status, wait, and stop, but
+status has no pid/start time and stop cancels the run instead of gracefully
+signalling a live child handle.
 
 #### `run`
 
@@ -2249,6 +2254,8 @@ A consistent point-in-time snapshot of a live supervision session.
 
 ``pid`` and ``started_at`` are ``None`` between incarnations, during a
 backoff or storm pause, after completion, and for a capture-only runner.
+Resource-capped supervisors use that capture-only path, so their live
+sessions report no pid or start time while an incarnation runs.
 
 #### `is_active`
 
@@ -2273,6 +2280,9 @@ is_storm_paused: bool
 ```text
 pid: int | None
 ```
+
+The current live child pid, or ``None``. Resource-capped supervisors
+run capture-only and therefore always report ``None`` here.
 
 #### `started_at`
 
@@ -3018,8 +3028,12 @@ diagnostic: str | None
 class IdleTimeout
 ```
 
-A run produced no stdout/stderr line for its `Command.idle_timeout(...)`
-window (the child went silent) and was killed.
+A run produced no line on the iterator's watched output channel for its
+`Command.idle_timeout(...)` window and was killed.
+
+``stdout_lines()`` watches stdout only; ``stderr_lines()``,
+``output_events()``, and ``lifecycle_events()`` count activity on either
+piped stream.
 
 A deliberate *sibling* of `Timeout`, not a subclass: an idle (inactivity)
 timeout is a distinct condition from a wall-clock `timeout()` expiry — "the

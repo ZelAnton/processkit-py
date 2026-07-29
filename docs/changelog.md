@@ -53,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with this changelog by local and CI drift checks.
 
 ### Changed
+- Document and pin idle monitoring per iterator: `stdout_lines()` watches
+  stdout activity, while merged-event and stderr-only streams count both pipes.
 - Exercise Windows ARM64 in regular and nightly test matrices, and add a
   sharded nightly cargo-mutants signal for the Rust binding layer.
 

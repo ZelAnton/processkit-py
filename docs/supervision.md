@@ -171,6 +171,14 @@ caps cannot be combined with `runner=`: injected runners own their execution
 semantics, so silently wrapping one in a real process group would break the
 test-double boundary.
 
+Resource-capped supervision is capture-only. `run()`/`arun()` retain their full
+result and restart semantics, but a `start()`/`astart()` session cannot expose a
+live child handle: `status.pid` and `status.started_at` stay `None`, and `stop()`
+uses the session cancellation path rather than signalling the current child
+gracefully. The private limited group is still dropped and the whole incarnation
+tree is contained; only live pid introspection and graceful child signalling are
+unavailable.
+
 ## The failure-storm guard
 
 Backoff slows individual restarts; the **failure-storm guard** distinguishes "fails
@@ -280,7 +288,8 @@ with Supervisor(Command("my-server"), restart="always").start() as session:
 
 `status` is an atomic snapshot. `pid` and `started_at` are `None` between
 incarnations, during backoff, after completion, and for capture-only test
-doubles. `wait()` consumes the session and waits for its natural outcome;
+doubles. They also stay `None` for a resource-capped supervisor, whose
+incarnations use the capture-only path described above. `wait()` consumes the session and waits for its natural outcome;
 `stop(grace_seconds)` requests graceful termination and reports
 `outcome.stopped == "stopped"`. Terminal verbs are one-shot.
 

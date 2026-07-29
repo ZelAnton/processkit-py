@@ -522,7 +522,7 @@ of `timeout()` / `no_timeout()` you call **last** wins.
 ### `idle_timeout` — a silence watchdog
 
 `idle_timeout(seconds)` bounds a *silent gap* rather than total runtime: it kills
-the child if it emits no stdout/stderr **line** for that long — for a tool that
+the child if it emits no **watched output line** for that long — for a tool that
 hangs silently while a healthy long job keeps printing. It **composes** with
 `timeout()` (whichever threshold is reached first wins) and validates like it
 (finite, `> 0`).
@@ -544,7 +544,10 @@ carrying `idle_timeout_seconds`), never the wall-clock `timed_out`/`Timeout`, so
 the two timeout classes stay tellable apart. **Boundaries:** idle monitoring
 rides the per-line output channel, so it is enforced only on the
 streaming/interactive surface (`start()`/`astart()` +
-`stdout_lines()`/`output_events()`); the one-shot capture verbs, `Pipeline`, and
+`stdout_lines()`/`stderr_lines()`/`output_events()`/`lifecycle_events()`). The
+stdout-only iterator resets its window only for stdout lines; the other three
+use the merged event stream, so either piped stream counts as activity. The
+one-shot capture verbs, `Pipeline`, and
 `Supervisor` do not enforce it (processkit's core has no native idle-timeout —
 that awaits upstream support). A redirected stdout (`stdout_file`/`inherit`/
 `null`) carries no line events, so the streaming verbs raise the usual "stdout is

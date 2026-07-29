@@ -314,7 +314,7 @@ impl PyCommand {
     }
 
     /// Set an **idle (inactivity) timeout**: tear the child down if it produces
-    /// no stdout/stderr *line* for `seconds`. Aimed at the classic "hung tool"
+    /// no watched output *line* for `seconds`. Aimed at the classic "hung tool"
     /// case a plain `timeout()` handles poorly — a legitimately long job keeps
     /// emitting progress, so you can bound its *silence* tightly without having
     /// to guess a generous wall-clock ceiling for its total runtime. Validated
@@ -336,7 +336,9 @@ impl PyCommand {
     /// Idle monitoring is driven by the existing per-line output channel: it is
     /// applied where the binding itself pumps lines — `start()`/`astart()` +
     /// `stdout_lines()` / `stderr_lines()` / `output_events()` /
-    /// `lifecycle_events()` (piped stdout, the default). The
+    /// `lifecycle_events()` (piped stdout, the default). `stdout_lines()` watches
+    /// stdout activity only; the other three use the merged event stream, so
+    /// activity on either piped stream resets their window. The
     /// one-shot capture verbs (`output()`/`run()`/`exit_code()`/`probe()` and
     /// their `a`-twins), the `Pipeline`, and `Supervisor` run entirely inside
     /// the crate, which has **no native idle-timeout** in processkit 2.3.x and

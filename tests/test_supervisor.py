@@ -13,6 +13,7 @@ import pytest
 from processkit import (
     Command,
     ProcessError,
+    ProcessGroup,
     ProcessNotFound,
     ProcessResult,
     ResourceLimit,
@@ -172,6 +173,29 @@ def test_supervision_session_status_and_stop_live_child() -> None:
 
     outcome = session.stop(0.1)
     assert outcome.stopped == "stopped"
+
+
+def test_resource_limited_supervision_session_is_capture_only() -> None:
+    try:
+        with ProcessGroup(max_processes=8):
+            pass
+    except (ResourceLimit, Unsupported) as exc:
+        pytest.skip(f"the active containment mechanism cannot enforce process limits: {exc}")
+
+    session = Supervisor(
+        Command(PY, ["-c", "import time; time.sleep(1)"]),
+        restart="never",
+        max_processes=8,
+    ).start()
+    deadline = time.monotonic() + 10.0
+    while not session.status.is_active:
+        if time.monotonic() >= deadline:
+            pytest.fail("capture-only supervision session never became active")
+        time.sleep(0.01)
+
+    assert session.status.pid is None
+    assert session.status.started_at is None
+    assert session.wait().final_result.is_success
 
 
 def test_supervision_session_sync_context_stops_live_child() -> None:

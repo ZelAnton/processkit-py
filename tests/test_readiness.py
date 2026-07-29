@@ -15,7 +15,7 @@ import inspect
 import socket
 import sys
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -754,9 +754,9 @@ def test_wait_for_port_cancel_propagates() -> None:
 def test_wait_for_port_closes_raced_connection() -> None:
     # The real leak fix: a connect that completes but is never "taken" (a timeout
     # or cancellation racing a successful connect, so `asyncio.wait_for` drops it)
-    # must still have its transport closed. Pins `_close_pending_connection`; if it
+    # must still have its transport closed. Pins the shared probe settler; if it
     # were a no-op the writer would stay open and the assertion would fail.
-    from processkit._aio import _close_pending_connection
+    from processkit._aio import _close_connection_now, _settle_probe
 
     async def scenario() -> None:
         port = free_port()
@@ -765,7 +765,7 @@ def test_wait_for_port_closes_raced_connection() -> None:
             conn = asyncio.ensure_future(asyncio.open_connection("127.0.0.1", port))
             _reader, writer = await conn  # the connect raced to completion
             assert not writer.is_closing()
-            _close_pending_connection(conn)  # the cleanup the leak fix runs
+            _settle_probe(conn, _close_connection_now)
             assert writer.is_closing(), "a raced probe transport must be closed"
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
@@ -775,18 +775,18 @@ def test_wait_for_port_closes_raced_connection() -> None:
 
 def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     # Pin the wiring (not just the helper): wait_for_port must route each connect
-    # through _close_pending_connection so a raced/refused connect is cleaned up.
+    # through the shared probe settler so a raced/refused connect is cleaned up.
     # Dropping that call would slip past the isolated helper test above.
     import processkit._aio as aio
 
     called: list[object] = []
-    real = aio._close_pending_connection
+    real = aio._settle_probe
 
-    def spy(task: asyncio.Task[tuple[asyncio.StreamReader, asyncio.StreamWriter]]) -> None:
+    def spy(task: asyncio.Task[object], cleanup_result: Callable[[object], None]) -> None:
         called.append(task)
-        real(task)
+        real(task, cleanup_result)
 
-    monkeypatch.setattr(aio, "_close_pending_connection", spy)
+    monkeypatch.setattr(aio, "_settle_probe", spy)
 
     async def scenario(port: int) -> None:
         task = asyncio.ensure_future(wait_for_port("127.0.0.1", port, timeout=10.0))
@@ -797,7 +797,7 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
 
     with refused_port() as port:  # nothing listening -> the OSError path runs the cleanup
         asyncio.run(scenario(port))
-    assert called, "wait_for_port should route cleanup through _close_pending_connection"
+    assert called, "wait_for_port should route cleanup through the shared probe settler"
 
 
 @pytest.fixture

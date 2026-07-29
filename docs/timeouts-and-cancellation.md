@@ -75,8 +75,8 @@ it too — handy for callers that don't import the processkit hierarchy.
 ## Idle (inactivity) timeout
 
 `.timeout(...)` bounds *total* runtime; `.idle_timeout(seconds)` bounds a
-**silent gap** instead — it tears the child down if it produces no stdout/stderr
-**line** for that long. This is the "hung tool" case a wall-clock timeout handles
+**silent gap** instead — it tears the child down if it produces no **watched
+output line** for that long. This is the "hung tool" case a wall-clock timeout handles
 poorly: a legitimately long job (a build, a test suite, a data export) keeps
 printing progress, so you can bound its *silence* tightly without guessing a
 generous ceiling for its total runtime. The two **compose** — set both, and
@@ -103,7 +103,10 @@ except IdleTimeout as e:
 
 Idle monitoring rides the **per-line output channel**, so it is enforced on the
 **streaming/interactive surface** — `start()`/`astart()` +
-`stdout_lines()`/`output_events()` (piped stdout, the default). It is **not**
+`stdout_lines()`/`stderr_lines()`/`output_events()`/`lifecycle_events()` (piped
+stdout, the default). `stdout_lines()` watches stdout alone; the other three
+consume the merged event stream, so a line on either piped stream resets their
+window. It is **not**
 enforced by the one-shot capture verbs (`output`/`run`/`exit_code`/`probe` and
 their `a`-twins), `Pipeline`, or `Supervisor`: those run entirely inside the
 Rust core, which has no native idle-timeout to observe per-line activity mid-run,

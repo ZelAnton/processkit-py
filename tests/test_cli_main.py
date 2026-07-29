@@ -603,6 +603,13 @@ def test_env_flag_without_equals_is_a_usage_error() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_env_flag_with_empty_key_is_a_usage_error() -> None:
+    result = _run_cli("run", "--env", "=VALUE", "--", PY, "-c", "print(1)")
+    assert result.returncode == 2
+    assert "key must not be empty" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
 def test_env_file_loads_entries_and_explicit_env_wins(tmp_path: pathlib.Path) -> None:
     env_file = tmp_path / "build.env"
     env_file.write_text(

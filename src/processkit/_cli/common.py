@@ -22,6 +22,8 @@ def _parse_env_flags(
         if "=" not in raw:
             parser.error(f"--env {raw!r}: expected KEY=VALUE")
         key, _, value = raw.partition("=")
+        if not key:
+            parser.error(f"--env {raw!r}: key must not be empty")
         pairs.append((key, value))
     return pairs
 

@@ -1021,7 +1021,8 @@ impl PyFinished {
 }
 
 /// Register this module's pyclasses (`ProcessResult`, `BytesResult`,
-/// `RunProfile`, `Outcome`, `OutputEvent`, `Finished`) on `_processkit`.
+/// `RunProfile`, `Outcome`, `OutputEvent`, `LifecycleEvent`, `Finished`) on
+/// `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessResult>()?;
     m.add_class::<PyBytesResult>()?;

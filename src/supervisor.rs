@@ -1056,6 +1056,7 @@ mod tests {
             (StopReason::RestartsExhausted, "restarts_exhausted"),
             (StopReason::GaveUp, "gave_up"),
             (StopReason::Unhealthy, "unhealthy"),
+            (StopReason::Stopped, "stopped"),
         ];
         for (reason, expected) in cases {
             assert_eq!(stop_reason_str(reason), expected, "{reason:?}");

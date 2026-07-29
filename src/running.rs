@@ -1281,7 +1281,7 @@ impl Drop for PyRunningProcess {
 }
 
 /// Register this module's pyclasses (`RunningProcess`, `ProcessStdin`,
-/// `StdoutLines`, `OutputEvents`) on `_processkit`.
+/// `StdoutLines`, `OutputEvents`, `LifecycleEvents`) on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunningProcess>()?;
     m.add_class::<PyProcessStdin>()?;

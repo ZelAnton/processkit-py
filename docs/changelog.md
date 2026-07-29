@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -
 
 ### Fixed
+- Reject an empty key passed through the CLI's `--env` flag with the same usage
+  error used for `--env-file` entries.
 - Treat every accepted spelling of piped stdout/stderr consistently when
   combining `Command.stdout()` or `stderr()` with PTY mode.
 - Prevent a concurrent lifecycle-event finisher from making a still-reportable

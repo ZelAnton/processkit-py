@@ -3,13 +3,15 @@
 //! sharing one generic set of run verbs over `ProcessRunner`.
 
 use std::future::Future;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use processkit::testing::{
-    DryRunRunner as PkDryRunRunner, Invocation, RecordReplayRunner as PkRecordReplayRunner,
-    RecordingRunner as PkRecordingRunner, Reply as PkReply, ScriptedRunner as PkScriptedRunner,
+    CassetteField, DryRunRunner as PkDryRunRunner, Invocation,
+    RecordReplayRunner as PkRecordReplayRunner, RecordingRunner as PkRecordingRunner,
+    Reply as PkReply, ScriptedRunner as PkScriptedRunner,
 };
 use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
@@ -26,13 +28,10 @@ use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
 use crate::runtime::{block_on, drive_async_py};
 
-// A per-call sink for the error a `ScriptedRunner.when` predicate raised (or the
-// `TypeError` a non-`bool` return produced). The crate resolves a reply by
-// calling each rule's predicate `(&Command) -> bool` — infallible from its
-// perspective — so a raising predicate cannot abort the verb by itself. The
-// predicate stashes its error in the innermost active sink and the run verb,
-// wrapped in a `when`-capture scope, re-raises it instead of returning the reply
-// a fallthrough would have selected.
+// A per-call sink for errors raised by Python callbacks behind an infallible
+// crate hook: `ScriptedRunner.when` predicates and cassette scrubbers. The
+// callback stashes its error in the innermost active sink and the enclosing run
+// verb re-raises it instead of silently accepting the crate's fallback value.
 //
 // A tokio task-local (not a slot on the shared predicate closure or the runner)
 // gives per-**call** isolation: the sink is scoped around each verb's future, so
@@ -56,11 +55,9 @@ tokio::task_local! {
     static WHEN_PREDICATE_ERROR: Arc<Mutex<Option<PyErr>>>;
 }
 
-/// Stash a `when` predicate's error in the active per-call sink (first error
-/// wins). Returns `Some(err)` when there is **no** active sink — the predicate
-/// ran outside a wrapped run verb — so the caller can fall back to the unraisable
-/// hook; returns `None` when the error was handed to a sink (or dropped as a
-/// later duplicate within an already-erroring call).
+/// Stash an infallible runner callback's Python error in the active per-call
+/// sink (first error wins). Returns `Some(err)` when there is no active sink so
+/// the caller can use the unraisable hook; returns `None` after hand-off.
 fn stash_when_error(err: PyErr) -> Option<PyErr> {
     let mut carry = Some(err);
     let in_scope = WHEN_PREDICATE_ERROR
@@ -535,6 +532,61 @@ fn make_invocation_callback(callback: Py<PyAny>) -> impl Fn(&str) + Send + Sync 
     }
 }
 
+/// Wrap a Python ``(field, text) -> str`` callback as the cassette crate's
+/// infallible scrub hook. A callback failure is stashed in the same per-call
+/// sink used by ``ScriptedRunner.when`` and re-raised by the enclosing runner
+/// verb. The replacement stays fail-closed even before that happens: raw input
+/// is never returned to the crate after a callback error, so a caller that
+/// catches the exception and still saves cannot persist the secret by accident.
+// `Py<PyAny>` is an owned, GIL-independent handle but does not declare
+// `RefUnwindSafe` because arbitrary Python objects have interior mutability.
+// This bridge never exposes that interior state to Rust unwinding: every Python
+// exception is caught as `PyErr` below. The marker wrapper satisfies the
+// upstream hook's conservative bounds without asserting safety for PyO3 types
+// globally.
+struct CassetteScrubCallback(Py<PyAny>);
+
+impl UnwindSafe for CassetteScrubCallback {}
+impl RefUnwindSafe for CassetteScrubCallback {}
+
+impl CassetteScrubCallback {
+    fn call(&self, py: Python<'_>, field: &str, text: &str) -> PyResult<String> {
+        self.0
+            .call1(py, (field, text))
+            .and_then(|value| value.extract::<String>(py))
+    }
+
+    fn write_unraisable(&self, py: Python<'_>, err: PyErr) {
+        err.write_unraisable(py, Some(self.0.bind(py)));
+    }
+}
+
+fn make_cassette_scrubber(
+    callback: Py<PyAny>,
+) -> impl Fn(CassetteField, &str) -> String + Send + Sync + RefUnwindSafe + UnwindSafe + 'static {
+    let callback = CassetteScrubCallback(callback);
+    move |field: CassetteField, text: &str| {
+        const FAILED_REPLACEMENT: &str = "<processkit-scrub-error>";
+        let field = match field {
+            CassetteField::Argument => "argument",
+            CassetteField::Cwd => "cwd",
+            CassetteField::Stdout => "stdout",
+            CassetteField::Stderr => "stderr",
+            _ => "unknown",
+        };
+        Python::try_attach(|py| match callback.call(py, field, text) {
+            Ok(replacement) => replacement,
+            Err(err) => {
+                if let Some(err) = stash_when_error(err) {
+                    callback.write_unraisable(py, err);
+                }
+                FAILED_REPLACEMENT.to_string()
+            }
+        })
+        .unwrap_or_else(|| FAILED_REPLACEMENT.to_string())
+    }
+}
+
 /// Downcast a Python `runner=` argument to a type-erased, shareable
 /// `ProcessRunner` — the single extraction point `output_all`/`aoutput_all`/
 /// `output_all_bytes`/`aoutput_all_bytes` (`batch.rs`), `Supervisor.__new__`
@@ -949,9 +1001,9 @@ impl PyReply {
 /// (`.program`, ...), with no built-in assumption that a cassette only ever
 /// holds successes. See `tests/test_runner_seam.py`'s
 /// `test_cassette_records_and_replays_a_failed_call`.
-/// `frozen`: an immutable `Arc<…>` (no builders; `record`/`replay` are
-/// constructors and `save` only reads), so `&self` throughout and no borrow-flag
-/// race with a concurrent call.
+/// `frozen`: an immutable `Arc<…>` (`scrub=` configures the consuming crate
+/// builder before it is wrapped; `save` only reads), so `&self` throughout and
+/// no borrow-flag race with a concurrent call.
 #[pyclass(name = "RecordReplayRunner", module = "processkit.testing", frozen)]
 pub(crate) struct PyRecordReplayRunner {
     inner: Arc<PkRecordReplayRunner<JobRunner>>,
@@ -966,22 +1018,47 @@ impl PyRecordReplayRunner {
 
 runner_pymethods!(PyRecordReplayRunner {
     /// Record real runs (via the real runner) to a cassette at `path`; call
-    /// `save()` to write it to disk.
+    /// `save()` to write it to disk. `scrub(field, text) -> str` transforms
+    /// arguments, cwd, stdout, and stderr before persistence.
     #[staticmethod]
-    fn record(path: PathBuf) -> Self {
-        Self {
-            inner: Arc::new(PkRecordReplayRunner::record(path, JobRunner::new())),
+    #[pyo3(signature = (path, *, scrub=None))]
+    fn record(py: Python<'_>, path: PathBuf, scrub: Option<Py<PyAny>>) -> PyResult<Self> {
+        if let Some(scrub) = &scrub {
+            if !scrub.bind(py).is_callable() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "scrub must be callable",
+                ));
+            }
         }
+        let runner = PkRecordReplayRunner::record(path, JobRunner::new());
+        let runner = match scrub {
+            Some(scrub) => runner.scrub_with(make_cassette_scrubber(scrub)),
+            None => runner,
+        };
+        Ok(Self {
+            inner: Arc::new(runner),
+        })
     }
 
     /// Replay runs from the cassette at `path` (no real processes spawned).
     #[staticmethod]
-    fn replay(path: PathBuf) -> PyResult<Self> {
-        PkRecordReplayRunner::replay(path)
-            .map(|inner| Self {
-                inner: Arc::new(inner),
-            })
-            .map_err(map_err)
+    #[pyo3(signature = (path, *, scrub=None))]
+    fn replay(py: Python<'_>, path: PathBuf, scrub: Option<Py<PyAny>>) -> PyResult<Self> {
+        if let Some(scrub) = &scrub {
+            if !scrub.bind(py).is_callable() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "scrub must be callable",
+                ));
+            }
+        }
+        let runner = PkRecordReplayRunner::replay(path).map_err(map_err)?;
+        let runner = match scrub {
+            Some(scrub) => runner.scrub_with(make_cassette_scrubber(scrub)),
+            None => runner,
+        };
+        Ok(Self {
+            inner: Arc::new(runner),
+        })
     }
 
     /// Write the recorded cassette to its file.

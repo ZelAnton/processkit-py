@@ -69,7 +69,14 @@ if TYPE_CHECKING:
         output_all,
         output_all_bytes,
     )
-    from processkit.testing import Invocation, RecordingRunner
+    from processkit.testing import Invocation, RecordingRunner, RecordReplayRunner
+
+    def _cassette_scrubber_constructor_types(
+        path: StrPath,
+        scrub: Callable[[Literal["argument", "cwd", "stdout", "stderr", "unknown"], str], str],
+    ) -> None:
+        assert_type(RecordReplayRunner.record(path, scrub=scrub), RecordReplayRunner)
+        assert_type(RecordReplayRunner.replay(path, scrub=scrub), RecordReplayRunner)
 
     def _command_verb_return_types(cmd: Command) -> None:
         assert_type(cmd.output(), ProcessResult)

@@ -82,15 +82,16 @@ the very same runner objects and awaits the `a`-prefixed verbs.
 Installing processkit registers a **pytest plugin** — a `pytest11` entry point,
 autoloaded in every pytest session, with nothing to add to your `conftest.py`. It
 turns the doubles above into fixtures, so wiring one into a test is a single
-parameter rather than a line of construction. Each fixture yields one of the
-doubles below, so it satisfies the same `ProcessRunner` seam and spawns no real
-process:
+parameter rather than a line of construction. The runner fixtures yield the
+doubles below, so they satisfy the same `ProcessRunner` seam and spawn no real
+process. A companion fixture configures cassette redaction:
 
 | Fixture | Yields | Notes |
 |---|---|---|
 | `scripted_runner` | a fresh [`ScriptedRunner`](#scripting-replies-scriptedrunner) | teach it replies with `.on()` / `.when()` / `.fallback()` |
 | `recording_runner` | a [`RecordingRunner`](#asserting-on-calls-recordingrunner) spy | replies `Reply.ok("")` (a clean exit 0, empty stdout — the neutral default) to every call and records each one |
 | `record_replay_runner` | a [`RecordReplayRunner`](#recordreplay-cassettes-recordreplayrunner) cassette | replay by default, record on demand — see below |
+| `processkit_cassette_scrubber` | `None` by default | override with a deterministic `(field, text) -> str` callback to redact the cassette fixture in both modes |
 | `dry_run_runner` | a fresh [`DryRunRunner`](#rendering-commands-without-running-dryrunrunner) | renders each command to text instead of running it |
 
 ```python
@@ -146,7 +147,8 @@ def test_offline(record_replay_runner):
 ```
 
 > Cassettes store `program`/`args`/`cwd`/`stdout`/`stderr` **verbatim** and can
-> carry secrets — review one before committing it (see
+> carry secrets unless a scrubber is configured. Override the
+> `processkit_cassette_scrubber` fixture for cassettes kept in VCS (see
 > [Record/replay cassettes](#recordreplay-cassettes-recordreplayrunner) for the
 > full semantics and the redaction boundary).
 
@@ -322,17 +324,52 @@ Semantics worth knowing before you commit a cassette:
 
 | Aspect | Behavior |
 |---|---|
-| Match key | program + args + cwd + a stdin **source digest** |
+| Match key | program + args + a stdin **source digest**; cwd is stored for visibility but is not matched by default |
 | Environment | override **values never reach the file** — only sorted variable names; env is *not* matched, so env differences can't cause spurious misses |
 | Duplicates of one key | replayed in capture order, then the **last entry repeats** — a changing sequence (`rev-parse HEAD` before/after a commit) replays faithfully, while a retry/probe loop keeps getting a stable final answer |
 | Miss | an invocation **absent from the cassette is a strict error** — replay never spawns a surprise subprocess, so a stale cassette fails loudly |
 
-Only env **values** are redacted. `program`, `args`, `cwd`, `stdout`, and
-`stderr` are stored **verbatim** and can carry secrets — a `--password=…` flag,
-a token echoed to output — so **review a fixture before committing it**, and
-keep secret-bearing cassettes out of shared trees. (`save()` writes the file
-owner-only — `0600` on Unix — and refuses to follow a symlink, so a fresh
-cassette isn't world-readable; the review is still on you before *committing* it.)
+Only environment **values** are omitted automatically. `program`, `args`, `cwd`,
+`stdout`, and `stderr` are otherwise stored verbatim and can carry secrets. Use
+the opt-in `scrub=` hook for arguments, cwd, and captured output:
+
+```python
+import os
+from pathlib import Path
+
+def scrub_cassette(field: str, text: str) -> str:
+    if field in {"argument", "stdout", "stderr"}:
+        return text.replace(os.environ["TOOL_TOKEN"], "<token>")
+    if field == "cwd":
+        return text.replace(str(Path.home()), "<home>")
+    return text
+
+rec = RecordReplayRunner.record("fixtures/tool.json", scrub=scrub_cassette)
+# ... run commands, then rec.save()
+
+# The same deterministic callback preserves redacted argument match keys.
+rep = RecordReplayRunner.replay("fixtures/tool.json", scrub=scrub_cassette)
+```
+
+Record-mode callers still receive the real unsanitized result; only the stored
+entry is transformed. Replay returns the fixture-safe stored output. A scrubber
+exception or non-string result aborts the runner verb and uses a fail-closed
+placeholder internally, never the raw field. The program name is deliberately
+not scrubbed because it is the stable tool identity.
+
+For the pytest fixture, override one companion fixture in `conftest.py`; the
+plugin applies it in both modes:
+
+```python
+import pytest
+
+@pytest.fixture
+def processkit_cassette_scrubber():
+    return scrub_cassette
+```
+
+`save()` writes the file owner-only (`0600` on Unix) and refuses to follow a
+symlink, but still review a fixture before committing it.
 
 Record from a single thread. The capture buffer is per-runner; recording the same
 `RecordReplayRunner` from several threads at once (only possible on a free-threaded

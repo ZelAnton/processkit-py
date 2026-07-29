@@ -330,6 +330,74 @@ def test_replay_serves_recorded_output_without_respawning(tmp_path: pathlib.Path
     assert replayed == first
 
 
+def test_cassette_scrubber_redacts_persistence_and_keeps_replay_keys_symmetric(
+    tmp_path: pathlib.Path,
+) -> None:
+    secret = "top-secret"
+    workdir = tmp_path / f"{secret}-workspace"
+    workdir.mkdir()
+    cassette = tmp_path / "scrubbed.json"
+    seen_fields: set[str] = set()
+
+    def scrub(field: str, text: str) -> str:
+        seen_fields.add(field)
+        return text.replace(secret, "<redacted>")
+
+    code = (
+        "import sys; "
+        "print('stdout=' + sys.argv[1]); "
+        "print('stderr=' + sys.argv[1], file=sys.stderr)"
+    )
+    command = Command(PY, ["-c", code, secret]).cwd(workdir)
+    recorder = RecordReplayRunner.record(cassette, scrub=scrub)
+    recorded = recorder.output(command)
+    recorder.save()
+
+    assert secret in recorded.stdout
+    assert secret in recorded.stderr
+    assert {"argument", "cwd", "stdout", "stderr"} <= seen_fields
+    fixture = cassette.read_text(encoding="utf-8")
+    assert secret not in fixture
+    assert "<redacted>" in fixture
+
+    replayer = RecordReplayRunner.replay(cassette, scrub=scrub)
+    replayed = replayer.output(command)
+    assert "<redacted>" in replayed.stdout
+    assert "<redacted>" in replayed.stderr
+
+
+def test_cassette_scrubber_failure_is_raised_and_fails_closed(
+    tmp_path: pathlib.Path,
+) -> None:
+    cassette = tmp_path / "scrub-error.json"
+
+    def broken_scrubber(_field: str, _text: str) -> str:
+        raise ValueError("scrubber failed")
+
+    recorder = RecordReplayRunner.record(cassette, scrub=broken_scrubber)
+    with pytest.raises(ValueError, match="scrubber failed"):
+        recorder.run(Command(PY, ["-c", "print('raw-secret')", "raw-secret"]))
+
+    recorder.save()
+    fixture = cassette.read_text(encoding="utf-8")
+    assert "raw-secret" not in fixture
+    assert "<processkit-scrub-error>" in fixture
+
+
+def test_cassette_scrubber_must_be_callable(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(TypeError, match="scrub must be callable"):
+        RecordReplayRunner.record(tmp_path / "cassette.json", scrub=object())  # type: ignore[arg-type]
+
+
+def test_cassette_scrubber_must_return_string(tmp_path: pathlib.Path) -> None:
+    def wrong_type(_field: str, _text: str) -> str:
+        return 42  # type: ignore[return-value]
+
+    recorder = RecordReplayRunner.record(tmp_path / "cassette.json", scrub=wrong_type)
+    with pytest.raises(TypeError):
+        recorder.run(Command(PY, ["-c", "print('secret')"]))
+
+
 def test_cassette_miss_carries_program(tmp_path: pathlib.Path) -> None:
     cassette = str(tmp_path / "cassette.json")
     rec = RecordReplayRunner.record(cassette)

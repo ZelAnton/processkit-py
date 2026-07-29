@@ -189,6 +189,55 @@ def test_cassette_records_then_replays_without_respawn(pytester: pytest.Pytester
     replayed.assert_outcomes(passed=1)
 
 
+def test_cassette_fixture_applies_overridden_scrubber_in_both_modes(
+    pytester: pytest.Pytester,
+) -> None:
+    pytester.makefile(".ini", pytest="[pytest]\nprocesskit_cassette_dir = cassettes\n")
+    pytester.makeconftest(
+        """
+        import pytest
+
+
+        @pytest.fixture
+        def processkit_cassette_scrubber():
+            return lambda field, text: text.replace("fixture-secret", "<redacted>")
+        """
+    )
+    pytester.makepyfile(
+        """
+        import pathlib
+        import sys
+
+        from processkit import Command
+
+        MARKER = pathlib.Path(__file__).parent / "spawn-count.txt"
+        CODE = (
+            "import pathlib, sys; "
+            f"pathlib.Path({str(MARKER)!r}).open('a').write('x'); "
+            "print(sys.argv[1])"
+        )
+
+
+        def test_scrubbed_fixture(record_replay_runner):
+            output = record_replay_runner.run(
+                Command(sys.executable, ["-c", CODE, "fixture-secret"])
+            )
+            assert output in {"fixture-secret", "<redacted>"}
+        """
+    )
+
+    recorded = pytester.runpytest("--processkit-record")
+    recorded.assert_outcomes(passed=1)
+    cassette = next(pytester.path.glob("cassettes/*.json"))
+    fixture = cassette.read_text(encoding="utf-8")
+    assert "fixture-secret" not in fixture
+    assert "<redacted>" in fixture
+
+    replayed = pytester.runpytest()
+    replayed.assert_outcomes(passed=1)
+    assert (pytester.path / "spawn-count.txt").read_text(encoding="utf-8") == "x"
+
+
 def test_default_mode_is_replay_so_a_missing_cassette_errors(pytester: pytest.Pytester) -> None:
     # With no switch and a fresh tmp_path cassette dir, the fixture builds a
     # *replay* runner over a nonexistent cassette — a setup error, not a spawn.

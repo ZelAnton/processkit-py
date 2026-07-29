@@ -1342,12 +1342,27 @@ class ScriptedRunner(_RunnerVerbs):
 @final
 class RecordReplayRunner(_RunnerVerbs):
     """Records real runs to a cassette file (`record`) and replays them without
-    spawning (`replay`); shares the `Runner` run-verb surface."""
+    spawning (`replay`); shares the `Runner` run-verb surface.
+
+    ``scrub`` receives one of ``argument`` / ``cwd`` / ``stdout`` / ``stderr``
+    plus its text and returns the fixture-safe replacement. Configure the same
+    deterministic callback for record and replay so redacted match keys agree.
+    """
 
     @staticmethod
-    def record(path: StrPath) -> RecordReplayRunner: ...
+    def record(
+        path: StrPath,
+        *,
+        scrub: Callable[[Literal["argument", "cwd", "stdout", "stderr", "unknown"], str], str]
+        | None = ...,
+    ) -> RecordReplayRunner: ...
     @staticmethod
-    def replay(path: StrPath) -> RecordReplayRunner: ...
+    def replay(
+        path: StrPath,
+        *,
+        scrub: Callable[[Literal["argument", "cwd", "stdout", "stderr", "unknown"], str], str]
+        | None = ...,
+    ) -> RecordReplayRunner: ...
     def save(self) -> None: ...
     def __repr__(self) -> str: ...
 

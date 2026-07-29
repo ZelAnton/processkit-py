@@ -450,7 +450,9 @@ assert scripted.run(Command("git", ["rev-parse", "HEAD"])) == "deadbeef"
 ```
 
 `RecordReplayRunner` captures real tool output once and replays it offline, and
-`RecordingRunner` spies on *what* your code ran.
+`RecordingRunner` spies on *what* your code ran. An opt-in deterministic
+`scrub=` callback redacts cassette arguments, cwd, stdout, and stderr before a
+fixture is committed while preserving replay-key symmetry.
 *Deeper: [Testing your code](https://github.com/ZelAnton/processkit-py/blob/main/docs/testing.md).*
 
 ### Seeing what ran (observability)

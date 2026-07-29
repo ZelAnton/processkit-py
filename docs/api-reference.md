@@ -3333,16 +3333,28 @@ class RecordReplayRunner
 Records real runs to a cassette file (`record`) and replays them without
 spawning (`replay`); shares the `Runner` run-verb surface.
 
+``scrub`` receives one of ``argument`` / ``cwd`` / ``stdout`` / ``stderr``
+plus its text and returns the fixture-safe replacement. Configure the same
+deterministic callback for record and replay so redacted match keys agree.
+
 #### `record`
 
 ```text
-def record(path: StrPath) -> RecordReplayRunner
+def record(
+    path: StrPath,
+    *,
+    scrub: Callable[[Literal['argument', 'cwd', 'stdout', 'stderr', 'unknown'], str], str] | None = ...,
+) -> RecordReplayRunner
 ```
 
 #### `replay`
 
 ```text
-def replay(path: StrPath) -> RecordReplayRunner
+def replay(
+    path: StrPath,
+    *,
+    scrub: Callable[[Literal['argument', 'cwd', 'stdout', 'stderr', 'unknown'], str], str] | None = ...,
+) -> RecordReplayRunner
 ```
 
 #### `save`

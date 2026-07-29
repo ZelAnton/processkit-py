@@ -17,7 +17,8 @@ the seam your code is written against:
   default) to every call and records each one for later assertions.
 - ``record_replay_runner`` — a :class:`~processkit.testing.RecordReplayRunner`
   bound to a per-test cassette, in *replay* mode by default and *record* mode when
-  recording is switched on (see below).
+  recording is switched on (see below). Override the
+  ``processkit_cassette_scrubber`` fixture to redact committed cassettes.
 - ``dry_run_runner`` — a fresh :class:`~processkit.testing.DryRunRunner` that
   renders each command to text instead of running it.
 
@@ -53,15 +54,13 @@ import hashlib
 import os
 import pathlib
 import re
-from typing import TYPE_CHECKING, NoReturn
+from collections.abc import Callable, Iterator
+from typing import Literal, NoReturn
 
 import pytest
 
 from ._processkit import Command, Pipeline, ProcessGroup, Runner
 from .testing import DryRunRunner, RecordingRunner, RecordReplayRunner, Reply, ScriptedRunner
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
 
 # Public knobs. Names are deliberately prefixed (``processkit_*`` /
 # ``PROCESSKIT_*`` / ``--processkit-*``) because an autoloaded pytest11 plugin
@@ -153,6 +152,19 @@ def dry_run_runner() -> DryRunRunner:
     return DryRunRunner()
 
 
+@pytest.fixture
+def processkit_cassette_scrubber() -> (
+    Callable[[Literal["argument", "cwd", "stdout", "stderr", "unknown"], str], str] | None
+):
+    """Optional ``(field, text) -> str`` cassette redaction hook.
+
+    Override this fixture in a consumer's ``conftest.py`` with a deterministic
+    function. The same override configures record and replay, keeping redacted
+    argument and cwd match keys symmetric. ``None`` preserves existing behavior.
+    """
+    return None
+
+
 def _is_record_mode(config: pytest.Config) -> bool:
     """Resolve the record ↔ replay switch: CLI flag, then env var, then ini."""
     if config.getoption(_RECORD_CLI_DEST):
@@ -186,7 +198,12 @@ def _cassette_name(nodeid: str) -> str:
 
 @pytest.fixture
 def record_replay_runner(
-    request: pytest.FixtureRequest, tmp_path: pathlib.Path
+    request: pytest.FixtureRequest,
+    tmp_path: pathlib.Path,
+    processkit_cassette_scrubber: Callable[
+        [Literal["argument", "cwd", "stdout", "stderr", "unknown"], str], str
+    ]
+    | None,
 ) -> Iterator[RecordReplayRunner]:
     """A :class:`~processkit.testing.RecordReplayRunner` bound to this test's
     cassette. In replay mode (the default) it serves the recorded run offline —
@@ -197,7 +214,7 @@ def record_replay_runner(
     cassette = _cassette_dir(config, tmp_path) / _cassette_name(request.node.nodeid)
     if _is_record_mode(config):
         cassette.parent.mkdir(parents=True, exist_ok=True)
-        runner = RecordReplayRunner.record(str(cassette))
+        runner = RecordReplayRunner.record(str(cassette), scrub=processkit_cassette_scrubber)
         yield runner
         runner.save()
     else:
@@ -208,7 +225,7 @@ def record_replay_runner(
                 f"CLI flag, the {_RECORD_ENV}=1 environment variable, or the "
                 f"{_RECORD_INI} ini option set to true."
             )
-        yield RecordReplayRunner.replay(str(cassette))
+        yield RecordReplayRunner.replay(str(cassette), scrub=processkit_cassette_scrubber)
 
 
 # --- the "no real spawn" guard ----------------------------------------------

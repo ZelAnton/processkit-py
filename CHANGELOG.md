@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add deterministic cassette secret scrubbing through
+  `RecordReplayRunner.record(..., scrub=)` / `replay(..., scrub=)` and the
+  overridable `processkit_cassette_scrubber` pytest fixture, backed by
+  ProcessKit-rs 3.1.0's symmetric scrub hook.
 - Add `--pty` with optional `--pty-cols`/`--pty-rows` to
   `python -m processkit run`, exposing a merged pseudo-terminal output stream
   for tools that require a TTY.

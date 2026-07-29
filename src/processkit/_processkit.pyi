@@ -455,6 +455,14 @@ class Command:
     def setsid(self) -> Command: ...
     def umask(self, mask: int) -> Command: ...
     def priority(self, level: Priority) -> Command: ...
+    def cpu_affinity(self, cpus: Sequence[int]) -> Command:
+        """Restrict the child tree to logical CPU indices.
+
+        Supported on Linux and Windows. Launching elsewhere raises
+        ``Unsupported`` rather than silently ignoring the request. The set must
+        be non-empty and representable by the platform; duplicates are removed,
+        indices are sorted, and repeated calls are last-write-wins.
+        """
     def io_priority(self, class_name: IoPriorityClass, *, level: int | None = ...) -> Command:
         """Set Linux I/O scheduling priority.
 
@@ -992,6 +1000,20 @@ class MemberInfo:
 
     def __repr__(self) -> str: ...
 
+@final
+class HostContainment:
+    """A spawn-free snapshot of this host's containment capabilities."""
+
+    @property
+    def mechanism(self) -> Literal["job_object", "cgroup_v2", "process_group"]: ...
+    @property
+    def soft_stop_scope(self) -> Literal["whole_tree", "opt_in_members", "none"]: ...
+    @property
+    def parent_death_cleanup(self) -> Literal["whole_tree", "direct_child_only", "none"]: ...
+    @property
+    def crate_version(self) -> str: ...
+    def __repr__(self) -> str: ...
+
 class _RunnerVerbs:
     """Private, stub-only base: the run-verb surface every runner shares
     (`ProcessGroup`, `Runner`, `ScriptedRunner`, `RecordReplayRunner`,
@@ -1062,6 +1084,9 @@ class ProcessGroup(_RunnerVerbs):
     # "unknown" is a forward-compat fallback the pinned crate version does not emit.
     @property
     def mechanism(self) -> Literal["job_object", "cgroup_v2", "process_group", "unknown"]: ...
+    @property
+    def soft_stop_scope(self) -> Literal["whole_tree", "opt_in_members", "none"]:
+        """Current reach of a graceful ``term``/``int`` stop for this group."""
     def members(self) -> list[int]: ...
     def members_info(self) -> list[MemberInfo]:
         """An enriched, point-in-time snapshot of the group's members — the same
@@ -1719,6 +1744,20 @@ class InvalidJson(ProcessError):
 # run would raise. This module function searches only the process `PATH`; for a
 # `prefer_local` directory or a relocated child `PATH`, use `Command.resolve_program`
 # / `CliClient.resolve_program`. Synchronous — no async runtime is required.
+def process_info(pid: int) -> MemberInfo | None:
+    """Return best-effort metadata for a live pid, or ``None`` when it is gone."""
+
+def process_is_alive(pid: int, start_time: int | None = ...) -> bool:
+    """Return whether the pid still names the saved process instance.
+
+    Pair ``pid`` with ``MemberInfo.start_time`` to reject a recycled pid. When
+    either token is unavailable, this honestly degrades to bare-pid liveness.
+    Inspection errors raise ``OSError`` rather than being misreported as dead.
+    """
+
+def host_containment() -> HostContainment:
+    """Return a side-effect-free report without creating a group or spawning."""
+
 def which(program: StrPath) -> str: ...
 
 # Batch execution: run many commands with bounded concurrency, in input order.

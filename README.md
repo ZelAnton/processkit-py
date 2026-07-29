@@ -123,7 +123,7 @@ The run-to-completion verbs repeat on the `Runner` and `CliClient` layers too
 ## Quick start
 
 ```python
-from processkit import Command, ProcessGroup
+from processkit import Command, ProcessGroup, host_containment, process_info
 
 # Capture output; a non-zero exit does not raise on its own.
 result = Command("git", ["rev-parse", "HEAD"]).output()
@@ -229,8 +229,12 @@ with ProcessGroup() as group:
     group.start(Command("dev-server"))
     group.start(Command("worker"))
     print(group.mechanism)        # "job_object" | "cgroup_v2" | "process_group"
+    print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
     print(group.members())        # live member pids
+    print(process_info(group.members()[0]))
 # the whole tree, grandchildren included, is gone here
+
+print(host_containment())         # host-wide containment capabilities
 ```
 
 The `with` / `async with` exit (and ordinary GC) reaps the tree on every
@@ -250,6 +254,7 @@ from processkit import Command, ProcessGroup
 tool = (
     Command("untrusted-tool")
     .env_clear().inherit_env(["PATH"])     # locked-down environment
+    .cpu_affinity([0, 1])                   # pin the child to selected CPUs
     .output_limit(max_bytes=8 * 1024 * 1024)
 )
 with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
@@ -260,6 +265,8 @@ with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0)
 Limits need a **Windows Job Object** or a **Linux cgroup-v2 root**; under a
 container, systemd session, or other non-root cgroup the kernel forbids them and
 `ResourceLimit` is raised — never a silently-unbounded group.
+CPU affinity is available on Windows and Linux and raises `Unsupported` on other
+platforms.
 *Deeper: [Process groups → resource limits](https://github.com/ZelAnton/processkit-py/blob/main/docs/process-groups.md).*
 
 ### Signalling and pausing the whole tree

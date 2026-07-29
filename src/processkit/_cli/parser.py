@@ -53,6 +53,19 @@ def _io_priority(value: str) -> tuple[str, int | None]:
     return class_name, level
 
 
+def _cpu_affinity(value: str) -> list[int]:
+    raw_cpus = value.split(",")
+    if not value or any(not raw for raw in raw_cpus):
+        raise argparse.ArgumentTypeError("must be a comma-separated list of CPU indices")
+    try:
+        cpus = [int(raw) for raw in raw_cpus]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("CPU indices must be non-negative integers") from exc
+    if any(cpu < 0 for cpu in cpus):
+        raise argparse.ArgumentTypeError("CPU indices must be non-negative integers")
+    return cpus
+
+
 def _build_parser() -> tuple[
     argparse.ArgumentParser,
     argparse.ArgumentParser,
@@ -254,6 +267,14 @@ def _build_parser() -> tuple[
         help="Set Linux I/O priority: idle, best_effort:0..7, or real_time:0..7.",
     )
     run_parser.add_argument(
+        "--cpu-affinity",
+        dest="cpu_affinity",
+        type=_cpu_affinity,
+        default=None,
+        metavar="CPU[,CPU...]",
+        help="Restrict the child tree to logical CPU indices (Linux/Windows).",
+    )
+    run_parser.add_argument(
         "--pty",
         action="store_true",
         help="Run the child under a pseudo-terminal and emit its merged terminal stream.",
@@ -373,6 +394,14 @@ def _build_parser() -> tuple[
         default=None,
         metavar="FLOAT",
         help="Cap each incarnation's CPU usage as a fraction of one core.",
+    )
+    supervise_parser.add_argument(
+        "--cpu-affinity",
+        dest="cpu_affinity",
+        type=_cpu_affinity,
+        default=None,
+        metavar="CPU[,CPU...]",
+        help="Restrict each incarnation to logical CPU indices (Linux/Windows).",
     )
     supervise_parser.add_argument(
         "--create-no-window",

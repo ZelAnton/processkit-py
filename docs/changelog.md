@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add Linux/Windows child CPU affinity through `Command.cpu_affinity(...)` and
+  the `run`/`supervise` CLI `--cpu-affinity` flag.
+- Add reuse-safe `process_info()` / `process_is_alive()` helpers for bare pids
+  returned by detached launches, supervision, and process groups.
+- Add spawn-free `host_containment()` capability reports, the current
+  `ProcessGroup.soft_stop_scope` graceful-stop reach, and the same host details
+  to human-readable and JSON `doctor` reports.
 - Add deterministic cassette secret scrubbing through
   `RecordReplayRunner.record(..., scrub=)` / `replay(..., scrub=)` and the
   overridable `processkit_cassette_scrubber` pytest fixture, backed by

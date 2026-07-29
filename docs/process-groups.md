@@ -33,10 +33,14 @@ with the default graceful-shutdown grace (a short window, then escalate to a
 hard kill):
 
 ```python
-from processkit import ProcessGroup
+from processkit import ProcessGroup, host_containment
+
+host = host_containment()  # no group creation or process spawn
+print(host.mechanism, host.soft_stop_scope, host.parent_death_cleanup)
 
 with ProcessGroup() as group:
     print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group"
+    print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
 ```
 
 `mechanism` reports what you actually got at runtime. On a Linux host without
@@ -44,6 +48,13 @@ cgroup-v2 delegation it quietly reads `"process_group"` instead of
 `"cgroup_v2"` — the same fallback that decides which features below are
 available. See [Platform support](platforms.md) for the per-OS matrix; the
 short version is *Windows strongest, macOS weakest.*
+
+`host_containment()` predicts the host-level mechanism and maximum graceful
+stop reach before a group exists, plus abrupt parent-death cleanup and the
+underlying Rust crate version. A real group's `soft_stop_scope` is more specific:
+on Windows it can narrow from host-level `"opt_in_members"` to `"none"` when
+the current membership has no console-CTRL or windowed process. On Unix it is
+`"whole_tree"`.
 
 Tune the teardown timing at construction:
 

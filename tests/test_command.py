@@ -1228,6 +1228,55 @@ def test_priority_rejects_unknown_preset() -> None:
         Command(PY, ["-c", "print(1)"]).priority("bogus")  # type: ignore[arg-type]
 
 
+@pytest.mark.skipif(
+    sys.platform not in {"linux", "win32"}, reason="CPU affinity is Linux/Windows-only"
+)
+def test_cpu_affinity_applies_to_child() -> None:
+    if sys.platform == "linux":
+        cpu = min(os.sched_getaffinity(0))
+        code = "import os; print(','.join(map(str, sorted(os.sched_getaffinity(0)))))"
+        assert Command(PY, ["-c", code]).cpu_affinity([cpu, cpu]).run() == str(cpu)
+        return
+
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.GetProcessAffinityMask.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    kernel32.GetProcessAffinityMask.restype = ctypes.c_int
+    process_mask = ctypes.c_size_t()
+    system_mask = ctypes.c_size_t()
+    assert kernel32.GetProcessAffinityMask(
+        kernel32.GetCurrentProcess(), ctypes.byref(process_mask), ctypes.byref(system_mask)
+    )
+    cpu = (process_mask.value & -process_mask.value).bit_length() - 1
+    code = (
+        "import ctypes\n"
+        "k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "k.GetCurrentProcess.restype = ctypes.c_void_p\n"
+        "k.GetProcessAffinityMask.argtypes = [ctypes.c_void_p, "
+        "ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]\n"
+        "k.GetProcessAffinityMask.restype = ctypes.c_int\n"
+        "p = ctypes.c_size_t(); s = ctypes.c_size_t()\n"
+        "assert k.GetProcessAffinityMask(k.GetCurrentProcess(), ctypes.byref(p), ctypes.byref(s))\n"
+        "print(p.value)\n"
+    )
+    assert int(Command(PY, ["-c", code]).cpu_affinity([cpu]).run()) == 1 << cpu
+
+
+@pytest.mark.skipif(
+    sys.platform in {"linux", "win32"}, reason="CPU affinity is supported on Linux/Windows"
+)
+def test_cpu_affinity_is_unsupported_at_launch_elsewhere() -> None:
+    with pytest.raises(Unsupported) as excinfo:
+        Command(PY, ["-c", "print('x')"]).cpu_affinity([0]).run()
+    assert "cpu_affinity" in excinfo.value.operation
+
+
 @pytest.mark.parametrize(
     ("class_name", "level"),
     [("idle", None), ("best_effort", 0), ("best_effort", 7), ("real_time", 3)],

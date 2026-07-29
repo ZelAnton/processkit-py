@@ -73,6 +73,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
 | `--priority LEVEL` | `Command.priority(level)` | CPU priority: `idle`, `below_normal`, `normal`, `above_normal`, or `high`. |
 | `--io-priority CLASS[:LEVEL]` | `Command.io_priority(...)` | Linux I/O priority: `idle`, `best_effort:0..7`, or `real_time:0..7`; unsupported elsewhere. |
+| `--cpu-affinity CPU[,CPU...]` | `Command.cpu_affinity([...])` | Pin the child tree to logical CPUs on Linux/Windows; unsupported elsewhere. |
 | `--pty` | `Command.pty(...)` | Allocate a pseudo-terminal and relay its one merged terminal stream on stdout. The child does not inherit the wrapper's stdin; use the Python API for an interactive writer. |
 | `--pty-cols N` / `--pty-rows N` | `Command.pty(cols=..., rows=...)` | Initial terminal size. Requires `--pty`; provide both dimensions together. |
 
@@ -269,6 +270,7 @@ just line-buffered rather than a byte-for-byte fd passthrough.
 | `--max-memory BYTES` | Cap every incarnation's whole process tree memory. |
 | `--max-processes N` | Cap every incarnation's process-tree size. |
 | `--cpu-quota FLOAT` | Cap every incarnation's CPU as a fraction of one core. |
+| `--cpu-affinity CPU[,CPU...]` | Pin every incarnation to logical CPUs on Linux/Windows. |
 | `--create-no-window` | Apply `Command.create_no_window()` to every incarnation. |
 | `--health-port HOST:PORT` | Probe a TCP endpoint; bracket IPv6 literals, for example `[::1]:8080`. Mutually exclusive with `--health-http`. |
 | `--health-http URL` | Probe an absolute HTTP(S) URL; any 2xx response is healthy. Mutually exclusive with `--health-port`. |
@@ -334,6 +336,9 @@ python -m processkit doctor
 
 ```text
 processkit doctor
+  graceful-stop scope     : whole_tree
+  parent-death cleanup    : whole_tree
+  processkit-rs version   : 3.1.0
   containment mechanism : cgroup_v2
   resource limits        : available
   verdict: OK - containment and resource limits are both available (exit 0)
@@ -347,6 +352,9 @@ that can be unavailable one without the others):
 
 ```text
 processkit doctor
+  graceful-stop scope     : opt_in_members
+  parent-death cleanup    : direct_child_only
+  processkit-rs version   : 3.1.0
   containment mechanism : process_group
   resource limits        : unavailable --max-memory (ResourceLimit: cgroup v2 root required)
   note: --max-memory/--max-processes/--cpu-quota need a Windows Job Object or
@@ -387,6 +395,12 @@ stdout while preserving the same exit code. Its stable base schema is:
 ```json
 {
   "mechanism": "cgroup_v2",
+  "host_containment": {
+    "mechanism": "cgroup_v2",
+    "soft_stop_scope": "whole_tree",
+    "parent_death_cleanup": "whole_tree",
+    "crate_version": "3.1.0"
+  },
   "verdict": "OK",
   "exit_code": 0,
   "resource_limits": {
@@ -399,7 +413,8 @@ stdout while preserving the same exit code. Its stable base schema is:
 ```
 
 `mechanism`, `verdict`, and `caveat` are strings; `exit_code` is an integer;
-and all `resource_limits` fields are booleans. `verdict` is one of `OK`,
+all `host_containment` fields are strings; and all `resource_limits` fields are
+booleans. `verdict` is one of `OK`,
 `DEGRADED`, `UNAVAILABLE`, or `ERROR`, matching exit codes `0`, `1`, `3`, and
 `4`. When an `OSError` prevents a definitive probe result, the payload also
 contains `error_probe_failures`, a list of error strings.

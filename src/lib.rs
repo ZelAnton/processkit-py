@@ -17,6 +17,7 @@ mod command;
 mod convert;
 mod errors;
 mod group;
+mod introspection;
 mod logging;
 mod result;
 mod runner;
@@ -49,6 +50,7 @@ fn _processkit(m: &Bound<'_, PyModule>) -> PyResult<()> {
     command::register(m)?;
     result::register(m)?;
     group::register(m)?;
+    introspection::register(m)?;
     running::register(m)?;
     supervisor::register(m)?;
     runner::register(m)?;

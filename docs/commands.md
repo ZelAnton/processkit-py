@@ -18,6 +18,7 @@ so an early return, an exception, or a cancelled task can never leak a child.
 - [Bounding captured output](#bounding-captured-output)
 - [Timeouts](#timeouts)
 - [Privileges and spawn flags](#privileges-and-spawn-flags)
+- [CPU affinity](#cpu-affinity)
 - [I/O scheduling priority](#io-scheduling-priority)
 - [Detached launch: the deliberate containment opt-out](#detached-launch-the-deliberate-containment-opt-out)
 - [Pseudo-terminal mode](#pseudo-terminal-mode)
@@ -638,6 +639,23 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
+## CPU affinity
+
+`cpu_affinity(cpus)` pins the child to logical CPU indices; descendants inherit
+the mask unless they later change their own affinity:
+
+```python
+worker = Command("indexer").cpu_affinity([0, 2])
+```
+
+Linux applies the set before `exec`; Windows applies it while the child is still
+suspended, before it joins the Job Object and resumes. The sequence must be
+non-empty and representable by the platform. Duplicates are removed, stored in
+ascending order, and repeated calls are last-write-wins. macOS and BSD reject a
+configured affinity at launch with `Unsupported` rather than silently ignoring
+it. This is distinct from `cpu_quota`: affinity chooses *which* cores may run the
+tree, while a quota caps total CPU time.
+
 ## I/O scheduling priority
 
 On Linux, `io_priority` asks the kernel to lower or raise the child's disk-I/O
@@ -670,6 +688,11 @@ child = (
 )
 print(child.pid)
 ```
+
+The module-level `process_info(child.pid)` and `process_is_alive(child.pid,
+saved_start_time)` helpers can inspect whether that pid still names the same
+process instance without taking ownership. Save `MemberInfo.start_time` when
+available to reject pid reuse; neither helper adds `wait` or `kill` semantics.
 
 Dropping `child` does **not** kill or reap the process. There is deliberately no
 `kill`, `wait`, timeout, capture, or interactive-stdin method: after launch,

@@ -19,6 +19,8 @@ import socket
 import subprocess
 import sys
 
+import pytest
+
 from .conftest import NO_SUCH_PROGRAM, PY
 
 #: Generous but bounded — these are short-lived child interpreters; a hang
@@ -70,6 +72,7 @@ def test_run_help_does_not_raise() -> None:
     assert "--kill-on-parent-death" in result.stdout
     assert "--priority" in result.stdout
     assert "--io-priority" in result.stdout
+    assert "--cpu-affinity" in result.stdout
     assert "--pty" in result.stdout
     assert "--pty-cols" in result.stdout
     assert "--pty-rows" in result.stdout
@@ -824,7 +827,7 @@ def test_run_rejects_idle_timeout_with_direct_stdout_redirect(tmp_path: pathlib.
     assert "--idle-timeout cannot be combined with --stdout-file" in result.stderr
 
 
-def test_run_passes_priority_and_parent_death_flags_to_command() -> None:
+def test_run_passes_scheduling_and_parent_death_flags_to_command() -> None:
     script = (
         "import json, sys\n"
         "import processkit._cli as cli\n"
@@ -839,6 +842,7 @@ def test_run_passes_priority_and_parent_death_flags_to_command() -> None:
         "    def priority(self, value): self.calls.append(['priority', value]); return self\n"
         "    def io_priority(self, value, *, level=None): "
         "self.calls.append(['io', value, level]); return self\n"
+        "    def cpu_affinity(self, cpus): self.calls.append(['affinity', cpus]); return self\n"
         "class _Outcome:\n"
         "    code = 0\n"
         "    signal = None\n"
@@ -853,7 +857,8 @@ def test_run_passes_priority_and_parent_death_flags_to_command() -> None:
         "run_mod.Command = _SpyCommand\n"
         "run_mod.ProcessGroup = _Group\n"
         "code = cli.main(['run', '--kill-on-parent-death', '--priority', 'high', "
-        "'--io-priority', 'best_effort:3', '--', 'irrelevant'])\n"
+        "'--io-priority', 'best_effort:3', '--cpu-affinity', '3,1,3', "
+        "'--', 'irrelevant'])\n"
         "print(json.dumps(_SpyCommand.calls))\n"
         "sys.exit(code)\n"
     )
@@ -865,13 +870,25 @@ def test_run_passes_priority_and_parent_death_flags_to_command() -> None:
         check=False,
     )
     assert result.returncode == 0
-    assert json.loads(result.stdout) == [["parent"], ["priority", "high"], ["io", "best_effort", 3]]
+    assert json.loads(result.stdout) == [
+        ["parent"],
+        ["priority", "high"],
+        ["io", "best_effort", 3],
+        ["affinity", [3, 1, 3]],
+    ]
 
 
 def test_run_rejects_malformed_io_priority() -> None:
     result = _run_cli("run", "--io-priority", "best_effort", "--", PY)
     assert result.returncode == 2
     assert "best_effort:LEVEL" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["", "1,", ",1", "-1", "one"])
+def test_run_rejects_malformed_cpu_affinity(value: str) -> None:
+    result = _run_cli("run", "--cpu-affinity", value, "--", PY)
+    assert result.returncode == 2
+    assert "CPU" in result.stderr
 
 
 def test_run_pty_gives_child_a_terminal_and_merges_stderr_into_stdout() -> None:
@@ -1068,12 +1085,19 @@ def test_profile_flag_degrades_to_null_fields_when_unavailable() -> None:
 
 _DOCTOR_JSON_KEYS = {
     "mechanism",
+    "host_containment",
     "verdict",
     "exit_code",
     "resource_limits",
     "caveat",
 }
 _DOCTOR_RESOURCE_LIMIT_KEYS = {"max_memory", "max_processes", "cpu_quota"}
+_DOCTOR_HOST_CONTAINMENT_KEYS = {
+    "mechanism",
+    "soft_stop_scope",
+    "parent_death_cleanup",
+    "crate_version",
+}
 
 
 def test_doctor_help_does_not_raise() -> None:
@@ -1151,6 +1175,10 @@ def test_doctor_json_has_a_stable_schema_and_replaces_the_text_report() -> None:
     assert set(payload) == _DOCTOR_JSON_KEYS
     assert isinstance(payload["mechanism"], str)
     assert payload["mechanism"] == "cgroup_v2"
+    host_report = payload["host_containment"]
+    assert isinstance(host_report, dict)
+    assert set(host_report) == _DOCTOR_HOST_CONTAINMENT_KEYS
+    assert all(isinstance(value, str) for value in host_report.values())
     assert isinstance(payload["verdict"], str)
     assert payload["verdict"] == "OK"
     assert isinstance(payload["exit_code"], int)
@@ -1410,6 +1438,7 @@ def test_supervise_help_does_not_raise() -> None:
     assert "--create-no-window" in result.stdout
     assert "--health-port" in result.stdout
     assert "--health-http" in result.stdout
+    assert "--cpu-affinity" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 
@@ -1466,6 +1495,7 @@ def test_supervise_passes_containment_flags_to_command_and_supervisor() -> None:
         "    def stderr_tee(self, *a): return self\n"
         "    def timeout(self, value): self.calls.append(['timeout', value]); return self\n"
         "    def create_no_window(self): self.calls.append(['no-window']); return self\n"
+        "    def cpu_affinity(self, cpus): self.calls.append(['affinity', cpus]); return self\n"
         "class _Result:\n"
         "    code = 0\n"
         "    signal = None\n"
@@ -1481,6 +1511,7 @@ def test_supervise_passes_containment_flags_to_command_and_supervisor() -> None:
         "mod.Supervisor = _Supervisor\n"
         "code = cli.main(['supervise', '--timeout', '2', '--max-memory', '1000', "
         "'--max-processes', '3', '--cpu-quota', '0.5', '--create-no-window', "
+        "'--cpu-affinity', '2,4', "
         "'--', 'irrelevant'])\n"
         "print(json.dumps({'calls': _Command.calls, 'kwargs': _Supervisor.kwargs}))\n"
         "sys.exit(code)\n"
@@ -1494,7 +1525,7 @@ def test_supervise_passes_containment_flags_to_command_and_supervisor() -> None:
     )
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["calls"] == [["timeout", 2.0], ["no-window"]]
+    assert payload["calls"] == [["timeout", 2.0], ["no-window"], ["affinity", [2, 4]]]
     assert payload["kwargs"] == {"max_memory": 1000, "max_processes": 3, "cpu_quota": 0.5}
 
 

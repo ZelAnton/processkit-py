@@ -130,8 +130,20 @@ SECTIONS: tuple[Section, ...] = (
         "it, signal or suspend the group, and reap the entire tree "
         "(grandchildren included) on exit. `MemberInfo` is the enriched per-member "
         "snapshot `members_info()` returns; `sample_stats` turns a one-shot "
-        "`stats()` snapshot into a periodic async series for live monitoring.",
-        ("ProcessGroup", "ProcessGroupStats", "ShutdownReport", "MemberInfo", "sample_stats"),
+        "`stats()` snapshot into a periodic async series for live monitoring. "
+        "The lookup helpers inspect arbitrary processes, while `HostContainment` "
+        "reports the containment guarantees available on the current host.",
+        (
+            "ProcessGroup",
+            "ProcessGroupStats",
+            "ShutdownReport",
+            "MemberInfo",
+            "HostContainment",
+            "process_info",
+            "process_is_alive",
+            "host_containment",
+            "sample_stats",
+        ),
     ),
     Section(
         "Supervision",

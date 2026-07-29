@@ -162,6 +162,17 @@ pub(crate) struct PyMemberInfo {
     start_time: Option<u64>,
 }
 
+impl From<processkit::MemberInfo> for PyMemberInfo {
+    fn from(info: processkit::MemberInfo) -> Self {
+        Self {
+            pid: info.pid(),
+            ppid: info.ppid(),
+            exe_name: info.exe_name().map(str::to_owned),
+            start_time: info.start_time(),
+        }
+    }
+}
+
 #[pymethods]
 impl PyMemberInfo {
     /// The member's process id — always present. Point-in-time, like a pid from
@@ -475,6 +486,13 @@ impl PyProcessGroup {
         Ok(mechanism)
     }
 
+    /// How far a graceful `term`/`int` soft stop can reach for this group now:
+    /// `"whole_tree"`, `"opt_in_members"`, or `"none"`.
+    #[getter]
+    fn soft_stop_scope(&self) -> PyResult<&'static str> {
+        Ok(self.group()?.soft_stop_scope().name())
+    }
+
     /// The process ids currently contained by the group.
     fn members(&self) -> PyResult<Vec<u32>> {
         self.group()?.members().map_err(map_err)
@@ -487,15 +505,7 @@ impl PyProcessGroup {
     /// silently omitted by the crate — the fields are never fabricated.
     fn members_info(&self) -> PyResult<Vec<PyMemberInfo>> {
         let infos = self.group()?.members_info().map_err(map_err)?;
-        Ok(infos
-            .into_iter()
-            .map(|info| PyMemberInfo {
-                pid: info.pid(),
-                ppid: info.ppid(),
-                exe_name: info.exe_name().map(str::to_owned),
-                start_time: info.start_time(),
-            })
-            .collect())
+        Ok(infos.into_iter().map(PyMemberInfo::from).collect())
     }
 
     /// Send a signal to every process in the tree. `name` is one of `term`,

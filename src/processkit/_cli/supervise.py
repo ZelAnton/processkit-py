@@ -157,6 +157,8 @@ def _supervise(
             command = command.timeout(args.timeout)
         if args.create_no_window:
             command = command.create_no_window()
+        if args.cpu_affinity is not None:
+            command = command.cpu_affinity(args.cpu_affinity)
         # Keep the command configuration order identical to `run`: establish
         # the environment base first, then apply explicit overrides and cwd.
         command = _apply_environment(

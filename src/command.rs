@@ -962,6 +962,15 @@ impl PyCommand {
         Ok(self.rewrap(self.inner.clone().priority(priority)))
     }
 
+    /// Restrict the child to these logical CPU indices. Descendants inherit the
+    /// mask. Supported on Linux and Windows; launching elsewhere raises
+    /// `Unsupported` instead of silently ignoring the request. An empty or
+    /// out-of-range set fails before user code runs; duplicates are removed and
+    /// repeated calls are last-write-wins.
+    fn cpu_affinity(&self, cpus: Vec<usize>) -> Self {
+        self.rewrap(self.inner.clone().cpu_affinity(cpus))
+    }
+
     /// Set Linux I/O scheduling priority. `idle` takes no level;
     /// `best_effort` and `real_time` require a level from 0 (highest) to 7
     /// (lowest). A requested I/O priority raises `Unsupported` when launched on

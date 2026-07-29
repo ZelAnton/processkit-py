@@ -577,6 +577,19 @@ def umask(mask: int) -> Command
 def priority(level: Priority) -> Command
 ```
 
+#### `cpu_affinity`
+
+```text
+def cpu_affinity(cpus: Sequence[int]) -> Command
+```
+
+Restrict the child tree to logical CPU indices.
+
+Supported on Linux and Windows. Launching elsewhere raises
+``Unsupported`` rather than silently ignoring the request. The set must
+be non-empty and representable by the platform; duplicates are removed,
+indices are sorted, and repeated calls are last-write-wins.
+
 #### `io_priority`
 
 ```text
@@ -1823,7 +1836,7 @@ def close() -> Awaitable[None]
 
 ## Process groups
 
-Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `MemberInfo` is the enriched per-member snapshot `members_info()` returns; `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring.
+Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `MemberInfo` is the enriched per-member snapshot `members_info()` returns; `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring. The lookup helpers inspect arbitrary processes, while `HostContainment` reports the containment guarantees available on the current host.
 
 ### `ProcessGroup`
 
@@ -1849,6 +1862,14 @@ expose (not an `extract_runner` target, though — see `runner.rs`).
 ```text
 mechanism: Literal['job_object', 'cgroup_v2', 'process_group', 'unknown']
 ```
+
+#### `soft_stop_scope`
+
+```text
+soft_stop_scope: Literal['whole_tree', 'opt_in_members', 'none']
+```
+
+Current reach of a graceful ``term``/``int`` stop for this group.
 
 #### `members`
 
@@ -2079,6 +2100,66 @@ since the Unix epoch; always ``None`` on the BSDs), so do not interpret it
 or compare it across platforms. Its sole use is pairing with ``pid``: two
 snapshots whose ``pid`` **and** ``start_time`` both match name the same
 process instance, telling a recycled pid apart from the original.
+
+### `HostContainment`
+
+```text
+class HostContainment
+```
+
+A spawn-free snapshot of this host's containment capabilities.
+
+#### `mechanism`
+
+```text
+mechanism: Literal['job_object', 'cgroup_v2', 'process_group']
+```
+
+#### `soft_stop_scope`
+
+```text
+soft_stop_scope: Literal['whole_tree', 'opt_in_members', 'none']
+```
+
+#### `parent_death_cleanup`
+
+```text
+parent_death_cleanup: Literal['whole_tree', 'direct_child_only', 'none']
+```
+
+#### `crate_version`
+
+```text
+crate_version: str
+```
+
+### `process_info`
+
+```text
+def process_info(pid: int) -> MemberInfo | None
+```
+
+Return best-effort metadata for a live pid, or ``None`` when it is gone.
+
+### `process_is_alive`
+
+```text
+def process_is_alive(pid: int, start_time: int | None = ...) -> bool
+```
+
+Return whether the pid still names the saved process instance.
+
+Pair ``pid`` with ``MemberInfo.start_time`` to reject a recycled pid. When
+either token is unavailable, this honestly degrades to bare-pid liveness.
+Inspection errors raise ``OSError`` rather than being misreported as dead.
+
+### `host_containment`
+
+```text
+def host_containment() -> HostContainment
+```
+
+Return a side-effect-free report without creating a group or spawning.
 
 ### `sample_stats`
 

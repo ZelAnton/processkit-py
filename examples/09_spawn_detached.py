@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from processkit import Command
+from processkit import Command, process_info, process_is_alive
 
 
 def main() -> None:
@@ -24,6 +24,10 @@ def main() -> None:
         )
         child = Command(sys.executable, ["-c", helper]).spawn_detached()
         print(f"detached pid={child.pid}")
+
+        identity = process_info(child.pid)
+        saved_start = None if identity is None else identity.start_time
+        print(f"same process still alive: {process_is_alive(child.pid, saved_start)}")
 
         # DetachedChild is deliberately pid-only: processkit cannot wait for,
         # kill, time out, or contain it. The helper must own its own lifetime.
@@ -38,6 +42,7 @@ def main() -> None:
         if contents != "done":
             raise RuntimeError("detached helper did not finish")
         print(contents)
+        print(f"alive after marker: {process_is_alive(child.pid, saved_start)}")
 
 
 if __name__ == "__main__":

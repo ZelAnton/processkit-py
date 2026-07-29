@@ -2,8 +2,10 @@
 
 processkit's guarantee is strongest on Windows and weakest on macOS. This is
 inherent to what each OS offers, and it is documented here rather than hidden.
-`ProcessGroup.mechanism` tells you which mechanism is active at runtime:
-`"job_object"`, `"cgroup_v2"`, or `"process_group"`.
+`host_containment()` reports the expected mechanism, host-level soft-stop reach,
+abrupt parent-death cleanup, and Rust crate version without creating a group or
+spawning. `ProcessGroup.mechanism` and `ProcessGroup.soft_stop_scope` then report
+the actual mechanism and current per-group soft-stop reach at runtime.
 
 ## Teardown (the no-orphan guarantee)
 
@@ -73,6 +75,17 @@ available through the Python `RunningProcess` API.
 | **Windows / macOS / BSD** | Launch raises `Unsupported`; the request is never silently ignored |
 
 This is independent of the cross-platform CPU `Command.priority()` setting.
+
+## CPU affinity (`Command.cpu_affinity()`)
+
+| Platform | Behavior |
+|---|---|
+| **Linux** | Applies a `sched_setaffinity` mask before `exec`; descendants inherit it. |
+| **Windows** | Applies a process affinity mask while the child is suspended, before resume. |
+| **macOS / BSD** | Launch raises `Unsupported`; the request is never silently ignored. |
+
+Affinity selects allowed logical CPUs; `ProcessGroup(cpu_quota=...)` separately
+limits aggregate CPU consumption.
 
 ## Multiprocessing: use `spawn` or `forkserver`, not `fork`
 

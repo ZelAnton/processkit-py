@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-from processkit import ProcessGroup, ResourceLimit, Unsupported
+from processkit import ProcessGroup, ResourceLimit, Unsupported, host_containment
 from processkit._cli.exit_codes import (
     EXIT_DOCTOR_LIMITS_UNAVAILABLE,
     EXIT_DOCTOR_NO_CONTAINMENT,
@@ -60,6 +60,7 @@ def _doctor_json_payload(
     """
     payload: dict[str, object] = {
         "mechanism": mechanism,
+        "host_containment": _host_containment_payload(),
         "verdict": verdict,
         "exit_code": exit_code,
         "resource_limits": resource_limits,
@@ -70,6 +71,17 @@ def _doctor_json_payload(
     return payload
 
 
+def _host_containment_payload() -> dict[str, str]:
+    """Return the crate's spawn-free host capability report as JSON data."""
+    report = host_containment()
+    return {
+        "mechanism": report.mechanism,
+        "soft_stop_scope": report.soft_stop_scope,
+        "parent_death_cleanup": report.parent_death_cleanup,
+        "crate_version": report.crate_version,
+    }
+
+
 def _emit_doctor_json(payload: dict[str, object]) -> None:
     """Write one complete ``doctor --json`` payload to stdout."""
     emit_stdout(json.dumps(payload))
@@ -77,6 +89,13 @@ def _emit_doctor_json(payload: dict[str, object]) -> None:
 
 def _print_doctor_caveat() -> None:
     emit_stdout(f"  note: {_DOCTOR_CAVEAT}")
+
+
+def _print_host_containment() -> None:
+    report = _host_containment_payload()
+    emit_stdout(f"  graceful-stop scope     : {report['soft_stop_scope']}")
+    emit_stdout(f"  parent-death cleanup    : {report['parent_death_cleanup']}")
+    emit_stdout(f"  processkit-rs version   : {report['crate_version']}")
 
 
 def _doctor(json_output: bool = False) -> int:
@@ -94,6 +113,7 @@ def _doctor(json_output: bool = False) -> int:
     verdicts above."""
     if not json_output:
         emit_stdout("processkit doctor")
+        _print_host_containment()
     try:
         plain_group = ProcessGroup()
     except (ResourceLimit, Unsupported) as exc:

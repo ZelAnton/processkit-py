@@ -173,6 +173,8 @@ def _run(
     if args.io_priority is not None:
         class_name, level = args.io_priority
         command = command.io_priority(class_name, level=level)
+    if args.cpu_affinity is not None:
+        command = command.cpu_affinity(args.cpu_affinity)
     # Environment builders compose in a fixed order at spawn regardless of
     # call order (docs/commands.md#environment-and-sandboxing), but this is
     # still the natural reading order: clear/allow-list the base environment

@@ -1005,6 +1005,7 @@ so an early return, an exception, or a cancelled task can never leak a child.
 - [Bounding captured output](#bounding-captured-output)
 - [Timeouts](#timeouts)
 - [Privileges and spawn flags](#privileges-and-spawn-flags)
+- [CPU affinity](#cpu-affinity)
 - [I/O scheduling priority](#io-scheduling-priority)
 - [Detached launch: the deliberate containment opt-out](#detached-launch-the-deliberate-containment-opt-out)
 - [Pseudo-terminal mode](#pseudo-terminal-mode)
@@ -1625,6 +1626,23 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
+## CPU affinity
+
+`cpu_affinity(cpus)` pins the child to logical CPU indices; descendants inherit
+the mask unless they later change their own affinity:
+
+```python
+worker = Command("indexer").cpu_affinity([0, 2])
+```
+
+Linux applies the set before `exec`; Windows applies it while the child is still
+suspended, before it joins the Job Object and resumes. The sequence must be
+non-empty and representable by the platform. Duplicates are removed, stored in
+ascending order, and repeated calls are last-write-wins. macOS and BSD reject a
+configured affinity at launch with `Unsupported` rather than silently ignoring
+it. This is distinct from `cpu_quota`: affinity chooses *which* cores may run the
+tree, while a quota caps total CPU time.
+
 ## I/O scheduling priority
 
 On Linux, `io_priority` asks the kernel to lower or raise the child's disk-I/O
@@ -1657,6 +1675,11 @@ child = (
 )
 print(child.pid)
 ```
+
+The module-level `process_info(child.pid)` and `process_is_alive(child.pid,
+saved_start_time)` helpers can inspect whether that pid still names the same
+process instance without taking ownership. Save `MemberInfo.start_time` when
+available to reject pid reuse; neither helper adds `wait` or `kill` semantics.
 
 Dropping `child` does **not** kill or reap the process. There is deliberately no
 `kill`, `wait`, timeout, capture, or interactive-stdin method: after launch,
@@ -1874,10 +1897,14 @@ with the default graceful-shutdown grace (a short window, then escalate to a
 hard kill):
 
 ```python
-from processkit import ProcessGroup
+from processkit import ProcessGroup, host_containment
+
+host = host_containment()  # no group creation or process spawn
+print(host.mechanism, host.soft_stop_scope, host.parent_death_cleanup)
 
 with ProcessGroup() as group:
     print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group"
+    print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
 ```
 
 `mechanism` reports what you actually got at runtime. On a Linux host without
@@ -1885,6 +1912,13 @@ cgroup-v2 delegation it quietly reads `"process_group"` instead of
 `"cgroup_v2"` — the same fallback that decides which features below are
 available. See [Platform support](platforms.md) for the per-OS matrix; the
 short version is *Windows strongest, macOS weakest.*
+
+`host_containment()` predicts the host-level mechanism and maximum graceful
+stop reach before a group exists, plus abrupt parent-death cleanup and the
+underlying Rust crate version. A real group's `soft_stop_scope` is more specific:
+on Windows it can narrow from host-level `"opt_in_members"` to `"none"` when
+the current membership has no console-CTRL or windowed process. On Unix it is
+`"whole_tree"`.
 
 Tune the teardown timing at construction:
 
@@ -4669,6 +4703,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
 | `--priority LEVEL` | `Command.priority(level)` | CPU priority: `idle`, `below_normal`, `normal`, `above_normal`, or `high`. |
 | `--io-priority CLASS[:LEVEL]` | `Command.io_priority(...)` | Linux I/O priority: `idle`, `best_effort:0..7`, or `real_time:0..7`; unsupported elsewhere. |
+| `--cpu-affinity CPU[,CPU...]` | `Command.cpu_affinity([...])` | Pin the child tree to logical CPUs on Linux/Windows; unsupported elsewhere. |
 | `--pty` | `Command.pty(...)` | Allocate a pseudo-terminal and relay its one merged terminal stream on stdout. The child does not inherit the wrapper's stdin; use the Python API for an interactive writer. |
 | `--pty-cols N` / `--pty-rows N` | `Command.pty(cols=..., rows=...)` | Initial terminal size. Requires `--pty`; provide both dimensions together. |
 
@@ -4865,6 +4900,7 @@ just line-buffered rather than a byte-for-byte fd passthrough.
 | `--max-memory BYTES` | Cap every incarnation's whole process tree memory. |
 | `--max-processes N` | Cap every incarnation's process-tree size. |
 | `--cpu-quota FLOAT` | Cap every incarnation's CPU as a fraction of one core. |
+| `--cpu-affinity CPU[,CPU...]` | Pin every incarnation to logical CPUs on Linux/Windows. |
 | `--create-no-window` | Apply `Command.create_no_window()` to every incarnation. |
 | `--health-port HOST:PORT` | Probe a TCP endpoint; bracket IPv6 literals, for example `[::1]:8080`. Mutually exclusive with `--health-http`. |
 | `--health-http URL` | Probe an absolute HTTP(S) URL; any 2xx response is healthy. Mutually exclusive with `--health-port`. |
@@ -4930,6 +4966,9 @@ python -m processkit doctor
 
 ```text
 processkit doctor
+  graceful-stop scope     : whole_tree
+  parent-death cleanup    : whole_tree
+  processkit-rs version   : 3.1.0
   containment mechanism : cgroup_v2
   resource limits        : available
   verdict: OK - containment and resource limits are both available (exit 0)
@@ -4943,6 +4982,9 @@ that can be unavailable one without the others):
 
 ```text
 processkit doctor
+  graceful-stop scope     : opt_in_members
+  parent-death cleanup    : direct_child_only
+  processkit-rs version   : 3.1.0
   containment mechanism : process_group
   resource limits        : unavailable --max-memory (ResourceLimit: cgroup v2 root required)
   note: --max-memory/--max-processes/--cpu-quota need a Windows Job Object or
@@ -4983,6 +5025,12 @@ stdout while preserving the same exit code. Its stable base schema is:
 ```json
 {
   "mechanism": "cgroup_v2",
+  "host_containment": {
+    "mechanism": "cgroup_v2",
+    "soft_stop_scope": "whole_tree",
+    "parent_death_cleanup": "whole_tree",
+    "crate_version": "3.1.0"
+  },
   "verdict": "OK",
   "exit_code": 0,
   "resource_limits": {
@@ -4995,7 +5043,8 @@ stdout while preserving the same exit code. Its stable base schema is:
 ```
 
 `mechanism`, `verdict`, and `caveat` are strings; `exit_code` is an integer;
-and all `resource_limits` fields are booleans. `verdict` is one of `OK`,
+all `host_containment` fields are strings; and all `resource_limits` fields are
+booleans. `verdict` is one of `OK`,
 `DEGRADED`, `UNAVAILABLE`, or `ERROR`, matching exit codes `0`, `1`, `3`, and
 `4`. When an `OSError` prevents a definitive probe result, the payload also
 contains `error_probe_failures`, a list of error strings.
@@ -5338,8 +5387,10 @@ Next: [Timeouts & cancellation](timeouts-and-cancellation.md) ·
 
 processkit's guarantee is strongest on Windows and weakest on macOS. This is
 inherent to what each OS offers, and it is documented here rather than hidden.
-`ProcessGroup.mechanism` tells you which mechanism is active at runtime:
-`"job_object"`, `"cgroup_v2"`, or `"process_group"`.
+`host_containment()` reports the expected mechanism, host-level soft-stop reach,
+abrupt parent-death cleanup, and Rust crate version without creating a group or
+spawning. `ProcessGroup.mechanism` and `ProcessGroup.soft_stop_scope` then report
+the actual mechanism and current per-group soft-stop reach at runtime.
 
 ## Teardown (the no-orphan guarantee)
 
@@ -5409,6 +5460,17 @@ available through the Python `RunningProcess` API.
 | **Windows / macOS / BSD** | Launch raises `Unsupported`; the request is never silently ignored |
 
 This is independent of the cross-platform CPU `Command.priority()` setting.
+
+## CPU affinity (`Command.cpu_affinity()`)
+
+| Platform | Behavior |
+|---|---|
+| **Linux** | Applies a `sched_setaffinity` mask before `exec`; descendants inherit it. |
+| **Windows** | Applies a process affinity mask while the child is suspended, before resume. |
+| **macOS / BSD** | Launch raises `Unsupported`; the request is never silently ignored. |
+
+Affinity selects allowed logical CPUs; `ProcessGroup(cpu_quota=...)` separately
+limits aggregate CPU consumption.
 
 ## Multiprocessing: use `spawn` or `forkserver`, not `fork`
 
@@ -5563,6 +5625,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add Linux/Windows child CPU affinity through `Command.cpu_affinity(...)` and
+  the `run`/`supervise` CLI `--cpu-affinity` flag.
+- Add reuse-safe `process_info()` / `process_is_alive()` helpers for bare pids
+  returned by detached launches, supervision, and process groups.
+- Add spawn-free `host_containment()` capability reports, the current
+  `ProcessGroup.soft_stop_scope` graceful-stop reach, and the same host details
+  to human-readable and JSON `doctor` reports.
 - Add deterministic cassette secret scrubbing through
   `RecordReplayRunner.record(..., scrub=)` / `replay(..., scrub=)` and the
   overridable `processkit_cassette_scrubber` pytest fixture, backed by
@@ -7399,6 +7468,19 @@ def umask(mask: int) -> Command
 def priority(level: Priority) -> Command
 ```
 
+#### `cpu_affinity`
+
+```text
+def cpu_affinity(cpus: Sequence[int]) -> Command
+```
+
+Restrict the child tree to logical CPU indices.
+
+Supported on Linux and Windows. Launching elsewhere raises
+``Unsupported`` rather than silently ignoring the request. The set must
+be non-empty and representable by the platform; duplicates are removed,
+indices are sorted, and repeated calls are last-write-wins.
+
 #### `io_priority`
 
 ```text
@@ -8645,7 +8727,7 @@ def close() -> Awaitable[None]
 
 ## Process groups
 
-Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `MemberInfo` is the enriched per-member snapshot `members_info()` returns; `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring.
+Kill-on-drop containment for a whole process tree — start children into it, signal or suspend the group, and reap the entire tree (grandchildren included) on exit. `MemberInfo` is the enriched per-member snapshot `members_info()` returns; `sample_stats` turns a one-shot `stats()` snapshot into a periodic async series for live monitoring. The lookup helpers inspect arbitrary processes, while `HostContainment` reports the containment guarantees available on the current host.
 
 ### `ProcessGroup`
 
@@ -8671,6 +8753,14 @@ expose (not an `extract_runner` target, though — see `runner.rs`).
 ```text
 mechanism: Literal['job_object', 'cgroup_v2', 'process_group', 'unknown']
 ```
+
+#### `soft_stop_scope`
+
+```text
+soft_stop_scope: Literal['whole_tree', 'opt_in_members', 'none']
+```
+
+Current reach of a graceful ``term``/``int`` stop for this group.
 
 #### `members`
 
@@ -8901,6 +8991,66 @@ since the Unix epoch; always ``None`` on the BSDs), so do not interpret it
 or compare it across platforms. Its sole use is pairing with ``pid``: two
 snapshots whose ``pid`` **and** ``start_time`` both match name the same
 process instance, telling a recycled pid apart from the original.
+
+### `HostContainment`
+
+```text
+class HostContainment
+```
+
+A spawn-free snapshot of this host's containment capabilities.
+
+#### `mechanism`
+
+```text
+mechanism: Literal['job_object', 'cgroup_v2', 'process_group']
+```
+
+#### `soft_stop_scope`
+
+```text
+soft_stop_scope: Literal['whole_tree', 'opt_in_members', 'none']
+```
+
+#### `parent_death_cleanup`
+
+```text
+parent_death_cleanup: Literal['whole_tree', 'direct_child_only', 'none']
+```
+
+#### `crate_version`
+
+```text
+crate_version: str
+```
+
+### `process_info`
+
+```text
+def process_info(pid: int) -> MemberInfo | None
+```
+
+Return best-effort metadata for a live pid, or ``None`` when it is gone.
+
+### `process_is_alive`
+
+```text
+def process_is_alive(pid: int, start_time: int | None = ...) -> bool
+```
+
+Return whether the pid still names the saved process instance.
+
+Pair ``pid`` with ``MemberInfo.start_time`` to reject a recycled pid. When
+either token is unavailable, this honestly degrades to bare-pid liveness.
+Inspection errors raise ``OSError`` rather than being misreported as dead.
+
+### `host_containment`
+
+```text
+def host_containment() -> HostContainment
+```
+
+Return a side-effect-free report without creating a group or spawning.
 
 ### `sample_stats`
 

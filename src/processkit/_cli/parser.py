@@ -34,6 +34,25 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _io_priority(value: str) -> tuple[str, int | None]:
+    class_name, separator, raw_level = value.partition(":")
+    if class_name == "idle":
+        if separator:
+            raise argparse.ArgumentTypeError("idle I/O priority does not take a level")
+        return class_name, None
+    if class_name not in {"best_effort", "real_time"} or not separator:
+        raise argparse.ArgumentTypeError("must be idle, best_effort:LEVEL, or real_time:LEVEL")
+    try:
+        level = int(raw_level)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "I/O priority level must be an integer from 0 to 7"
+        ) from exc
+    if not 0 <= level <= 7:
+        raise argparse.ArgumentTypeError("I/O priority level must be an integer from 0 to 7")
+    return class_name, level
+
+
 def _build_parser() -> tuple[
     argparse.ArgumentParser,
     argparse.ArgumentParser,
@@ -189,6 +208,51 @@ def _build_parser() -> tuple[
             "No-op outside Windows, same as the underlying binding method."
         ),
     )
+    run_parser.add_argument(
+        "--output-limit",
+        dest="output_limit",
+        type=_positive_int,
+        default=None,
+        metavar="BYTES",
+        help=(
+            "Cap captured stdout/stderr at BYTES and fail if the child exceeds it. "
+            "Output is piped and re-emitted line-by-line."
+        ),
+    )
+    run_parser.add_argument(
+        "--stdout-file",
+        dest="stdout_file",
+        default=None,
+        metavar="PATH",
+        help="Redirect the child's stdout directly to PATH (create or truncate).",
+    )
+    run_parser.add_argument(
+        "--stderr-file",
+        dest="stderr_file",
+        default=None,
+        metavar="PATH",
+        help="Redirect the child's stderr directly to PATH (create or truncate).",
+    )
+    run_parser.add_argument(
+        "--kill-on-parent-death",
+        dest="kill_on_parent_death",
+        action="store_true",
+        help="Request the platform's best-effort abrupt-parent-death cleanup.",
+    )
+    run_parser.add_argument(
+        "--priority",
+        choices=("idle", "below_normal", "normal", "above_normal", "high"),
+        default=None,
+        help="Set the child's CPU scheduling priority preset.",
+    )
+    run_parser.add_argument(
+        "--io-priority",
+        dest="io_priority",
+        type=_io_priority,
+        default=None,
+        metavar="CLASS[:LEVEL]",
+        help="Set Linux I/O priority: idle, best_effort:0..7, or real_time:0..7.",
+    )
     supervise_parser = subparsers.add_parser(
         "supervise",
         help="Keep a command alive with restart policy and backoff",
@@ -257,6 +321,74 @@ def _build_parser() -> tuple[
             "upstream support lands; use `run --idle-timeout` for a single "
             "command."
         ),
+    )
+    supervise_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help="Kill each incarnation if it is still running after SECONDS.",
+    )
+    supervise_parser.add_argument(
+        "--max-memory",
+        dest="max_memory",
+        type=_positive_int,
+        default=None,
+        metavar="BYTES",
+        help="Cap each incarnation's whole process tree memory, in bytes.",
+    )
+    supervise_parser.add_argument(
+        "--max-processes",
+        dest="max_processes",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Cap each incarnation's process-tree size.",
+    )
+    supervise_parser.add_argument(
+        "--cpu-quota",
+        dest="cpu_quota",
+        type=_positive_float,
+        default=None,
+        metavar="FLOAT",
+        help="Cap each incarnation's CPU usage as a fraction of one core.",
+    )
+    supervise_parser.add_argument(
+        "--create-no-window",
+        dest="create_no_window",
+        action="store_true",
+        help="Do not create a console window for each incarnation (Windows).",
+    )
+    health_group = supervise_parser.add_mutually_exclusive_group()
+    health_group.add_argument(
+        "--health-port",
+        dest="health_port",
+        default=None,
+        metavar="HOST:PORT",
+        help="Treat a successful TCP connection to HOST:PORT as healthy.",
+    )
+    health_group.add_argument(
+        "--health-http",
+        dest="health_http",
+        default=None,
+        metavar="URL",
+        help="Treat an HTTP(S) 2xx response from URL as healthy.",
+    )
+    supervise_parser.add_argument(
+        "--health-interval",
+        dest="health_interval",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help="Probe cadence (default: 5 seconds; requires a health probe).",
+    )
+    supervise_parser.add_argument(
+        "--health-timeout",
+        dest="health_timeout",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help="Timeout for one health probe (default: 1 second; requires a health probe).",
     )
     supervise_parser.add_argument(
         "--env-clear",

@@ -1191,7 +1191,13 @@ class SupervisionSession:
 
 @final
 class Supervisor:
-    """Keep a command alive: restart per policy with backoff until a stop condition."""
+    """Keep a command alive: restart per policy with backoff until a stop condition.
+
+    ``max_memory``, ``max_processes``, and ``cpu_quota`` apply whole-tree
+    resource caps to the fresh private process group created for every real-run
+    incarnation. They cannot be combined with ``runner`` because an injected
+    runner owns its execution semantics.
+    """
 
     def __init__(
         self,
@@ -1258,6 +1264,12 @@ class Supervisor:
         health_check: Callable[[], bool] | None = ...,
         health_check_interval: float | None = ...,
         health_check_failures: int | None = ...,
+        # Whole-tree resource caps for every incarnation. These configure the
+        # private ProcessGroup created per run and fail before spawning when the
+        # active platform cannot enforce a requested limit.
+        max_memory: int | None = ...,
+        max_processes: int | None = ...,
+        cpu_quota: float | None = ...,
         # Drives every incarnation through this runner instead of the real
         # `Runner` — any `RunnerLike` for hermetic supervision tests. Not a
         # `ProcessGroup` — deliberately not an `extract_runner` target; see

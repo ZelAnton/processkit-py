@@ -15,10 +15,12 @@ from processkit import (
     ProcessError,
     ProcessNotFound,
     ProcessResult,
+    ResourceLimit,
     SupervisionOutcome,
     SupervisionSession,
     SupervisionStatus,
     Supervisor,
+    Unsupported,
 )
 from processkit.testing import Reply, ScriptedRunner
 
@@ -42,6 +44,19 @@ def _wait_for_live_status(session: SupervisionSession, timeout: float = 10.0) ->
 def test_supervisor_never_restarts_on_success() -> None:
     outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never").run()
     assert outcome.restarts == 0
+    assert outcome.final_result.is_success
+
+
+def test_supervisor_resource_limits_cannot_be_combined_with_a_custom_runner() -> None:
+    with pytest.raises(ValueError, match="resource limits cannot be combined with a custom runner"):
+        Supervisor(Command(PY), max_memory=1024, runner=ScriptedRunner())
+
+
+def test_supervisor_applies_resource_limits_to_its_private_process_group() -> None:
+    try:
+        outcome = Supervisor(Command(PY, ["-c", "pass"]), restart="never", max_processes=8).run()
+    except (ResourceLimit, Unsupported) as exc:
+        pytest.skip(f"the active containment mechanism cannot enforce process limits: {exc}")
     assert outcome.final_result.is_success
 
 

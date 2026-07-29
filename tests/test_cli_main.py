@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import signal
+import socket
 import subprocess
 import sys
 
@@ -63,6 +64,12 @@ def test_run_help_does_not_raise() -> None:
     assert "--timeout" in result.stdout
     assert "--profile" in result.stdout
     assert "--create-no-window" in result.stdout
+    assert "--output-limit" in result.stdout
+    assert "--stdout-file" in result.stdout
+    assert "--stderr-file" in result.stdout
+    assert "--kill-on-parent-death" in result.stdout
+    assert "--priority" in result.stdout
+    assert "--io-priority" in result.stdout
     assert "--env-file" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
@@ -171,7 +178,10 @@ def test_cli_runs_interpreter_finalization_after_async_bridge_is_done() -> None:
     probe = (
         "import atexit, runpy, sys\n"
         "atexit.register(lambda: sys.stderr.write('FINALIZATION-RAN\\n'))\n"
-        f"sys.argv = ['processkit', 'run', '--idle-timeout', '2', '--', {PY!r}, "
+        # This test proves finalization, not process-start latency. Leave enough
+        # idle headroom for a child interpreter to start under full xdist load;
+        # the outer subprocess timeout still bounds a genuine hang at 30 seconds.
+        f"sys.argv = ['processkit', 'run', '--idle-timeout', '15', '--', {PY!r}, "
         "'-c', 'print(\"from child\", flush=True)']\n"
         "runpy.run_module('processkit', run_name='__main__')\n"
         "sys.stderr.write('RETURNED-TO-CALLER\\n')\n"
@@ -754,6 +764,113 @@ def test_without_create_no_window_flag_create_no_window_is_not_called() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_run_redirects_stdout_and_stderr_directly_to_files(tmp_path: pathlib.Path) -> None:
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    result = _run_cli(
+        "run",
+        "--stdout-file",
+        str(stdout_path),
+        "--stderr-file",
+        str(stderr_path),
+        "--",
+        PY,
+        "-c",
+        "import sys; print('out'); print('err', file=sys.stderr)",
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert stdout_path.read_text(encoding="utf-8").strip() == "out"
+    assert stderr_path.read_text(encoding="utf-8").strip() == "err"
+
+
+def test_run_output_limit_fails_loud_without_emitting_over_limit_output() -> None:
+    result = _run_cli("run", "--output-limit", "16", "--", PY, "-c", "print('x' * 100)")
+    assert result.returncode == 125
+    assert result.stdout == ""
+    assert "output exceeded its capture ceiling" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_run_rejects_output_limit_with_direct_stdout_redirect(tmp_path: pathlib.Path) -> None:
+    result = _run_cli(
+        "run",
+        "--output-limit",
+        "16",
+        "--stdout-file",
+        str(tmp_path / "out.log"),
+        "--",
+        PY,
+    )
+    assert result.returncode == 2
+    assert "--output-limit cannot be combined with --stdout-file" in result.stderr
+
+
+def test_run_rejects_idle_timeout_with_direct_stdout_redirect(tmp_path: pathlib.Path) -> None:
+    result = _run_cli(
+        "run",
+        "--idle-timeout",
+        "1",
+        "--stdout-file",
+        str(tmp_path / "out.log"),
+        "--",
+        PY,
+    )
+    assert result.returncode == 2
+    assert "--idle-timeout cannot be combined with --stdout-file" in result.stderr
+
+
+def test_run_passes_priority_and_parent_death_flags_to_command() -> None:
+    script = (
+        "import json, sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.run as run_mod\n"
+        "class _SpyCommand:\n"
+        "    calls = []\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): return self\n"
+        "    def stdout(self, *a): return self\n"
+        "    def stderr(self, *a): return self\n"
+        "    def kill_on_parent_death(self): self.calls.append(['parent']); return self\n"
+        "    def priority(self, value): self.calls.append(['priority', value]); return self\n"
+        "    def io_priority(self, value, *, level=None): "
+        "self.calls.append(['io', value, level]); return self\n"
+        "class _Outcome:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _Proc:\n"
+        "    def outcome(self): return _Outcome()\n"
+        "class _Group:\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *a): return False\n"
+        "    def start(self, command): return _Proc()\n"
+        "run_mod.Command = _SpyCommand\n"
+        "run_mod.ProcessGroup = _Group\n"
+        "code = cli.main(['run', '--kill-on-parent-death', '--priority', 'high', "
+        "'--io-priority', 'best_effort:3', '--', 'irrelevant'])\n"
+        "print(json.dumps(_SpyCommand.calls))\n"
+        "sys.exit(code)\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == [["parent"], ["priority", "high"], ["io", "best_effort", 3]]
+
+
+def test_run_rejects_malformed_io_priority() -> None:
+    result = _run_cli("run", "--io-priority", "best_effort", "--", PY)
+    assert result.returncode == 2
+    assert "best_effort:LEVEL" in result.stderr
+
+
 # --- --profile ------------------------------------------------------------
 
 _PROFILE_JSON_KEYS = {
@@ -1234,6 +1351,13 @@ def test_supervise_help_does_not_raise() -> None:
     assert result.returncode == 0
     assert "usage" in result.stdout.lower()
     assert "--restart" in result.stdout
+    assert "--timeout" in result.stdout
+    assert "--max-memory" in result.stdout
+    assert "--max-processes" in result.stdout
+    assert "--cpu-quota" in result.stdout
+    assert "--create-no-window" in result.stdout
+    assert "--health-port" in result.stdout
+    assert "--health-http" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 
@@ -1257,6 +1381,258 @@ def test_supervise_parses_flags() -> None:
         "pass",
     )
     assert result.returncode == 0
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_timeout_is_per_incarnation_and_uses_timeout_exit_code() -> None:
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "never",
+        "--timeout",
+        "0.2",
+        "--",
+        PY,
+        "-c",
+        "import time; time.sleep(30)",
+    )
+    assert result.returncode == 124
+    assert "timed out after 0.2s" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_passes_containment_flags_to_command_and_supervisor() -> None:
+    script = (
+        "import json, sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as mod\n"
+        "class _Command:\n"
+        "    calls = []\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): return self\n"
+        "    def stdout_tee(self, *a): return self\n"
+        "    def stderr_tee(self, *a): return self\n"
+        "    def timeout(self, value): self.calls.append(['timeout', value]); return self\n"
+        "    def create_no_window(self): self.calls.append(['no-window']); return self\n"
+        "class _Result:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _Outcome:\n"
+        "    stopped = 'policy_satisfied'\n"
+        "    final_result = _Result()\n"
+        "class _Supervisor:\n"
+        "    kwargs = {}\n"
+        "    def __init__(self, command, **kwargs): _Supervisor.kwargs = kwargs\n"
+        "    def run(self): return _Outcome()\n"
+        "mod.Command = _Command\n"
+        "mod.Supervisor = _Supervisor\n"
+        "code = cli.main(['supervise', '--timeout', '2', '--max-memory', '1000', "
+        "'--max-processes', '3', '--cpu-quota', '0.5', '--create-no-window', "
+        "'--', 'irrelevant'])\n"
+        "print(json.dumps({'calls': _Command.calls, 'kwargs': _Supervisor.kwargs}))\n"
+        "sys.exit(code)\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["calls"] == [["timeout", 2.0], ["no-window"]]
+    assert payload["kwargs"] == {"max_memory": 1000, "max_processes": 3, "cpu_quota": 0.5}
+
+
+def test_supervise_health_port_builds_a_working_probe() -> None:
+    script = (
+        "import json, sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as mod\n"
+        "class _Connection:\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *a): return False\n"
+        "seen = []\n"
+        "def connect(address, timeout):\n"
+        "    seen.append([list(address), timeout])\n"
+        "    return _Connection()\n"
+        "mod.socket.create_connection = connect\n"
+        "class _Command:\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): return self\n"
+        "    def stdout_tee(self, *a): return self\n"
+        "    def stderr_tee(self, *a): return self\n"
+        "class _Result:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _Outcome:\n"
+        "    stopped = 'policy_satisfied'\n"
+        "    final_result = _Result()\n"
+        "class _Supervisor:\n"
+        "    details = {}\n"
+        "    def __init__(self, command, **kwargs):\n"
+        "        _Supervisor.details = {'healthy': kwargs['health_check'](), "
+        "'interval': kwargs['health_check_interval']}\n"
+        "    def run(self): return _Outcome()\n"
+        "mod.Command = _Command\n"
+        "mod.Supervisor = _Supervisor\n"
+        "code = cli.main(['supervise', '--health-port', '[::1]:8080', "
+        "'--health-interval', '2', '--health-timeout', '0.25', '--', 'irrelevant'])\n"
+        "print(json.dumps({'details': _Supervisor.details, 'seen': seen}))\n"
+        "sys.exit(code)\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "details": {"healthy": True, "interval": 2.0},
+        "seen": [[["::1", 8080], 0.25]],
+    }
+
+
+def test_supervise_health_http_accepts_only_a_2xx_response() -> None:
+    script = (
+        "import json, sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as mod\n"
+        "class _Response:\n"
+        "    status = 204\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *a): return False\n"
+        "seen = []\n"
+        "def open_url(url, timeout): seen.append([url, timeout]); return _Response()\n"
+        "mod.urllib.request.urlopen = open_url\n"
+        "class _Command:\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): return self\n"
+        "    def stdout_tee(self, *a): return self\n"
+        "    def stderr_tee(self, *a): return self\n"
+        "class _Result:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _Outcome:\n"
+        "    stopped = 'policy_satisfied'\n"
+        "    final_result = _Result()\n"
+        "class _Supervisor:\n"
+        "    healthy = False\n"
+        "    def __init__(self, command, **kwargs): "
+        "_Supervisor.healthy = kwargs['health_check']()\n"
+        "    def run(self): return _Outcome()\n"
+        "mod.Command = _Command\n"
+        "mod.Supervisor = _Supervisor\n"
+        "code = cli.main(['supervise', '--health-http', 'http://localhost/healthz', "
+        "'--health-timeout', '0.4', '--', 'irrelevant'])\n"
+        "print(json.dumps({'healthy': _Supervisor.healthy, 'seen': seen}))\n"
+        "sys.exit(code)\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {
+        "healthy": True,
+        "seen": [["http://localhost/healthz", 0.4]],
+    }
+
+
+def test_supervise_resource_limit_retries_contained_but_uncapped() -> None:
+    script = (
+        "import json, sys\n"
+        "import processkit\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as mod\n"
+        "class _Command:\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): return self\n"
+        "    def stdout_tee(self, *a): return self\n"
+        "    def stderr_tee(self, *a): return self\n"
+        "class _Result:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _Outcome:\n"
+        "    stopped = 'policy_satisfied'\n"
+        "    final_result = _Result()\n"
+        "class _Supervisor:\n"
+        "    calls = []\n"
+        "    def __init__(self, command, **kwargs): self.kwargs = kwargs\n"
+        "    def run(self):\n"
+        "        self.calls.append(self.kwargs)\n"
+        "        if 'max_memory' in self.kwargs:\n"
+        "            raise processkit.ResourceLimit('controller unavailable')\n"
+        "        return _Outcome()\n"
+        "mod.Command = _Command\n"
+        "mod.Supervisor = _Supervisor\n"
+        "code = cli.main(['supervise', '--max-memory', '1000', '--', 'irrelevant'])\n"
+        "print(json.dumps(_Supervisor.calls))\n"
+        "sys.exit(code)\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == [{"max_memory": 1000}, {}]
+    assert "supervising contained, but uncapped" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_health_options_require_exactly_one_valid_probe() -> None:
+    cases = [
+        (["--health-interval", "1"], "requires a health probe"),
+        (["--health-port", "localhost"], "must be HOST:PORT"),
+        (["--health-http", "file:///tmp/healthy"], "absolute http:// or https:// URL"),
+        (["--health-http", "http://localhost:bad/"], "valid absolute HTTP(S) URL"),
+        (
+            ["--health-port", "localhost:80", "--health-http", "http://localhost/"],
+            "not allowed with argument",
+        ),
+    ]
+    for flags, message in cases:
+        result = _run_cli("supervise", *flags, "--", PY)
+        assert result.returncode == 2
+        assert message in result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_unhealthy_process_is_force_stopped() -> None:
+    with socket.socket() as unavailable:
+        unavailable.bind(("127.0.0.1", 0))
+        port = unavailable.getsockname()[1]
+        result = _run_cli(
+            "supervise",
+            "--restart",
+            "never",
+            "--health-port",
+            f"127.0.0.1:{port}",
+            "--health-interval",
+            "0.05",
+            "--health-timeout",
+            "0.05",
+            "--",
+            PY,
+            "-c",
+            "import time; time.sleep(30)",
+        )
+    assert result.returncode in {120, 128 + getattr(signal, "SIGKILL", 9)}
+    assert "health check" in result.stderr or "killed by signal" in result.stderr
     assert "Traceback (most recent call last)" not in result.stderr
 
 
@@ -1406,6 +1782,7 @@ def test_supervise_exits_signal_code_when_final_result_was_killed_by_signal() ->
         "class _FinalResult:\n"
         "    code = None\n"
         "    signal = 15\n"
+        "    timed_out = False\n"
         "class _Outcome:\n"
         "    stopped = 'policy_satisfied'\n"
         "    final_result = _FinalResult()\n"

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Expand `python -m processkit run` with fail-loud captured-output limits,
+  direct stdout/stderr file redirects, abrupt-parent-death cleanup, and CPU/I/O
+  priority controls.
+- Expand `python -m processkit supervise` with per-incarnation timeouts and
+  resource caps, headless Windows launches, and proactive TCP or HTTP health
+  checks. `Supervisor` now accepts the matching `max_memory=`,
+  `max_processes=`, and `cpu_quota=` constructor options.
 - Add `RunningProcess.stderr_lines()` for stderr-only line streaming and direct
   use with readiness helpers such as `wait_for_line`.
 - Add `Command.run_json()` / `arun_json()` with the same typed JSON decoding and

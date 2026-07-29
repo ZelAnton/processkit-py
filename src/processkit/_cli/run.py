@@ -118,23 +118,46 @@ def _run(
     # front rather than silently letting one win.
     if args.idle_timeout is not None and args.profile is not None:
         run_parser.error("--idle-timeout cannot be combined with --profile")
+    if args.output_limit is not None and args.profile is not None:
+        run_parser.error("--output-limit cannot be combined with --profile")
+    if args.output_limit is not None and args.stdout_file is not None:
+        run_parser.error("--output-limit cannot be combined with --stdout-file")
+    if args.idle_timeout is not None and args.stdout_file is not None:
+        run_parser.error("--idle-timeout cannot be combined with --stdout-file")
 
     env_pairs = _parse_environment(run_parser, args.env_file, args.env)
 
     program, *rest = child_argv
     idle_requested = args.idle_timeout is not None
+    streaming_requested = idle_requested or args.output_limit is not None
     command = Command(program, rest).inherit_stdin()
-    if idle_requested:
+    if streaming_requested:
         # Idle monitoring rides the per-line output channel, so keep stdout/stderr
         # piped (the Command default) — `_drive_idle` re-emits each line — rather
-        # than inheriting raw. `idle_timeout()` is enforced by the streaming
-        # iterator that path drives.
-        assert args.idle_timeout is not None
-        command = command.idle_timeout(args.idle_timeout)
+        # than inheriting raw. The output-limit path uses the same pump so its
+        # fail-loud captured-byte ceiling is actually enforced.
+        if idle_requested:
+            assert args.idle_timeout is not None
+            command = command.idle_timeout(args.idle_timeout)
     else:
-        command = command.stdout("inherit").stderr("inherit")
+        command = command.stdout("inherit")
+    if args.stdout_file is not None:
+        command = command.stdout_file(args.stdout_file)
+    if args.stderr_file is not None:
+        command = command.stderr_file(args.stderr_file)
+    elif not streaming_requested:
+        command = command.stderr("inherit")
+    if args.output_limit is not None:
+        command = command.output_limit(max_bytes=args.output_limit, on_overflow="error")
     if args.create_no_window:
         command = command.create_no_window()
+    if args.kill_on_parent_death:
+        command = command.kill_on_parent_death()
+    if args.priority is not None:
+        command = command.priority(args.priority)
+    if args.io_priority is not None:
+        class_name, level = args.io_priority
+        command = command.io_priority(class_name, level=level)
     # Environment builders compose in a fixed order at spawn regardless of
     # call order (docs/commands.md#environment-and-sandboxing), but this is
     # still the natural reading order: clear/allow-list the base environment
@@ -201,11 +224,10 @@ def _run(
                     return EXIT_NOT_EXECUTABLE
                 _fail(f"could not start {program!r}: {exc}")
                 return EXIT_INTERNAL_ERROR
-            if idle_requested:
-                # Stream + enforce the idle-timeout (see `_drive_idle`). On a
-                # silent child the binding kills it and the iterator raises
-                # `IdleTimeout`; the surrounding `with group:` still shuts the
-                # tree down on the early return.
+            if streaming_requested:
+                # Stream + enforce the idle-timeout/output limit (see
+                # `_drive_idle`). The surrounding `with group:` still shuts the
+                # tree down on an early return or a fail-loud overflow.
                 profile = None
                 try:
                     outcome = asyncio.run(_drive_idle(proc))

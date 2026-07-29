@@ -3827,6 +3827,14 @@ retained decoded line content (unchanged in processkit 3.0.0); pass
 read from the pipe instead. See
 [what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).
 
+Each real-run incarnation normally receives a fresh private `ProcessGroup`.
+Pass `max_memory=`, `max_processes=`, or `cpu_quota=` to `Supervisor` to create
+those groups with the matching whole-tree cap. A cap the active platform cannot
+enforce raises `ResourceLimit` before that incarnation is spawned. Resource
+caps cannot be combined with `runner=`: injected runners own their execution
+semantics, so silently wrapping one in a real process group would break the
+test-double boundary.
+
 ## The failure-storm guard
 
 Backoff slows individual restarts; the **failure-storm guard** distinguishes "fails
@@ -4565,9 +4573,10 @@ python -m processkit run -- git log -- README.md
 
 The child runs inside a `ProcessGroup`: even for one command, its whole
 process tree — every grandchild it forks — is torn down when this wrapper
-exits, and its stdin/stdout/stderr are inherited straight through to your
-terminal: the child reads from the same stdin and its output is live, not
-buffered up and dumped at the end.
+exits, and by default its stdin/stdout/stderr are inherited straight through
+to your terminal: the child reads from the same stdin and its output is live,
+not buffered up and dumped at the end. Output-control flags below deliberately
+replace that default for the selected streams.
 
 ```bash
 # Bound the whole run to 30 seconds.
@@ -4583,7 +4592,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 |---|---|---|
 | `--timeout SECONDS` | `Command.timeout(seconds)` | Kills the whole tree once the deadline passes. |
 | `--timeout-grace SECONDS` | `Command.timeout_grace(seconds)` | Signal first, hard-kill after `SECONDS`. Requires `--timeout`; a usage error otherwise. |
-| `--idle-timeout SECONDS` | `Command.idle_timeout(seconds)` | Kill the child if it emits no output line for `SECONDS`. Exit `123` (distinct from `--timeout`'s `124`). Pipes and re-emits stdout/stderr line-by-line; incompatible with `--profile`. See [below](#--idle-timeout-a-silence-watchdog). |
+| `--idle-timeout SECONDS` | `Command.idle_timeout(seconds)` | Kill the child if it emits no output line for `SECONDS`. Exit `123` (distinct from `--timeout`'s `124`). Pipes and re-emits stdout/stderr line-by-line; incompatible with `--profile` and `--stdout-file`. See [below](#--idle-timeout-a-silence-watchdog). |
 | `--max-memory BYTES` | `ProcessGroup(max_memory=...)` | Whole-tree memory cap. |
 | `--max-processes N` | `ProcessGroup(max_processes=...)` | Fork-bomb ceiling for the tree. |
 | `--cpu-quota FLOAT` | `ProcessGroup(cpu_quota=...)` | Fraction of a **single** core (`0.5` = half, `2.0` = two cores). |
@@ -4594,6 +4603,12 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--cwd DIR` | `Command.cwd(dir)` | Run the child with `DIR` as its working directory. |
 | `--profile [FILE]` | `RunningProcess.profile(...)` | After the child exits, emit a JSON resource profile — to stderr if `FILE` is omitted, or written to `FILE` otherwise. See [below](#--profile-machine-readable-resource-usage). |
 | `--create-no-window` | `Command.create_no_window()` | Do not create a console window for the child. No-op outside Windows (same as the underlying binding method). |
+| `--output-limit BYTES` | `Command.output_limit(max_bytes=..., on_overflow="error")` | Pipe and re-emit output line-by-line, failing with `125` if captured stdout/stderr exceeds the raw-byte ceiling. Incompatible with `--profile` and `--stdout-file`. |
+| `--stdout-file PATH` | `Command.stdout_file(path)` | Redirect stdout directly to a newly created or truncated file. |
+| `--stderr-file PATH` | `Command.stderr_file(path)` | Redirect stderr directly to a newly created or truncated file. |
+| `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
+| `--priority LEVEL` | `Command.priority(level)` | CPU priority: `idle`, `below_normal`, `normal`, `above_normal`, or `high`. |
+| `--io-priority CLASS[:LEVEL]` | `Command.io_priority(...)` | Linux I/O priority: `idle`, `best_effort:0..7`, or `real_time:0..7`; unsupported elsewhere. |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
@@ -4673,7 +4688,17 @@ deliberate fidelity trade taken only when the flag is set: output is UTF-8
 decoded and line-framed, and the child's streams are not a TTY. For the same
 reason `--idle-timeout` is **incompatible with `--profile`** (they need
 different consuming operations on the one handle) — combining them is a usage
-error.
+error. It is also incompatible with `--stdout-file`, because streaming requires
+a piped stdout; redirect stderr instead when stdout activity alone is a useful
+silence signal.
+
+`--output-limit` uses that same line pump without adding an idle deadline. Its
+`on_overflow="error"` policy counts raw bytes read from both pipes, kills the
+run when the cap is crossed, and reports the existing internal-failure exit
+code `125`; output beyond the ceiling is never relayed. Direct `--stdout-file`
+redirection has no stdout pipe to monitor, so combining it with
+`--output-limit` is a usage error. `--stderr-file` remains compatible: stderr
+goes directly to the file and the ceiling applies to the still-captured stdout.
 
 `--idle-timeout` is **not** available under `supervise`: each supervised
 incarnation runs through `Supervisor`'s one-shot verbs, which processkit's core
@@ -4763,6 +4788,15 @@ just line-buffered rather than a byte-for-byte fd passthrough.
 | `--backoff-factor FLOAT` | Multiplier for successive restart delays. Must be at least `1`. |
 | `--max-backoff SECONDS` | Upper bound for restart delay. Must be positive. |
 | `--no-jitter` | Disable restart-delay jitter; jitter is enabled by default. |
+| `--timeout SECONDS` | Apply `Command.timeout(seconds)` independently to every incarnation. A final timed-out incarnation exits `124`. |
+| `--max-memory BYTES` | Cap every incarnation's whole process tree memory. |
+| `--max-processes N` | Cap every incarnation's process-tree size. |
+| `--cpu-quota FLOAT` | Cap every incarnation's CPU as a fraction of one core. |
+| `--create-no-window` | Apply `Command.create_no_window()` to every incarnation. |
+| `--health-port HOST:PORT` | Probe a TCP endpoint; bracket IPv6 literals, for example `[::1]:8080`. Mutually exclusive with `--health-http`. |
+| `--health-http URL` | Probe an absolute HTTP(S) URL; any 2xx response is healthy. Mutually exclusive with `--health-port`. |
+| `--health-interval SECONDS` | Probe cadence, default `5`; requires a health probe. |
+| `--health-timeout SECONDS` | Per-probe network timeout, default `1`; requires a health probe. |
 | `--env-clear` | Start the child with an empty environment. |
 | `--inherit-env NAME` | Allow-list a parent variable (implies `--env-clear`). Repeatable. |
 | `--env-file PATH` | Load docker-style `KEY=VALUE` lines. Repeatable; later files win and `--env` wins over files. |
@@ -4773,6 +4807,14 @@ just line-buffered rather than a byte-for-byte fd passthrough.
 python -m processkit supervise --restart always --max-restarts 5 -- some_command
 ```
 
+Health checks are synchronous, bounded probes passed to `Supervisor`'s
+`health_check=` hook. The first probe runs after one interval, giving the child
+a startup grace period; three consecutive failures use the binding's default
+threshold and force-kill the wedged incarnation. A restart policy then treats
+that kill like any other crash. With `--restart never`, a POSIX signal kill
+uses `128 + N`; on a platform that reports no signal it uses the existing
+internal-failure code `120` with a health-check diagnostic.
+
 | Exit code | Meaning |
 |---|---|
 | *(the final child result's code)* | Supervision stopped because the restart policy was satisfied. |
@@ -4780,20 +4822,22 @@ python -m processkit supervise --restart always --max-restarts 5 -- some_command
 | `120` | An internal command/supervisor failure, including a missing or unexecutable program. |
 | `121` | The restart policy required another attempt, but `--max-restarts` was exhausted. |
 | `122` | Supervision gave up due to a `give_up_when` condition (reserved for API-driven outcomes). |
+| `124` | The final incarnation hit its per-incarnation `--timeout`. |
 | `128 + N` | The final incarnation was killed by signal `N` (POSIX only) — mirrors `run`'s own convention. |
 | `128 + SIGINT` (`130`) | `python -m processkit` itself was interrupted with Ctrl+C. |
 
 ## Resource limits: hard cap or best effort?
 
-`--max-memory` / `--max-processes` / `--cpu-quota` need a real container — a
+The `run` and `supervise` forms of `--max-memory` / `--max-processes` /
+`--cpu-quota` need a real container — a
 Windows Job Object or a Linux **cgroup-v2 root** (see
 [Process groups](process-groups.md#resource-limits-the-sandbox) and
 [Platform support](platforms.md)). Inside an ordinary container, a systemd
 user session, or on macOS, the kernel refuses these caps outright.
 
-Rather than fail the whole run over a cap the environment can't grant, this
-CLI **degrades**: it prints a warning to stderr and re-runs the child in a
-plain, uncapped `ProcessGroup` — "contained, but uncapped" — the same
+Rather than fail the operation over a cap the environment can't grant, this
+CLI **degrades**: it prints a warning to stderr and runs (or supervises) the
+child in a plain, uncapped `ProcessGroup` — "contained, but uncapped" — the same
 fallback `examples/04_sandbox_resource_limits.py` uses. The no-orphan
 containment guarantee still applies either way; only the specific numeric
 caps are dropped. If your script depends on the cap actually being enforced,
@@ -4894,11 +4938,7 @@ directly for anything beyond it: piping several commands together
 ([Supervision](supervision.md)), line-by-line streaming ([Streaming &
 interactive I/O](streaming.md)), or running a batch of commands concurrently
 (`output_all` / `aoutput_all`). There is also no `--dry-run` mode yet — a
-plausible follow-up, not implemented today. There is also no `--output-limit`
-flag: stdio here is always inherited straight through to your terminal, so
-there is no captured-output buffer for
-`Command.output_limit(...)` to bound in the first place — that method only
-matters when a caller captures output via the Python API instead.
+plausible follow-up, not implemented today.
 
 ---
 
@@ -5445,6 +5485,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Expand `python -m processkit run` with fail-loud captured-output limits,
+  direct stdout/stderr file redirects, abrupt-parent-death cleanup, and CPU/I/O
+  priority controls.
+- Expand `python -m processkit supervise` with per-incarnation timeouts and
+  resource caps, headless Windows launches, and proactive TCP or HTTP health
+  checks. `Supervisor` now accepts the matching `max_memory=`,
+  `max_processes=`, and `cpu_quota=` constructor options.
 - Add `RunningProcess.stderr_lines()` for stderr-only line streaming and direct
   use with readiness helpers such as `wait_for_line`.
 - Add `Command.run_json()` / `arun_json()` with the same typed JSON decoding and
@@ -8832,11 +8879,19 @@ Supervisor(
     health_check: Callable[[], bool] | None = ...,
     health_check_interval: float | None = ...,
     health_check_failures: int | None = ...,
+    max_memory: int | None = ...,
+    max_processes: int | None = ...,
+    cpu_quota: float | None = ...,
     runner: RunnerLike | None = ...,
 )
 ```
 
 Keep a command alive: restart per policy with backoff until a stop condition.
+
+``max_memory``, ``max_processes``, and ``cpu_quota`` apply whole-tree
+resource caps to the fresh private process group created for every real-run
+incarnation. They cannot be combined with ``runner`` because an injected
+runner owns its execution semantics.
 
 #### `run`
 

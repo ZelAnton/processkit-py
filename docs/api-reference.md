@@ -2151,11 +2151,19 @@ Supervisor(
     health_check: Callable[[], bool] | None = ...,
     health_check_interval: float | None = ...,
     health_check_failures: int | None = ...,
+    max_memory: int | None = ...,
+    max_processes: int | None = ...,
+    cpu_quota: float | None = ...,
     runner: RunnerLike | None = ...,
 )
 ```
 
 Keep a command alive: restart per policy with backoff until a stop condition.
+
+``max_memory``, ``max_processes``, and ``cpu_quota`` apply whole-tree
+resource caps to the fresh private process group created for every real-run
+incarnation. They cannot be combined with ``runner`` because an injected
+runner owns its execution semantics.
 
 #### `run`
 

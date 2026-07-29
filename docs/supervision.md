@@ -163,6 +163,14 @@ retained decoded line content (unchanged in processkit 3.0.0); pass
 read from the pipe instead. See
 [what `max_bytes` counts](commands.md#what-max_bytes-actually-counts).
 
+Each real-run incarnation normally receives a fresh private `ProcessGroup`.
+Pass `max_memory=`, `max_processes=`, or `cpu_quota=` to `Supervisor` to create
+those groups with the matching whole-tree cap. A cap the active platform cannot
+enforce raises `ResourceLimit` before that incarnation is spawned. Resource
+caps cannot be combined with `runner=`: injected runners own their execution
+semantics, so silently wrapping one in a real process group would break the
+test-double boundary.
+
 ## The failure-storm guard
 
 Backoff slows individual restarts; the **failure-storm guard** distinguishes "fails

@@ -253,7 +253,8 @@ impl WhenCaptureRunner {
 }
 
 /// The boxed-future type a hand-written `#[async_trait]` verb returns.
-type VerbFuture<'a, T> = Pin<Box<dyn Future<Output = processkit::Result<T>> + Send + 'a>>;
+pub(crate) type VerbFuture<'a, T> =
+    Pin<Box<dyn Future<Output = processkit::Result<T>> + Send + 'a>>;
 
 impl ProcessRunner for WhenCaptureRunner {
     fn output_string<'life0, 'life1, 'async_trait>(

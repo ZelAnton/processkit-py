@@ -6,6 +6,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use processkit::GiveUpAttempt;
 use processkit::JobRunner;
+use processkit::ProcessGroup;
+use processkit::ProcessGroupOptions;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
 use processkit::RestartPolicy;
@@ -23,11 +25,33 @@ use crate::convert::{
 };
 use crate::errors::{map_err, map_err_ref, ProcessError};
 use crate::result::PyProcessResult;
-use crate::runner::{extract_runner, WhenCaptureRunner};
+use crate::runner::{extract_runner, VerbFuture, WhenCaptureRunner};
 use crate::runtime::{block_on, drive_async_py, reject_reentrant_runtime, require_event_loop};
 
 const DEFAULT_BACKOFF_INITIAL: Duration = Duration::from_millis(200);
 const DEFAULT_BACKOFF_FACTOR: f64 = 2.0;
+
+#[derive(Clone)]
+struct LimitedJobRunner {
+    options: ProcessGroupOptions,
+}
+
+impl ProcessRunner for LimitedJobRunner {
+    fn output_string<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        command: &'life1 processkit::Command,
+    ) -> VerbFuture<'async_trait, PkProcessResult<String>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let group = ProcessGroup::with_options(self.options.clone())?;
+            group.output_string(command).await
+        })
+    }
+}
 
 /// A one-shot sink for the error a control-predicate (`stop_when` /
 /// `give_up_when`) raised — or the `TypeError` a non-`bool` return produced.
@@ -471,6 +495,9 @@ impl PySupervisor {
         health_check=None,
         health_check_interval=None,
         health_check_failures=None,
+        max_memory=None,
+        max_processes=None,
+        cpu_quota=None,
         runner=None,
     ))]
     #[allow(clippy::too_many_arguments)] // a keyword-only builder constructor
@@ -493,14 +520,41 @@ impl PySupervisor {
         health_check: Option<Py<PyAny>>,
         health_check_interval: Option<f64>,
         health_check_failures: Option<u32>,
+        max_memory: Option<u64>,
+        max_processes: Option<u32>,
+        cpu_quota: Option<f64>,
         runner: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        if runner.is_some()
+            && (max_memory.is_some() || max_processes.is_some() || cpu_quota.is_some())
+        {
+            return Err(PyValueError::new_err(
+                "resource limits cannot be combined with a custom runner",
+            ));
+        }
         // One error sink for this supervisor's control predicates, read back by
         // `run`/`arun` after the loop halts. Created even when no predicate is
         // set (harmless: it stays empty) to keep the field unconditional.
         let error_slot: ErrorSlot = Arc::new(Mutex::new(None));
         let runner: Arc<dyn ProcessRunner + Send + Sync> = match runner {
             Some(obj) => extract_runner(obj)?,
+            None if max_memory.is_some() || max_processes.is_some() || cpu_quota.is_some() => {
+                let mut options = ProcessGroupOptions::default();
+                if let Some(bytes) = max_memory {
+                    options = options.max_memory(bytes);
+                }
+                if let Some(n) = max_processes {
+                    options = options.max_processes(n);
+                }
+                if let Some(cores) = cpu_quota {
+                    options = options.cpu_quota(cores);
+                }
+                // Match `ProcessGroup(...)` constructor semantics: reject an
+                // invalid or unenforceable cap now, before supervision starts.
+                // Each incarnation still creates its own fresh group below.
+                let _probe = ProcessGroup::with_options(options.clone()).map_err(map_err)?;
+                Arc::new(LimitedJobRunner { options })
+            }
             None => Arc::new(JobRunner::new()),
         };
         let when_runner = Arc::new(WhenCaptureRunner::new(runner));

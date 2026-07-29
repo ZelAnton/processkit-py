@@ -6,8 +6,13 @@ docstring.
 from __future__ import annotations
 
 import argparse
+import http.client
 import signal
+import socket
 import sys
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
 from typing import Literal, TypedDict
 
 from processkit import (
@@ -25,6 +30,7 @@ from processkit._cli.exit_codes import (
     EXIT_SUPERVISE_GAVE_UP,
     EXIT_SUPERVISE_INTERNAL_ERROR,
     EXIT_SUPERVISE_RESTARTS_EXHAUSTED,
+    EXIT_TIMEOUT,
 )
 
 
@@ -35,6 +41,76 @@ class _SupervisorKwargs(TypedDict, total=False):
     backoff_factor: float
     max_backoff: float
     jitter: bool
+    health_check: Callable[[], bool]
+    health_check_interval: float
+    max_memory: int
+    max_processes: int
+    cpu_quota: float
+
+
+def _parse_health_port(parser: argparse.ArgumentParser, endpoint: str) -> tuple[str, int]:
+    if endpoint.startswith("["):
+        closing = endpoint.find("]")
+        if closing < 0 or endpoint[closing + 1 : closing + 2] != ":":
+            parser.error("--health-port must be HOST:PORT (bracket IPv6 literals)")
+        host = endpoint[1:closing]
+        raw_port = endpoint[closing + 2 :]
+    else:
+        host, separator, raw_port = endpoint.rpartition(":")
+        if not separator or ":" in host:
+            parser.error("--health-port must be HOST:PORT (bracket IPv6 literals)")
+    if not host:
+        parser.error("--health-port host must not be empty")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        parser.error("--health-port port must be an integer from 1 to 65535")
+    if not 1 <= port <= 65535:
+        parser.error("--health-port port must be an integer from 1 to 65535")
+    return host, port
+
+
+def _health_probe(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> Callable[[], bool] | None:
+    if args.health_port is None and args.health_http is None:
+        if args.health_interval is not None or args.health_timeout is not None:
+            parser.error("--health-interval/--health-timeout requires a health probe")
+        return None
+
+    timeout = 1.0 if args.health_timeout is None else args.health_timeout
+    if args.health_port is not None:
+        host, port = _parse_health_port(parser, args.health_port)
+
+        def probe_port() -> bool:
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except (OSError, ValueError):
+                return False
+
+        return probe_port
+
+    url = args.health_http
+    assert isinstance(url, str)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        parser.error("--health-http must be a valid absolute HTTP(S) URL")
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        parser.error("--health-http must be an absolute http:// or https:// URL")
+
+    def probe_http() -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                status = response.status
+                return isinstance(status, int) and 200 <= status < 300
+        except (OSError, ValueError, http.client.HTTPException):
+            return False
+
+    return probe_http
 
 
 def _supervise(
@@ -60,6 +136,8 @@ def _supervise(
             "for a single command."
         )
 
+    health_probe = _health_probe(supervise_parser, args)
+
     env_pairs = _parse_environment(supervise_parser, args.env_file, args.env)
     program, *rest = child_argv
 
@@ -73,6 +151,10 @@ def _supervise(
         command = (
             Command(program, rest).inherit_stdin().stdout_tee(sys.stdout).stderr_tee(sys.stderr)
         )
+        if args.timeout is not None:
+            command = command.timeout(args.timeout)
+        if args.create_no_window:
+            command = command.create_no_window()
         # Keep the command configuration order identical to `run`: establish
         # the environment base first, then apply explicit overrides and cwd.
         command = _apply_environment(
@@ -96,8 +178,36 @@ def _supervise(
             supervisor_kwargs["max_backoff"] = args.max_backoff
         if args.no_jitter:
             supervisor_kwargs["jitter"] = False
+        if args.max_memory is not None:
+            supervisor_kwargs["max_memory"] = args.max_memory
+        if args.max_processes is not None:
+            supervisor_kwargs["max_processes"] = args.max_processes
+        if args.cpu_quota is not None:
+            supervisor_kwargs["cpu_quota"] = args.cpu_quota
+        if health_probe is not None:
+            supervisor_kwargs["health_check"] = health_probe
+            supervisor_kwargs["health_check_interval"] = (
+                5.0 if args.health_interval is None else args.health_interval
+            )
 
-        outcome = Supervisor(command, **supervisor_kwargs).run()
+        try:
+            outcome = Supervisor(command, **supervisor_kwargs).run()
+        except (ResourceLimit, Unsupported) as exc:
+            limits_requested = (
+                args.max_memory is not None
+                or args.max_processes is not None
+                or args.cpu_quota is not None
+            )
+            if not limits_requested:
+                raise
+            _fail(
+                f"requested resource limits are not supported in this environment "
+                f"({exc}); supervising contained, but uncapped."
+            )
+            supervisor_kwargs.pop("max_memory", None)
+            supervisor_kwargs.pop("max_processes", None)
+            supervisor_kwargs.pop("cpu_quota", None)
+            outcome = Supervisor(command, **supervisor_kwargs).run()
     except (ProcessNotFound, PermissionDenied, ResourceLimit, Unsupported) as exc:
         _fail(f"could not supervise {program!r}: {exc}")
         return EXIT_SUPERVISE_INTERNAL_ERROR
@@ -108,8 +218,11 @@ def _supervise(
         _fail(f"{program!r} failed: {exc}")
         return EXIT_SUPERVISE_INTERNAL_ERROR
 
-    if outcome.stopped in {"policy_satisfied", "predicate"}:
+    if outcome.stopped in {"policy_satisfied", "predicate", "unhealthy"}:
         result = outcome.final_result
+        if result.timed_out:
+            _fail(f"{program!r} timed out after {args.timeout}s")
+            return EXIT_TIMEOUT
         # A signal-killed last incarnation has no `.code` (mirrors `_run`'s own
         # `128 + signal` handling) — report the signal, not a generic internal
         # error, so this stays distinguishable from a genuine internal failure.
@@ -117,6 +230,9 @@ def _supervise(
             _fail(f"{program!r} was killed by signal {result.signal}")
             return EXIT_SIGNAL_BASE + result.signal
         if result.code is None:
+            if outcome.stopped == "unhealthy":
+                _fail(f"{program!r} failed its health check")
+                return EXIT_SUPERVISE_INTERNAL_ERROR
             _fail(f"{program!r} produced no exit code")
             return EXIT_SUPERVISE_INTERNAL_ERROR
         return result.code

@@ -23,6 +23,8 @@ python examples/01_no_orphan_guarantee.py
 | [`07_lifecycle_events.py`](07_lifecycle_events.py) | One ordered `started` → output → `exited` event stream | Progress and structured run telemetry |
 | [`08_batch_as_completed.py`](08_batch_as_completed.py) | Bounded-concurrency results emitted as each command finishes | Large fan-out with immediate progress |
 | [`09_spawn_detached.py`](09_spawn_detached.py) | A trusted, self-terminating detached helper and the explicit loss of containment | The rare intentional ownership opt-out |
+| [`10_pipelines.py`](10_pipelines.py) | A portable shell-free pipeline, chain timeout, and pipefail attribution | Multi-stage data processing without shell injection |
+| [`11_testing_seam.py`](11_testing_seam.py) | Scripted and recording doubles plus an offline scrubbed cassette replay | Hermetic testing of process-driving application code |
 
 For task-sized snippets rather than whole programs, see the
 [cookbook](../docs/cookbook.md); for the full treatment of any area, the

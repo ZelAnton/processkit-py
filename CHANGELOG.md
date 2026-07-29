@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `python -m processkit run`, exposing a merged pseudo-terminal output stream
   for tools that require a TTY.
 - Add runnable examples for managed PTY sessions, lifecycle events,
-  completion-order batches, and intentionally detached helpers.
+  completion-order batches, intentionally detached helpers, shell-free
+  pipelines, and hermetic runner/cassette testing seams.
 - Expand `python -m processkit run` with fail-loud captured-output limits,
   direct stdout/stderr file redirects, abrupt-parent-death cleanup, and CPU/I/O
   priority controls.

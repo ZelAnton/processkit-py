@@ -112,9 +112,9 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      # Checks the public typing surface — see `[tool.pyright]` in
-      # pyproject.toml for the exact `include` scope and the `basic` vs
-      # `strict` rationale.
+      # Checks the public typing surface in strict mode — see `[tool.pyright]`
+      # in pyproject.toml for the exact include scope and narrow diagnostic
+      # exceptions.
       - run: uv run pyright
 
   rust-lint:
@@ -254,7 +254,8 @@ jobs:
             echo '## Coverage (Python only)'
             # Literal Markdown backticks inside single quotes, not command substitution.
             # shellcheck disable=SC2016
-            echo 'Not measured here: the compiled `_processkit` extension (see its Rust tests) and subprocess-only CLI driver modules (see `[tool.coverage.run]` in pyproject.toml).'
+            echo 'Not measured here: the compiled `_processkit` extension (see its Rust tests).'
+            echo 'Subprocess-only CLI driver modules are excluded; see `[tool.coverage.run]` in pyproject.toml.'
             echo '```'
             uv run coverage report
             echo '```'

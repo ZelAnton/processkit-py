@@ -290,14 +290,15 @@ parallel = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# Measured coverage of the scope above (`source` minus `omit` -- 970 statements
-# and 282 branches) is 75.08% on a Windows dev box. The enforcing Ubuntu leg is
-# expected to remain higher because it runs the POSIX-only tests that Windows
-# skips; its exact post-change baseline will be confirmed by the next CI run.
+# Measured coverage of the scope above (`source` minus `omit` -- 972 statements
+# and 282 branches) is 74.96–75.12% across two Windows dev-box runs. The
+# enforcing Ubuntu leg is expected to remain higher because it runs the
+# POSIX-only tests that Windows skips; its exact post-change baseline will be
+# confirmed by the next CI run.
 # Measured 2026-07-29 with the full suite and four file-grouped xdist workers.
 #
 # `fail_under` sits three points below that lower Windows baseline (~38 of the
-# 1,252 measured units), enough for platform/measurement noise while still
+# 1,254 measured units), enough for platform/measurement noise while still
 # catching a real loss in `_aio.py`, the directly-tested CLI helpers,
 # `pytest_plugin.py`, `scripts/release/`, or the package `__init__.py`.
 # Process-driving CLI modules remain outside the denominator for the

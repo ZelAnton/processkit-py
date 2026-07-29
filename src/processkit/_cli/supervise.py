@@ -148,9 +148,11 @@ def _supervise(
         # errors every incarnation. Stay piped (the `Command` default) and tee every
         # decoded line straight through to this process's own inherited stdout/
         # stderr instead, so output still streams live to the calling terminal.
-        command = (
-            Command(program, rest).inherit_stdin().stdout_tee(sys.stdout).stderr_tee(sys.stderr)
-        )
+        command = Command(program, rest).inherit_stdin()
+        if sys.stdout is not None:
+            command = command.stdout_tee(sys.stdout)
+        if sys.stderr is not None:
+            command = command.stderr_tee(sys.stderr)
         if args.timeout is not None:
             command = command.timeout(args.timeout)
         if args.create_no_window:

@@ -1498,6 +1498,48 @@ def test_supervise_passes_containment_flags_to_command_and_supervisor() -> None:
     assert payload["kwargs"] == {"max_memory": 1000, "max_processes": 3, "cpu_quota": 0.5}
 
 
+def test_supervise_omits_tees_when_standard_streams_are_unavailable() -> None:
+    script = (
+        "import json, sys\n"
+        "import processkit._cli as cli\n"
+        "import processkit._cli.supervise as mod\n"
+        "class _Command:\n"
+        "    calls = []\n"
+        "    def __init__(self, *a, **k): pass\n"
+        "    def inherit_stdin(self): self.calls.append('stdin'); return self\n"
+        "    def stdout_tee(self, *a): raise AssertionError('stdout tee called')\n"
+        "    def stderr_tee(self, *a): raise AssertionError('stderr tee called')\n"
+        "class _Result:\n"
+        "    code = 0\n"
+        "    signal = None\n"
+        "    timed_out = False\n"
+        "class _Outcome:\n"
+        "    stopped = 'policy_satisfied'\n"
+        "    final_result = _Result()\n"
+        "class _Supervisor:\n"
+        "    def __init__(self, command, **kwargs): pass\n"
+        "    def run(self): return _Outcome()\n"
+        "mod.Command = _Command\n"
+        "mod.Supervisor = _Supervisor\n"
+        "stdout, stderr = sys.stdout, sys.stderr\n"
+        "sys.stdout = sys.stderr = None\n"
+        "try:\n"
+        "    code = cli.main(['supervise', '--', 'irrelevant'])\n"
+        "finally:\n"
+        "    sys.stdout, sys.stderr = stdout, stderr\n"
+        "print(json.dumps({'code': code, 'calls': _Command.calls}))\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"code": 0, "calls": ["stdin"]}
+
+
 def test_supervise_health_port_builds_a_working_probe() -> None:
     script = (
         "import json, sys\n"

@@ -5594,6 +5594,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Block every direct `Command` spawn path under pytest's `no_real_spawn`
+  marker, including JSON, async JSON, and deliberately detached launches.
+- Let `python -m processkit supervise` run when the parent interpreter has no
+  stdout or stderr stream by omitting the unavailable live-output tee.
 - Reject an empty key passed through the CLI's `--env` flag with the same usage
   error used for `--env-file` entries.
 - Treat every accepted spelling of piped stdout/stderr consistently when

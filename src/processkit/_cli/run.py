@@ -46,12 +46,13 @@ from processkit._cli.parser import PROFILE_STDERR_MARKER
 _PROFILE_SAMPLE_INTERVAL_SECONDS = 0.1
 
 
-async def _drive_idle(proc: RunningProcess) -> Outcome:
-    """Stream the child's output line-by-line — re-emitting each decoded line to
-    this process's stdout/stderr — while the binding's streaming iterator
-    enforces the command's ``idle_timeout``. Raises `IdleTimeout` if the child
-    goes silent past the window (the binding has already killed it by then);
-    otherwise returns the run `Outcome` once it exits.
+async def _drive_streaming(proc: RunningProcess) -> Outcome:
+    """Relay the child's managed output stream until the process exits.
+
+    The binding's iterator enforces any configured idle timeout and fail-loud
+    output limit while this pump is active. It also carries the merged PTY
+    stream when PTY mode is configured. Raises `IdleTimeout` if the child goes
+    silent past its window; other stream failures propagate as `ProcessError`.
 
     This is a *decoded, line-oriented* re-emit, not the raw byte passthrough
     ``run`` uses by default: idle monitoring rides the per-line output channel,
@@ -114,7 +115,7 @@ def _run(
 ) -> int:
     if args.timeout_grace is not None and args.timeout is None:
         run_parser.error("--timeout-grace requires --timeout")
-    # `--idle-timeout` streams and re-emits piped output (see `_drive_idle`);
+    # `--idle-timeout` streams and re-emits piped output (see `_drive_streaming`);
     # `--profile` consumes the handle with a sampling `profile()` wait. The two
     # need incompatible consuming verbs on the one handle, so reject the combo up
     # front rather than silently letting one win.
@@ -147,7 +148,7 @@ def _run(
         command = command.inherit_stdin()
     if streaming_requested:
         # Idle monitoring rides the per-line output channel, so keep stdout/stderr
-        # piped (the Command default) — `_drive_idle` re-emits each line — rather
+        # piped (the Command default) — `_drive_streaming` re-emits each line — rather
         # than inheriting raw. The output-limit path uses the same pump so its
         # fail-loud captured-byte ceiling is actually enforced.
         if idle_requested:
@@ -240,11 +241,11 @@ def _run(
                 return EXIT_INTERNAL_ERROR
             if streaming_requested:
                 # Relay the PTY stream, or stream + enforce the idle-timeout /
-                # output limit (see `_drive_idle`). The surrounding `with group:`
+                # output limit (see `_drive_streaming`). The surrounding `with group:`
                 # still shuts the tree down on an early return or fail-loud overflow.
                 profile = None
                 try:
-                    outcome = asyncio.run(_drive_idle(proc))
+                    outcome = asyncio.run(_drive_streaming(proc))
                 except IdleTimeout:
                     _fail(f"{program!r} was idle for {args.idle_timeout}s (no output line)")
                     return EXIT_IDLE_TIMEOUT
@@ -259,7 +260,9 @@ def _run(
     except KeyboardInterrupt:
         _fail("interrupted")
         return EXIT_SIGNAL_BASE + signal.SIGINT
-    except ProcessError as exc:  # defensive: no known path raises here, but never a traceback
+    except ProcessError as exc:
+        # Managed streaming reports fail-loud output-limit and PTY failures
+        # here; other binding failures remain defensive internal errors.
         _fail(f"{program!r} failed: {exc}")
         return EXIT_INTERNAL_ERROR
 

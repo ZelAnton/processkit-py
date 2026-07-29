@@ -28,6 +28,10 @@ Exit code contract:
   incompatible with ``--profile``. Not available under ``supervise`` (its
   incarnations run through Supervisor's one-shot verbs, which have no
   idle-timeout hook — passing it there is a usage error).
+- ``--output-limit`` was exceeded while relaying captured output: exit **125**,
+  with a one-line diagnostic and no traceback. Like idle monitoring and PTY
+  relay, this mode uses the managed streaming path rather than raw inherited
+  stdout/stderr.
 - The child could not be found: exit **127** (``ProcessNotFound``).
 - The child was found but could not be executed (e.g. not executable / no
   permission): exit **126** (``PermissionDenied``).
@@ -68,7 +72,9 @@ with bounded exponential backoff between restarts. `--restart
 {always,on_crash,never}` selects the policy (default `on_crash`);
 `--max-restarts` bounds how many restarts are attempted; `--backoff-initial` /
 `--backoff-factor` / `--max-backoff` tune the delay schedule; `--no-jitter`
-disables the default random jitter. The same `--env-clear` / `--inherit-env` /
+disables the default random jitter. `--health-port` and `--health-http` add a
+proactive liveness probe, with `--health-interval` and `--health-timeout`
+controlling its cadence. The same `--env-clear` / `--inherit-env` /
 `--env-file` / `--env` / `--cwd` flags as `run` configure the environment and working
 directory identically.
 
@@ -79,17 +85,20 @@ populate `SupervisionOutcome.final_result`) — a non-piped stdout errors every
 incarnation. To still stream live to this terminal, this wrapper pipes both
 streams and tees every decoded line straight through to its own inherited
 stdout/stderr (`Command.stdout_tee` / `stderr_tee`); output still appears
-live, but line-buffered rather than a byte-for-byte fd passthrough.
+live, but line-buffered rather than a byte-for-byte fd passthrough. If the
+wrapper itself has no stdout or stderr stream (for example under
+``pythonw.exe``), the corresponding tee is omitted instead of failing setup.
 
 Exit code contract (its own reserved range, disjoint from `run`'s
 124-127/128+signal above, `doctor`'s 0/1/3/4 below, and argparse's own
 usage-error code `2`):
 
 - Normal completion (`SupervisionOutcome.stopped` in
-  ``{"policy_satisfied", "predicate"}``): this process exits with the last
+  ``{"policy_satisfied", "predicate", "unhealthy"}``): this process exits with the last
   incarnation's own code (`final_result.code`, unchanged), or
   **128 + signal number** if that incarnation was killed by a signal (POSIX
-  only) — the same convention `run` uses.
+  only) — the same convention `run` uses. An unhealthy outcome with neither a
+  code nor a signal is an internal supervision failure and exits **120**.
 - ``stopped == "restarts_exhausted"``: exit **121** — the restart policy
   wanted another attempt, but `--max-restarts` was exhausted.
 - ``stopped == "gave_up"``: exit **122** — supervision gave up (reserved for

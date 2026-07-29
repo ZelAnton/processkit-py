@@ -331,6 +331,12 @@ def test_guard_blocks_real_spawn_primitives(pytester: pytest.Pytester) -> None:
 
 
         @pytest.mark.no_real_spawn
+        @pytest.mark.parametrize("verb", ["run_json", "arun_json", "spawn_detached"])
+        def test_all_command_spawn_paths_blocked(verb):
+            getattr(Command(sys.executable, ["-c", "print(1)"]), verb)()
+
+
+        @pytest.mark.no_real_spawn
         def test_runner_run_blocked():
             Runner().run(Command(sys.executable, ["-c", "print(1)"]))
         """
@@ -338,7 +344,7 @@ def test_guard_blocks_real_spawn_primitives(pytester: pytest.Pytester) -> None:
     # `--strict-markers` also proves the marker is registered (an unknown marker
     # would error out here instead of running).
     result = pytester.runpytest("--strict-markers")
-    result.assert_outcomes(failed=2)
+    result.assert_outcomes(failed=5)
     result.stdout.fnmatch_lines(["*real process spawn blocked*"])
 
 

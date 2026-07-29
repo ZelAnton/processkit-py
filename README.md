@@ -307,6 +307,19 @@ print(outcome.restarts, outcome.stopped)
 
 *Deeper: [Supervision](https://github.com/ZelAnton/processkit-py/blob/main/docs/supervision.md).*
 
+### Running a tty-sensitive CLI
+
+Opt into a managed pseudo-terminal when a tool buffers behind pipes or requires
+a tty. Output is one merged terminal stream, and containment is unchanged:
+
+```python
+with Command("interactive-tool").pty(cols=120, rows=40).keep_stdin_open().start() as proc:
+    proc.resize_pty(160, 50)
+```
+
+The existing `stdout_lines()` and `take_stdin()` APIs work with the PTY; in
+async code `send_control("c")` delivers terminal Ctrl-C semantics.
+
 ### Waiting for a child to be ready
 
 "Start a server, then use it" needs the server to be *ready*, not merely

@@ -16,6 +16,7 @@ platform-agnostic.
 - [Stopping: the predicate](#stopping-the-predicate)
 - [Reading the outcome](#reading-the-outcome)
 - [Liveness health checks](#liveness-health-checks)
+- [Live supervision sessions](#live-supervision-sessions)
 - [Sync vs async](#sync-vs-async)
 
 ## A supervised server
@@ -119,14 +120,13 @@ Two honest caveats about `stop_when=`:
   the runtime, so a nested sync call (`Command(...).run()`/`.probe()`/…) can't drive
   the runtime again — it raises a clear `ProcessError` ("cannot call a synchronous
   processkit verb from inside an async context or a callback"). That error is then
-  surfaced through the unraisable hook (next bullet), so the supervisor keeps going
-  rather than stopping — i.e. a sync verb in the predicate is a no-op stop gate, not
-  a crash. If you must run a check, precompute it before the supervised run, or use
-  the result handed to the predicate.
-- **A predicate that raises does not stop supervision.** The exception is surfaced
-  through Python's [unraisable hook](https://docs.python.org/3/library/sys.html#sys.unraisablehook)
-  and treated as "don't stop" — a buggy predicate degrades to *keep going*, it does
-  not crash the supervisor.
+  re-raised from the supervisor's terminal verb, so supervision aborts rather
+  than turning the failed check into a false verdict. If you must run a check,
+  precompute it before the supervised run, or use the result handed to the
+  predicate.
+- **A predicate that raises aborts supervision.** The original Python exception is
+  re-raised from `run()` / `arun()` or the session's terminal verb; a broken
+  predicate is never silently interpreted as "don't stop".
 
 ## Reading the outcome
 
@@ -254,6 +254,41 @@ it), and the final synthetic result is a non-success signal-kill. A probe that *
 or returns a non-`bool` cannot answer "healthy": it is treated as unhealthy **and** its
 error is surfaced to the caller from `run()`/`arun()` — not swallowed into a spurious
 liveness kill — the same fail-loud contract as `stop_when=`/`give_up_when=`.
+
+## Live supervision sessions
+
+`run()` is ideal when the caller only needs the final outcome. Use `start()` when
+you need to observe or stop the keeper loop while it is running:
+
+```python
+from processkit import Command, Supervisor
+
+with Supervisor(Command("my-server"), restart="always").start() as session:
+    status = session.status
+    print(status.is_active, status.pid, status.restarts)
+    print(status.started_at, status.is_storm_paused)
+    outcome = session.stop(5.0)
+```
+
+`status` is an atomic snapshot. `pid` and `started_at` are `None` between
+incarnations, during backoff, after completion, and for capture-only test
+doubles. `wait()` consumes the session and waits for its natural outcome;
+`stop(grace_seconds)` requests graceful termination and reports
+`outcome.stopped == "stopped"`. Terminal verbs are one-shot.
+
+The async twins are lazy awaitables:
+
+```python
+session = await Supervisor(Command("my-server"), restart="always").astart()
+async with session:
+    print(session.status.pid)
+    outcome = await session.astop(5.0)
+```
+
+Use `await session.await_wait()` to await natural completion. Exiting either
+context-manager form stops an open session with a one-second grace window;
+calling a terminal verb inside the block makes the later exit a no-op. Call
+`stop()` / `astop()` explicitly when that grace must be configured.
 
 ## Sync vs async
 

@@ -48,11 +48,14 @@ if TYPE_CHECKING:
         Runner,
         RunningProcess,
         RunProfile,
+        ShutdownReport,
         Signalled,
         SignalName,
         StdoutLines,
         StrPath,
         SupervisionOutcome,
+        SupervisionSession,
+        SupervisionStatus,
         Supervisor,
         Timeout,
         Unsupported,
@@ -169,6 +172,7 @@ if TYPE_CHECKING:
         assert_type(proc.aoutcome(), Awaitable[Outcome])
         assert_type(proc.afinish(), Awaitable[Finished])
         assert_type(proc.aoutput(), Awaitable[ProcessResult])
+        assert_type(sup.astart(), Awaitable[SupervisionSession])
         assert_type(sup.arun(), Awaitable[SupervisionOutcome])
         assert_type(client.aoutput(["x"]), Awaitable[ProcessResult])
         # `arun_json` returns the decoded JSON as `Awaitable[Any]` (JSON admits any
@@ -217,6 +221,26 @@ if TYPE_CHECKING:
         assert_type(proc.__aexit__(None, None, None), Awaitable[Literal[False]])
         assert_type(group.__aenter__(), Awaitable[ProcessGroup])
         assert_type(group.__aexit__(None, None, None), Awaitable[Literal[False]])
+
+    def _group_stop_return_types(group: ProcessGroup) -> None:
+        assert_type(group.stop(1.0), ShutdownReport)
+        assert_type(group.stop(1.0, escalate=False), ShutdownReport)
+        assert_type(group.astop(1.0), Awaitable[ShutdownReport])
+
+    def _supervision_session_return_types(
+        sup: Supervisor, session: SupervisionSession, status: SupervisionStatus
+    ) -> None:
+        assert_type(sup.start(), SupervisionSession)
+        assert_type(session.status, SupervisionStatus)
+        assert_type(session.wait(), SupervisionOutcome)
+        assert_type(session.await_wait(), Awaitable[SupervisionOutcome])
+        assert_type(session.stop(1.0), SupervisionOutcome)
+        assert_type(session.astop(1.0), Awaitable[SupervisionOutcome])
+        assert_type(status.is_active, bool)
+        assert_type(status.restarts, int)
+        assert_type(status.is_storm_paused, bool)
+        assert_type(status.pid, int | None)
+        assert_type(status.started_at, float | None)
 
     async def _async_context_manager_protocol_types(
         proc: RunningProcess, group: ProcessGroup

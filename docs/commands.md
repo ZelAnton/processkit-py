@@ -18,6 +18,7 @@ so an early return, an exception, or a cancelled task can never leak a child.
 - [Bounding captured output](#bounding-captured-output)
 - [Timeouts](#timeouts)
 - [Privileges and spawn flags](#privileges-and-spawn-flags)
+- [Pseudo-terminal mode](#pseudo-terminal-mode)
 - [Results](#results)
 - [Errors](#errors)
 - [Pipelines](#pipelines)
@@ -618,11 +619,37 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
-processkit wires **pipes**, not a pseudo-terminal, so a tool that *demands* a tty
-(an `ssh`/`sudo` password prompt) won't get one. Drive such tools
-non-interactively — key-based auth, `ssh -o BatchMode=yes`,
-`GIT_TERMINAL_PROMPT=0`, or a known answer fed over
-[interactive stdin](streaming.md). *Deeper: [Platform support](platforms.md).*
+## Pseudo-terminal mode
+
+Pipe mode remains the default. Opt into a real pseudo-terminal when a program
+buffers output behind a pipe, requires a tty, or needs terminal control
+semantics:
+
+```python
+from processkit import Command
+
+command = (
+    Command("interactive-tool")
+    .pty(cols=120, rows=40)
+    .keep_stdin_open()
+)
+with command.start() as proc:
+    proc.resize_pty(160, 50)
+```
+
+PTY mode is supported on Windows and POSIX. The terminal has one merged output
+stream: both child stdout and stderr arrive through the existing stdout
+capture/streaming APIs, while the stderr capture is empty. With
+`keep_stdin_open()`, `take_stdin()` writes to the terminal master and
+`send_control("c")` is interpreted by the terminal as Ctrl-C, rather than
+merely writing byte `0x03` to a pipe.
+
+Provide `cols` and `rows` together and use positive values. PTY mode owns the
+child's stdio, so it cannot be combined with `inherit_stdin()`, inherited/null
+stdout or stderr, or `stdout_file()` / `stderr_file()`; the conflicting builder
+call raises before a child can spawn. Use non-interactive flags instead when a
+PTY is unnecessary — for example `ssh -o BatchMode=yes` or
+`GIT_TERMINAL_PROMPT=0`. *Deeper: [Streaming & interactive I/O](streaming.md).*
 
 ## Results
 

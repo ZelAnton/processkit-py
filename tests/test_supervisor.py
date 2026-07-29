@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import pickle
+import time
 
 import pytest
 
@@ -15,11 +16,25 @@ from processkit import (
     ProcessNotFound,
     ProcessResult,
     SupervisionOutcome,
+    SupervisionSession,
+    SupervisionStatus,
     Supervisor,
 )
 from processkit.testing import Reply, ScriptedRunner
 
 from .conftest import NO_SUCH_PROGRAM, PY
+
+
+def _wait_for_live_status(session: SupervisionSession, timeout: float = 10.0) -> SupervisionStatus:
+    deadline = time.monotonic() + timeout
+    while True:
+        status = session.status
+        if status.is_active and status.pid is not None:
+            return status
+        if time.monotonic() >= deadline:
+            pytest.fail("supervision session never published a live pid")
+        time.sleep(0.01)
+
 
 # --- restart policies + stop predicate --------------------------------------
 
@@ -107,6 +122,86 @@ def test_supervisor_arun_is_once() -> None:
             sup.run()
 
     asyncio.run(scenario())
+
+
+# --- live supervision sessions ---------------------------------------------
+
+
+def test_supervision_session_waits_for_scripted_run() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("done"))
+
+    session = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner).start()
+    assert isinstance(session, SupervisionSession)
+    assert isinstance(session.status, SupervisionStatus)
+    assert session.status.is_active
+    outcome = session.wait()
+
+    assert outcome.final_result.stdout == "done"
+    assert outcome.stopped == "policy_satisfied"
+    with pytest.raises(ProcessError, match="already completed"):
+        session.wait()
+
+
+def test_supervision_session_status_and_stop_live_child() -> None:
+    session = Supervisor(
+        Command(PY, ["-c", "import time; time.sleep(60)"]), restart="always"
+    ).start()
+    status = _wait_for_live_status(session)
+
+    assert status.restarts == 0
+    assert not status.is_storm_paused
+    assert status.started_at is not None
+    assert "SupervisionStatus(" in repr(status)
+
+    outcome = session.stop(0.1)
+    assert outcome.stopped == "stopped"
+
+
+def test_supervision_session_sync_context_stops_live_child() -> None:
+    session = Supervisor(
+        Command(PY, ["-c", "import time; time.sleep(60)"]), restart="always"
+    ).start()
+    with session as entered:
+        assert entered is session
+        assert _wait_for_live_status(session).pid is not None
+
+    with pytest.raises(ProcessError, match="already completed"):
+        _ = session.status
+
+
+def test_supervision_session_async_surface_and_context() -> None:
+    async def scenario() -> None:
+        runner = ScriptedRunner()
+        runner.fallback(Reply.ok("async"))
+        session = await Supervisor(
+            Command(NO_SUCH_PROGRAM), restart="never", runner=runner
+        ).astart()
+        assert (await session.await_wait()).final_result.stdout == "async"
+
+        live = await Supervisor(
+            Command(PY, ["-c", "import time; time.sleep(60)"]), restart="always"
+        ).astart()
+        async with live as entered:
+            assert entered is live
+            assert live.status.is_active
+        with pytest.raises(ProcessError, match="already completed"):
+            await live.astop(0.0)
+
+    asyncio.run(scenario())
+
+
+def test_supervision_session_preserves_scripted_predicate_error() -> None:
+    def boom(_cmd: Command) -> bool:
+        raise ValueError("session predicate exploded")
+
+    runner = ScriptedRunner()
+    runner.when(boom, Reply.ok("matched"))
+    runner.fallback(Reply.ok("fallback"))
+    session = Supervisor(Command(NO_SUCH_PROGRAM), restart="never", runner=runner).start()
+
+    with pytest.raises(ValueError, match="session predicate exploded"):
+        session.wait()
 
 
 def test_sync_verb_in_stop_when_surfaces_clear_error() -> None:

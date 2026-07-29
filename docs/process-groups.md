@@ -113,7 +113,8 @@ explicit control you also have three verbs:
 |---|---|
 | `with` / `async with` exit | **Graceful** teardown of the whole tree — the same as `shutdown()` (signal → wait up to `shutdown_grace` → hard-kill survivors if `escalate_to_kill`). Always on, even if the block raises. |
 | `group.kill_all()` | Immediate hard kill of the whole tree, mid-flight; idempotent. |
-| `group.shutdown()` / `await group.ashutdown()` | **Graceful**: signal → wait up to `shutdown_grace` → hard-kill survivors if `escalate_to_kill`. |
+| `group.shutdown()` / `await group.ashutdown()` | **Graceful**: signal → wait up to `shutdown_grace` → hard-kill survivors if `escalate_to_kill`; closes the Python group handle. |
+| `group.stop(grace, escalate=True)` / `await group.astop(...)` | Gracefully stop the current tree and return a `ShutdownReport`; the group remains open for later starts. |
 
 ```python
 group = ProcessGroup(shutdown_grace=5.0, escalate_to_kill=True)
@@ -133,6 +134,26 @@ A child that handles `SIGTERM` and exits ends the grace **early** —
 `shutdown` / `ashutdown` returns as soon as the tree is empty, not after the
 full timeout. Use `kill_all()` when you want the tree gone *now* with no
 grace at all.
+
+Use `stop()` when teardown telemetry matters:
+
+```python
+with ProcessGroup() as group:
+    group.start(Command("my-service"))
+    report = group.stop(5.0, escalate=True)
+
+print(report.soft_signal, report.attempted_signal)
+print(report.members_before, report.members_after)
+print(report.drained_within_grace, report.escalated, report.elapsed_seconds)
+```
+
+`soft_signal` is `"sent"`, `"unsupported"`, `"failed"`, or the forward-compatible
+`"unknown"`; `attempted_signal` names the signal when one was attempted. Unlike
+`shutdown()`, `stop()` does not close the group, so the same object can contain a
+later child tree. Either member count is `None` when the platform membership
+query itself failed. On the POSIX process-group fallback, `members_after` can
+temporarily include a killed but not-yet-reaped zombie; atomic Job Object and
+cgroup membership drop it at exit.
 
 **The no-orphan guarantee and its platform asymmetry.** The `with` /
 `async with` exit path reaps the tree on every platform, and so does cancelling

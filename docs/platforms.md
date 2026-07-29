@@ -48,6 +48,18 @@ failure, see [Troubleshooting](troubleshooting.md#resourcelimit-under-docker-sys
 Operations a platform can't perform raise `Unsupported` — catch it if you target
 multiple platforms.
 
+## Pseudo-terminals (`Command.pty()`)
+
+| | Launch and resize | Terminal control input | Output |
+|---|---|---|---|
+| **Windows** | ConPTY; initial `cols`/`rows` and `RunningProcess.resize_pty()` | `ProcessStdin.send_control()` targets the pseudo-console | One merged terminal stream exposed as stdout |
+| **Linux / macOS / BSD** | Native PTY; initial size and `TIOCSWINSZ` resize | Terminal line discipline turns controls such as Ctrl-C into signals | One merged terminal stream exposed as stdout |
+
+PTY mode is opt-in and keeps the same containment backend as an ordinary
+launch. It is incompatible with inherited, null, or file-redirected stdio;
+conflicts fail while the command is built rather than becoming platform-specific
+no-ops.
+
 ## Multiprocessing: use `spawn` or `forkserver`, not `fork`
 
 processkit runs a tokio runtime with background worker threads, started lazily

@@ -6,6 +6,8 @@ use std::time::Duration;
 use processkit::Mechanism;
 use processkit::ProcessGroup as PkProcessGroup;
 use processkit::ProcessGroupOptions;
+use processkit::ShutdownReport as PkShutdownReport;
+use processkit::SoftSignal;
 use pyo3::prelude::*;
 
 use crate::command::PyCommand;
@@ -20,6 +22,89 @@ use crate::running::PyRunningProcess;
 use crate::runtime::{
     block_on, drive_async, drive_async_py, reject_reentrant_runtime, require_event_loop,
 };
+
+/// Observed facts from one graceful `ProcessGroup.stop()` attempt.
+#[pyclass(name = "ShutdownReport", frozen, module = "processkit")]
+pub(crate) struct PyShutdownReport {
+    soft_signal: &'static str,
+    attempted_signal: Option<&'static str>,
+    members_before: Option<usize>,
+    members_after: Option<usize>,
+    drained_within_grace: bool,
+    escalated: bool,
+    elapsed: Duration,
+}
+
+impl From<PkShutdownReport> for PyShutdownReport {
+    fn from(report: PkShutdownReport) -> Self {
+        let soft_signal = match report.soft_signal() {
+            SoftSignal::Sent(_) => "sent",
+            SoftSignal::Unsupported => "unsupported",
+            SoftSignal::Failed(_) => "failed",
+            _ => "unknown",
+        };
+        Self {
+            soft_signal,
+            attempted_signal: report.attempted_signal().and_then(|signal| signal.name()),
+            members_before: report.members_before(),
+            members_after: report.members_after(),
+            drained_within_grace: report.drained_within_grace(),
+            escalated: report.escalated(),
+            elapsed: report.elapsed(),
+        }
+    }
+}
+
+#[pymethods]
+impl PyShutdownReport {
+    #[getter]
+    fn soft_signal(&self) -> &'static str {
+        self.soft_signal
+    }
+
+    #[getter]
+    fn attempted_signal(&self) -> Option<&'static str> {
+        self.attempted_signal
+    }
+
+    #[getter]
+    fn members_before(&self) -> Option<usize> {
+        self.members_before
+    }
+
+    #[getter]
+    fn members_after(&self) -> Option<usize> {
+        self.members_after
+    }
+
+    #[getter]
+    fn drained_within_grace(&self) -> bool {
+        self.drained_within_grace
+    }
+
+    #[getter]
+    fn escalated(&self) -> bool {
+        self.escalated
+    }
+
+    #[getter]
+    fn elapsed_seconds(&self) -> f64 {
+        self.elapsed.as_secs_f64()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ShutdownReport(soft_signal={:?}, attempted_signal={:?}, members_before={:?}, members_after={:?}, drained_within_grace={}, escalated={}, elapsed_seconds={})",
+            self.soft_signal,
+            self.attempted_signal,
+            self.members_before,
+            self.members_after,
+            self.drained_within_grace,
+            self.escalated,
+            self.elapsed.as_secs_f64(),
+        )
+    }
+}
 
 /// A snapshot of a `ProcessGroup`'s resource usage.
 #[pyclass(name = "ProcessGroupStats", frozen, module = "processkit")]
@@ -456,6 +541,39 @@ impl PyProcessGroup {
         })
     }
 
+    /// Gracefully stop the current tree and report what actually happened.
+    #[pyo3(signature = (grace_seconds, *, escalate = true))]
+    fn stop(
+        &self,
+        py: Python<'_>,
+        grace_seconds: f64,
+        escalate: bool,
+    ) -> PyResult<PyShutdownReport> {
+        let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
+        reject_reentrant_runtime()?;
+        let group = self.group()?;
+        block_on(py, async move { group.stop(grace, escalate).await }).map(Into::into)
+    }
+
+    /// Async counterpart of `stop()`.
+    #[pyo3(signature = (grace_seconds, *, escalate = true))]
+    fn astop<'py>(
+        &self,
+        py: Python<'py>,
+        grace_seconds: f64,
+        escalate: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
+        require_event_loop(py)?;
+        let group = self.group()?;
+        drive_async(py, async move {
+            group
+                .stop(grace, escalate)
+                .await
+                .map(PyShutdownReport::from)
+        })
+    }
+
     /// Tear down the whole tree gracefully (sync). Idempotent — a second call is
     /// a no-op.
     fn shutdown(&self, py: Python<'_>) -> PyResult<()> {
@@ -492,5 +610,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessGroup>()?;
     m.add_class::<PyProcessGroupStats>()?;
     m.add_class::<PyMemberInfo>()?;
+    m.add_class::<PyShutdownReport>()?;
     Ok(())
 }

@@ -15,7 +15,7 @@ descendants as a unit. Abrupt owner-death coverage is platform-specific and
 reported explicitly.
 
 Beyond spawning a subprocess: run-and-capture, line streaming, interactive
-stdin, shell-free pipelines, readiness probes, timeouts & cancellation,
+stdin, opt-in pseudo-terminals, shell-free pipelines, readiness probes, timeouts & cancellation,
 supervision with restart/backoff, resource-limited sandboxes, and a mockable
 runner seam for subprocess-free tests — each in a synchronous *and* an
 asyncio-native form.
@@ -90,13 +90,13 @@ handy before you ship: it collects every per-OS caveat in one place.
 |---|---|
 | [Cookbook](cookbook.md) | "I want to …" → working snippet, for every capability; the fastest way in |
 | [Coming from subprocess](migrating.md) | Side-by-side translation of `subprocess` / `asyncio.subprocess` patterns, the exception mapping, and the whole-tree containment the stdlib can't give |
-| [Running commands](commands.md) | The `Command` builder end to end — args, env/sandboxing, stdin, stdout/stderr redirection, encodings, output caps, timeouts, privileges — and every consuming verb (`output`, `run`, `probe`, …) with its error semantics |
-| [Process groups](process-groups.md) | Kill-on-drop containment: creating groups, spawning, teardown, whole-tree signals, suspend/resume, member listing, resource limits, stats |
+| [Running commands](commands.md) | The `Command` builder end to end — args, env/sandboxing, stdin, PTY mode, stdout/stderr redirection, encodings, output caps, timeouts, privileges — and every consuming verb (`output`, `run`, `probe`, …) with its error semantics |
+| [Process groups](process-groups.md) | Kill-on-drop containment: creating groups, spawning, observable graceful stop, teardown, whole-tree signals, suspend/resume, member listing, resource limits, stats |
 | [Sandboxing untrusted tools](sandboxing.md) | The agent/LLM-tool recipe: locked-down env → bounded output → group resource limits → timeout → teardown, a checklist, and an honest threat model (what this does and does not protect against) |
-| [Streaming & interactive I/O](streaming.md) | `astart()` and the live `RunningProcess`: line streaming, interactive stdin, readiness probes (`wait_for_line` / `wait_for_port` / `wait_until`), per-run profiling |
+| [Streaming & interactive I/O](streaming.md) | `astart()` and the live `RunningProcess`: line streaming, interactive stdin and PTYs, readiness probes (`wait_for_line` / `wait_for_port` / `wait_until`), per-run profiling |
 | [Pipelines](pipelines.md) | Shell-free command pipelines — chain with `.pipe()` or the pipe operator: wiring, pipefail attribution, chain timeouts, binary tails |
 | [Timeouts & cancellation](timeouts-and-cancellation.md) | How a deadline is *captured* vs when it raises, interrupting a blocked sync call (Ctrl+C), and asyncio cancellation that reaps the whole tree |
-| [Supervision](supervision.md) | Keeping a child alive: restart policies, backoff & jitter, stop conditions, outcomes |
+| [Supervision](supervision.md) | Keeping a child alive: restart policies, live sessions/status, backoff & jitter, stop conditions, outcomes |
 | [Testing your code](testing.md) | The `ProcessRunner` seam — `ScriptedRunner` (incl. scripted streaming `start()`), record/replay cassettes, the `RecordingRunner` spy, the `CliClient` wrapper, and the autoloaded **pytest plugin** (ready-made fixtures + a no-real-spawn guard) |
 | [Command-line usage](cli.md) | `python -m processkit run -- ...`: containment and resource limits for a shell command with no Python to write, flags, exit codes |
 | [Performance & overhead](performance.md) | Why the workload is syscall-bound, what each benchmark in `benchmarks/` measures, how to reproduce them locally, and qualitative throughput/scaling expectations |
@@ -145,6 +145,10 @@ async def main():
     async with await Command("my-build", ["--watch"]).astart() as proc:
         async for line in proc.stdout_lines():
             print(line)
+
+    # A managed PTY for tools that buffer behind pipes or require a tty.
+    async with await Command("interactive-tool").pty(cols=120, rows=40).astart() as pty_proc:
+        pty_proc.resize_pty(160, 50)
 
     # Containment: anything started in the group dies with it (grandchildren too).
     async with ProcessGroup() as group:

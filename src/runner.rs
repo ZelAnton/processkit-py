@@ -15,6 +15,7 @@ use processkit::JobRunner;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner;
 use processkit::ProcessRunnerExt;
+use processkit::RunningProcess as PkRunningProcess;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -200,8 +201,9 @@ where
 /// order or completion order survives in this correlation.
 ///
 /// The `ProcessRunner` trait is `#[async_trait]` (each verb returns a boxed
-/// future); this is the same desugaring written by hand. `start` is left to the
-/// trait default — the batch driver only ever calls `output_string`/`output_bytes`.
+/// future); this is the same desugaring written by hand. `start` is forwarded
+/// too: live supervision needs the real runner's handle to publish a pid and
+/// stop the current incarnation gracefully.
 pub(crate) struct WhenCaptureRunner {
     inner: Arc<dyn ProcessRunner + Send + Sync>,
     /// The `when`-predicate error of the command whose verb future resolved most
@@ -277,6 +279,25 @@ impl ProcessRunner for WhenCaptureRunner {
         Box::pin(async move {
             let sink = new_when_sink();
             let result = scope_when(sink.clone(), self.inner.output_bytes(command)).await;
+            if let Some(err) = take_when_error(&sink) {
+                self.record(err);
+            }
+            result
+        })
+    }
+
+    fn start<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        command: &'life1 processkit::Command,
+    ) -> VerbFuture<'async_trait, PkRunningProcess>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let sink = new_when_sink();
+            let result = scope_when(sink.clone(), self.inner.start(command)).await;
             if let Some(err) = take_when_error(&sink) {
                 self.record(err);
             }

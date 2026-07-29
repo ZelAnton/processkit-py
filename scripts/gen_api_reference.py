@@ -123,13 +123,13 @@ SECTIONS: tuple[Section, ...] = (
         "(grandchildren included) on exit. `MemberInfo` is the enriched per-member "
         "snapshot `members_info()` returns; `sample_stats` turns a one-shot "
         "`stats()` snapshot into a periodic async series for live monitoring.",
-        ("ProcessGroup", "ProcessGroupStats", "MemberInfo", "sample_stats"),
+        ("ProcessGroup", "ProcessGroupStats", "ShutdownReport", "MemberInfo", "sample_stats"),
     ),
     Section(
         "Supervision",
         "Keep a command alive: restart it per a policy, with backoff and jitter, "
         "until a stop condition is met.",
-        ("Supervisor", "SupervisionOutcome"),
+        ("Supervisor", "SupervisionSession", "SupervisionStatus", "SupervisionOutcome"),
     ),
     Section(
         "Cancellation",

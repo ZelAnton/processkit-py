@@ -28,6 +28,7 @@ from processkit import (
     ProcessGroup,
     ProcessRunner,
     ResourceLimit,
+    ShutdownReport,
     StreamingRunner,
     Unsupported,
     sample_stats,
@@ -64,6 +65,86 @@ def test_explicit_shutdown_is_idempotent(pid_file: pathlib.Path) -> None:
     assert wait_dead(grandchild_pid, timeout=10.0), (
         f"grandchild {grandchild_pid} survived shutdown()"
     )
+
+
+def test_group_stop_reports_empty_group_and_keeps_it_open() -> None:
+    with ProcessGroup() as group:
+        report = group.stop(0.05)
+        assert isinstance(report, ShutdownReport)
+        assert report.members_before == 0
+        assert report.members_after == 0
+        assert report.drained_within_grace
+        assert not report.escalated
+        assert report.elapsed_seconds >= 0.0
+        assert report.soft_signal in {"sent", "unsupported", "failed", "unknown"}
+        assert report.attempted_signal in {None, "term"}
+        assert "ShutdownReport(" in repr(report)
+
+        # stop() is a reusable operation on the current tree, unlike shutdown().
+        assert group.start(Command(PY, ["-c", "pass"])).finish().outcome.exited_zero
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="cooperative SIGTERM handling is POSIX-only")
+def test_group_stop_reports_cooperative_child_drained(tmp_path: pathlib.Path) -> None:
+    ready = tmp_path / "cooperative-ready"
+    code = (
+        "import pathlib, signal, sys, time\n"
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+        f"pathlib.Path({str(ready)!r}).write_text('x')\n"
+        "time.sleep(60)\n"
+    )
+
+    with ProcessGroup() as group:
+        running = group.start(Command(PY, ["-c", code]))
+        assert wait_until(ready.exists, timeout=10.0), "the child never became ready"
+        report = group.stop(2.0)
+        outcome = running.outcome()
+
+    assert report.members_before is not None
+    assert report.members_before >= 1
+    assert report.soft_signal == "sent"
+    assert report.attempted_signal == "term"
+    assert report.drained_within_grace
+    assert not report.escalated
+    assert outcome.exited_zero
+
+
+def test_group_stop_escalates_for_uncooperative_child(tmp_path: pathlib.Path) -> None:
+    ready = tmp_path / "stop-ready"
+    if sys.platform == "win32":
+        code = f"import pathlib, time; pathlib.Path({str(ready)!r}).write_text('x'); time.sleep(60)"
+    else:
+        code = (
+            "import pathlib, signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            f"pathlib.Path({str(ready)!r}).write_text('x')\n"
+            "time.sleep(60)\n"
+        )
+
+    with ProcessGroup() as group:
+        mechanism = group.mechanism
+        running = group.start(Command(PY, ["-c", code]))
+        assert wait_until(ready.exists, timeout=10.0), "the child never became ready"
+        report = group.stop(0.05, escalate=True)
+        outcome = running.outcome()
+
+    assert report.members_before is not None
+    assert report.members_before >= 1
+    assert report.escalated
+    assert report.members_after is not None
+    if mechanism != "process_group":
+        assert report.members_after == 0
+    assert not outcome.exited_zero
+
+
+def test_group_astop_returns_report() -> None:
+    async def scenario() -> ShutdownReport:
+        async with ProcessGroup() as group:
+            return await group.astop(0.01, escalate=False)
+
+    report = asyncio.run(scenario())
+    assert isinstance(report, ShutdownReport)
+    assert report.drained_within_grace
 
 
 def test_use_after_close_raises() -> None:

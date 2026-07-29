@@ -1,12 +1,17 @@
 # PTY launch mode (`Command.pty()`) — feasibility & design
 
-This is a **decision record**, not a user guide: it fixes whether and how
-processkit-py can grow an opt-in pseudo-terminal (PTY) launch mode, and hands
-the follow-up implementation work off to separate tasks. Nothing here ships a
-`Command.pty()` yet — every API shape below is a *sketch* of a symbol that does
-not exist, deliberately written in plain `text` blocks (not runnable
-` ```python `) so the documentation drift guard never tries to type-check a
-made-up API.
+**Status: implemented.** This remains the historical decision record that led
+to the shipping PTY surface. The current user contract is documented in
+[Running commands](commands.md#pseudo-terminal-mode) and
+[Streaming & interactive I/O](streaming.md#interactive-pty-sessions):
+`Command.pty(*, cols=None, rows=None)`, merged terminal output through stdout,
+interactive input through `take_stdin()`, and live
+`RunningProcess.resize_pty(cols, rows)`.
+
+The design sketches and upstream constraints below are retained to explain the
+decision. Where a sketch differs from the final API, the shipping surface above
+wins: there is no `echo=` option, resize is named `resize_pty`, and conflicting
+stdio builder calls are rejected during command construction.
 
 ## Why a PTY mode at all
 
@@ -21,14 +26,10 @@ change behaviour when their stdio is a pipe rather than a terminal:
 - terminal control sequences (colour, cursor moves) and real terminal signals
   (Ctrl-C → `SIGINT`, Ctrl-Z → `SIGTSTP`) are unavailable.
 
-Today the streaming/interactive surface (`keep_stdin_open()` / `take_stdin()` /
-`stdout_lines()` / `send_control()`) drives such tools over ordinary **pipes**.
-The guides already say so explicitly and flag the gap as future work — the
-*Running commands* guide (`docs/commands.md`) notes "processkit wires pipes, not
-a pseudo-terminal", and the *Streaming & interactive I/O* guide
-(`docs/streaming.md`) notes that real terminal-signal delivery "requires a
-pseudoterminal, which processkit does not provide yet". This document decides
-how to close that gap.
+At the time of this decision, the streaming/interactive surface
+(`keep_stdin_open()` / `take_stdin()` / `stdout_lines()` / `send_control()`)
+drove such tools over ordinary **pipes**. The gap described here has since been
+closed by the implemented PTY surface linked above.
 
 ## Decision summary (the answer up front)
 
@@ -42,8 +43,8 @@ how to close that gap.
 - **(c) The proposed Python surface is `Command.pty(...)`**, streaming one
   merged terminal stream through `RunningProcess` while preserving kill-on-exit
   containment unchanged. See [Python API sketch](#c-python-api-sketch-commandpty).
-- **(d) Implementation is deferred to separate queue tasks**, enumerated in
-  [Follow-up work](#d-follow-up-work).
+- **(d) Implementation landed in the upstream crate and this binding**, including
+  public-surface, test, and documentation follow-ups.
 
 ## Background: how a launch works today
 
@@ -188,54 +189,46 @@ Questions
   - Mandatory stdout/stderr merge, or an optional separate stderr pipe?
 ```
 
-## (c) Python API sketch (`Command.pty()`)
+## (c) Implemented Python API (`Command.pty()`)
 
-Once the crate exposes the capability, the binding would surface it as an opt-in
-builder, consistent with the existing builder conventions (`src/command.rs`).
-The shape below is a **sketch of an API that does not exist yet** — hence the
-`text` block, not a runnable sample.
+The final binding surfaces the opt-in builder using the existing builder
+conventions (`src/command.rs`). The historical sketch below is followed by the
+final differences.
 
-```text
-# Opt-in PTY launch (SKETCH — Command.pty does not exist yet).
-proc = (
+```python
+proc = await (
     Command("claude", ["--interactive"])
-    .pty(cols=120, rows=40, echo=False)   # opt in; sizes are optional
-    .keep_stdin_open()                    # write to the pty master from Python
-    .start()
+    .pty(cols=120, rows=40)
+    .keep_stdin_open()
+    .astart()
 )
 
-# One MERGED terminal stream: under a pty the kernel combines the child's
-# stdout and stderr, so the existing line/event iterators carry the whole
-# terminal output (a dedicated terminal_lines() may be added instead).
-async for line in proc.stdout_lines():
-    ...
-
+# One MERGED terminal stream: the existing stdout iterator carries stdout and
+# stderr together.
+lines = proc.stdout_lines()
 stdin = proc.take_stdin()
 await stdin.write_line("do the thing")
-await stdin.send_control("c")   # now a REAL SIGINT via the line discipline,
-                                # not just a raw \x03 byte in a pipe
-
-proc.resize(cols=160, rows=50)  # SKETCH: ResizePseudoConsole / TIOCSWINSZ
-outcome = proc.outcome()        # or use `with proc:` for deterministic teardown
+proc.resize_pty(160, 50)
+await stdin.send_control("c")
+outcome = await proc.aoutcome()
 ```
 
 ### Semantics that the design pins down
 
 - **Merged terminal stream.** A real terminal has one stream, so under `pty()`
   the child's stdout and stderr are combined on the master. The existing
-  `RunningProcess.stdout_lines()` / `output_events()` would carry that merged
-  output (with the separate-stderr view empty), or a dedicated
-  `terminal_lines()` reader is added. The chosen line framing
+  `RunningProcess.stdout_lines()` / `output_events()` carry that merged output,
+  with the separate-stderr view empty. The chosen line framing
   (`line_terminator(...)`) still applies to the merged stream — important for
   carriage-return progress output, which is exactly the tty case.
 - **Interactive stdin over the master.** `keep_stdin_open()` + `take_stdin()`
   return a `ProcessStdin` that writes to the master. The key behavioural upgrade:
   `send_control("c")` becomes a **real** terminal control (the line discipline
-  turns it into `SIGINT`), where today it is a plain `\x03` byte only a
-  cooperating child interprets (see `docs/streaming.md`). `inherit_stdin()` stays
+  turns it into `SIGINT`), rather than the plain `\x03` byte pipe mode sends to a
+  cooperating child (see `docs/streaming.md`). `inherit_stdin()` stays
   mutually exclusive with `pty()` — a pty *is* a crate-managed terminal, so
   handing the child the parent's real terminal at the same time is a
-  contradiction and is rejected at launch, mirroring the existing
+  contradiction and is rejected during command construction, mirroring the existing
   `inherit_stdin` / `keep_stdin_open` exclusion.
 - **Kill-on-exit containment is unchanged.** Because the child is still spawned
   race-free into the crate's Job Object / cgroup / process group, the no-orphan
@@ -246,19 +239,20 @@ outcome = proc.outcome()        # or use `with proc:` for deterministic teardown
   the crate rather than spawning in the binding (see
   [Blocker 2](#blocker-2--race-free-spawn-into-containment-is-crate-owned-and-atomic)).
 - **Window size.** An initial `cols`/`rows` at build time and a runtime
-  `RunningProcess.resize(cols, rows)`; both optional, with a sensible default
+  `RunningProcess.resize_pty(cols, rows)`; both optional, with a sensible default
   size when unset.
 - **Mutual exclusivity & platform reach.** `pty()` is incompatible with the
   file-redirect stdio sinks (`stdout_file` / `stderr_file`) and with
-  `inherit_stdin`; conflicts are rejected at launch, not silently ignored. Both
+  `inherit_stdin`; conflicts are rejected while constructing the command, not
+  silently ignored. Both
   platform families support a pseudo-terminal, so — unlike the POSIX-only
   privilege knobs — this is a supported-everywhere feature rather than an
   off-platform no-op.
 
-### What to do **today**, until PTY lands
+### Pipe-mode alternatives
 
-Until the feature ships, drive tty-demanding tools non-interactively or hand them
-the real terminal directly. This uses only the current, shipping API:
+Even though PTY mode now ships, non-interactive operation or direct terminal
+inheritance can still be the simpler choice:
 
 ```python
 from processkit import Command
@@ -272,10 +266,10 @@ Command("git", ["fetch"]).env("GIT_TERMINAL_PROMPT", "0").run()
 Command("gpg", ["--decrypt", "secret.asc"]).inherit_stdin().stdout("inherit").run()
 ```
 
-## (d) Follow-up work
+## (d) Completed follow-up work
 
-Implementation is intentionally split into separate, independently reviewable
-queue tasks (this task delivers only the decision):
+The upstream, binding, public-surface, test, and documentation follow-ups have
+all landed. The original checklist is retained as implementation history:
 
 1. **Upstream request.** File the PTY API request from
    [section (b)](#b-upstream-request-to-the-processkit-crate) against the

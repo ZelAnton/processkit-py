@@ -17,6 +17,7 @@ the tree down deterministically.
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
 - [Interactive stdin](#interactive-stdin)
+- [Interactive PTY sessions](#interactive-pty-sessions)
 - [Readiness probes](#readiness-probes)
 - [Live introspection and per-run telemetry](#live-introspection-and-per-run-telemetry)
 - [Deterministic teardown](#deterministic-teardown)
@@ -348,10 +349,44 @@ the mapped control byte to the child's stdin pipe: for example,
 `await stdin.send_control("d")` writes Ctrl-D (`\x04`). Invalid input raises
 `ValueError`.
 
-This is a byte in a normal pipe, not a terminal signal. It only affects
-children that read and interpret that byte from stdin; real terminal semantics
-such as SIGINT/SIGTSTP delivery require a pseudoterminal, which `processkit`
-does not provide yet.
+In the default pipe mode this is only a byte; it affects children that read and
+interpret it. Under `Command.pty()`, the same writer targets the terminal master,
+so `send_control("c")` receives real terminal handling (Ctrl-C / SIGINT on
+POSIX, and the corresponding ConPTY control input on Windows).
+
+## Interactive PTY sessions
+
+Use a PTY for programs that change buffering or interaction when stdout is not
+a terminal:
+
+```python
+from processkit import Command
+
+proc = await (
+    Command("interactive-tool")
+    .pty(cols=120, rows=40)
+    .keep_stdin_open()
+    .astart()
+)
+stdin = proc.take_stdin()
+lines = proc.stdout_lines()  # merged terminal output: stdout plus stderr
+
+await stdin.write_line("status")
+print(await anext(lines))
+proc.resize_pty(160, 50)
+await stdin.send_control("c")
+outcome = await proc.aoutcome()
+```
+
+The PTY has one merged terminal stream, exposed as stdout; stderr is empty.
+Existing line framing still applies, including
+`line_terminator("carriage_return")` for progress displays that redraw with
+bare `\r`. `resize_pty(cols, rows)` requires positive dimensions and raises
+`ProcessError` for a non-PTY or already-exited process.
+
+PTY mode is mutually exclusive with inherited, null, or file-redirected stdio.
+Conflicts are rejected while constructing the command. It preserves the same
+private-tree containment and context-manager teardown as an ordinary launch.
 
 `take_stdin()` **raises** `ProcessError` if the `Command` didn't
 `keep_stdin_open()` or the writer was already taken — so a missing setup fails

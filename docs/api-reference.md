@@ -1759,6 +1759,18 @@ def kill_all() -> None
 def stats() -> ProcessGroupStats
 ```
 
+#### `stop`
+
+```text
+def stop(grace_seconds: float, *, escalate: bool = ...) -> ShutdownReport
+```
+
+#### `astop`
+
+```text
+def astop(grace_seconds: float, *, escalate: bool = ...) -> Awaitable[ShutdownReport]
+```
+
 #### `shutdown`
 
 ```text
@@ -1795,6 +1807,60 @@ peak_memory_bytes: int | None
 
 ```text
 total_cpu_time_seconds: float | None
+```
+
+### `ShutdownReport`
+
+```text
+class ShutdownReport
+```
+
+Observed facts from one graceful ``ProcessGroup.stop()``.
+
+Member counts describe the platform's containment membership and are
+``None`` only when that query failed. On the POSIX process-group fallback,
+``members_after`` can temporarily include an unreaped zombie.
+
+#### `soft_signal`
+
+```text
+soft_signal: Literal['sent', 'unsupported', 'failed', 'unknown']
+```
+
+#### `attempted_signal`
+
+```text
+attempted_signal: Literal['term'] | None
+```
+
+#### `members_before`
+
+```text
+members_before: int | None
+```
+
+#### `members_after`
+
+```text
+members_after: int | None
+```
+
+#### `drained_within_grace`
+
+```text
+drained_within_grace: bool
+```
+
+#### `escalated`
+
+```text
+escalated: bool
+```
+
+#### `elapsed_seconds`
+
+```text
+elapsed_seconds: float
 ```
 
 ### `MemberInfo`
@@ -1957,6 +2023,111 @@ def run() -> SupervisionOutcome
 def arun() -> Awaitable[SupervisionOutcome]
 ```
 
+#### `start`
+
+```text
+def start() -> SupervisionSession
+```
+
+#### `astart`
+
+```text
+def astart() -> Awaitable[SupervisionSession]
+```
+
+### `SupervisionSession`
+
+```text
+class SupervisionSession
+```
+
+A live one-shot handle to background supervision.
+
+``wait`` and ``stop`` (or one of their async twins) are terminal, one-shot
+operations. Dropping an open session aborts supervision and tears down its
+current private process tree.
+
+#### `status`
+
+```text
+status: SupervisionStatus
+```
+
+#### `wait`
+
+```text
+def wait() -> SupervisionOutcome
+```
+
+Wait for supervision to end naturally and consume this session.
+
+#### `await_wait`
+
+```text
+def await_wait() -> Awaitable[SupervisionOutcome]
+```
+
+Async counterpart of ``wait`` (``await`` itself is reserved).
+
+#### `stop`
+
+```text
+def stop(grace_seconds: float) -> SupervisionOutcome
+```
+
+Gracefully stop the current incarnation and consume this session.
+
+#### `astop`
+
+```text
+def astop(grace_seconds: float) -> Awaitable[SupervisionOutcome]
+```
+
+Async counterpart of ``stop``.
+
+### `SupervisionStatus`
+
+```text
+class SupervisionStatus
+```
+
+A consistent point-in-time snapshot of a live supervision session.
+
+``pid`` and ``started_at`` are ``None`` between incarnations, during a
+backoff or storm pause, after completion, and for a capture-only runner.
+
+#### `is_active`
+
+```text
+is_active: bool
+```
+
+#### `restarts`
+
+```text
+restarts: int
+```
+
+#### `is_storm_paused`
+
+```text
+is_storm_paused: bool
+```
+
+#### `pid`
+
+```text
+pid: int | None
+```
+
+#### `started_at`
+
+```text
+started_at: float | None
+```
+
+Unix timestamp for the current incarnation, or ``None``.
+
 ### `SupervisionOutcome`
 
 ```text
@@ -1989,7 +2160,7 @@ restarts: int
 #### `stopped`
 
 ```text
-stopped: Literal['policy_satisfied', 'predicate', 'restarts_exhausted', 'gave_up', 'unhealthy', 'unknown']
+stopped: Literal['policy_satisfied', 'predicate', 'restarts_exhausted', 'gave_up', 'unhealthy', 'stopped', 'unknown']
 ```
 
 #### `storm_pauses`

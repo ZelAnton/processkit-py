@@ -2,7 +2,7 @@
 
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use processkit::GiveUpAttempt;
 use processkit::JobRunner;
@@ -11,6 +11,8 @@ use processkit::ProcessRunner;
 use processkit::RestartPolicy;
 use processkit::StopReason;
 use processkit::SupervisionOutcome;
+use processkit::SupervisionSession as PkSupervisionSession;
+use processkit::SupervisionStatus as PkSupervisionStatus;
 use processkit::Supervisor as PkSupervisor;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -21,7 +23,7 @@ use crate::convert::{
 };
 use crate::errors::{map_err, map_err_ref, ProcessError};
 use crate::result::PyProcessResult;
-use crate::runner::{extract_runner, new_when_sink, scope_when, take_when_error};
+use crate::runner::{extract_runner, WhenCaptureRunner};
 use crate::runtime::{block_on, drive_async_py, reject_reentrant_runtime, require_event_loop};
 
 const DEFAULT_BACKOFF_INITIAL: Duration = Duration::from_millis(200);
@@ -81,6 +83,7 @@ fn stop_reason_str(reason: StopReason) -> &'static str {
         StopReason::RestartsExhausted => "restarts_exhausted",
         StopReason::GaveUp => "gave_up",
         StopReason::Unhealthy => "unhealthy",
+        StopReason::Stopped => "stopped",
         _ => "unknown",
     }
 }
@@ -428,6 +431,7 @@ pub(crate) struct PySupervisor {
     /// `run()`/`arun()` re-raises it after the loop halts. Per-instance, so
     /// concurrent supervisions never cross errors (see [`ErrorSlot`]).
     error_slot: ErrorSlot,
+    when_runner: Arc<WhenCaptureRunner>,
 }
 
 impl PySupervisor {
@@ -633,10 +637,13 @@ impl PySupervisor {
             Some(obj) => extract_runner(obj)?,
             None => Arc::new(JobRunner::new()),
         };
-        let supervisor = supervisor.with_runner(runner);
+        let when_runner = Arc::new(WhenCaptureRunner::new(runner));
+        let wrapped_runner: Arc<dyn ProcessRunner + Send + Sync> = when_runner.clone();
+        let supervisor = supervisor.with_runner(wrapped_runner);
         Ok(Self {
             inner: Mutex::new(Some(supervisor)),
             error_slot,
+            when_runner,
         })
     }
 
@@ -646,20 +653,16 @@ impl PySupervisor {
         // running.rs for why the order matters (consume-then-fail).
         reject_reentrant_runtime()?;
         let supervisor = self.take_supervisor()?;
-        // Scope the whole supervision loop under a fresh `when`-predicate error
-        // sink (see `runner.rs`): an injected `ScriptedRunner` whose `when`
-        // predicate raises then aborts supervision with that error instead of
-        // silently masking it behind a fallback reply and (possibly) looping on.
-        // The loop drives the runner inline on THIS task (`supervisor.run()`'s
-        // `self.runner.output_string(...).await`, no `tokio::spawn`), so a single
-        // scope reaches every incarnation's predicate.
-        let when_sink = new_when_sink();
-        let result = block_on(py, scope_when(when_sink.clone(), supervisor.run()));
+        // `WhenCaptureRunner` scopes each runner verb independently and hands a
+        // raising `ScriptedRunner.when` predicate back here, so it cannot be
+        // masked behind a fallback reply. Per-verb scoping also survives the
+        // detached task used by live sessions.
+        let result = block_on(py, supervisor.run());
         // Precedence: the runner's `when`-predicate error is the earliest, most
         // fundamental defect — it undermines the very reply a control predicate
         // then examined — so it wins over a `stop_when`/`give_up_when` error,
         // which in turn beats the (now meaningless) outcome or mapped crate error.
-        if let Some(err) = take_when_error(&when_sink) {
+        if let Some(err) = self.when_runner.take_completed_error() {
             return Err(err);
         }
         // A control predicate (`stop_when`/`give_up_when`) that raised or returned
@@ -688,14 +691,13 @@ impl PySupervisor {
         // Cloned before the supervisor is taken, so the awaited future can read the
         // control-predicate error slot back after the loop halts (see `run`).
         let error_slot = self.error_slot.clone();
-        // Fresh `when`-predicate error sink scoped around the awaited supervision
-        // loop, mirroring the sync `run` (same precedence: runner `when` error, then
-        // control-predicate error, then the outcome/mapped crate error).
-        let when_sink = new_when_sink();
+        // Mirror sync `run`'s error precedence: runner `when` error, then
+        // control-predicate error, then the outcome/mapped crate error.
+        let when_runner = self.when_runner.clone();
         let supervisor = self.take_supervisor()?;
         drive_async_py(py, async move {
-            let result = scope_when(when_sink.clone(), supervisor.run()).await;
-            if let Some(err) = take_when_error(&when_sink) {
+            let result = supervisor.run().await;
+            if let Some(err) = when_runner.take_completed_error() {
                 return Err(err);
             }
             if let Some(err) = take_slot_error(&error_slot) {
@@ -706,6 +708,256 @@ impl PySupervisor {
                 .map_err(map_err)
         })
     }
+
+    /// Start supervision in the background and return a live session.
+    fn start(&self) -> PyResult<PySupervisionSession> {
+        reject_reentrant_runtime()?;
+        let supervisor = self.take_supervisor()?;
+        let _guard = crate::runtime::runtime()?.enter();
+        Ok(PySupervisionSession::new(
+            supervisor.start(),
+            self.error_slot.clone(),
+            self.when_runner.clone(),
+        ))
+    }
+
+    /// Async, lazy counterpart of `start()`.
+    fn astart<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
+        let supervisor = self.take_supervisor()?;
+        let error_slot = self.error_slot.clone();
+        let when_runner = self.when_runner.clone();
+        drive_async_py(py, async move {
+            Ok(PySupervisionSession::new(
+                supervisor.start(),
+                error_slot,
+                when_runner,
+            ))
+        })
+    }
+}
+
+/// A consistent point-in-time snapshot of a live supervision session.
+#[pyclass(name = "SupervisionStatus", frozen, module = "processkit")]
+pub(crate) struct PySupervisionStatus {
+    active: bool,
+    restarts: u32,
+    storm_paused: bool,
+    pid: Option<u32>,
+    started_at: Option<f64>,
+}
+
+impl From<PkSupervisionStatus> for PySupervisionStatus {
+    fn from(status: PkSupervisionStatus) -> Self {
+        Self {
+            active: status.is_active(),
+            restarts: status.restarts(),
+            storm_paused: status.is_storm_paused(),
+            pid: status.pid(),
+            started_at: status
+                .started_at()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs_f64()),
+        }
+    }
+}
+
+#[pymethods]
+impl PySupervisionStatus {
+    #[getter]
+    fn is_active(&self) -> bool {
+        self.active
+    }
+
+    #[getter]
+    fn restarts(&self) -> u32 {
+        self.restarts
+    }
+
+    #[getter]
+    fn is_storm_paused(&self) -> bool {
+        self.storm_paused
+    }
+
+    #[getter]
+    fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// Unix timestamp of the current incarnation's start, or `None`.
+    #[getter]
+    fn started_at(&self) -> Option<f64> {
+        self.started_at
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SupervisionStatus(is_active={}, restarts={}, is_storm_paused={}, pid={:?}, started_at={:?})",
+            self.active, self.restarts, self.storm_paused, self.pid, self.started_at
+        )
+    }
+}
+
+/// A live, one-shot handle to background supervision.
+#[pyclass(name = "SupervisionSession", frozen, module = "processkit")]
+pub(crate) struct PySupervisionSession {
+    inner: Mutex<Option<PkSupervisionSession>>,
+    error_slot: ErrorSlot,
+    when_runner: Arc<WhenCaptureRunner>,
+}
+
+impl PySupervisionSession {
+    fn new(
+        session: PkSupervisionSession,
+        error_slot: ErrorSlot,
+        when_runner: Arc<WhenCaptureRunner>,
+    ) -> Self {
+        Self {
+            inner: Mutex::new(Some(session)),
+            error_slot,
+            when_runner,
+        }
+    }
+
+    fn take(&self) -> PyResult<PkSupervisionSession> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| ProcessError::new_err("this SupervisionSession has already completed"))
+    }
+
+    fn take_if_open(&self) -> Option<PkSupervisionSession> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    fn convert_result(
+        result: processkit::Result<SupervisionOutcome>,
+        error_slot: &ErrorSlot,
+        when_runner: &WhenCaptureRunner,
+    ) -> PyResult<PySupervisionOutcome> {
+        if let Some(err) = when_runner.take_completed_error() {
+            return Err(err);
+        }
+        if let Some(err) = take_slot_error(error_slot) {
+            return Err(err);
+        }
+        result
+            .map(|outcome| convert_supervision_outcome(&outcome))
+            .map_err(map_err)
+    }
+
+    fn convert_py_result(
+        result: PyResult<SupervisionOutcome>,
+        error_slot: &ErrorSlot,
+        when_runner: &WhenCaptureRunner,
+    ) -> PyResult<PySupervisionOutcome> {
+        if let Some(err) = when_runner.take_completed_error() {
+            return Err(err);
+        }
+        if let Some(err) = take_slot_error(error_slot) {
+            return Err(err);
+        }
+        result.map(|outcome| convert_supervision_outcome(&outcome))
+    }
+}
+
+#[pymethods]
+impl PySupervisionSession {
+    #[getter]
+    fn status(&self) -> PyResult<PySupervisionStatus> {
+        let guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = guard.as_ref().ok_or_else(|| {
+            ProcessError::new_err("this SupervisionSession has already completed")
+        })?;
+        Ok(session.status().into())
+    }
+
+    fn wait(&self, py: Python<'_>) -> PyResult<PySupervisionOutcome> {
+        reject_reentrant_runtime()?;
+        let session = self.take()?;
+        let result = block_on(py, session.wait());
+        Self::convert_py_result(result, &self.error_slot, &self.when_runner)
+    }
+
+    fn await_wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
+        let session = self.take()?;
+        let error_slot = self.error_slot.clone();
+        let when_runner = self.when_runner.clone();
+        drive_async_py(py, async move {
+            let result = session.wait().await;
+            Self::convert_result(result, &error_slot, &when_runner)
+        })
+    }
+
+    fn stop(&self, py: Python<'_>, grace_seconds: f64) -> PyResult<PySupervisionOutcome> {
+        let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
+        reject_reentrant_runtime()?;
+        let session = self.take()?;
+        let result = block_on(py, session.stop(grace));
+        Self::convert_py_result(result, &self.error_slot, &self.when_runner)
+    }
+
+    fn astop<'py>(&self, py: Python<'py>, grace_seconds: f64) -> PyResult<Bound<'py, PyAny>> {
+        let grace = nonnegative_duration(grace_seconds, "grace_seconds")?;
+        require_event_loop(py)?;
+        let session = self.take()?;
+        let error_slot = self.error_slot.clone();
+        let when_runner = self.when_runner.clone();
+        drive_async_py(py, async move {
+            let result = session.stop(grace).await;
+            Self::convert_result(result, &error_slot, &when_runner)
+        })
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _exc_type: Option<Bound<'_, PyAny>>,
+        _exc_value: Option<Bound<'_, PyAny>>,
+        _traceback: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        reject_reentrant_runtime()?;
+        if let Some(session) = self.take_if_open() {
+            let result = block_on(py, session.stop(Duration::from_secs(1)));
+            let _ = Self::convert_py_result(result, &self.error_slot, &self.when_runner)?;
+        }
+        Ok(false)
+    }
+
+    fn __aenter__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        drive_async_py(py, async move { Ok(slf) })
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
+    fn __aexit__<'py>(
+        &self,
+        py: Python<'py>,
+        _exc_type: Option<Bound<'py, PyAny>>,
+        _exc_value: Option<Bound<'py, PyAny>>,
+        _traceback: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        require_event_loop(py)?;
+        let session = self.take_if_open();
+        let error_slot = self.error_slot.clone();
+        let when_runner = self.when_runner.clone();
+        drive_async_py(py, async move {
+            if let Some(session) = session {
+                let result = session.stop(Duration::from_secs(1)).await;
+                let _ = Self::convert_result(result, &error_slot, &when_runner)?;
+            }
+            Ok(false)
+        })
+    }
 }
 
 /// Register this module's pyclasses (`Supervisor`, `SupervisionOutcome`) on
@@ -713,6 +965,8 @@ impl PySupervisor {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySupervisor>()?;
     m.add_class::<PySupervisionOutcome>()?;
+    m.add_class::<PySupervisionStatus>()?;
+    m.add_class::<PySupervisionSession>()?;
     Ok(())
 }
 

@@ -503,6 +503,30 @@ three are synchronous and side-effect-free (a few `stat`s, no spawn), and raise
 `ProcessNotFound` (also a `FileNotFoundError`) with a `searched` diagnostic on a
 miss — the exact error a real run would raise.
 
+## Run a tty-sensitive or pipe-buffered tool
+
+Some CLIs block-buffer output when connected to a pipe, suppress interactive
+features, or refuse to run without a tty. Give the child a managed PTY while
+keeping process-tree teardown:
+
+```python
+from processkit import Command
+
+command = (
+    Command("interactive-tool")
+    .pty(cols=120, rows=40)
+    .keep_stdin_open()
+)
+with command.start() as proc:
+    stdin = proc.take_stdin()
+    proc.resize_pty(160, 50)
+```
+
+Read `proc.stdout_lines()` for the merged terminal stream. In async code,
+`await stdin.send_control("c")` delivers a real terminal Ctrl-C. Do not combine
+PTY mode with inherited/null/file-redirected stdio; the builder rejects those
+conflicts before launch.
+
 ## Keep a service alive (supervision)
 
 ```python
@@ -522,8 +546,8 @@ print(outcome.restarts, outcome.stopped)
 The `stop_when=` predicate receives each run's `ProcessResult` and returns a
 bool; inspect the passed result rather than calling a synchronous run verb inside
 it (a nested sync call from within the supervisor's own loop is unsupported). A
-predicate that raises is reported via the unraisable hook and treated as "don't
-stop".
+predicate that raises aborts supervision and is re-raised to the caller; it is
+never silently interpreted as "don't stop".
 
 `Supervisor` also accepts `runner=` — pass a `ScriptedRunner` with
 `.on_sequence(...)` (fail a few times, then succeed) to test a restart/backoff

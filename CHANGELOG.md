@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add opt-in pseudo-terminal launches with `Command.pty(...)` and live terminal
   resizing through `RunningProcess.resize_pty(...)`. PTY output is a single
   merged stdout stream, and interactive stdin uses the existing writer API.
+- Add live `Supervisor.start()` / `astart()` sessions with status snapshots,
+  graceful stop, completion waits, and sync/async context management.
+- Add `ProcessGroup.stop()` / `astop()` with a `ShutdownReport` describing the
+  graceful signal, remaining members, elapsed time, and hard-kill escalation.
 
 ### Changed
 -

@@ -829,6 +829,31 @@ class ProcessGroupStats:
     def __repr__(self) -> str: ...
 
 @final
+class ShutdownReport:
+    """Observed facts from one graceful ``ProcessGroup.stop()``.
+
+    Member counts describe the platform's containment membership and are
+    ``None`` only when that query failed. On the POSIX process-group fallback,
+    ``members_after`` can temporarily include an unreaped zombie.
+    """
+
+    @property
+    def soft_signal(self) -> Literal["sent", "unsupported", "failed", "unknown"]: ...
+    @property
+    def attempted_signal(self) -> Literal["term"] | None: ...
+    @property
+    def members_before(self) -> int | None: ...
+    @property
+    def members_after(self) -> int | None: ...
+    @property
+    def drained_within_grace(self) -> bool: ...
+    @property
+    def escalated(self) -> bool: ...
+    @property
+    def elapsed_seconds(self) -> float: ...
+    def __repr__(self) -> str: ...
+
+@final
 class MemberInfo:
     """An enriched, point-in-time snapshot of one member of a `ProcessGroup`'s
     tree — its pid plus best-effort metadata.
@@ -970,6 +995,8 @@ class ProcessGroup(_RunnerVerbs):
     def resume(self) -> None: ...
     def kill_all(self) -> None: ...
     def stats(self) -> ProcessGroupStats: ...
+    def stop(self, grace_seconds: float, *, escalate: bool = ...) -> ShutdownReport: ...
+    def astop(self, grace_seconds: float, *, escalate: bool = ...) -> Awaitable[ShutdownReport]: ...
     def shutdown(self) -> None: ...
     def ashutdown(self) -> Awaitable[None]: ...
     def __repr__(self) -> str: ...
@@ -1000,7 +1027,13 @@ class SupervisionOutcome:
     def stopped(
         self,
     ) -> Literal[
-        "policy_satisfied", "predicate", "restarts_exhausted", "gave_up", "unhealthy", "unknown"
+        "policy_satisfied",
+        "predicate",
+        "restarts_exhausted",
+        "gave_up",
+        "unhealthy",
+        "stopped",
+        "unknown",
     ]: ...
     @property
     def storm_pauses(self) -> int: ...
@@ -1013,6 +1046,62 @@ class SupervisionOutcome:
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
+
+@final
+class SupervisionStatus:
+    """A consistent point-in-time snapshot of a live supervision session.
+
+    ``pid`` and ``started_at`` are ``None`` between incarnations, during a
+    backoff or storm pause, after completion, and for a capture-only runner.
+    """
+
+    @property
+    def is_active(self) -> bool: ...
+    @property
+    def restarts(self) -> int: ...
+    @property
+    def is_storm_paused(self) -> bool: ...
+    @property
+    def pid(self) -> int | None: ...
+    @property
+    def started_at(self) -> float | None:
+        """Unix timestamp for the current incarnation, or ``None``."""
+    def __repr__(self) -> str: ...
+
+@final
+class SupervisionSession:
+    """A live one-shot handle to background supervision.
+
+    ``wait`` and ``stop`` (or one of their async twins) are terminal, one-shot
+    operations. Dropping an open session aborts supervision and tears down its
+    current private process tree.
+    """
+
+    @property
+    def status(self) -> SupervisionStatus: ...
+    def wait(self) -> SupervisionOutcome:
+        """Wait for supervision to end naturally and consume this session."""
+    def await_wait(self) -> Awaitable[SupervisionOutcome]:
+        """Async counterpart of ``wait`` (``await`` itself is reserved)."""
+    def stop(self, grace_seconds: float) -> SupervisionOutcome:
+        """Gracefully stop the current incarnation and consume this session."""
+    def astop(self, grace_seconds: float) -> Awaitable[SupervisionOutcome]:
+        """Async counterpart of ``stop``."""
+    def __enter__(self) -> SupervisionSession:
+        """Enter a scope whose exit stops an open session with one second of grace."""
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc_value: BaseException | None = ...,
+        traceback: TracebackType | None = ...,
+    ) -> Literal[False]: ...
+    def __aenter__(self) -> Awaitable[SupervisionSession]: ...
+    def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc_value: BaseException | None = ...,
+        traceback: TracebackType | None = ...,
+    ) -> Awaitable[Literal[False]]: ...
 
 @final
 class Supervisor:
@@ -1098,6 +1187,8 @@ class Supervisor:
     # Async counterpart of `run()`; likewise one-shot — the supervisor is spent
     # once awaited, and a second `run`/`arun` raises `ProcessError`.
     def arun(self) -> Awaitable[SupervisionOutcome]: ...
+    def start(self) -> SupervisionSession: ...
+    def astart(self) -> Awaitable[SupervisionSession]: ...
 
 @final
 class Reply:

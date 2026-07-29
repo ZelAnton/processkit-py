@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `RunningProcess.stderr_lines()` for stderr-only line streaming and direct
+  use with readiness helpers such as `wait_for_line`.
+- Add `Command.run_json()` / `arun_json()` with the same typed JSON decoding and
+  `InvalidJson` diagnostics as `CliClient`.
 - Add a **CLI Runner** link immediately after the Rust version in the Pages
   navigation.
 - Add opt-in pseudo-terminal launches with `Command.pty(...)` and live terminal

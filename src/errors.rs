@@ -42,11 +42,12 @@ create_exception!(_processkit, Cancelled, ProcessError);
 // by `map_err`: the crate has no native idle-timeout, so no crate `Error`
 // variant maps to it.
 create_exception!(_processkit, IdleTimeout, ProcessError);
-// `InvalidJson` is raised by the binding-only `CliClient.run_json`/`arun_json`
-// verbs when a run that succeeded (a zero exit, like `run`) produced stdout that
-// does not parse as JSON. Like `IdleTimeout`, it is synthesized entirely on the
-// binding side (constructed by `invalid_json_err`, never by `map_err`): the crate
-// has no "invalid JSON" concept, so no crate `Error` variant maps to it. Kept a
+// `InvalidJson` is raised by the binding-only `Command` and `CliClient`
+// `run_json`/`arun_json` verbs when a run that succeeded (a zero exit, like
+// `run`) produced stdout that does not parse as JSON. Like `IdleTimeout`, it is
+// synthesized entirely on the binding side (constructed by `invalid_json_err`,
+// never by `map_err`): the crate has no "invalid JSON" concept, so no crate
+// `Error` variant maps to it. Kept a
 // plain sibling under `ProcessError` and deliberately NOT a subclass of
 // `NonZeroExit` — the run itself succeeded; only its *output shape* is wrong — so
 // `except InvalidJson` isolates a bad-payload failure while `except ProcessError`
@@ -198,9 +199,9 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// Build an [`InvalidJson`] for a `CliClient.run_json`/`arun_json` call whose
+/// Build an [`InvalidJson`] for a `Command` or `CliClient` JSON run whose
 /// (successful) run produced stdout that did not parse as JSON. Carries the
-/// client's `program` and a length-capped `stdout` fragment as structured
+/// command's `program` and a length-capped `stdout` fragment as structured
 /// attributes — never the whole payload, which can be large or hold secrets —
 /// with the underlying `json.loads` parser message folded into `str(exc)`, so the
 /// failure is attributed rather than surfaced as a bare `json.JSONDecodeError`.
@@ -278,7 +279,7 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
 /// `operation` attribute as an upstream `ErrorReason::Unsupported`.
 pub(crate) fn unsupported_err(operation: &str) -> PyErr {
     let err = Unsupported::new_err(format!("{operation} is not supported"));
-    Python::attach(|py| {
+    let _ = Python::try_attach(|py| {
         let _ = err.value(py).setattr("operation", operation);
     });
     err

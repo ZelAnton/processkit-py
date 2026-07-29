@@ -202,7 +202,8 @@ class Command:
         it).
 
         Enforced on the streaming/interactive surface only — ``start()`` /
-        ``astart()`` + ``stdout_lines()`` / ``output_events()`` — since idle
+        ``astart()`` + one of the output iterators (``stdout_lines()``,
+        ``stderr_lines()``, ``output_events()``, or ``lifecycle_events()``) — since idle
         monitoring rides that per-line channel. The one-shot capture verbs
         (``output``/``run``/``exit_code``/``probe`` and their ``a``-twins), the
         ``Pipeline``, and ``Supervisor`` run entirely inside the crate, which has
@@ -210,8 +211,8 @@ class Command:
         upstream support). Monitoring rides the streaming verbs, which the crate
         gates on stdout being piped: under
         ``stdout_file``/``stdout("inherit")``/``stdout("null")`` both
-        ``stdout_lines()`` and ``output_events()`` raise ``ProcessError`` ("stdout
-        is not piped") at setup, so an idle-timeout on a redirected stdout is
+        all four output iterators raise ``ProcessError`` ("stdout is not piped")
+        at setup, so an idle-timeout on a redirected stdout is
         diagnosed there — never silently un-enforced. ``stderr_file`` leaves
         stdout piped, so idle monitoring keeps working on the stdout channel."""
 
@@ -469,6 +470,11 @@ class Command:
     def output(self) -> ProcessResult: ...
     def output_bytes(self) -> BytesResult: ...
     def run(self) -> str: ...
+    def run_json(self) -> Any:
+        """Require a zero exit and decode stdout with ``json.loads``.
+
+        Process failures match ``run()``. Invalid JSON raises ``InvalidJson``
+        with ``program`` and a bounded ``stdout`` fragment."""
     def exit_code(self) -> int: ...
     def probe(self) -> bool: ...
     def resolve_program(self) -> str:
@@ -496,6 +502,8 @@ class Command:
     def aoutput(self) -> Awaitable[ProcessResult]: ...
     def aoutput_bytes(self) -> Awaitable[BytesResult]: ...
     def arun(self) -> Awaitable[str]: ...
+    def arun_json(self) -> Awaitable[Any]:
+        """Async counterpart of ``run_json()``."""
     def aexit_code(self) -> Awaitable[int]: ...
     def aprobe(self) -> Awaitable[bool]: ...
     def start(self) -> RunningProcess: ...
@@ -676,6 +684,16 @@ class LifecycleEvent:
     def __repr__(self) -> str: ...
 
 @final
+class StderrLines:
+    """Async iterator over a process's stderr, line by line.
+
+    Backed by the merged lifecycle stream: stdout is drained but not yielded.
+    Choose this or the other one-shot output streams on a process handle."""
+
+    def __aiter__(self) -> AsyncIterator[str]: ...
+    def __anext__(self) -> Awaitable[str]: ...
+
+@final
 class StdoutLines:
     """Async iterator over a process's stdout, line by line."""
 
@@ -730,8 +748,9 @@ class RunningProcess:
 
     Usable as a (async) context manager — exiting the block tears the process
     down (a hard kill of the whole private tree for a standalone
-    ``start()``/``astart()`` handle). ``stdout_lines()`` / ``output_events()`` /
-    ``take_stdin()`` / ``kill()`` are *synchronous* setup calls; the
+    ``start()``/``astart()`` handle). ``stdout_lines()`` / ``stderr_lines()`` /
+    ``output_events()`` / ``lifecycle_events()`` / ``take_stdin()`` / ``kill()``
+    are *synchronous* setup calls; the
     iterator / handle they return is what you await.
 
     Every consuming verb — ``outcome``/``finish``/``output``/``output_bytes``/
@@ -777,6 +796,13 @@ class RunningProcess:
         traceback: TracebackType | None = ...,
     ) -> Awaitable[Literal[False]]: ...
     def stdout_lines(self) -> StdoutLines: ...
+    def stderr_lines(self) -> StderrLines:
+        """Stream decoded stderr lines while background-draining stdout.
+
+        Consumes the same one-shot output as ``stdout_lines()``,
+        ``output_events()``, and ``lifecycle_events()``. Afterwards use
+        ``finish()``/``afinish()`` or
+        ``outcome()``/``aoutcome()`` to report the run."""
     def output_events(self) -> OutputEvents:
         """Interleaved stdout+stderr lines as an async iterator (call once).
 
@@ -1619,7 +1645,7 @@ class IdleTimeout(ProcessError):
     child went silent" vs "the run took too long overall" — so `except
     IdleTimeout` does not swallow a wall-clock `Timeout` and vice-versa, while
     `except ProcessError` still catches both. Raised from the streaming
-    iterators (`stdout_lines()` / `output_events()`) on the handle from
+    output iterators on the handle from
     `start()`/`astart()`; the one-shot capture verbs do not enforce
     `idle_timeout` (see its docstring)."""
 
@@ -1628,7 +1654,7 @@ class IdleTimeout(ProcessError):
     idle_timeout_seconds: float
 
 class InvalidJson(ProcessError):
-    """`CliClient.run_json()` / `arun_json()` ran the command successfully (a
+    """A `Command` or `CliClient` JSON verb ran the command successfully (a
     zero exit, like `run`) but its stdout did not parse as JSON.
 
     A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
@@ -1638,7 +1664,7 @@ class InvalidJson(ProcessError):
     its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
     failure without also catching a genuine non-zero exit."""
 
-    # The wrapped client's program.
+    # The executed command's program.
     program: str
     # A length-capped fragment of the stdout that failed to parse — a bounded
     # head for diagnosis, not the whole payload (which can be large or hold

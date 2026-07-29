@@ -58,6 +58,7 @@ async API or a `timeout()` there). *Deeper:
 | `output()` | `ProcessResult` | captured (`.code`) | captured (`.timed_out` / `.signal`) | You want to inspect the outcome yourself |
 | `output_bytes()` | `BytesResult` | captured | captured | stdout is binary (images, archives) |
 | `run()` | trimmed stdout `str` | raises `NonZeroExit` | raises `Timeout` / `Signalled` | "Give me the answer, or fail" |
+| `run_json()` | decoded JSON value | raises `NonZeroExit` | raises `Timeout` / `Signalled` | A one-off tool emits machine-readable JSON |
 | `exit_code()` | `int` (raw) | returns the code | raises (no `-1` sentinel) | The exit code *is* the answer |
 | `probe()` | `bool` | `0`→`True`, `1`→`False`, else raises | raises | Predicate tools: `git diff --quiet`, `grep -q` |
 | `start()` / `astart()` | `RunningProcess` | — | — | Streaming / interactive I/O — see [Streaming](streaming.md) |
@@ -65,11 +66,24 @@ async API or a `timeout()` there). *Deeper:
 The capturing verbs (`output`, `output_bytes`) treat a non-zero exit, a timeout,
 and a signal-kill as **data** — they never raise on the child's outcome. The
 checking verbs (`run`, `exit_code`, `probe`) turn those into exceptions. Async
-twins: `aoutput`, `aoutput_bytes`, `arun`, `aexit_code`, `aprobe`, `astart`.
+twins: `aoutput`, `aoutput_bytes`, `arun`, `arun_json`, `aexit_code`, `aprobe`,
+`astart`.
 
 ```python
 result = Command("git", ["merge", "feature"]).output()
 print(result.code, result.is_success, result.stdout)   # nothing raised
+```
+
+`run_json()` is the checked JSON twin of `run()`: it requires a zero exit and
+passes stdout through `json.loads`, returning ordinary Python dictionaries,
+lists, scalars, booleans, or `None`. A successful command with malformed JSON
+raises `InvalidJson` (a `ProcessError`) carrying the program and a bounded stdout
+fragment; a process failure remains the same `NonZeroExit`/`Timeout`/`Signalled`
+that `run()` would raise.
+
+```python
+metadata = Command("tool", ["metadata", "--json"]).run_json()
+metadata = await Command("tool", ["metadata", "--json"]).arun_json()
 ```
 
 ## Program, arguments, working directory

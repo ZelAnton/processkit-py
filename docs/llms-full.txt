@@ -337,7 +337,7 @@ async with ProcessGroup() as group:
     # port — a warming-up server accepts the port while still replying 503):
     # await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
     # or wait for a log line (a plain string is a substring-match shorthand):
-    # await wait_for_line(proc.stdout_lines(), "listening", timeout=10)
+    # await wait_for_line(proc.stderr_lines(), "listening", timeout=10)
     # or wait for a Unix socket to accept connections (stronger than a path check):
     # await wait_for_unix_socket("/run/my-server.sock", timeout=10)
     # or wait for a pid file to appear:
@@ -451,13 +451,16 @@ head = git.run(["rev-parse", "HEAD"])            # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 ```
 
-Modern tools (`gh`, `kubectl`, `docker`, `az`, `jj`) emit machine-readable JSON;
-`run_json` / `arun_json` run like `run` (requiring a zero exit) and hand back the
-already-parsed object, so you skip the `run(...)` + `json.loads(...)` +
-error-mapping boilerplate:
+Modern tools (`gh`, `kubectl`, `docker`, `az`, `jj`) emit machine-readable JSON.
+For a one-off call, `Command.run_json()` / `arun_json()` decode it directly;
+`CliClient.run_json()` / `arun_json()` add reusable program defaults. Both run
+like `run` (requiring a zero exit) and hand back the already-parsed object, so
+you skip the `run(...)` + `json.loads(...)` + error-mapping boilerplate:
 
 ```python
-from processkit import CliClient, InvalidJson
+from processkit import CliClient, Command, InvalidJson
+
+version = Command("tool", ["version", "--json"]).run_json()
 
 gh = CliClient("gh")
 try:
@@ -1040,6 +1043,7 @@ async API or a `timeout()` there). *Deeper:
 | `output()` | `ProcessResult` | captured (`.code`) | captured (`.timed_out` / `.signal`) | You want to inspect the outcome yourself |
 | `output_bytes()` | `BytesResult` | captured | captured | stdout is binary (images, archives) |
 | `run()` | trimmed stdout `str` | raises `NonZeroExit` | raises `Timeout` / `Signalled` | "Give me the answer, or fail" |
+| `run_json()` | decoded JSON value | raises `NonZeroExit` | raises `Timeout` / `Signalled` | A one-off tool emits machine-readable JSON |
 | `exit_code()` | `int` (raw) | returns the code | raises (no `-1` sentinel) | The exit code *is* the answer |
 | `probe()` | `bool` | `0`→`True`, `1`→`False`, else raises | raises | Predicate tools: `git diff --quiet`, `grep -q` |
 | `start()` / `astart()` | `RunningProcess` | — | — | Streaming / interactive I/O — see [Streaming](streaming.md) |
@@ -1047,11 +1051,24 @@ async API or a `timeout()` there). *Deeper:
 The capturing verbs (`output`, `output_bytes`) treat a non-zero exit, a timeout,
 and a signal-kill as **data** — they never raise on the child's outcome. The
 checking verbs (`run`, `exit_code`, `probe`) turn those into exceptions. Async
-twins: `aoutput`, `aoutput_bytes`, `arun`, `aexit_code`, `aprobe`, `astart`.
+twins: `aoutput`, `aoutput_bytes`, `arun`, `arun_json`, `aexit_code`, `aprobe`,
+`astart`.
 
 ```python
 result = Command("git", ["merge", "feature"]).output()
 print(result.code, result.is_success, result.stdout)   # nothing raised
+```
+
+`run_json()` is the checked JSON twin of `run()`: it requires a zero exit and
+passes stdout through `json.loads`, returning ordinary Python dictionaries,
+lists, scalars, booleans, or `None`. A successful command with malformed JSON
+raises `InvalidJson` (a `ProcessError`) carrying the program and a bounded stdout
+fragment; a process failure remains the same `NonZeroExit`/`Timeout`/`Signalled`
+that `run()` would raise.
+
+```python
+metadata = Command("tool", ["metadata", "--json"]).run_json()
+metadata = await Command("tool", ["metadata", "--json"]).arun_json()
 ```
 
 ## Program, arguments, working directory
@@ -2455,7 +2472,7 @@ arrives, write stdin incrementally, probe for readiness, profile a run, and tear
 the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
-- [Streaming stdout](#streaming-stdout)
+- [Streaming stdout or stderr](#streaming-stdout-or-stderr)
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
@@ -2518,7 +2535,7 @@ tree's fate (`owns_group` is `False`), so `shutdown()`/`ashutdown()` raise
 `Unsupported` there; tear such a child down via the group (or `kill()`). See
 [Process groups](process-groups.md).
 
-## Streaming stdout
+## Streaming stdout or stderr
 
 `stdout_lines()` is a synchronous setup call that returns a `StdoutLines` async
 iterator of decoded lines, yielded as the child produces them — no waiting for
@@ -2555,6 +2572,22 @@ to know:
   [teardown](#deterministic-teardown) kill the tree (shown below).
 - The line counters tick live: `proc.stdout_line_count` /
   `proc.stderr_line_count` are cheap progress gauges while you stream.
+
+When a service announces readiness on stderr, use `stderr_lines()` directly:
+
+```python
+from processkit import Command, wait_for_line
+
+proc = await Command("my-server").astart()
+banner = await wait_for_line(proc.stderr_lines(), "listening", timeout=10)
+```
+
+`stderr_lines()` drains stdout in the background but yields only decoded stderr
+lines. It consumes the same one-shot output as `stdout_lines()`,
+`output_events()`, and `lifecycle_events()`, so choose one of those four for a
+handle; afterwards use `finish()`/`afinish()` or `outcome()`/`aoutcome()` to
+report the run. Because the
+current core adapter starts from the merged stream, stdout must remain piped.
 
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*
@@ -5412,6 +5445,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `RunningProcess.stderr_lines()` for stderr-only line streaming and direct
+  use with readiness helpers such as `wait_for_line`.
+- Add `Command.run_json()` / `arun_json()` with the same typed JSON decoding and
+  `InvalidJson` diagnostics as `CliClient`.
 - Add a **CLI Runner** link immediately after the Rust version in the Pages
   navigation.
 - Add opt-in pseudo-terminal launches with `Command.pty(...)` and live terminal
@@ -6803,7 +6840,8 @@ captured ``timed_out`` contract is untouched (an idle-timeout never sets
 it).
 
 Enforced on the streaming/interactive surface only — ``start()`` /
-``astart()`` + ``stdout_lines()`` / ``output_events()`` — since idle
+``astart()`` + one of the output iterators (``stdout_lines()``,
+``stderr_lines()``, ``output_events()``, or ``lifecycle_events()``) — since idle
 monitoring rides that per-line channel. The one-shot capture verbs
 (``output``/``run``/``exit_code``/``probe`` and their ``a``-twins), the
 ``Pipeline``, and ``Supervisor`` run entirely inside the crate, which has
@@ -6811,8 +6849,8 @@ no native idle-timeout to enforce, so they do **not** honor it (that needs
 upstream support). Monitoring rides the streaming verbs, which the crate
 gates on stdout being piped: under
 ``stdout_file``/``stdout("inherit")``/``stdout("null")`` both
-``stdout_lines()`` and ``output_events()`` raise ``ProcessError`` ("stdout
-is not piped") at setup, so an idle-timeout on a redirected stdout is
+all four output iterators raise ``ProcessError`` ("stdout is not piped")
+at setup, so an idle-timeout on a redirected stdout is
 diagnosed there — never silently un-enforced. ``stderr_file`` leaves
 stdout piped, so idle monitoring keeps working on the stdout channel.
 
@@ -7259,6 +7297,17 @@ def output_bytes() -> BytesResult
 def run() -> str
 ```
 
+#### `run_json`
+
+```text
+def run_json() -> Any
+```
+
+Require a zero exit and decode stdout with ``json.loads``.
+
+Process failures match ``run()``. Invalid JSON raises ``InvalidJson``
+with ``program`` and a bounded ``stdout`` fragment.
+
 #### `exit_code`
 
 ```text
@@ -7319,6 +7368,14 @@ def aoutput_bytes() -> Awaitable[BytesResult]
 ```text
 def arun() -> Awaitable[str]
 ```
+
+#### `arun_json`
+
+```text
+def arun_json() -> Awaitable[Any]
+```
+
+Async counterpart of ``run_json()``.
 
 #### `aexit_code`
 
@@ -7635,8 +7692,9 @@ A handle to a started process: stream output, write stdin, wait for exit.
 
 Usable as a (async) context manager — exiting the block tears the process
 down (a hard kill of the whole private tree for a standalone
-``start()``/``astart()`` handle). ``stdout_lines()`` / ``output_events()`` /
-``take_stdin()`` / ``kill()`` are *synchronous* setup calls; the
+``start()``/``astart()`` handle). ``stdout_lines()`` / ``stderr_lines()`` /
+``output_events()`` / ``lifecycle_events()`` / ``take_stdin()`` / ``kill()``
+are *synchronous* setup calls; the
 iterator / handle they return is what you await.
 
 Every consuming verb — ``outcome``/``finish``/``output``/``output_bytes``/
@@ -7697,6 +7755,19 @@ owns_group: bool | None
 ```text
 def stdout_lines() -> StdoutLines
 ```
+
+#### `stderr_lines`
+
+```text
+def stderr_lines() -> StderrLines
+```
+
+Stream decoded stderr lines while background-draining stdout.
+
+Consumes the same one-shot output as ``stdout_lines()``,
+``output_events()``, and ``lifecycle_events()``. Afterwards use
+``finish()``/``afinish()`` or
+``outcome()``/``aoutcome()`` to report the run.
 
 #### `output_events`
 
@@ -8280,6 +8351,17 @@ class StdoutLines
 ```
 
 Async iterator over a process's stdout, line by line.
+
+### `StderrLines`
+
+```text
+class StderrLines
+```
+
+Async iterator over a process's stderr, line by line.
+
+Backed by the merged lifecycle stream: stdout is drained but not yielded.
+Choose this or the other one-shot output streams on a process handle.
 
 ### `OutputEvents`
 
@@ -9617,7 +9699,7 @@ timeout is a distinct condition from a wall-clock `timeout()` expiry — "the
 child went silent" vs "the run took too long overall" — so `except
 IdleTimeout` does not swallow a wall-clock `Timeout` and vice-versa, while
 `except ProcessError` still catches both. Raised from the streaming
-iterators (`stdout_lines()` / `output_events()`) on the handle from
+output iterators on the handle from
 `start()`/`astart()`; the one-shot capture verbs do not enforce
 `idle_timeout` (see its docstring).
 
@@ -9805,7 +9887,7 @@ program: str
 class InvalidJson
 ```
 
-`CliClient.run_json()` / `arun_json()` ran the command successfully (a
+A `Command` or `CliClient` JSON verb ran the command successfully (a
 zero exit, like `run`) but its stdout did not parse as JSON.
 
 A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,

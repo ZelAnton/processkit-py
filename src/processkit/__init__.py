@@ -10,7 +10,7 @@ Both a synchronous surface and an asyncio-native one are provided:
   `Command(...).start()` for a scoped background child you watch and tear down.
 - Async: `await Command(...).aoutput()` / `.arun()` / `.astart()`,
   `async with ProcessGroup() as g:`, and streaming over a `RunningProcess`
-  (`async for line in proc.stdout_lines(): ...`, interactive `take_stdin()`).
+  (`stdout_lines()` / `stderr_lines()`, interactive `take_stdin()`).
 
 A `RunningProcess`'s *consuming* verbs each come in a sync/async pair, like
 everywhere else in this library: `outcome`/`aoutcome` (named to dodge the
@@ -71,6 +71,7 @@ from ._processkit import (
     RunProfile,
     ShutdownReport,
     Signalled,
+    StderrLines,
     StdoutLines,
     SupervisionOutcome,
     SupervisionSession,
@@ -165,6 +166,7 @@ __all__ = [
     "ShutdownReport",
     "SignalName",
     "Signalled",
+    "StderrLines",
     "StdoutLines",
     "StrPath",
     "StreamingRunner",

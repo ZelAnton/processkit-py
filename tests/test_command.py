@@ -33,6 +33,7 @@ from processkit import (
     Command,
     Finished,
     IdleTimeout,
+    InvalidJson,
     NonZeroExit,
     Outcome,
     OutputEvent,
@@ -76,6 +77,40 @@ def test_output_captures_stdout_and_code() -> None:
 
 def test_run_returns_trimmed_stdout() -> None:
     assert Command(PY, ["-c", "print('hi')"]).run() == "hi"
+
+
+def test_command_run_json_parses_valid_json() -> None:
+    value = Command(PY, ["-c", "import json; print(json.dumps({'ok': [1, True]}))"]).run_json()
+    assert value == {"ok": [1, True]}
+
+
+def test_command_arun_json_parses_valid_json() -> None:
+    async def scenario() -> object:
+        return await Command(PY, ["-c", "print('[1, 2, null]')"]).arun_json()
+
+    assert asyncio.run(scenario()) == [1, 2, None]
+
+
+def test_command_run_json_invalid_raises_typed_error() -> None:
+    with pytest.raises(InvalidJson) as excinfo:
+        Command(PY, ["-c", "print('not-json')"]).run_json()
+
+    assert excinfo.value.program == PY
+    assert "not-json" in excinfo.value.stdout
+    assert not isinstance(excinfo.value, json.JSONDecodeError)
+
+
+def test_command_arun_json_invalid_raises_typed_error() -> None:
+    async def scenario() -> None:
+        with pytest.raises(InvalidJson):
+            await Command(PY, ["-c", "print('still-not-json')"]).arun_json()
+
+    asyncio.run(scenario())
+
+
+def test_command_run_json_requires_zero_exit() -> None:
+    with pytest.raises(NonZeroExit):
+        Command(PY, ["-c", "import sys; print('{}'); sys.exit(3)"]).run_json()
 
 
 def test_combined_is_a_property_with_both_streams() -> None:

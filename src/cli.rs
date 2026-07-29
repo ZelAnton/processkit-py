@@ -213,7 +213,7 @@ fn build_command(
 /// the binding-synthesized `InvalidJson` (carrying `program` and a bounded stdout
 /// fragment — see [`invalid_json_err`]), never a bare `json.JSONDecodeError`, so a
 /// caller can `except InvalidJson` / `except ProcessError` uniformly and read the
-/// context. `program` names the client's program for the diagnostic.
+/// context. `program` names the executed command for the diagnostic.
 ///
 /// Decision (T-155): JSON is parsed here through Python's stdlib `json.loads`,
 /// **not** a new `serde_json` Cargo dependency. `json` already ships a fast C
@@ -223,7 +223,11 @@ fn build_command(
 /// over the crate as the other `CliClient` verbs — the parse is the sole
 /// JSON-specific step and does not warrant widening the crate's dependency surface
 /// for one method pair.
-fn parse_json<'py>(py: Python<'py>, program: &str, text: &str) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn parse_json<'py>(
+    py: Python<'py>,
+    program: &str,
+    text: &str,
+) -> PyResult<Bound<'py, PyAny>> {
     match py.import("json")?.call_method1("loads", (text,)) {
         Ok(value) => Ok(value),
         Err(parse_error) => Err(invalid_json_err(py, program, text, &parse_error)),

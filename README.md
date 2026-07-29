@@ -109,6 +109,7 @@ decides what you get back. Each has an `a`-prefixed asyncio twin
 | You want | Call | You get |
 |---|---|---|
 | stdout, success required | `.run()` | trimmed `str`; non-zero exit / timeout / kill → typed exception |
+| decoded JSON, success required | `.run_json()` | native Python value; invalid JSON → `InvalidJson` |
 | the full outcome, exit code as data | `.output()` / `.output_bytes()` | `ProcessResult` / `BytesResult` — code, stdout, stderr, `timed_out`; never raises on a non-zero exit |
 | just the exit code | `.exit_code()` | `int` (a timed-out / killed run raises instead of inventing `-1`) |
 | a yes/no answer | `.probe()` | `bool` — exit 0 → `True`, 1 → `False`, anything else raises |
@@ -335,7 +336,7 @@ started. Three async probes replace the arbitrary sleep:
 from processkit import Command, wait_until, wait_for_port, wait_for_line
 
 proc = await Command("my-server").astart()
-lines = proc.stdout_lines()
+lines = proc.stderr_lines()  # use stdout_lines() when the banner is on stdout
 await wait_for_line(lines, "listening on", timeout=10)                  # a log line
 await wait_for_port("127.0.0.1", 8080, timeout=10)                      # a TCP port
 await wait_until(lambda: health_check(), timeout=10, interval=0.1)      # any condition
@@ -414,15 +415,17 @@ await stdin.close()
 
 ### Wrapping a CLI tool
 
-`CliClient` binds a program to default timeout/env, so repeated calls pass only
-their args:
+`Command.run_json()` / `arun_json()` decode a one-off tool's JSON directly.
+`CliClient` binds a program to default timeout/env when repeated calls should
+pass only their args:
 
 ```python
-from processkit import CliClient
+from processkit import CliClient, Command
 
 git = CliClient("git", default_timeout=30.0)
 head = git.run(["rev-parse", "HEAD"])     # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
+metadata = Command("tool", ["metadata", "--json"]).run_json()
 ```
 
 For testable code, pass `runner=` (a `ScriptedRunner` and friends) to

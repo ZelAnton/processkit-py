@@ -37,27 +37,48 @@ from .conftest import NO_SUCH_PROGRAM, spawn_grandchild_command
 PY = sys.executable
 
 
-def test_output_all_returns_results_in_order() -> None:
+def _forced_inverted_completion_pair(
+    marker: pathlib.Path, *, binary: bool = False
+) -> tuple[Command, Command]:
+    marker_arg = str(marker)
+    slow_emit = "sys.stdout.buffer.write(b'\\x01'); sys.stdout.flush()" if binary else "print(1)"
+    fast_emit = "sys.stdout.buffer.write(b'\\x02'); sys.stdout.flush()" if binary else "print(2)"
+    slow_code = (
+        "import pathlib, sys, time\n"
+        "marker = pathlib.Path(sys.argv[1])\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not marker.exists():\n"
+        "    if time.monotonic() >= deadline: sys.exit(99)\n"
+        "    time.sleep(0.01)\n"
+        "time.sleep(1)\n"
+        f"{slow_emit}\n"
+    )
+    fast_code = f"import pathlib, sys\n{fast_emit}\npathlib.Path(sys.argv[1]).write_text('done')\n"
+    return (
+        Command(PY, ["-c", slow_code, marker_arg]),
+        Command(PY, ["-c", fast_code, marker_arg]),
+    )
+
+
+def test_output_all_returns_results_in_order(tmp_path: pathlib.Path) -> None:
     # The first command sleeps far longer than the second, so it *finishes*
     # last -- an implementation that (bug) returned results in completion
     # order rather than input order would put "2" first here. The previous
     # version of this test raced two instantaneous commands, which a
     # completion-order implementation would also have passed by coincidence
     # (nothing forced their completion order to differ from input order).
-    slow = Command(PY, ["-c", "import time; time.sleep(0.5); print(1)"])
-    fast = Command(PY, ["-c", "print(2)"])
+    slow, fast = _forced_inverted_completion_pair(tmp_path / "fast-finished")
     results = output_all([slow, fast], concurrency=2)
     assert all(isinstance(r, ProcessResult) for r in results)
     assert [r.stdout.strip() for r in results if isinstance(r, ProcessResult)] == ["1", "2"]
 
 
-def test_aoutput_all_returns_results_in_order() -> None:
+def test_aoutput_all_returns_results_in_order(tmp_path: pathlib.Path) -> None:
     # Async twin of test_output_all_returns_results_in_order: same inverted
     # completion order (first command sleeps longest, finishes last), same
     # input-order guarantee on the returned list.
     async def scenario() -> list[ProcessResult | ProcessError]:
-        slow = Command(PY, ["-c", "import time; time.sleep(0.5); print(1)"])
-        fast = Command(PY, ["-c", "print(2)"])
+        slow, fast = _forced_inverted_completion_pair(tmp_path / "fast-finished")
         return await aoutput_all([slow, fast], concurrency=2)
 
     results = asyncio.run(scenario())
@@ -65,16 +86,14 @@ def test_aoutput_all_returns_results_in_order() -> None:
     assert [r.stdout.strip() for r in results if isinstance(r, ProcessResult)] == ["1", "2"]
 
 
-def test_output_all_bytes_returns_results_in_order() -> None:
+def test_output_all_bytes_returns_results_in_order(tmp_path: pathlib.Path) -> None:
     # Bytes twin, on the separate bytes result-conversion path
     # (`bytes_results_to_pylist`) -- same inverted-completion-order guarantee.
     # `aoutput_all_bytes` is not given its own copy: the async bridge is
     # already exercised by `test_aoutput_all_returns_results_in_order` and the
     # bytes conversion path by this test, and the ordering logic itself is
     # shared by all four entry points, not reimplemented per variant.
-    slow_code = "import sys, time; time.sleep(0.5); sys.stdout.buffer.write(b'\\x01')"
-    slow = Command(PY, ["-c", slow_code])
-    fast = Command(PY, ["-c", "import sys; sys.stdout.buffer.write(b'\\x02')"])
+    slow, fast = _forced_inverted_completion_pair(tmp_path / "fast-finished", binary=True)
     results = output_all_bytes([slow, fast], concurrency=2)
     assert all(isinstance(r, BytesResult) for r in results)
     assert [r.stdout for r in results if isinstance(r, BytesResult)] == [b"\x01", b"\x02"]
@@ -505,7 +524,7 @@ def test_aoutput_all_bounds_live_children_to_concurrency(
 # --- streaming as-completed (aoutput_as_completed) ---------------------------
 
 
-def test_aoutput_as_completed_yields_in_completion_order() -> None:
+def test_aoutput_as_completed_yields_in_completion_order(tmp_path: pathlib.Path) -> None:
     # The whole point of the streaming variant vs collect-all `aoutput_all`: the
     # first command sleeps far longer than the second, so it *finishes* last, and
     # a completion-order iterator must yield the fast slot (index 1) BEFORE the
@@ -514,8 +533,7 @@ def test_aoutput_as_completed_yields_in_completion_order() -> None:
     # completion order as `test_aoutput_all_returns_results_in_order`, but here
     # the ordering asserted is the emission order, not a returned list.
     async def scenario() -> list[tuple[int, ProcessResult | ProcessError]]:
-        slow = Command(PY, ["-c", "import time; time.sleep(0.5); print(1)"])
-        fast = Command(PY, ["-c", "print(2)"])
+        slow, fast = _forced_inverted_completion_pair(tmp_path / "fast-finished")
         collected: list[tuple[int, ProcessResult | ProcessError]] = []
         async for pair in aoutput_as_completed([slow, fast], concurrency=2):
             collected.append(pair)

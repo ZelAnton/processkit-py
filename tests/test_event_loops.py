@@ -18,9 +18,11 @@ its backend parameter is skipped, and the plain-asyncio backend still runs.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import pathlib
 import sys
 from collections.abc import Callable, Coroutine
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -32,12 +34,12 @@ from ._programs import free_port
 from .conftest import PY, spawn_grandchild_command
 
 try:
-    import uvloop  # type: ignore[import-not-found]
+    uvloop: ModuleType | None = importlib.import_module("uvloop")
 except ImportError:
     uvloop = None
 
 try:
-    import anyio  # type: ignore[import-not-found]
+    anyio: ModuleType | None = importlib.import_module("anyio")
 except ImportError:
     anyio = None
 

@@ -1,5 +1,5 @@
 //! The async streaming/interactive handles: `RunningProcess` plus its
-//! `ProcessStdin`, `StdoutLines`, and `OutputEvents`.
+//! `ProcessStdin`, `StdoutLines`, `StderrLines`, and `OutputEvents`.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
@@ -12,6 +12,7 @@ use processkit::Finished as PkFinished;
 // `output_events()` -> `events()`) as the merged stream widened from output to
 // the whole process lifecycle. The Python names are unchanged — see
 // `PyOutputEvents` below.
+use processkit::ProcessEvent as PkProcessEvent;
 use processkit::ProcessEvents as PkProcessEvents;
 use processkit::ProcessStdin as PkProcessStdin;
 use processkit::RunningProcess as PkRunningProcess;
@@ -42,8 +43,8 @@ use crate::runtime::{
 /// life (see `impl Drop for PyRunningProcess`).
 type SharedProcess = Arc<StdMutex<Option<PkRunningProcess>>>;
 
-/// The idle-timeout watchdog carried by a `stdout_lines()` / `output_events()`
-/// stream: the inactivity window plus a shared handle to the process to kill on
+/// The idle-timeout watchdog carried by a process output stream: the inactivity
+/// window plus a shared handle to the process to kill on
 /// silence. Enforcement rides the existing per-line output channel — the
 /// stream's own `.next()` — rather than a separate process-supervision loop:
 /// each `__anext__` bounds the wait for the next line by `window`, and a lapse
@@ -535,6 +536,51 @@ impl PyOutputEvents {
     }
 }
 
+/// An async iterator over stderr lines. The core exposes one merged lifecycle
+/// stream, so this adapter drains stdout in the background and yields only the
+/// stderr variants.
+#[pyclass(name = "StderrLines", module = "processkit")]
+pub(crate) struct PyStderrLines {
+    inner: Arc<Mutex<EventsDrive>>,
+    idle: Option<IdleGuard>,
+}
+
+#[pymethods]
+impl PyStderrLines {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = self.inner.clone();
+        let idle = self.idle.clone();
+        drive_async_py(py, async move {
+            let mut guard = stream.lock().await;
+            loop {
+                let event = match &idle {
+                    Some(guard_idle) => {
+                        match tokio::time::timeout(guard_idle.window, guard.next_event()).await {
+                            Ok(event) => event,
+                            Err(_elapsed) => {
+                                guard_idle.kill();
+                                return Err(idle_timeout_err(guard_idle.window.as_secs_f64()));
+                            }
+                        }
+                    }
+                    None => guard.next_event().await,
+                };
+                match event {
+                    Some(PkProcessEvent::Stderr(line)) => return Ok(line.into_text()),
+                    // A stdout line still resets the idle window; it is simply
+                    // not part of this stderr-only iterator's public output.
+                    Some(_) => continue,
+                    None => return Err(PyStopAsyncIteration::new_err(())),
+                }
+            }
+        })
+    }
+}
+
 /// An async iterator over the complete ordered process lifecycle.
 #[pyclass(name = "LifecycleEvents", module = "processkit")]
 pub(crate) struct PyLifecycleEvents {
@@ -591,13 +637,13 @@ impl PyLifecycleEvents {
 // instead; the guard is always released (via the owned-returning helpers below)
 // *before* any `block_on`/await, so a consumed handle reads back cleanly as
 // `None` and the wait window is never held under the lock. The streaming
-// handles (`ProcessStdin`/`StdoutLines`/`OutputEvents`) keep their own
+// handles (`ProcessStdin` and the output iterators) keep their own
 // `tokio::sync::Mutex` for their async-held stream state — unchanged.
 #[pyclass(name = "RunningProcess", module = "processkit", frozen)]
 pub(crate) struct PyRunningProcess {
     // `None` after a consuming method has taken ownership of the process.
     // `Arc` (was a bare `StdMutex`) so an idle-timeout watchdog in a
-    // `stdout_lines()`/`output_events()` stream can share the very same slot and
+    // output stream can share the very same slot and
     // hard-kill the child on silence through the one lock — no separate kill
     // channel that could race a consuming verb. Every access still funnels
     // through `lock()`, so the `Arc` is transparent to the methods below.
@@ -616,7 +662,7 @@ pub(crate) struct PyRunningProcess {
 impl PyRunningProcess {
     /// Wrap a freshly started crate process, carrying the originating
     /// `Command`'s binding-only idle-timeout onto the handle so its
-    /// `stdout_lines()` / `output_events()` streams enforce it. The single
+    /// output streams enforce it. The single
     /// constructor every `start()`/`astart()` site (on `Command`, `Runner`/the
     /// doubles, and `ProcessGroup`) funnels through.
     pub(crate) fn started(running: PkRunningProcess, idle_timeout: Option<Duration>) -> Self {
@@ -956,6 +1002,31 @@ impl PyRunningProcess {
         })
     }
 
+    /// An async iterator over stderr, line by line. This consumes the merged
+    /// lifecycle stream, discards stdout lines, and preserves normal
+    /// finish/outcome reporting through the shared finisher.
+    fn stderr_lines(&self) -> PyResult<PyStderrLines> {
+        let idle = self.idle_guard();
+        let _guard = runtime()?.enter();
+        let events = {
+            let mut inner = self.lock();
+            let running = inner
+                .as_mut()
+                .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+            running.events().map_err(map_err)?
+        };
+        Ok(PyStderrLines {
+            inner: Arc::new(Mutex::new(EventsDrive {
+                stream: events,
+                process: self.inner.clone(),
+                finish: self.finish.clone(),
+                reap_started: false,
+                probe_after: Duration::ZERO,
+            })),
+            idle,
+        })
+    }
+
     /// An async iterator over stdout and stderr as interleaved `OutputEvent`s.
     ///
     /// Backed by the crate's `events()` (`output_events()` before crate 3.0.0):
@@ -1281,11 +1352,13 @@ impl Drop for PyRunningProcess {
 }
 
 /// Register this module's pyclasses (`RunningProcess`, `ProcessStdin`,
-/// `StdoutLines`, `OutputEvents`, `LifecycleEvents`) on `_processkit`.
+/// `StdoutLines`, `StderrLines`, `OutputEvents`, `LifecycleEvents`) on
+/// `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunningProcess>()?;
     m.add_class::<PyProcessStdin>()?;
     m.add_class::<PyStdoutLines>()?;
+    m.add_class::<PyStderrLines>()?;
     m.add_class::<PyOutputEvents>()?;
     m.add_class::<PyLifecycleEvents>()?;
     Ok(())

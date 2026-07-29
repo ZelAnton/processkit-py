@@ -14,6 +14,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::cancellation::PyCancellationToken;
+use crate::cli::parse_json;
 use crate::convert::{
     build_output_buffer_policy, build_retry_policy, is_python_writer, nonnegative_duration,
     open_tee_sink, parse_encoding, parse_io_priority, parse_line_terminator, parse_priority,
@@ -22,7 +23,7 @@ use crate::convert::{
 use crate::errors::{map_err, unsupported_err};
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
-use crate::runtime::{block_on, drive_async};
+use crate::runtime::{block_on, drive_async, drive_async_py_convert};
 
 /// A command builder. Builder methods return a new `Command`, so a configured
 /// command is reusable and chains read left to right.
@@ -334,7 +335,8 @@ impl PyCommand {
     /// **Enforced on the streaming/interactive surface only (binding scope).**
     /// Idle monitoring is driven by the existing per-line output channel: it is
     /// applied where the binding itself pumps lines — `start()`/`astart()` +
-    /// `stdout_lines()` / `output_events()` (piped stdout, the default). The
+    /// `stdout_lines()` / `stderr_lines()` / `output_events()` /
+    /// `lifecycle_events()` (piped stdout, the default). The
     /// one-shot capture verbs (`output()`/`run()`/`exit_code()`/`probe()` and
     /// their `a`-twins), the `Pipeline`, and `Supervisor` run entirely inside
     /// the crate, which has **no native idle-timeout** in processkit 2.3.x and
@@ -349,8 +351,8 @@ impl PyCommand {
     /// **Redirected stdout is diagnosed, not silently un-watched (cf.
     /// `stdout_file`, K-043).** Monitoring rides the streaming verbs, which the
     /// crate gates on **stdout** being piped: under `stdout_file()` /
-    /// `stdout("inherit")` / `stdout("null")` both `stdout_lines()` **and**
-    /// `output_events()` raise `ProcessError` ("stdout is not piped …") at setup,
+    /// `stdout("inherit")` / `stdout("null")` all four streaming iterators raise
+    /// `ProcessError` ("stdout is not piped …") at setup,
     /// before any line is read — so an `idle_timeout()` combined with a
     /// redirected stdout surfaces loudly there rather than being quietly
     /// unenforced. `stderr_file()` is the asymmetric case (K-043): it leaves
@@ -1039,6 +1041,15 @@ impl PyCommand {
         block_on(py, self.inner.run())
     }
 
+    /// Require a zero exit, parse stdout as JSON, and return the decoded Python
+    /// object. Invalid JSON raises `InvalidJson` with the command program and a
+    /// bounded stdout fragment; process failures retain `run()` semantics.
+    fn run_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let program = self.inner.program().to_string_lossy().into_owned();
+        let text = block_on(py, self.inner.run())?;
+        parse_json(py, &program, &text)
+    }
+
     /// The exit code; a timeout / signal-kill raises rather than returning a
     /// sentinel.
     fn exit_code(&self, py: Python<'_>) -> PyResult<i32> {
@@ -1115,6 +1126,21 @@ impl PyCommand {
     fn arun<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
         drive_async(py, async move { cmd.run().await })
+    }
+
+    /// Async counterpart of `run_json()`. JSON conversion runs on the event-loop
+    /// thread after the process work completes.
+    fn arun_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let cmd = self.inner.clone();
+        let program = cmd.program().to_string_lossy().into_owned();
+        drive_async_py_convert(
+            py,
+            async move {
+                let text = cmd.run().await.map_err(map_err)?;
+                Ok((program, text))
+            },
+            |py, (program, text)| parse_json(py, &program, &text).map(Bound::unbind),
+        )
     }
 
     /// Async counterpart of `exit_code()`.

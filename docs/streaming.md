@@ -12,7 +12,7 @@ arrives, write stdin incrementally, probe for readiness, profile a run, and tear
 the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
-- [Streaming stdout](#streaming-stdout)
+- [Streaming stdout or stderr](#streaming-stdout-or-stderr)
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
@@ -75,7 +75,7 @@ tree's fate (`owns_group` is `False`), so `shutdown()`/`ashutdown()` raise
 `Unsupported` there; tear such a child down via the group (or `kill()`). See
 [Process groups](process-groups.md).
 
-## Streaming stdout
+## Streaming stdout or stderr
 
 `stdout_lines()` is a synchronous setup call that returns a `StdoutLines` async
 iterator of decoded lines, yielded as the child produces them — no waiting for
@@ -112,6 +112,22 @@ to know:
   [teardown](#deterministic-teardown) kill the tree (shown below).
 - The line counters tick live: `proc.stdout_line_count` /
   `proc.stderr_line_count` are cheap progress gauges while you stream.
+
+When a service announces readiness on stderr, use `stderr_lines()` directly:
+
+```python
+from processkit import Command, wait_for_line
+
+proc = await Command("my-server").astart()
+banner = await wait_for_line(proc.stderr_lines(), "listening", timeout=10)
+```
+
+`stderr_lines()` drains stdout in the background but yields only decoded stderr
+lines. It consumes the same one-shot output as `stdout_lines()`,
+`output_events()`, and `lifecycle_events()`, so choose one of those four for a
+handle; afterwards use `finish()`/`afinish()` or `outcome()`/`aoutcome()` to
+report the run. Because the
+current core adapter starts from the merged stream, stdout must remain piped.
 
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*

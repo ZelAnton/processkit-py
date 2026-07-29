@@ -337,7 +337,7 @@ async with ProcessGroup() as group:
     # port — a warming-up server accepts the port while still replying 503):
     # await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
     # or wait for a log line (a plain string is a substring-match shorthand):
-    # await wait_for_line(proc.stdout_lines(), "listening", timeout=10)
+    # await wait_for_line(proc.stderr_lines(), "listening", timeout=10)
     # or wait for a Unix socket to accept connections (stronger than a path check):
     # await wait_for_unix_socket("/run/my-server.sock", timeout=10)
     # or wait for a pid file to appear:
@@ -451,13 +451,16 @@ head = git.run(["rev-parse", "HEAD"])            # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 ```
 
-Modern tools (`gh`, `kubectl`, `docker`, `az`, `jj`) emit machine-readable JSON;
-`run_json` / `arun_json` run like `run` (requiring a zero exit) and hand back the
-already-parsed object, so you skip the `run(...)` + `json.loads(...)` +
-error-mapping boilerplate:
+Modern tools (`gh`, `kubectl`, `docker`, `az`, `jj`) emit machine-readable JSON.
+For a one-off call, `Command.run_json()` / `arun_json()` decode it directly;
+`CliClient.run_json()` / `arun_json()` add reusable program defaults. Both run
+like `run` (requiring a zero exit) and hand back the already-parsed object, so
+you skip the `run(...)` + `json.loads(...)` + error-mapping boilerplate:
 
 ```python
-from processkit import CliClient, InvalidJson
+from processkit import CliClient, Command, InvalidJson
+
+version = Command("tool", ["version", "--json"]).run_json()
 
 gh = CliClient("gh")
 try:

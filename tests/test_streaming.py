@@ -28,6 +28,7 @@ from processkit import (
     RunProfile,
     Supervisor,
     Unsupported,
+    wait_for_line,
 )
 
 from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
@@ -124,6 +125,61 @@ def test_stdout_lines_streams_in_order() -> None:
     assert finished.timed_out is False
     assert finished.signal == finished.outcome.signal
     assert finished.signal is None
+
+
+def test_stderr_lines_streams_in_order_while_draining_stdout() -> None:
+    code = (
+        "import sys\n"
+        "print('out-ignored', flush=True)\n"
+        "print('err-one', file=sys.stderr, flush=True)\n"
+        "print('err-two', file=sys.stderr, flush=True)\n"
+    )
+
+    async def scenario() -> tuple[list[str], Outcome]:
+        proc = await Command(PY, ["-c", code]).astart()
+        lines = [line async for line in proc.stderr_lines()]
+        return lines, await proc.aoutcome()
+
+    lines, outcome = asyncio.run(scenario())
+    assert lines == ["err-one", "err-two"]
+    assert outcome.exited_zero
+
+
+def test_wait_for_line_accepts_stderr_lines_for_readiness() -> None:
+    code = (
+        "import sys, time\n"
+        "print('starting', flush=True)\n"
+        "print('listening on 8080', file=sys.stderr, flush=True)\n"
+        "time.sleep(0.1)\n"
+    )
+
+    async def scenario() -> tuple[str, Outcome]:
+        proc = await Command(PY, ["-c", code]).astart()
+        line = await wait_for_line(proc.stderr_lines(), "listening", timeout=5.0)
+        return line, await proc.aoutcome()
+
+    line, outcome = asyncio.run(scenario())
+    assert line == "listening on 8080"
+    assert outcome.exited_zero
+
+
+def test_stderr_lines_idle_timeout_resets_on_stdout_activity() -> None:
+    code = (
+        "import sys, time\n"
+        "for _ in range(12):\n"
+        "    print('progress', flush=True)\n"
+        "    time.sleep(0.2)\n"
+        "print('ready', file=sys.stderr, flush=True)\n"
+    )
+
+    async def scenario() -> tuple[list[str], Outcome]:
+        proc = await Command(PY, ["-c", code]).idle_timeout(2.0).astart()
+        lines = [line async for line in proc.stderr_lines()]
+        return lines, await proc.aoutcome()
+
+    lines, outcome = asyncio.run(scenario())
+    assert lines == ["ready"]
+    assert outcome.exited_zero
 
 
 def test_stdout_line_terminator_carriage_return_splits_progress_frames() -> None:
@@ -570,7 +626,9 @@ def test_async_with_reaps_the_tree_after_an_early_break_from_an_exited_child(
     )
 
 
-@pytest.mark.parametrize("stream_verb", ["output_events", "stdout_lines"])
+@pytest.mark.parametrize(
+    "stream_verb", ["output_events", "lifecycle_events", "stderr_lines", "stdout_lines"]
+)
 def test_dropping_the_handle_kills_the_tree_while_a_stream_is_live(
     pid_file: pathlib.Path, stream_verb: str
 ) -> None:

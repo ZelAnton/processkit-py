@@ -1,6 +1,8 @@
-"""The ``run`` subcommand: spawn a child inside a kill-on-exit `ProcessGroup`
-with inherited stdio, implementing the exit-code contract documented in
-`processkit._cli`'s module docstring.
+"""The ``run`` subcommand: spawn a child inside a kill-on-exit `ProcessGroup`.
+
+Stdio is inherited by default; output-observing modes such as idle monitoring,
+capture limits, and PTY relay use the binding's managed streams instead. Exit
+codes follow the contract documented in `processkit._cli`'s module docstring.
 """
 
 from __future__ import annotations
@@ -124,13 +126,25 @@ def _run(
         run_parser.error("--output-limit cannot be combined with --stdout-file")
     if args.idle_timeout is not None and args.stdout_file is not None:
         run_parser.error("--idle-timeout cannot be combined with --stdout-file")
+    if (args.pty_cols is not None or args.pty_rows is not None) and not args.pty:
+        run_parser.error("--pty-cols/--pty-rows requires --pty")
+    if (args.pty_cols is None) != (args.pty_rows is None):
+        run_parser.error("--pty-cols and --pty-rows must be provided together")
+    if args.pty and args.profile is not None:
+        run_parser.error("--pty cannot be combined with --profile")
+    if args.pty and (args.stdout_file is not None or args.stderr_file is not None):
+        run_parser.error("--pty cannot be combined with --stdout-file/--stderr-file")
 
     env_pairs = _parse_environment(run_parser, args.env_file, args.env)
 
     program, *rest = child_argv
     idle_requested = args.idle_timeout is not None
-    streaming_requested = idle_requested or args.output_limit is not None
-    command = Command(program, rest).inherit_stdin()
+    streaming_requested = idle_requested or args.output_limit is not None or args.pty
+    command = Command(program, rest)
+    if args.pty:
+        command = command.pty(cols=args.pty_cols, rows=args.pty_rows)
+    else:
+        command = command.inherit_stdin()
     if streaming_requested:
         # Idle monitoring rides the per-line output channel, so keep stdout/stderr
         # piped (the Command default) — `_drive_idle` re-emits each line — rather
@@ -225,9 +239,9 @@ def _run(
                 _fail(f"could not start {program!r}: {exc}")
                 return EXIT_INTERNAL_ERROR
             if streaming_requested:
-                # Stream + enforce the idle-timeout/output limit (see
-                # `_drive_idle`). The surrounding `with group:` still shuts the
-                # tree down on an early return or a fail-loud overflow.
+                # Relay the PTY stream, or stream + enforce the idle-timeout /
+                # output limit (see `_drive_idle`). The surrounding `with group:`
+                # still shuts the tree down on an early return or fail-loud overflow.
                 profile = None
                 try:
                     outcome = asyncio.run(_drive_idle(proc))

@@ -334,6 +334,8 @@ Things to know:
 
 ## Full lifecycle event stream
 
+Runnable version: [`examples/07_lifecycle_events.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/07_lifecycle_events.py).
+
 For structured logging that needs the pid and terminal outcome in the same
 ordered channel as output, use `lifecycle_events()` instead:
 
@@ -399,6 +401,8 @@ so `send_control("c")` receives real terminal handling (Ctrl-C / SIGINT on
 POSIX, and the corresponding ConPTY control input on Windows).
 
 ## Interactive PTY sessions
+
+Runnable version: [`examples/06_interactive_pty.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/06_interactive_pty.py).
 
 Use a PTY for programs that change buffering or interaction when stdout is not
 a terminal:

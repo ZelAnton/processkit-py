@@ -1,0 +1,9 @@
+# The binding crate contains meaningful Rust-side orchestration beyond the PyO3
+# declarations. Keep mutation testing on the top-level binding modules; the
+# nightly workflow shards this complete list to keep each runner bounded.
+examine_globs = ["src/*.rs"]
+
+# A mutated completion or teardown path can hang instead of failing. Allow a
+# slow baseline some headroom while retaining a finite per-mutant deadline.
+timeout_multiplier = 6
+minimum_test_timeout = 30

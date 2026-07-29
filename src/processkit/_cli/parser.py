@@ -253,6 +253,27 @@ def _build_parser() -> tuple[
         metavar="CLASS[:LEVEL]",
         help="Set Linux I/O priority: idle, best_effort:0..7, or real_time:0..7.",
     )
+    run_parser.add_argument(
+        "--pty",
+        action="store_true",
+        help="Run the child under a pseudo-terminal and emit its merged terminal stream.",
+    )
+    run_parser.add_argument(
+        "--pty-cols",
+        dest="pty_cols",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Initial pseudo-terminal width (requires --pty and --pty-rows).",
+    )
+    run_parser.add_argument(
+        "--pty-rows",
+        dest="pty_rows",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="Initial pseudo-terminal height (requires --pty and --pty-cols).",
+    )
     supervise_parser = subparsers.add_parser(
         "supervise",
         help="Keep a command alive with restart policy and backoff",

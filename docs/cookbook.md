@@ -438,6 +438,8 @@ stream. Cancelling the consuming task, or `break`ing out of the loop early, tear
 down every command still in flight, leaving no orphaned children. Use
 `aoutput_as_completed_bytes` for undecoded `bytes` output.
 
+Runnable version: [`examples/08_batch_as_completed.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/08_batch_as_completed.py).
+
 ## Wrap a CLI tool
 
 `CliClient` binds a program to default timeout/env, so repeated calls pass only

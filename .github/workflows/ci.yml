@@ -171,7 +171,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest]
         python: ['', '3.14t']
     runs-on: ${{ matrix.os }}
     steps:
@@ -191,7 +191,7 @@ jobs:
       # Coverage (`--cov`, from the `[tool.coverage.run]` config in pyproject.toml)
       # is measured on exactly one representative leg (ubuntu-latest, abi3/GIL):
       # the pure-Python surface being measured has no OS-specific or free-
-      # threading-specific code paths, so instrumenting all 8 legs would only add
+      # threading-specific code paths, so instrumenting all 10 legs would only add
       # overhead for an identical number. `--cov` (no path argument) picks up
       # `[tool.coverage.run] source` from pyproject.toml; `parallel = true` there
       # plus pytest-cov's built-in xdist support combine each `-n auto` worker's

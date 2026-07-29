@@ -60,6 +60,11 @@ launch. It is incompatible with inherited, null, or file-redirected stdio;
 conflicts fail while the command is built rather than becoming platform-specific
 no-ops.
 
+The command-line wrapper exposes the non-interactive form as `python -m
+processkit run --pty [--pty-cols N --pty-rows N] -- PROGRAM ...`; its merged
+terminal stream is relayed on stdout. Interactive input and live resizing remain
+available through the Python `RunningProcess` API.
+
 ## I/O scheduling priority (`Command.io_priority()`)
 
 | Platform | Behavior |

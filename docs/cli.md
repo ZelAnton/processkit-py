@@ -73,6 +73,8 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
 | `--priority LEVEL` | `Command.priority(level)` | CPU priority: `idle`, `below_normal`, `normal`, `above_normal`, or `high`. |
 | `--io-priority CLASS[:LEVEL]` | `Command.io_priority(...)` | Linux I/O priority: `idle`, `best_effort:0..7`, or `real_time:0..7`; unsupported elsewhere. |
+| `--pty` | `Command.pty(...)` | Allocate a pseudo-terminal and relay its one merged terminal stream on stdout. The child does not inherit the wrapper's stdin; use the Python API for an interactive writer. |
+| `--pty-cols N` / `--pty-rows N` | `Command.pty(cols=..., rows=...)` | Initial terminal size. Requires `--pty`; provide both dimensions together. |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
@@ -163,6 +165,17 @@ code `125`; output beyond the ceiling is never relayed. Direct `--stdout-file`
 redirection has no stdout pipe to monitor, so combining it with
 `--output-limit` is a usage error. `--stderr-file` remains compatible: stderr
 goes directly to the file and the ceiling applies to the still-captured stdout.
+
+`--pty` also uses the line pump, but the source is a real pseudo-terminal: tools
+that require `isatty()` see a terminal and stdout/stderr arrive as one merged
+stream on the wrapper's stdout. Optional dimensions must be supplied together.
+PTY owns the child's stdio, so direct file redirects and `--profile` are usage
+errors; `--output-limit`, idle/wall-clock timeouts, resource limits, and
+`--create-no-window` keep their normal semantics. This CLI mode is intended for
+non-interactive TTY-sensitive tools and does not forward the wrapper's stdin;
+use `Command.pty().keep_stdin_open()` plus `take_stdin()` for interactive input.
+If the platform cannot allocate a PTY, the request fails through the existing
+`Unsupported`/internal-error path (`125`) rather than silently using pipes.
 
 `--idle-timeout` is **not** available under `supervise`: each supervised
 incarnation runs through `Supervisor`'s one-shot verbs, which processkit's core

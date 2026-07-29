@@ -70,6 +70,9 @@ def test_run_help_does_not_raise() -> None:
     assert "--kill-on-parent-death" in result.stdout
     assert "--priority" in result.stdout
     assert "--io-priority" in result.stdout
+    assert "--pty" in result.stdout
+    assert "--pty-cols" in result.stdout
+    assert "--pty-rows" in result.stdout
     assert "--env-file" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
@@ -869,6 +872,55 @@ def test_run_rejects_malformed_io_priority() -> None:
     result = _run_cli("run", "--io-priority", "best_effort", "--", PY)
     assert result.returncode == 2
     assert "best_effort:LEVEL" in result.stderr
+
+
+def test_run_pty_gives_child_a_terminal_and_merges_stderr_into_stdout() -> None:
+    code = (
+        "import os, sys; "
+        "print(f'tty={os.isatty(1)}', flush=True); "
+        "print('from-stderr', file=sys.stderr, flush=True)"
+    )
+    result = _run_cli("run", "--pty", "--", PY, "-c", code)
+    assert result.returncode == 0
+    assert "tty=True" in result.stdout
+    assert "from-stderr" in result.stdout
+    assert result.stderr == ""
+
+
+def test_run_pty_applies_initial_terminal_size() -> None:
+    result = _run_cli(
+        "run",
+        "--pty",
+        "--pty-cols",
+        "91",
+        "--pty-rows",
+        "37",
+        "--",
+        PY,
+        "-c",
+        "import os; size = os.get_terminal_size(1); print(size.columns, size.lines)",
+    )
+    assert result.returncode == 0
+    # ConPTY may wrap the payload in terminal-control sequences; the reported
+    # geometry itself must still be present in the merged terminal stream.
+    assert "91 37" in result.stdout
+
+
+def test_run_pty_rejects_incomplete_size_and_conflicting_sinks(tmp_path: pathlib.Path) -> None:
+    cases = [
+        (["--pty-cols", "80"], "requires --pty"),
+        (["--pty", "--pty-cols", "80"], "must be provided together"),
+        (["--pty", "--profile"], "cannot be combined with --profile"),
+        (
+            ["--pty", "--stderr-file", str(tmp_path / "stderr.log")],
+            "cannot be combined with --stdout-file/--stderr-file",
+        ),
+    ]
+    for flags, message in cases:
+        result = _run_cli("run", *flags, "--", PY)
+        assert result.returncode == 2
+        assert message in result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
 
 
 # --- --profile ------------------------------------------------------------

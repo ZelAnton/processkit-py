@@ -681,6 +681,7 @@ cancellation, PTY, open stdin, capture callbacks/limits/tees, inherited stdio,
 or parent-death cleanup — is rejected with `Unsupported`, never ignored.
 "Detached" means outside processkit's container, not outside a surrounding CI
 job, Windows Job Object, cgroup, service, or container imposed by the host.
+Runnable version: [`examples/09_spawn_detached.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/09_spawn_detached.py).
 
 ## Pseudo-terminal mode
 
@@ -713,6 +714,7 @@ stdout or stderr, or `stdout_file()` / `stderr_file()`; the conflicting builder
 call raises before a child can spawn. Use non-interactive flags instead when a
 PTY is unnecessary — for example `ssh -o BatchMode=yes` or
 `GIT_TERMINAL_PROMPT=0`. *Deeper: [Streaming & interactive I/O](streaming.md).*
+Runnable version: [`examples/06_interactive_pty.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/06_interactive_pty.py).
 
 ## Results
 

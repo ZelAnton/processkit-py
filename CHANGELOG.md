@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `--pty` with optional `--pty-cols`/`--pty-rows` to
+  `python -m processkit run`, exposing a merged pseudo-terminal output stream
+  for tools that require a TTY.
+- Add runnable examples for managed PTY sessions, lifecycle events,
+  completion-order batches, and intentionally detached helpers.
 - Expand `python -m processkit run` with fail-loud captured-output limits,
   direct stdout/stderr file redirects, abrupt-parent-death cleanup, and CPU/I/O
   priority controls.
@@ -41,7 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with this changelog by local and CI drift checks.
 
 ### Changed
--
+- Exercise Windows ARM64 in regular and nightly test matrices, and add a
+  sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
 - Reject an empty key passed through the CLI's `--env` flag with the same usage

@@ -171,6 +171,7 @@ limits from the command line, no code required:
 python -m processkit run --timeout 30 --max-memory 536870912 -- pytest -x
 python -m processkit run --env-file ci.env --env MODE=test -- ./build.sh
 python -m processkit run --output-limit 8388608 --stderr-file build.err -- ./build.sh
+python -m processkit run --pty --pty-cols 120 --pty-rows 40 -- color-sensitive-tool
 python -m processkit supervise --health-port 127.0.0.1:8080 -- ./server
 ```
 

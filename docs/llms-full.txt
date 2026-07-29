@@ -438,6 +438,8 @@ stream. Cancelling the consuming task, or `break`ing out of the loop early, tear
 down every command still in flight, leaving no orphaned children. Use
 `aoutput_as_completed_bytes` for undecoded `bytes` output.
 
+Runnable version: [`examples/08_batch_as_completed.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/08_batch_as_completed.py).
+
 ## Wrap a CLI tool
 
 `CliClient` binds a program to default timeout/env, so repeated calls pass only
@@ -1666,6 +1668,7 @@ cancellation, PTY, open stdin, capture callbacks/limits/tees, inherited stdio,
 or parent-death cleanup — is rejected with `Unsupported`, never ignored.
 "Detached" means outside processkit's container, not outside a surrounding CI
 job, Windows Job Object, cgroup, service, or container imposed by the host.
+Runnable version: [`examples/09_spawn_detached.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/09_spawn_detached.py).
 
 ## Pseudo-terminal mode
 
@@ -1698,6 +1701,7 @@ stdout or stderr, or `stdout_file()` / `stderr_file()`; the conflicting builder
 call raises before a child can spawn. Use non-interactive flags instead when a
 PTY is unnecessary — for example `ssh -o BatchMode=yes` or
 `GIT_TERMINAL_PROMPT=0`. *Deeper: [Streaming & interactive I/O](streaming.md).*
+Runnable version: [`examples/06_interactive_pty.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/06_interactive_pty.py).
 
 ## Results
 
@@ -2794,6 +2798,8 @@ Things to know:
 
 ## Full lifecycle event stream
 
+Runnable version: [`examples/07_lifecycle_events.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/07_lifecycle_events.py).
+
 For structured logging that needs the pid and terminal outcome in the same
 ordered channel as output, use `lifecycle_events()` instead:
 
@@ -2859,6 +2865,8 @@ so `send_control("c")` receives real terminal handling (Ctrl-C / SIGINT on
 POSIX, and the corresponding ConPTY control input on Windows).
 
 ## Interactive PTY sessions
+
+Runnable version: [`examples/06_interactive_pty.py`](https://github.com/ZelAnton/processkit-py/blob/main/examples/06_interactive_pty.py).
 
 Use a PTY for programs that change buffering or interaction when stdout is not
 a terminal:
@@ -4609,6 +4617,8 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
 | `--priority LEVEL` | `Command.priority(level)` | CPU priority: `idle`, `below_normal`, `normal`, `above_normal`, or `high`. |
 | `--io-priority CLASS[:LEVEL]` | `Command.io_priority(...)` | Linux I/O priority: `idle`, `best_effort:0..7`, or `real_time:0..7`; unsupported elsewhere. |
+| `--pty` | `Command.pty(...)` | Allocate a pseudo-terminal and relay its one merged terminal stream on stdout. The child does not inherit the wrapper's stdin; use the Python API for an interactive writer. |
+| `--pty-cols N` / `--pty-rows N` | `Command.pty(cols=..., rows=...)` | Initial terminal size. Requires `--pty`; provide both dimensions together. |
 
 Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
@@ -4699,6 +4709,17 @@ code `125`; output beyond the ceiling is never relayed. Direct `--stdout-file`
 redirection has no stdout pipe to monitor, so combining it with
 `--output-limit` is a usage error. `--stderr-file` remains compatible: stderr
 goes directly to the file and the ceiling applies to the still-captured stdout.
+
+`--pty` also uses the line pump, but the source is a real pseudo-terminal: tools
+that require `isatty()` see a terminal and stdout/stderr arrive as one merged
+stream on the wrapper's stdout. Optional dimensions must be supplied together.
+PTY owns the child's stdio, so direct file redirects and `--profile` are usage
+errors; `--output-limit`, idle/wall-clock timeouts, resource limits, and
+`--create-no-window` keep their normal semantics. This CLI mode is intended for
+non-interactive TTY-sensitive tools and does not forward the wrapper's stdin;
+use `Command.pty().keep_stdin_open()` plus `take_stdin()` for interactive input.
+If the platform cannot allocate a PTY, the request fails through the existing
+`Unsupported`/internal-error path (`125`) rather than silently using pipes.
 
 `--idle-timeout` is **not** available under `supervise`: each supervised
 incarnation runs through `Supervisor`'s one-shot verbs, which processkit's core
@@ -5323,6 +5344,11 @@ launch. It is incompatible with inherited, null, or file-redirected stdio;
 conflicts fail while the command is built rather than becoming platform-specific
 no-ops.
 
+The command-line wrapper exposes the non-interactive form as `python -m
+processkit run --pty [--pty-cols N --pty-rows N] -- PROGRAM ...`; its merged
+terminal stream is relayed on stdout. Interactive input and live resizing remain
+available through the Python `RunningProcess` API.
+
 ## I/O scheduling priority (`Command.io_priority()`)
 
 | Platform | Behavior |
@@ -5485,6 +5511,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `--pty` with optional `--pty-cols`/`--pty-rows` to
+  `python -m processkit run`, exposing a merged pseudo-terminal output stream
+  for tools that require a TTY.
+- Add runnable examples for managed PTY sessions, lifecycle events,
+  completion-order batches, and intentionally detached helpers.
 - Expand `python -m processkit run` with fail-loud captured-output limits,
   direct stdout/stderr file redirects, abrupt-parent-death cleanup, and CPU/I/O
   priority controls.
@@ -5518,7 +5549,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with this changelog by local and CI drift checks.
 
 ### Changed
--
+- Exercise Windows ARM64 in regular and nightly test matrices, and add a
+  sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
 - Reject an empty key passed through the CLI's `--env` flag with the same usage

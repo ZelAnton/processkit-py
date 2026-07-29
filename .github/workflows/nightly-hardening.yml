@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest]
         python: ['', '3.14t']
     runs-on: ${{ matrix.os }}
     # `PROCESSKIT_STRESS_SCALE` multiplies the iteration/spawn counts in
@@ -59,7 +59,7 @@ jobs:
       # races that depend on process/OS scheduling variance between separate
       # interpreter invocations, not just on in-process repetition count.
       # `shell: bash` runs the same POSIX loop on every OS in the matrix,
-      # including windows-latest (Actions ships Git Bash there).
+      # including both Windows architectures (Actions ships Git Bash there).
       - name: Run the suite repeatedly with scaled-up stress iterations
         shell: bash
         run: |
@@ -254,4 +254,86 @@ jobs:
         with:
           name: mutmut-cicd-stats
           path: mutants/mutmut-cicd-stats.json
+          if-no-files-found: error
+
+  cargo-mutants:
+    # Mutation testing for the Rust binding layer. The crate's default Cargo
+    # build intentionally leaves `extension-module` disabled, so unit tests can
+    # link the cdylib as documented in Cargo.toml. Scope and per-mutant timeouts
+    # are fixed in .cargo/mutants.toml; the matrix only partitions that scope.
+    # This scheduled/manual signal never gates pull requests. Surviving and
+    # timed-out mutants are reported, but do not hide genuine setup failures.
+    name: cargo-mutants (shard ${{ matrix.shard }}/32)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: stable
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2
+        with:
+          tool: cargo-mutants
+      - name: Run mutation testing shard
+        id: mutants
+        shell: bash
+        run: |
+          set +e
+          cargo mutants --shard ${{ matrix.shard }}/32
+          status=$?
+          set -e
+
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+            echo "::error::cargo-mutants failed with exit code ${status}"
+            exit "$status"
+          fi
+          if [ "$status" -eq 2 ] && [ ! -s mutants.out/missed.txt ] && [ ! -s mutants.out/timeout.txt ]; then
+            echo "::error::cargo-mutants returned an outcome code without outcome files"
+            exit 1
+          fi
+          if [ "$status" -eq 3 ] && [ ! -s mutants.out/timeout.txt ]; then
+            echo "::error::cargo-mutants returned a timeout code without timeout.txt"
+            exit 1
+          fi
+
+          echo "cargo-mutants completed with outcome code ${status}"
+      - name: Publish surviving mutants to the job summary
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          {
+            echo '## Mutation testing (cargo-mutants)'
+            echo 'Scope: `src/*.rs` without the `extension-module` feature.'
+            for outcome in missed timeout; do
+              echo
+              echo "### ${outcome}"
+              echo '```'
+              if [ -s "mutants.out/${outcome}.txt" ]; then
+                cat "mutants.out/${outcome}.txt"
+              else
+                echo '(none)'
+              fi
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Export mutation statistics
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          mkdir -p mutation-stats
+          cp mutants.out/*.txt mutation-stats/ 2>/dev/null || true
+          cp mutants.out/outcomes.json mutation-stats/ 2>/dev/null || true
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cargo-mutants-stats-${{ matrix.shard }}-of-32
+          path: mutation-stats/
           if-no-files-found: error

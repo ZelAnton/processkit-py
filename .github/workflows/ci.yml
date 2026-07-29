@@ -181,6 +181,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: stable
+          # uv currently provisions its x86_64 standalone CPython for 3.14t on
+          # the Windows ARM runner. Install the matching Rust target for this
+          # emulated free-threaded compatibility leg; the abi3 leg and the
+          # cibuildwheel release matrix still validate native win_arm64 output.
+          targets: ${{ matrix.os == 'windows-11-arm' && matrix.python == '3.14t' && 'x86_64-pc-windows-msvc' || '' }}
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true

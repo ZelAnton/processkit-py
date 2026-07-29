@@ -51,6 +51,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: stable
+          # Keep parity with ci.yml: uv's Windows 3.14t standalone interpreter
+          # is x86_64 on the ARM runner, so its Rust extension needs that target.
+          targets: ${{ matrix.os == 'windows-11-arm' && matrix.python == '3.14t' && 'x86_64-pc-windows-msvc' || '' }}
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true

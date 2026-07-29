@@ -237,8 +237,8 @@ timeout_method = "thread"
 # sees it) but this comment exists so the percentage below is never read as
 # "how well the Rust core is tested".
 source = ["src/processkit", "scripts/release"]
-# Carved back out of that scope: the CLI (`src/processkit/_cli/`) and the
-# `python -m processkit` entry point that calls into it. This is the same
+# Carved back out of that scope: the process-driving CLI modules and the
+# `python -m processkit` entry point that calls into them. This is the same
 # "coverage.py structurally cannot see it" exclusion as the compiled extension
 # above, not a "not tested yet" one -- the CLI is in fact exercised end to end
 # by `tests/test_cli_main.py` (the exit-code contract of `run`/`supervise`/
@@ -266,11 +266,14 @@ source = ["src/processkit", "scripts/release"]
 # constant zero) sharper: a real regression in the measured modules now moves
 # it ~1.6x further.
 #
-# If a `_cli` helper ever does grow in-process unit tests -- imported and
-# called directly by a test, rather than reached through a child -- revisit
-# this: the omit would silently hide that coverage.
+# Pure helpers in `parser.py`, `common.py`, `output.py`, `exit_codes.py`, and
+# `doctor.py` now have direct in-process tests and deliberately remain measured.
+# Only the entry/driver modules whose behavior is still exclusively exercised
+# through subprocesses remain omitted.
 omit = [
-  "src/processkit/_cli/*",
+  "src/processkit/_cli/__init__.py",
+  "src/processkit/_cli/run.py",
+  "src/processkit/_cli/supervise.py",
   "src/processkit/__main__.py",
 ]
 branch = true
@@ -283,28 +286,20 @@ parallel = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# Measured coverage of the scope above (`source` minus `omit` -- 903
-# statements and branches): 67.11% on a Windows dev box, and 71.54% on the CI
-# leg that actually enforces this gate (`test (ubuntu-latest, abi3)`, the "Run
-# tests with coverage" step in ci.yml). Both are that same 903-unit
-# denominator; the ~4-point spread is the POSIX-only tests that skip on
-# Windows. Measured 2026-07-25 -- the Windows figure directly, the ubuntu one
-# by recomputing that leg's own last measured total (46.08% in CI run
-# 30160360320) over this scope, the omitted files having contributed nothing
-# but denominator there too.
+# Measured coverage of the scope above (`source` minus `omit` -- 970 statements
+# and 282 branches) is 75.08% on a Windows dev box. The enforcing Ubuntu leg is
+# expected to remain higher because it runs the POSIX-only tests that Windows
+# skips; its exact post-change baseline will be confirmed by the next CI run.
+# Measured 2026-07-29 with the full suite and four file-grouped xdist workers.
 #
-# `fail_under` sits a couple of points below the *lower* of the two, so an
-# ordinary local `uv run pytest --cov` is not a false alarm either: 2.1 points
-# of margin on Windows and 6.5 on the enforcing leg (~19 and ~59 of the 903
-# units) absorb measurement noise. It still catches what this gate is for -- a
-# real chunk of `_aio.py`, `pytest_plugin.py`, `scripts/release/` or the
-# package `__init__.py` losing its tests outright.
-#
-# What it deliberately no longer tracks is *growth of the subprocess-only CLI*
-# (see the `omit` note above): that used to eat this margin on every batch
-# without a single test being lost, which is how the previous threshold of 43
-# went from 3.08 points of headroom to 0.56 in one batch (T-161).
-fail_under = 65
+# `fail_under` sits three points below that lower Windows baseline (~38 of the
+# 1,252 measured units), enough for platform/measurement noise while still
+# catching a real loss in `_aio.py`, the directly-tested CLI helpers,
+# `pytest_plugin.py`, `scripts/release/`, or the package `__init__.py`.
+# Process-driving CLI modules remain outside the denominator for the
+# subprocess/`os._exit` reason documented above, so their growth cannot consume
+# this margin without producing measurable in-process coverage.
+fail_under = 72
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",

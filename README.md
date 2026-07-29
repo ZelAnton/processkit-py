@@ -8,6 +8,10 @@ normal completion, errors, timeouts, cancellation, and context-manager exit reap
 descendants as a unit. Abrupt owner-death coverage is platform-specific and
 reported explicitly.
 
+The deliberately named `Command.spawn_detached()` is the sole opt-out for a
+trusted helper that must outlive its launcher; it returns only a pid and carries
+none of the containment, waiting, timeout, or capture guarantees above.
+
 Beyond spawning a subprocess: run-and-capture, line streaming, interactive
 stdin, shell-free pipelines, readiness probes, timeouts & cancellation,
 supervision with restart/backoff, resource-limited sandboxes, and a mockable
@@ -109,6 +113,7 @@ decides what you get back. Each has an `a`-prefixed asyncio twin
 | just the exit code | `.exit_code()` | `int` (a timed-out / killed run raises instead of inventing `-1`) |
 | a yes/no answer | `.probe()` | `bool` — exit 0 → `True`, 1 → `False`, anything else raises |
 | a live handle — streaming, stdin, probes | `.start()` / `.astart()` | `RunningProcess` |
+| a trusted helper that must outlive this process | `.spawn_detached()` | pid-only `DetachedChild`; **outside containment** |
 
 The run-to-completion verbs repeat on the `Runner` and `CliClient` layers too
 (`start` / `astart` live on `Command` and `Runner`).
@@ -148,8 +153,8 @@ async def main():
 
     # Stream a child's stdout; the context manager reaps the tree on exit.
     async with await Command("my-build", ["--watch"]).astart() as proc:
-        async for line in proc.stdout_lines():
-            print(line)
+        async for event in proc.lifecycle_events():
+            print(event.kind, event.pid, event.stream, event.text, event.outcome)
 
     async with ProcessGroup() as group:
         await group.astart(Command("dev-server"))

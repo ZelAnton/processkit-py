@@ -574,6 +574,18 @@ def umask(mask: int) -> Command
 def priority(level: Priority) -> Command
 ```
 
+#### `io_priority`
+
+```text
+def io_priority(class_name: IoPriorityClass, *, level: int | None = ...) -> Command
+```
+
+Set Linux I/O scheduling priority.
+
+``idle`` accepts no level; ``best_effort`` and ``real_time`` require
+``level=0..7`` (zero is highest). Launching outside Linux raises
+``Unsupported`` rather than silently ignoring the requested QoS.
+
 #### `output_limit`
 
 ```text
@@ -633,6 +645,18 @@ Returns the resolved **absolute** path; raises ``ProcessNotFound`` (also
 a ``FileNotFoundError``, with a ``searched`` diagnostic) on a miss. No
 ``a``-prefixed async twin — the probe is synchronous and needs no
 runtime.
+
+#### `spawn_detached`
+
+```text
+def spawn_detached() -> DetachedChild
+```
+
+Launch outside processkit containment and return a pid-only handle.
+
+This deliberately opts out of the no-orphan guarantee: dropping the
+handle does not kill or reap the child. Owner-dependent configuration
+is rejected with ``Unsupported`` instead of being ignored.
 
 #### `aoutput`
 
@@ -704,6 +728,23 @@ def command_line() -> str
 
 ```text
 def pipe(other: Command) -> Pipeline
+```
+
+### `DetachedChild`
+
+```text
+class DetachedChild
+```
+
+Pid-only handle for a child deliberately outside containment.
+
+Dropping this object has no effect on the child. It intentionally has no
+kill, wait, capture, timeout, or stdin surface.
+
+#### `pid`
+
+```text
+pid: int
 ```
 
 ### `CliClient`
@@ -1032,6 +1073,20 @@ sample. Teardown is unaffected — leaving the handle's context-manager
 block (or dropping it) hard-kills the whole tree even after the stream
 has taken the run over, which is what stops a grandchild still holding
 the pipe from outliving the block.
+
+#### `lifecycle_events`
+
+```text
+def lifecycle_events() -> LifecycleEvents
+```
+
+The full ordered process lifecycle as an async iterator (call once).
+
+The first event is ``started`` with the pid, stdout/stderr events carry
+decoded lines, and the final ``exited`` event carries the ``Outcome``.
+This consumes the same one-shot stream as ``output_events()``; choose
+one. Draining it drives the run to completion, after which a finisher
+reports the same run.
 
 #### `take_stdin`
 
@@ -1627,6 +1682,52 @@ is_stderr: bool
 
 ```text
 text: str
+```
+
+### `LifecycleEvents`
+
+```text
+class LifecycleEvents
+```
+
+Async iterator yielding started, output-line, and exited events in order.
+
+### `LifecycleEvent`
+
+```text
+class LifecycleEvent
+```
+
+One ordered event from a process's full lifecycle stream.
+
+#### `kind`
+
+```text
+kind: Literal['started', 'stdout', 'stderr', 'exited', 'unknown']
+```
+
+#### `pid`
+
+```text
+pid: int | None
+```
+
+#### `stream`
+
+```text
+stream: Literal['stdout', 'stderr'] | None
+```
+
+#### `text`
+
+```text
+text: str | None
+```
+
+#### `outcome`
+
+```text
+outcome: Outcome | None
 ```
 
 ### `ProcessStdin`
@@ -3090,6 +3191,12 @@ Exported so your own wrappers can annotate against the same types the API accept
 
 ```text
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
+```
+
+### `IoPriorityClass`
+
+```text
+IoPriorityClass = Literal['idle', 'best_effort', 'real_time']
 ```
 
 ### `LineTerminatorName`

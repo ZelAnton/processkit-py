@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graceful stop, completion waits, and sync/async context management.
 - Add `ProcessGroup.stop()` / `astop()` with a `ShutdownReport` describing the
   graceful signal, remaining members, elapsed time, and hard-kill escalation.
+- Add `RunningProcess.lifecycle_events()` for one ordered stream containing the
+  start pid, stdout/stderr lines, and final `Outcome`, while preserving the
+  output-only `output_events()` contract.
+- Add Linux disk-I/O scheduling controls through `Command.io_priority(...)`;
+  launching a configured command on another platform raises `Unsupported`.
+- Add the deliberately uncontained `Command.spawn_detached()` escape hatch and
+  pid-only `DetachedChild` for helpers that must outlive their launcher.
 
 ### Changed
 -

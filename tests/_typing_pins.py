@@ -30,8 +30,12 @@ if TYPE_CHECKING:
         BytesResult,
         CliClient,
         Command,
+        DetachedChild,
         Finished,
         InvalidJson,
+        IoPriorityClass,
+        LifecycleEvent,
+        LifecycleEvents,
         NonZeroExit,
         Outcome,
         OutputEvent,
@@ -76,10 +80,13 @@ if TYPE_CHECKING:
         assert_type(cmd.start(), RunningProcess)
         assert_type(cmd.pty(), Command)
         assert_type(cmd.pty(cols=120, rows=40), Command)
+        assert_type(cmd.io_priority("idle"), Command)
+        assert_type(cmd.spawn_detached(), DetachedChild)
 
     # The exported aliases are usable as annotations (importable from processkit).
-    def _public_aliases(program: StrPath, signal: SignalName) -> None:
+    def _public_aliases(program: StrPath, signal: SignalName, io_class: IoPriorityClass) -> None:
         assert_type(Command(program).timeout_signal(signal), Command)
+        assert_type(Command(program).io_priority(io_class, level=3), Command)
 
     # `Args` itself is usable as an annotation on a caller's own wrapper
     # (the module docstring's stated purpose for exporting it).
@@ -189,7 +196,10 @@ if TYPE_CHECKING:
         assert_type(asyncio.ensure_future(cmd.aoutput()), asyncio.Task[ProcessResult])
 
     def _streaming_awaitable_return_types(
-        stdin: ProcessStdin, lines: StdoutLines, events: OutputEvents
+        stdin: ProcessStdin,
+        lines: StdoutLines,
+        events: OutputEvents,
+        lifecycle: LifecycleEvents,
     ) -> None:
         assert_type(stdin.write(b"data"), Awaitable[None])
         assert_type(stdin.write_line("line"), Awaitable[None])
@@ -198,6 +208,7 @@ if TYPE_CHECKING:
         assert_type(stdin.close(), Awaitable[None])
         assert_type(lines.__anext__(), Awaitable[str])
         assert_type(events.__anext__(), Awaitable[OutputEvent])
+        assert_type(lifecycle.__anext__(), Awaitable[LifecycleEvent])
 
     def _streaming_awaitables_are_not_coroutines(
         stdin: ProcessStdin,
@@ -301,6 +312,17 @@ if TYPE_CHECKING:
         assert_type(proc.finish(), Finished)
         assert_type(proc.output(), ProcessResult)
         assert_type(proc.resize_pty(120, 40), None)
+        assert_type(proc.lifecycle_events(), LifecycleEvents)
+
+    def _detached_child_property_types(child: DetachedChild) -> None:
+        assert_type(child.pid, int)
+
+    def _lifecycle_event_property_types(event: LifecycleEvent) -> None:
+        assert_type(event.kind, Literal["started", "stdout", "stderr", "exited", "unknown"])
+        assert_type(event.pid, int | None)
+        assert_type(event.stream, Literal["stdout", "stderr"] | None)
+        assert_type(event.text, str | None)
+        assert_type(event.outcome, Outcome | None)
 
     async def _running_process_async_return_types(proc: RunningProcess) -> None:
         assert_type(await proc.aoutcome(), Outcome)

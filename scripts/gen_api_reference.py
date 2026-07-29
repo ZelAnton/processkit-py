@@ -89,7 +89,7 @@ SECTIONS: tuple[Section, ...] = (
         "`CliClient` binds a program to reusable defaults; `Pipeline` chains "
         "commands shell-free; `RunningProcess` is the live handle a started child "
         "hands back.",
-        ("Command", "CliClient", "Pipeline", "RunningProcess"),
+        ("Command", "DetachedChild", "CliClient", "Pipeline", "RunningProcess"),
     ),
     Section(
         "Program resolution",
@@ -114,7 +114,14 @@ SECTIONS: tuple[Section, ...] = (
         "The live handles a started `RunningProcess` hands out: async iterators "
         "over its output (line by line, or as interleaved stdout/stderr events) "
         "and a writable stdin.",
-        ("StdoutLines", "OutputEvents", "OutputEvent", "ProcessStdin"),
+        (
+            "StdoutLines",
+            "OutputEvents",
+            "OutputEvent",
+            "LifecycleEvents",
+            "LifecycleEvent",
+            "ProcessStdin",
+        ),
     ),
     Section(
         "Process groups",
@@ -209,6 +216,7 @@ SECTIONS: tuple[Section, ...] = (
         "Exported so your own wrappers can annotate against the same types the API accepts.",
         (
             "Args",
+            "IoPriorityClass",
             "LineTerminatorName",
             "Priority",
             "ReadableBuffer",

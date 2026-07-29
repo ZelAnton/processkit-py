@@ -19,6 +19,7 @@ from processkit import (
     BytesResult,
     Command,
     Finished,
+    LifecycleEvent,
     Outcome,
     ProcessError,
     ProcessGroup,
@@ -184,6 +185,51 @@ def test_output_events_cover_both_streams() -> None:
     assert streams == {"stdout", "stderr"}
     # is_stderr is the boolean twin of the stream label.
     assert all(is_err == (stream == "stderr") for stream, _, is_err in events)
+
+
+def test_lifecycle_events_cover_start_output_and_exit_in_order() -> None:
+    async def scenario() -> tuple[int | None, list[LifecycleEvent], Finished]:
+        proc = await Command(PY, ["-c", _BOTH_STREAMS]).astart()
+        pid = proc.pid
+        events = [event async for event in proc.lifecycle_events()]
+        finished = await proc.afinish()
+        return pid, events, finished
+
+    pid, events, finished = asyncio.run(
+        asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS)
+    )
+    assert events[0].kind == "started"
+    assert events[0].pid == pid
+    assert events[0].stream is None
+    assert events[0].text is None
+    assert events[0].outcome is None
+
+    assert events[-1].kind == "exited"
+    assert events[-1].pid is None
+    assert events[-1].stream is None
+    assert events[-1].text is None
+    assert events[-1].outcome is not None
+    assert events[-1].outcome.exited_zero
+    assert events[-1].outcome == finished.outcome
+
+    output: set[tuple[str, str]] = set()
+    for event in events[1:-1]:
+        assert event.kind in {"stdout", "stderr"}
+        assert event.stream is not None
+        assert event.text is not None
+        output.add((event.stream, event.text.rstrip()))
+    assert {("stdout", "out1"), ("stdout", "out2"), ("stderr", "err1")} <= output
+
+
+def test_lifecycle_and_output_event_iterators_share_one_shot_stream() -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "print('x')"]).astart()
+        proc.lifecycle_events()
+        with pytest.raises(ProcessError):
+            proc.output_events()
+        await proc.afinish()
+
+    asyncio.run(scenario())
 
 
 # --- the documented drain-then-finish order (processkit 3.0.0) ---------------

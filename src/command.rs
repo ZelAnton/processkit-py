@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use processkit::Command as PkCommand;
+use processkit::DetachedChild as PkDetachedChild;
 use processkit::ParentDeathCleanup;
 use processkit::Pipeline as PkPipeline;
 use processkit::Stdin as PkStdin;
@@ -14,10 +15,10 @@ use pyo3::prelude::*;
 use crate::cancellation::PyCancellationToken;
 use crate::convert::{
     build_output_buffer_policy, build_retry_policy, is_python_writer, nonnegative_duration,
-    open_tee_sink, parse_encoding, parse_line_terminator, parse_priority, parse_retry_if,
-    parse_signal, parse_stdio_mode, positive_duration, PyWriterSink,
+    open_tee_sink, parse_encoding, parse_io_priority, parse_line_terminator, parse_priority,
+    parse_retry_if, parse_signal, parse_stdio_mode, positive_duration, PyWriterSink,
 };
-use crate::errors::map_err;
+use crate::errors::{map_err, unsupported_err};
 use crate::result::{PyBytesResult, PyProcessResult};
 use crate::running::PyRunningProcess;
 use crate::runtime::{block_on, drive_async};
@@ -40,6 +41,25 @@ pub(crate) struct PyCommand {
 const PTY_CONFLICT_STDIN: u8 = 1;
 const PTY_CONFLICT_STDOUT: u8 = 2;
 const PTY_CONFLICT_STDERR: u8 = 4;
+
+/// A pid-only handle to a deliberately uncontained child.
+#[pyclass(name = "DetachedChild", frozen, module = "processkit")]
+pub(crate) struct PyDetachedChild {
+    inner: PkDetachedChild,
+}
+
+#[pymethods]
+impl PyDetachedChild {
+    /// The pid reported at spawn time. It may be recycled after the child exits.
+    #[getter]
+    fn pid(&self) -> u32 {
+        self.inner.pid()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DetachedChild(pid={})", self.inner.pid())
+    }
+}
 
 impl PyCommand {
     /// Rebuild the wrapper around a new crate `Command`, preserving the
@@ -935,6 +955,16 @@ impl PyCommand {
         Ok(self.rewrap(self.inner.clone().priority(priority)))
     }
 
+    /// Set Linux I/O scheduling priority. `idle` takes no level;
+    /// `best_effort` and `real_time` require a level from 0 (highest) to 7
+    /// (lowest). A requested I/O priority raises `Unsupported` when launched on
+    /// a non-Linux platform; it is never silently ignored.
+    #[pyo3(signature = (class_name, *, level=None))]
+    fn io_priority(&self, class_name: &str, level: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let priority = parse_io_priority(class_name, level)?;
+        Ok(self.rewrap(self.inner.clone().io_priority(priority)))
+    }
+
     /// Cap how much captured output is retained. Pass at least one of
     /// `max_bytes` / `max_lines`. To bound the parent's *memory* against an
     /// untrusted child, use `max_bytes` — a `max_lines`-only cap does not, since
@@ -1044,6 +1074,19 @@ impl PyCommand {
         self.inner
             .resolve_program()
             .map(|path| path.to_string_lossy().into_owned())
+            .map_err(map_err)
+    }
+
+    /// Launch outside processkit's kill-on-drop containment and return only its
+    /// spawn-time pid. This is the deliberate opt-out: dropping the returned
+    /// handle does not stop or reap the child.
+    fn spawn_detached(&self) -> PyResult<PyDetachedChild> {
+        if self.idle_timeout.is_some() {
+            return Err(unsupported_err("spawn_detached with an idle timeout"));
+        }
+        self.inner
+            .spawn_detached()
+            .map(|inner| PyDetachedChild { inner })
             .map_err(map_err)
     }
 
@@ -1311,6 +1354,7 @@ fn which(program: PathBuf) -> PyResult<String> {
 /// `which` function on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
+    m.add_class::<PyDetachedChild>()?;
     m.add_class::<PyPipeline>()?;
     m.add_function(pyo3::wrap_pyfunction!(which, m)?)?;
     Ok(())

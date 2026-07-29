@@ -1000,6 +1000,8 @@ so an early return, an exception, or a cancelled task can never leak a child.
 - [Bounding captured output](#bounding-captured-output)
 - [Timeouts](#timeouts)
 - [Privileges and spawn flags](#privileges-and-spawn-flags)
+- [I/O scheduling priority](#io-scheduling-priority)
+- [Detached launch: the deliberate containment opt-out](#detached-launch-the-deliberate-containment-opt-out)
 - [Pseudo-terminal mode](#pseudo-terminal-mode)
 - [Results](#results)
 - [Errors](#errors)
@@ -1601,6 +1603,53 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
+## I/O scheduling priority
+
+On Linux, `io_priority` asks the kernel to lower or raise the child's disk-I/O
+scheduling class independently of CPU `priority`:
+
+```python
+# Best-effort levels run from 0 (highest) to 7 (lowest).
+background = Command("indexer").io_priority("best_effort", level=7)
+idle_only = Command("cleanup").io_priority("idle")
+```
+
+`"best_effort"` and `"real_time"` require `level=0..7`; `"idle"` accepts no
+level. Real-time I/O can require elevated privilege. The setting is Linux-only:
+building the command remains portable, but launching it on Windows, macOS, or
+BSD raises `Unsupported` rather than silently running with ordinary I/O
+priority. Last write wins, like CPU `priority()`.
+
+## Detached launch: the deliberate containment opt-out
+
+`spawn_detached()` is the one API that intentionally inverts processkit's
+no-orphan guarantee. It creates a child outside this library's per-run container
+and returns a separate `DetachedChild` carrying only its spawn-time `pid`:
+
+```python
+child = (
+    Command("self-updater", ["--apply"])
+    .stdout_file("updater.log", append=True)
+    .stderr_file("updater.log", append=True)
+    .spawn_detached()
+)
+print(child.pid)
+```
+
+Dropping `child` does **not** kill or reap the process. There is deliberately no
+`kill`, `wait`, timeout, capture, or interactive-stdin method: after launch,
+processkit no longer owns it. Stdio is null by default; file redirects are the
+only supported output destination, because an ownerless pipe can fill and
+deadlock the child.
+
+Use this only for a daemon, updater, or handoff helper that must outlive its
+launcher. Prefer `start()` or a one-shot verb everywhere else. Any setting that
+needs an owner or output pump — timeouts (including `idle_timeout`), retries,
+cancellation, PTY, open stdin, capture callbacks/limits/tees, inherited stdio,
+or parent-death cleanup — is rejected with `Unsupported`, never ignored.
+"Detached" means outside processkit's container, not outside a surrounding CI
+job, Windows Job Object, cgroup, service, or container imposed by the host.
+
 ## Pseudo-terminal mode
 
 Pipe mode remains the default. Opt into a real pseudo-terminal when a program
@@ -2185,6 +2234,7 @@ importantly — an honest statement of what this buys you and what it does not.
   - [4. A timeout](#4-a-timeout)
   - [5. Teardown](#5-teardown)
 - [Checklist: run an untrusted tool safely](#checklist-run-an-untrusted-tool-safely)
+- [Never detach untrusted code](#never-detach-untrusted-code)
 - [Full example](#full-example)
 
 ## The threat model
@@ -2360,6 +2410,16 @@ Full treatment: [Tearing down](process-groups.md#tearing-down).
       resource and lifetime containment, not syscall/filesystem/network
       isolation.
 
+## Never detach untrusted code
+
+Do not call `Command.spawn_detached()` for an untrusted tool. Detached launch is
+an explicit opt-out from processkit's lifetime containment: it has no owning
+handle, timeout, output bound, or teardown path, and dropping its pid-only
+`DetachedChild` does nothing. It exists for a trusted updater or daemon that is
+supposed to outlive the launcher. In a sandbox, that behavior is precisely the
+orphan escape this guide is designed to prevent; use a contained one-shot verb,
+`start()` context manager, or `ProcessGroup` instead.
+
 ## Full example
 
 `examples/04_sandbox_resource_limits.py` runs this recipe end to end for an
@@ -2399,6 +2459,7 @@ the tree down deterministically.
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
+- [Full lifecycle event stream](#full-lifecycle-event-stream)
 - [Interactive stdin](#interactive-stdin)
 - [Interactive PTY sessions](#interactive-pty-sessions)
 - [Readiness probes](#readiness-probes)
@@ -2697,6 +2758,33 @@ Things to know:
   Which row a given `break` lands in follows the child's timing rather than how
   you wrote the loop, so treat the capture verbs as unavailable once you have
   streamed events and use a finisher.
+
+## Full lifecycle event stream
+
+For structured logging that needs the pid and terminal outcome in the same
+ordered channel as output, use `lifecycle_events()` instead:
+
+```python
+proc = await Command("worker").astart()
+
+async for event in proc.lifecycle_events():
+    if event.kind == "started":
+        print("started", event.pid)
+    elif event.kind in {"stdout", "stderr"}:
+        print(event.stream, event.text)
+    elif event.kind == "exited":
+        assert event.outcome is not None
+        print("exit", event.outcome.code)
+
+finished = await proc.afinish()
+```
+
+The sequence begins with `started`, contains zero or more `stdout`/`stderr`
+events, and ends with `exited`. Fields that do not apply to a kind are `None`.
+The iterator and `output_events()` are two views over the same one-shot stream,
+so choose exactly one. Draining either iterator drives the run to completion;
+the following `finish()`/`afinish()` or `outcome()`/`aoutcome()` reports the
+same run. `output_events()` remains output-only for compatibility.
 
 ## Interactive stdin
 
@@ -5154,6 +5242,15 @@ launch. It is incompatible with inherited, null, or file-redirected stdio;
 conflicts fail while the command is built rather than becoming platform-specific
 no-ops.
 
+## I/O scheduling priority (`Command.io_priority()`)
+
+| Platform | Behavior |
+|---|---|
+| **Linux** | Applies the requested `idle`, `best_effort` (0–7), or `real_time` (0–7) kernel I/O class at launch; privilege failures remain errors |
+| **Windows / macOS / BSD** | Launch raises `Unsupported`; the request is never silently ignored |
+
+This is independent of the cross-platform CPU `Command.priority()` setting.
+
 ## Multiprocessing: use `spawn` or `forkserver`, not `fork`
 
 processkit runs a tokio runtime with background worker threads, started lazily
@@ -5870,6 +5967,18 @@ def umask(mask: int) -> Command
 def priority(level: Priority) -> Command
 ```
 
+#### `io_priority`
+
+```text
+def io_priority(class_name: IoPriorityClass, *, level: int | None = ...) -> Command
+```
+
+Set Linux I/O scheduling priority.
+
+``idle`` accepts no level; ``best_effort`` and ``real_time`` require
+``level=0..7`` (zero is highest). Launching outside Linux raises
+``Unsupported`` rather than silently ignoring the requested QoS.
+
 #### `output_limit`
 
 ```text
@@ -5929,6 +6038,18 @@ Returns the resolved **absolute** path; raises ``ProcessNotFound`` (also
 a ``FileNotFoundError``, with a ``searched`` diagnostic) on a miss. No
 ``a``-prefixed async twin — the probe is synchronous and needs no
 runtime.
+
+#### `spawn_detached`
+
+```text
+def spawn_detached() -> DetachedChild
+```
+
+Launch outside processkit containment and return a pid-only handle.
+
+This deliberately opts out of the no-orphan guarantee: dropping the
+handle does not kill or reap the child. Owner-dependent configuration
+is rejected with ``Unsupported`` instead of being ignored.
 
 #### `aoutput`
 
@@ -6000,6 +6121,23 @@ def command_line() -> str
 
 ```text
 def pipe(other: Command) -> Pipeline
+```
+
+### `DetachedChild`
+
+```text
+class DetachedChild
+```
+
+Pid-only handle for a child deliberately outside containment.
+
+Dropping this object has no effect on the child. It intentionally has no
+kill, wait, capture, timeout, or stdin surface.
+
+#### `pid`
+
+```text
+pid: int
 ```
 
 ### `CliClient`
@@ -6328,6 +6466,20 @@ sample. Teardown is unaffected — leaving the handle's context-manager
 block (or dropping it) hard-kills the whole tree even after the stream
 has taken the run over, which is what stops a grandchild still holding
 the pipe from outliving the block.
+
+#### `lifecycle_events`
+
+```text
+def lifecycle_events() -> LifecycleEvents
+```
+
+The full ordered process lifecycle as an async iterator (call once).
+
+The first event is ``started`` with the pid, stdout/stderr events carry
+decoded lines, and the final ``exited`` event carries the ``Outcome``.
+This consumes the same one-shot stream as ``output_events()``; choose
+one. Draining it drives the run to completion, after which a finisher
+reports the same run.
 
 #### `take_stdin`
 
@@ -6923,6 +7075,52 @@ is_stderr: bool
 
 ```text
 text: str
+```
+
+### `LifecycleEvents`
+
+```text
+class LifecycleEvents
+```
+
+Async iterator yielding started, output-line, and exited events in order.
+
+### `LifecycleEvent`
+
+```text
+class LifecycleEvent
+```
+
+One ordered event from a process's full lifecycle stream.
+
+#### `kind`
+
+```text
+kind: Literal['started', 'stdout', 'stderr', 'exited', 'unknown']
+```
+
+#### `pid`
+
+```text
+pid: int | None
+```
+
+#### `stream`
+
+```text
+stream: Literal['stdout', 'stderr'] | None
+```
+
+#### `text`
+
+```text
+text: str | None
+```
+
+#### `outcome`
+
+```text
+outcome: Outcome | None
 ```
 
 ### `ProcessStdin`
@@ -8386,6 +8584,12 @@ Exported so your own wrappers can annotate against the same types the API accept
 
 ```text
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
+```
+
+### `IoPriorityClass`
+
+```text
+IoPriorityClass = Literal['idle', 'best_effort', 'real_time']
 ```
 
 ### `LineTerminatorName`

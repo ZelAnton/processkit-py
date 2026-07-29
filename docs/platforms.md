@@ -60,6 +60,15 @@ launch. It is incompatible with inherited, null, or file-redirected stdio;
 conflicts fail while the command is built rather than becoming platform-specific
 no-ops.
 
+## I/O scheduling priority (`Command.io_priority()`)
+
+| Platform | Behavior |
+|---|---|
+| **Linux** | Applies the requested `idle`, `best_effort` (0–7), or `real_time` (0–7) kernel I/O class at launch; privilege failures remain errors |
+| **Windows / macOS / BSD** | Launch raises `Unsupported`; the request is never silently ignored |
+
+This is independent of the cross-platform CPU `Command.priority()` setting.
+
 ## Multiprocessing: use `spawn` or `forkserver`, not `fork`
 
 processkit runs a tokio runtime with background worker threads, started lazily

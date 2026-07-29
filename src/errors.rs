@@ -274,6 +274,16 @@ pub(crate) fn map_err(error: processkit::Error) -> PyErr {
     map_err_ref(&error)
 }
 
+/// Build a binding-originated `Unsupported` with the same structured
+/// `operation` attribute as an upstream `ErrorReason::Unsupported`.
+pub(crate) fn unsupported_err(operation: &str) -> PyErr {
+    let err = Unsupported::new_err(format!("{operation} is not supported"));
+    Python::attach(|py| {
+        let _ = err.value(py).setattr("operation", operation);
+    });
+    err
+}
+
 /// Borrowing twin of [`map_err`], for a caller that holds only a `&Error` and
 /// cannot hand over ownership — notably the supervisor's `give_up_when`
 /// classifier inspecting a `GiveUpAttempt::Failed`, whose `Error` is not `Clone`

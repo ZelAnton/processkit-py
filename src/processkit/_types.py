@@ -37,7 +37,9 @@ carriage-return progress output); the shorthand aliases `"lf"`/`"cr"` are
 accepted at runtime too but are deliberately left out of this Literal so the
 canonical spelling is what type checkers surface. `Priority` is the set of
 named CPU-scheduling presets accepted by `Command.priority()` — a direct
-snake_case mirror of the crate's `Priority` enum variants. `ReadableBuffer` is
+snake_case mirror of the crate's `Priority` enum variants. `IoPriorityClass`
+names the Linux I/O-scheduler classes accepted by `Command.io_priority()`.
+`ReadableBuffer` is
 what `Command.stdin_bytes()` / `ProcessStdin.write()` accept — `bytes` and
 every other object PyO3 extracts a byte buffer from via the buffer protocol
 (`bytearray`, `memoryview`), not just `bytes` itself. Kept here as the single
@@ -97,6 +99,7 @@ SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
 RetryIf = Literal["transient", "transient_or_timeout"]
 LineTerminatorName = Literal["newline", "carriage_return"]
 Priority = Literal["idle", "below_normal", "normal", "above_normal", "high"]
+IoPriorityClass = Literal["idle", "best_effort", "real_time"]
 ReadableBuffer = bytes | bytearray | memoryview
 # Every runner accepted in place of the real `Runner` (mirrors
 # `runner.rs::extract_runner`'s accepted set) — named once so the `runner=`
@@ -108,6 +111,7 @@ RunnerLike: TypeAlias = (
 
 __all__ = [
     "Args",
+    "IoPriorityClass",
     "LineTerminatorName",
     "Priority",
     "ReadableBuffer",

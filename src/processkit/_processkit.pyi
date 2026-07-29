@@ -21,6 +21,7 @@ from typing import Any, Literal, final
 # runtime, which `mypy.stubtest` flags as an error.
 from ._types import (
     Args,
+    IoPriorityClass,
     LineTerminatorName,
     Priority,
     ReadableBuffer,
@@ -451,6 +452,13 @@ class Command:
     def setsid(self) -> Command: ...
     def umask(self, mask: int) -> Command: ...
     def priority(self, level: Priority) -> Command: ...
+    def io_priority(self, class_name: IoPriorityClass, *, level: int | None = ...) -> Command:
+        """Set Linux I/O scheduling priority.
+
+        ``idle`` accepts no level; ``best_effort`` and ``real_time`` require
+        ``level=0..7`` (zero is highest). Launching outside Linux raises
+        ``Unsupported`` rather than silently ignoring the requested QoS.
+        """
     def output_limit(
         self,
         *,
@@ -477,6 +485,14 @@ class Command:
         ``a``-prefixed async twin — the probe is synchronous and needs no
         runtime."""
 
+    def spawn_detached(self) -> DetachedChild:
+        """Launch outside processkit containment and return a pid-only handle.
+
+        This deliberately opts out of the no-orphan guarantee: dropping the
+        handle does not kill or reap the child. Owner-dependent configuration
+        is rejected with ``Unsupported`` instead of being ignored.
+        """
+
     def aoutput(self) -> Awaitable[ProcessResult]: ...
     def aoutput_bytes(self) -> Awaitable[BytesResult]: ...
     def arun(self) -> Awaitable[str]: ...
@@ -492,6 +508,18 @@ class Command:
     def command_line(self) -> str: ...
     def pipe(self, other: Command) -> Pipeline: ...
     def __or__(self, other: Command, /) -> Pipeline: ...
+    def __repr__(self) -> str: ...
+
+@final
+class DetachedChild:
+    """Pid-only handle for a child deliberately outside containment.
+
+    Dropping this object has no effect on the child. It intentionally has no
+    kill, wait, capture, timeout, or stdin surface.
+    """
+
+    @property
+    def pid(self) -> int: ...
     def __repr__(self) -> str: ...
 
 @final
@@ -632,6 +660,22 @@ class OutputEvent:
     def _unpickle(is_stderr: bool, text: str) -> OutputEvent: ...
 
 @final
+class LifecycleEvent:
+    """One ordered event from a process's full lifecycle stream."""
+
+    @property
+    def kind(self) -> Literal["started", "stdout", "stderr", "exited", "unknown"]: ...
+    @property
+    def pid(self) -> int | None: ...
+    @property
+    def stream(self) -> Literal["stdout", "stderr"] | None: ...
+    @property
+    def text(self) -> str | None: ...
+    @property
+    def outcome(self) -> Outcome | None: ...
+    def __repr__(self) -> str: ...
+
+@final
 class StdoutLines:
     """Async iterator over a process's stdout, line by line."""
 
@@ -655,6 +699,13 @@ class OutputEvents:
 
     def __aiter__(self) -> AsyncIterator[OutputEvent]: ...
     def __anext__(self) -> Awaitable[OutputEvent]: ...
+
+@final
+class LifecycleEvents:
+    """Async iterator yielding started, output-line, and exited events in order."""
+
+    def __aiter__(self) -> AsyncIterator[LifecycleEvent]: ...
+    def __anext__(self) -> Awaitable[LifecycleEvent]: ...
 
 @final
 class ProcessStdin:
@@ -740,6 +791,15 @@ class RunningProcess:
         block (or dropping it) hard-kills the whole tree even after the stream
         has taken the run over, which is what stops a grandchild still holding
         the pipe from outliving the block."""
+    def lifecycle_events(self) -> LifecycleEvents:
+        """The full ordered process lifecycle as an async iterator (call once).
+
+        The first event is ``started`` with the pid, stdout/stderr events carry
+        decoded lines, and the final ``exited`` event carries the ``Outcome``.
+        This consumes the same one-shot stream as ``output_events()``; choose
+        one. Draining it drives the run to completion, after which a finisher
+        reports the same run.
+        """
     def take_stdin(self) -> ProcessStdin:
         """The writable stdin handle. Raises `ProcessError` if stdin was not kept
         open (build the `Command` with ``keep_stdin_open()``) or was already

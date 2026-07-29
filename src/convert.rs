@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use processkit::prelude::Encoding;
 use processkit::Error as PkError;
+use processkit::IoPriority;
 use processkit::LineTerminator;
 use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;
@@ -381,6 +382,55 @@ pub(crate) fn parse_priority(level: &str) -> PyResult<Priority> {
         "high" => Ok(Priority::High),
         other => Err(PyValueError::new_err(format!(
             "unknown priority {other:?}; use one of: idle, below_normal, normal, above_normal, high"
+        ))),
+    }
+}
+
+/// Map the flat Python `Command.io_priority(class_name, level=...)` arguments
+/// onto the crate's data-carrying Linux `IoPriority` enum.
+pub(crate) fn parse_io_priority(
+    class_name: &str,
+    level: Option<&Bound<'_, PyAny>>,
+) -> PyResult<IoPriority> {
+    let key = normalize_named_preset(class_name);
+    let level = match level {
+        None => None,
+        Some(value) if value.is_instance_of::<PyBool>() => {
+            return Err(PyTypeError::new_err(
+                "io_priority level must be an integer from 0 through 7, not a bool",
+            ));
+        }
+        Some(value) if value.is_instance_of::<PyInt>() => match value.extract::<i64>() {
+            Ok(level) => Some(level),
+            Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+                let raw = value.str()?.to_str()?.to_owned();
+                return Err(PyValueError::new_err(format!(
+                    "io_priority level must be in 0..=7, got {raw}"
+                )));
+            }
+            Err(error) => return Err(error),
+        },
+        Some(_) => {
+            return Err(PyTypeError::new_err(
+                "io_priority level must be an integer from 0 through 7",
+            ));
+        }
+    };
+    match (key.as_str(), level) {
+        ("idle", None) => Ok(IoPriority::Idle),
+        ("idle", Some(_)) => Err(PyValueError::new_err(
+            "io_priority class 'idle' does not accept level",
+        )),
+        ("best_effort", Some(level @ 0..=7)) => Ok(IoPriority::BestEffort(level as u8)),
+        ("real_time", Some(level @ 0..=7)) => Ok(IoPriority::RealTime(level as u8)),
+        ("best_effort" | "real_time", None) => Err(PyValueError::new_err(format!(
+            "io_priority class {key:?} requires level=0..7"
+        ))),
+        ("best_effort" | "real_time", Some(level)) => Err(PyValueError::new_err(format!(
+            "io_priority level must be in 0..=7, got {level}"
+        ))),
+        (other, _) => Err(PyValueError::new_err(format!(
+            "unknown io_priority class {other:?}; use one of: idle, best_effort, real_time"
         ))),
     }
 }

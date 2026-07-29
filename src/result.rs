@@ -1,5 +1,5 @@
 //! The captured-result value types: `ProcessResult`, `BytesResult`, `Outcome`,
-//! `OutputEvent`, `Finished`, and `RunProfile`.
+//! `OutputEvent`, `LifecycleEvent`, `Finished`, and `RunProfile`.
 //!
 //! ## Value semantics: `__eq__`/`__hash__`/pickle (tasks T-041, T-151)
 //!
@@ -729,6 +729,100 @@ impl PyOutputEvent {
     }
 }
 
+/// One ordered event from a process's full lifecycle stream.
+#[pyclass(name = "LifecycleEvent", frozen, module = "processkit")]
+pub(crate) struct PyLifecycleEvent {
+    kind: &'static str,
+    pid: Option<u32>,
+    text: Option<String>,
+    outcome: Option<PkOutcome>,
+}
+
+impl From<PkProcessEvent> for PyLifecycleEvent {
+    fn from(event: PkProcessEvent) -> Self {
+        match event {
+            PkProcessEvent::Started { pid } => Self {
+                kind: "started",
+                pid,
+                text: None,
+                outcome: None,
+            },
+            PkProcessEvent::Stdout(line) => Self {
+                kind: "stdout",
+                pid: None,
+                text: Some(line.into_text()),
+                outcome: None,
+            },
+            PkProcessEvent::Stderr(line) => Self {
+                kind: "stderr",
+                pid: None,
+                text: Some(line.into_text()),
+                outcome: None,
+            },
+            PkProcessEvent::Exited(outcome) => Self {
+                kind: "exited",
+                pid: None,
+                text: None,
+                outcome: Some(outcome),
+            },
+            _ => Self {
+                kind: "unknown",
+                pid: None,
+                text: None,
+                outcome: None,
+            },
+        }
+    }
+}
+
+#[pymethods]
+impl PyLifecycleEvent {
+    /// `"started"`, `"stdout"`, `"stderr"`, `"exited"`, or `"unknown"`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    /// The child pid on a `started` event; otherwise `None`.
+    #[getter]
+    fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// `"stdout"` / `"stderr"` for a line event; otherwise `None`.
+    #[getter]
+    fn stream(&self) -> Option<&'static str> {
+        match self.kind {
+            "stdout" => Some("stdout"),
+            "stderr" => Some("stderr"),
+            _ => None,
+        }
+    }
+
+    /// The captured line on an output event; otherwise `None`.
+    #[getter]
+    fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
+    /// The final outcome on an `exited` event; otherwise `None`.
+    #[getter]
+    fn outcome(&self) -> Option<PyOutcome> {
+        self.outcome.map(PyOutcome::from)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "LifecycleEvent(kind={:?}, pid={:?}, stream={:?}, text={:?}, outcome={:?})",
+            self.kind,
+            self.pid,
+            self.stream(),
+            self.text,
+            self.outcome,
+        )
+    }
+}
+
 #[pymethods]
 impl PyOutputEvent {
     /// `"stdout"` or `"stderr"`.
@@ -934,6 +1028,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunProfile>()?;
     m.add_class::<PyOutcome>()?;
     m.add_class::<PyOutputEvent>()?;
+    m.add_class::<PyLifecycleEvent>()?;
     m.add_class::<PyFinished>()?;
     Ok(())
 }

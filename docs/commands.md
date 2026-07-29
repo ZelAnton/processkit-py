@@ -18,6 +18,8 @@ so an early return, an exception, or a cancelled task can never leak a child.
 - [Bounding captured output](#bounding-captured-output)
 - [Timeouts](#timeouts)
 - [Privileges and spawn flags](#privileges-and-spawn-flags)
+- [I/O scheduling priority](#io-scheduling-priority)
+- [Detached launch: the deliberate containment opt-out](#detached-launch-the-deliberate-containment-opt-out)
 - [Pseudo-terminal mode](#pseudo-terminal-mode)
 - [Results](#results)
 - [Errors](#errors)
@@ -618,6 +620,53 @@ Platform honesty, not silent no-ops:
   no prior `kill_on_parent_death()` call (read it off the class or any instance)
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
+
+## I/O scheduling priority
+
+On Linux, `io_priority` asks the kernel to lower or raise the child's disk-I/O
+scheduling class independently of CPU `priority`:
+
+```python
+# Best-effort levels run from 0 (highest) to 7 (lowest).
+background = Command("indexer").io_priority("best_effort", level=7)
+idle_only = Command("cleanup").io_priority("idle")
+```
+
+`"best_effort"` and `"real_time"` require `level=0..7`; `"idle"` accepts no
+level. Real-time I/O can require elevated privilege. The setting is Linux-only:
+building the command remains portable, but launching it on Windows, macOS, or
+BSD raises `Unsupported` rather than silently running with ordinary I/O
+priority. Last write wins, like CPU `priority()`.
+
+## Detached launch: the deliberate containment opt-out
+
+`spawn_detached()` is the one API that intentionally inverts processkit's
+no-orphan guarantee. It creates a child outside this library's per-run container
+and returns a separate `DetachedChild` carrying only its spawn-time `pid`:
+
+```python
+child = (
+    Command("self-updater", ["--apply"])
+    .stdout_file("updater.log", append=True)
+    .stderr_file("updater.log", append=True)
+    .spawn_detached()
+)
+print(child.pid)
+```
+
+Dropping `child` does **not** kill or reap the process. There is deliberately no
+`kill`, `wait`, timeout, capture, or interactive-stdin method: after launch,
+processkit no longer owns it. Stdio is null by default; file redirects are the
+only supported output destination, because an ownerless pipe can fill and
+deadlock the child.
+
+Use this only for a daemon, updater, or handoff helper that must outlive its
+launcher. Prefer `start()` or a one-shot verb everywhere else. Any setting that
+needs an owner or output pump — timeouts (including `idle_timeout`), retries,
+cancellation, PTY, open stdin, capture callbacks/limits/tees, inherited stdio,
+or parent-death cleanup — is rejected with `Unsupported`, never ignored.
+"Detached" means outside processkit's container, not outside a surrounding CI
+job, Windows Job Object, cgroup, service, or container imposed by the host.
 
 ## Pseudo-terminal mode
 

@@ -16,6 +16,7 @@ the tree down deterministically.
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
+- [Full lifecycle event stream](#full-lifecycle-event-stream)
 - [Interactive stdin](#interactive-stdin)
 - [Interactive PTY sessions](#interactive-pty-sessions)
 - [Readiness probes](#readiness-probes)
@@ -314,6 +315,33 @@ Things to know:
   Which row a given `break` lands in follows the child's timing rather than how
   you wrote the loop, so treat the capture verbs as unavailable once you have
   streamed events and use a finisher.
+
+## Full lifecycle event stream
+
+For structured logging that needs the pid and terminal outcome in the same
+ordered channel as output, use `lifecycle_events()` instead:
+
+```python
+proc = await Command("worker").astart()
+
+async for event in proc.lifecycle_events():
+    if event.kind == "started":
+        print("started", event.pid)
+    elif event.kind in {"stdout", "stderr"}:
+        print(event.stream, event.text)
+    elif event.kind == "exited":
+        assert event.outcome is not None
+        print("exit", event.outcome.code)
+
+finished = await proc.afinish()
+```
+
+The sequence begins with `started`, contains zero or more `stdout`/`stderr`
+events, and ends with `exited`. Fields that do not apply to a kind are `None`.
+The iterator and `output_events()` are two views over the same one-shot stream,
+so choose exactly one. Draining either iterator drives the run to completion;
+the following `finish()`/`afinish()` or `outcome()`/`aoutcome()` reports the
+same run. `output_events()` remains output-only for compatibility.
 
 ## Interactive stdin
 

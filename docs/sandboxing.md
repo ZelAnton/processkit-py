@@ -21,6 +21,7 @@ importantly — an honest statement of what this buys you and what it does not.
   - [4. A timeout](#4-a-timeout)
   - [5. Teardown](#5-teardown)
 - [Checklist: run an untrusted tool safely](#checklist-run-an-untrusted-tool-safely)
+- [Never detach untrusted code](#never-detach-untrusted-code)
 - [Full example](#full-example)
 
 ## The threat model
@@ -195,6 +196,16 @@ Full treatment: [Tearing down](process-groups.md#tearing-down).
 - [ ] Read [the threat model](#the-threat-model) above — this checklist buys
       resource and lifetime containment, not syscall/filesystem/network
       isolation.
+
+## Never detach untrusted code
+
+Do not call `Command.spawn_detached()` for an untrusted tool. Detached launch is
+an explicit opt-out from processkit's lifetime containment: it has no owning
+handle, timeout, output bound, or teardown path, and dropping its pid-only
+`DetachedChild` does nothing. It exists for a trusted updater or daemon that is
+supposed to outlive the launcher. In a sandbox, that behavior is precisely the
+orphan escape this guide is designed to prevent; use a contained one-shot verb,
+`start()` context manager, or `ProcessGroup` instead.
 
 ## Full example
 

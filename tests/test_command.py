@@ -17,7 +17,9 @@ import multiprocessing
 import os
 import pathlib
 import pickle
+import subprocess
 import sys
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 
 import pytest
@@ -46,6 +48,7 @@ from processkit import (
 )
 from processkit.testing import RecordingRunner, Reply, ScriptedRunner
 
+from ._liveness import wait_until
 from .conftest import NO_SUCH_PROGRAM, PY
 
 
@@ -1174,6 +1177,106 @@ def test_umask_unsupported_on_windows() -> None:
 def test_priority_rejects_unknown_preset() -> None:
     with pytest.raises(ValueError, match="priority"):
         Command(PY, ["-c", "print(1)"]).priority("bogus")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("class_name", "level"),
+    [("idle", None), ("best_effort", 0), ("best_effort", 7), ("real_time", 3)],
+)
+def test_io_priority_accepts_supported_classes(class_name: str, level: int | None) -> None:
+    cmd = Command(PY, ["-c", "print('ok')"])
+    configured = cmd.io_priority(class_name, level=level)  # type: ignore[arg-type]
+    assert isinstance(configured, Command)
+
+
+@pytest.mark.parametrize(
+    ("class_name", "level"),
+    [
+        ("idle", 0),
+        ("best_effort", None),
+        ("real_time", None),
+        ("best_effort", -1),
+        ("best_effort", 8),
+        ("best_effort", 2**100),
+        ("bogus", 0),
+    ],
+)
+def test_io_priority_rejects_invalid_class_level_pairs(class_name: str, level: int | None) -> None:
+    with pytest.raises(ValueError, match="io_priority"):
+        Command(PY).io_priority(class_name, level=level)  # type: ignore[arg-type]
+
+
+def test_io_priority_rejects_bool_and_non_integer_levels() -> None:
+    with pytest.raises(TypeError, match="not a bool"):
+        Command(PY).io_priority("best_effort", level=True)
+    with pytest.raises(TypeError, match="must be an integer"):
+        Command(PY).io_priority("best_effort", level=1.5)  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="I/O priority is Linux-only")
+def test_io_priority_applies_on_linux() -> None:
+    assert Command(PY, ["-c", "print('ok')"]).io_priority("idle").run() == "ok"
+
+
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="I/O priority is supported on Linux")
+def test_io_priority_is_unsupported_at_launch_off_linux() -> None:
+    with pytest.raises(Unsupported) as excinfo:
+        Command(PY, ["-c", "print('x')"]).io_priority("idle").run()
+    assert "io_priority" in excinfo.value.operation
+
+
+def test_spawn_detached_child_survives_launcher_and_handle_drop(
+    tmp_path: pathlib.Path,
+) -> None:
+    marker = tmp_path / "detached-alive"
+    child_code = (
+        "import pathlib, time; "
+        "time.sleep(0.5); "
+        f"pathlib.Path({str(marker)!r}).write_text('alive'); "
+        "time.sleep(0.5)"
+    )
+    launcher_code = (
+        "import sys; "
+        "from processkit import Command; "
+        f"child = Command(sys.executable, ['-c', {child_code!r}]).spawn_detached(); "
+        "assert repr(child) == f'DetachedChild(pid={child.pid})'; "
+        "print(child.pid, flush=True); "
+        "del child"
+    )
+
+    launcher = subprocess.run(
+        [PY, "-c", launcher_code],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert int(launcher.stdout.strip()) > 0
+    assert wait_until(marker.is_file, 5), "detached child did not outlive its launcher"
+    assert marker.read_text() == "alive"
+
+
+@pytest.mark.parametrize(
+    "configure",
+    [
+        lambda cmd: cmd.timeout(1),
+        lambda cmd: cmd.idle_timeout(1),
+        lambda cmd: cmd.pty(),
+        lambda cmd: cmd.keep_stdin_open(),
+    ],
+)
+def test_spawn_detached_rejects_owner_dependent_configuration(
+    configure: Callable[[Command], Command],
+) -> None:
+    configured = configure(Command(PY, ["-c", "print('never')"]))
+    with pytest.raises(Unsupported) as excinfo:
+        configured.spawn_detached()
+    assert "spawn_detached" in excinfo.value.operation
+
+
+def test_spawn_detached_maps_missing_program() -> None:
+    with pytest.raises(ProcessNotFound):
+        Command(NO_SUCH_PROGRAM).spawn_detached()
 
 
 # `nice(2)` value each preset maps to on Unix (see `Priority`'s doc comment in

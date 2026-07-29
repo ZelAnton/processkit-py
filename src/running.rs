@@ -24,7 +24,8 @@ use tokio::task::JoinHandle;
 use crate::convert::{nonnegative_duration, positive_duration};
 use crate::errors::{idle_timeout_err, map_err, ProcessError};
 use crate::result::{
-    PyBytesResult, PyFinished, PyOutcome, PyOutputEvent, PyProcessResult, PyRunProfile,
+    PyBytesResult, PyFinished, PyLifecycleEvent, PyOutcome, PyOutputEvent, PyProcessResult,
+    PyRunProfile,
 };
 use crate::runtime::{
     block_on, block_on_interruptible, drive_async, drive_async_py, reject_reentrant_runtime,
@@ -360,15 +361,12 @@ struct EventsDrive {
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 impl EventsDrive {
-    /// Pull the next *output line* event, driving the run's finisher alongside the
-    /// stream so the stream can reach its end.
+    /// Pull the next lifecycle event, driving the run's finisher alongside the
+    /// stream so its terminal `Exited` event can arrive.
     ///
     /// The loop has two jobs beyond `stream.next()`:
     ///
-    /// 1. **Filter.** Non-line lifecycle events (`Started`, `Exited`, and any kind
-    ///    a later crate release adds) are skipped, never surfaced as an
-    ///    `OutputEvent` with empty text — see `PyOutputEvent::from_event`.
-    /// 2. **Start the reap, as late as possible.** The finisher is armed only once
+    /// **Start the reap, as late as possible.** The finisher is armed only once
     ///    the crate's own non-consuming probe reports the child has exited, i.e.
     ///    once the stream is provably heading for its terminal park. Arming it
     ///    earlier would work for the deadlock but would spend the handle for the
@@ -388,7 +386,7 @@ impl EventsDrive {
     /// No output can be lost by reaping here: the crate's stream yields every
     /// buffered line before it even looks at the terminal event, and `finish()`
     /// publishes the outcome from its reap *before* it joins the output pumps.
-    async fn next_line(&mut self) -> Option<PyOutputEvent> {
+    async fn next_event(&mut self) -> Option<processkit::ProcessEvent> {
         // Field-wise borrows so the `select!` below can hold `&mut stream` in one
         // branch while the other reads `process`/`finish` and sets `reap_started`.
         let EventsDrive {
@@ -402,13 +400,7 @@ impl EventsDrive {
             if *reap_started {
                 // The reap is under way (or belongs to someone else): the terminal
                 // event is coming, so just drain.
-                match stream.next().await {
-                    Some(event) => match PyOutputEvent::from_event(event) {
-                        Some(line) => return Some(line),
-                        None => continue,
-                    },
-                    None => return None,
-                }
+                return stream.next().await;
             }
             // Both branches are cancel-safe: `next()` pops from the shared sink
             // only when it resolves, and the timer branch owns nothing at all —
@@ -421,10 +413,7 @@ impl EventsDrive {
                     // immediate probe rather than waiting out the idle cadence.
                     *probe_after = Duration::ZERO;
                     match event {
-                        Some(event) => match PyOutputEvent::from_event(event) {
-                            Some(line) => return Some(line),
-                            None => continue,
-                        },
+                        Some(event) => return Some(event),
                         None => return None,
                     }
                 },
@@ -442,6 +431,21 @@ impl EventsDrive {
                     }
                     continue;
                 }
+            }
+        }
+    }
+
+    /// Pull the next output-line event while preserving the historical
+    /// `output_events()` contract. Lifecycle-only events are skipped here, but
+    /// remain available through `lifecycle_events()`.
+    async fn next_line(&mut self) -> Option<PyOutputEvent> {
+        loop {
+            match self.next_event().await {
+                Some(event) => match PyOutputEvent::from_event(event) {
+                    Some(line) => return Some(line),
+                    None => continue,
+                },
+                None => return None,
             }
         }
     }
@@ -526,6 +530,45 @@ impl PyOutputEvents {
                     Some(line) => Ok(line),
                     None => Err(PyStopAsyncIteration::new_err(())),
                 },
+            }
+        })
+    }
+}
+
+/// An async iterator over the complete ordered process lifecycle.
+#[pyclass(name = "LifecycleEvents", module = "processkit")]
+pub(crate) struct PyLifecycleEvents {
+    inner: Arc<Mutex<EventsDrive>>,
+    idle: Option<IdleGuard>,
+}
+
+#[pymethods]
+impl PyLifecycleEvents {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = self.inner.clone();
+        let idle = self.idle.clone();
+        drive_async_py(py, async move {
+            let mut guard = stream.lock().await;
+            let event = match idle {
+                Some(guard_idle) => {
+                    let step = tokio::time::timeout(guard_idle.window, guard.next_event()).await;
+                    match step {
+                        Ok(event) => event,
+                        Err(_elapsed) => {
+                            guard_idle.kill();
+                            return Err(idle_timeout_err(guard_idle.window.as_secs_f64()));
+                        }
+                    }
+                }
+                None => guard.next_event().await,
+            };
+            match event {
+                Some(event) => Ok(PyLifecycleEvent::from(event)),
+                None => Err(PyStopAsyncIteration::new_err(())),
             }
         })
     }
@@ -928,6 +971,29 @@ impl PyRunningProcess {
         })
     }
 
+    /// The complete ordered lifecycle: started, output lines, then exited.
+    fn lifecycle_events(&self) -> PyResult<PyLifecycleEvents> {
+        let idle = self.idle_guard();
+        let _guard = runtime()?.enter();
+        let events = {
+            let mut inner = self.lock();
+            let running = inner
+                .as_mut()
+                .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+            running.events().map_err(map_err)?
+        };
+        Ok(PyLifecycleEvents {
+            inner: Arc::new(Mutex::new(EventsDrive {
+                stream: events,
+                process: self.inner.clone(),
+                finish: self.finish.clone(),
+                reap_started: false,
+                probe_after: Duration::ZERO,
+            })),
+            idle,
+        })
+    }
+
     /// Take the writable stdin handle. Raises `ProcessError` if stdin was not
     /// kept open (build the `Command` with `keep_stdin_open()`) or was already
     /// taken — so a missing setup fails here with a clear message, not later with
@@ -1205,5 +1271,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessStdin>()?;
     m.add_class::<PyStdoutLines>()?;
     m.add_class::<PyOutputEvents>()?;
+    m.add_class::<PyLifecycleEvents>()?;
     Ok(())
 }

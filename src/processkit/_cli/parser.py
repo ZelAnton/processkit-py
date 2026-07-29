@@ -147,6 +147,17 @@ def _build_parser() -> tuple[
         help="Set/override a child environment variable (Command.env(...)). Repeatable.",
     )
     run_parser.add_argument(
+        "--env-file",
+        dest="env_file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Load KEY=VALUE entries from PATH; blank lines and # comments are ignored. "
+            "Repeatable; later files win, and --env overrides every file."
+        ),
+    )
+    run_parser.add_argument(
         "--cwd",
         dest="cwd",
         default=None,
@@ -271,6 +282,17 @@ def _build_parser() -> tuple[
         default=[],
         metavar="KEY=VALUE",
         help="Set/override a child environment variable (Command.env(...)). Repeatable.",
+    )
+    supervise_parser.add_argument(
+        "--env-file",
+        dest="env_file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Load KEY=VALUE entries from PATH; blank lines and # comments are ignored. "
+            "Repeatable; later files win, and --env overrides every file."
+        ),
     )
     supervise_parser.add_argument(
         "--cwd",

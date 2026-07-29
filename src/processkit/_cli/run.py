@@ -24,7 +24,7 @@ from processkit import (
     RunProfile,
     Unsupported,
 )
-from processkit._cli.common import _apply_environment, _fail, _parse_env_flags
+from processkit._cli.common import _apply_environment, _fail, _parse_environment
 from processkit._cli.exit_codes import (
     EXIT_IDLE_TIMEOUT,
     EXIT_INTERNAL_ERROR,
@@ -119,7 +119,7 @@ def _run(
     if args.idle_timeout is not None and args.profile is not None:
         run_parser.error("--idle-timeout cannot be combined with --profile")
 
-    env_pairs = _parse_env_flags(run_parser, args.env)
+    env_pairs = _parse_environment(run_parser, args.env_file, args.env)
 
     program, *rest = child_argv
     idle_requested = args.idle_timeout is not None

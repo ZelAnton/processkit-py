@@ -73,6 +73,14 @@ llms:
 llms-check:
     uv run python scripts/gen_llms_txt.py --check
 
+# Regenerate docs/changelog.md from the root CHANGELOG.md.
+changelog:
+    uv run python scripts/gen_changelog_page.py
+
+# Verify the committed release-notes page is current.
+changelog-check:
+    uv run python scripts/gen_changelog_page.py --check
+
 # Run the benchmark suite (benchmarks/, pytest-benchmark; separate from `just test`).
 bench:
     uv sync --group bench

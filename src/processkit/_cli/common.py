@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import pathlib
 
 from processkit import Command
 from processkit._cli.output import emit_stderr
@@ -23,6 +24,36 @@ def _parse_env_flags(
         key, _, value = raw.partition("=")
         pairs.append((key, value))
     return pairs
+
+
+def _parse_env_files(parser: argparse.ArgumentParser, paths: list[str]) -> list[tuple[str, str]]:
+    """Read docker-style env files in order, with usage-quality diagnostics."""
+    pairs: list[tuple[str, str]] = []
+    for raw_path in paths:
+        path = pathlib.Path(raw_path)
+        try:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeError) as exc:
+            parser.error(f"--env-file {raw_path!r}: could not read file: {exc}")
+        for line_number, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                parser.error(f"--env-file {raw_path!r}, line {line_number}: expected KEY=VALUE")
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                parser.error(f"--env-file {raw_path!r}, line {line_number}: key must not be empty")
+            pairs.append((key, value))
+    return pairs
+
+
+def _parse_environment(
+    parser: argparse.ArgumentParser, env_files: list[str], raw_pairs: list[str]
+) -> list[tuple[str, str]]:
+    """Merge files in order, then explicit ``--env`` overrides."""
+    return _parse_env_files(parser, env_files) + _parse_env_flags(parser, raw_pairs)
 
 
 def _apply_environment(

@@ -34,5 +34,6 @@
 - [Async runtimes & event loops](event-loops.md)
 - [Platform support](platforms.md)
 - [Troubleshooting](troubleshooting.md)
+- [Release notes](changelog.md)
 - [API reference](api-reference.md)
 - [Architecture](internals.md)

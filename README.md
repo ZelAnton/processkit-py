@@ -168,6 +168,7 @@ limits from the command line, no code required:
 
 ```bash
 python -m processkit run --timeout 30 --max-memory 536870912 -- pytest -x
+python -m processkit run --env-file ci.env --env MODE=test -- ./build.sh
 ```
 
 See [Command-line usage](https://github.com/ZelAnton/processkit-py/blob/main/docs/cli.md) for the full flag list and exit-code

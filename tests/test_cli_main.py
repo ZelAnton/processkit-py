@@ -63,6 +63,7 @@ def test_run_help_does_not_raise() -> None:
     assert "--timeout" in result.stdout
     assert "--profile" in result.stdout
     assert "--create-no-window" in result.stdout
+    assert "--env-file" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 
@@ -600,6 +601,69 @@ def test_env_flag_without_equals_is_a_usage_error() -> None:
     assert result.returncode == 2
     assert "--env" in result.stderr
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_env_file_loads_entries_and_explicit_env_wins(tmp_path: pathlib.Path) -> None:
+    env_file = tmp_path / "build.env"
+    env_file.write_text(
+        "\ufeff# build settings\n\nPK_FILE_ONLY=from-file\nPK_OVERRIDE=from-file\n"
+        "PK_WITH_EQUALS=left=right\n",
+        encoding="utf-8",
+    )
+    code = (
+        "import os; print(os.environ['PK_FILE_ONLY'], os.environ['PK_OVERRIDE'], "
+        "os.environ['PK_WITH_EQUALS'])"
+    )
+    result = _run_cli(
+        "run",
+        "--env-file",
+        str(env_file),
+        "--env",
+        "PK_OVERRIDE=explicit",
+        "--",
+        PY,
+        "-c",
+        code,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "from-file explicit left=right"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_later_env_file_overrides_an_earlier_file(tmp_path: pathlib.Path) -> None:
+    first = tmp_path / "first.env"
+    second = tmp_path / "second.env"
+    first.write_text("PK_ORDER=first\n", encoding="utf-8")
+    second.write_text("PK_ORDER=second\n", encoding="utf-8")
+    result = _run_cli(
+        "run",
+        "--env-file",
+        str(first),
+        "--env-file",
+        str(second),
+        "--",
+        PY,
+        "-c",
+        "import os; print(os.environ['PK_ORDER'])",
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "second"
+
+
+def test_env_file_errors_are_usage_diagnostics_without_tracebacks(
+    tmp_path: pathlib.Path,
+) -> None:
+    malformed = tmp_path / "bad.env"
+    malformed.write_text("GOOD=value\nnot-a-pair\n", encoding="utf-8")
+    for path, expected in [
+        (malformed, "line 2"),
+        (tmp_path / "missing.env", "could not read file"),
+    ]:
+        result = _run_cli("run", "--env-file", str(path), "--", PY, "-c", "print(1)")
+        assert result.returncode == 2
+        assert "--env-file" in result.stderr
+        assert expected in result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
 
 
 def test_cwd_flag_changes_the_child_working_directory(tmp_path: pathlib.Path) -> None:
@@ -1401,6 +1465,28 @@ def test_supervise_env_clear_and_inherit_env_work_like_run() -> None:
     result = _run_cli(*args, env=parent_env)
     assert result.returncode == 0
     assert result.stdout.strip() == "kept -"
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_env_file_uses_the_same_merge_rules(tmp_path: pathlib.Path) -> None:
+    env_file = tmp_path / "supervise.env"
+    env_file.write_text("PK_SUPERVISE_FILE=from-file\nPK_OVERRIDE=file\n", encoding="utf-8")
+    code = "import os; print(os.environ['PK_SUPERVISE_FILE'], os.environ['PK_OVERRIDE'])"
+    result = _run_cli(
+        "supervise",
+        "--restart",
+        "never",
+        "--env-file",
+        str(env_file),
+        "--env",
+        "PK_OVERRIDE=flag",
+        "--",
+        PY,
+        "-c",
+        code,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "from-file flag"
     assert "Traceback (most recent call last)" not in result.stderr
 
 

@@ -20,5 +20,6 @@
 - [Async runtimes & event loops](/processkit-py/event-loops.html): processkit's async surface is **asyncio-native**.
 - [Platform support](/processkit-py/platforms.html): processkit's guarantee is strongest on Windows and weakest on macOS.
 - [Troubleshooting](/processkit-py/troubleshooting.html): Use this page to map a symptom to the guide that explains the full platform or runtime contract.
+- [Release notes](/processkit-py/changelog.html): All notable changes to **processkit** are documented in this file.
 - [API reference](/processkit-py/api-reference.html): The complete, per-symbol reference for the public `processkit` surface — every class, function, protocol, type alias, and exception exported by the package, plus the `processkit.testing` submodule.
 - [Architecture](/processkit-py/internals.html): This page is for contributors: how the binding is put together, where the line between "binding" and "crate" runs, and the conventions that keep the two layers — and the three parallel views of the public API — in sync.

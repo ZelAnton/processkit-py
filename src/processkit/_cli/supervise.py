@@ -19,7 +19,7 @@ from processkit import (
     Supervisor,
     Unsupported,
 )
-from processkit._cli.common import _apply_environment, _fail, _parse_env_flags
+from processkit._cli.common import _apply_environment, _fail, _parse_environment
 from processkit._cli.exit_codes import (
     EXIT_SIGNAL_BASE,
     EXIT_SUPERVISE_GAVE_UP,
@@ -60,7 +60,7 @@ def _supervise(
             "for a single command."
         )
 
-    env_pairs = _parse_env_flags(supervise_parser, args.env)
+    env_pairs = _parse_environment(supervise_parser, args.env_file, args.env)
     program, *rest = child_argv
 
     try:

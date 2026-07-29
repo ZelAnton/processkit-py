@@ -69,7 +69,7 @@ with bounded exponential backoff between restarts. `--restart
 `--max-restarts` bounds how many restarts are attempted; `--backoff-initial` /
 `--backoff-factor` / `--max-backoff` tune the delay schedule; `--no-jitter`
 disables the default random jitter. The same `--env-clear` / `--inherit-env` /
-`--env` / `--cwd` flags as `run` configure the environment and working
+`--env-file` / `--env` / `--cwd` flags as `run` configure the environment and working
 directory identically.
 
 Stdin is inherited exactly like `run` (`inherit_stdin()`). Stdout/stderr are

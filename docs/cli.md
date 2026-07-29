@@ -61,6 +61,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--cpu-quota FLOAT` | `ProcessGroup(cpu_quota=...)` | Fraction of a **single** core (`0.5` = half, `2.0` = two cores). |
 | `--env-clear` | `Command.env_clear()` | Start the child with an empty environment. |
 | `--inherit-env NAME` | `Command.inherit_env([...])` | Allow-list a parent variable through (implies `--env-clear`). Repeatable. |
+| `--env-file PATH` | Repeated `Command.env(key, value)` | Load docker-style `KEY=VALUE` lines. Blank lines and lines beginning with `#` are ignored. Repeatable. |
 | `--env KEY=VALUE` | `Command.env(key, value)` | Set/override a child environment variable. Repeatable. A value without `=` is a usage error. |
 | `--cwd DIR` | `Command.cwd(dir)` | Run the child with `DIR` as its working directory. |
 | `--profile [FILE]` | `RunningProcess.profile(...)` | After the child exits, emit a JSON resource profile — to stderr if `FILE` is omitted, or written to `FILE` otherwise. See [below](#--profile-machine-readable-resource-usage). |
@@ -70,7 +71,13 @@ Every numeric flag rejects zero and negative values at the argument-parsing
 stage (a usage error, not a traceback). See `docs/process-groups.md` and
 `docs/commands.md` for what each underlying builder method does in full —
 including how the environment builders (`env_clear` / `inherit_env` / `env`)
-compose regardless of call order.
+compose regardless of call order. CLI environment layers have a fixed
+precedence: the inherited base (or `--env-clear`), then `--inherit-env`, then
+`--env-file` values in file/argument order, then explicit `--env` flags. A later
+entry in the same layer wins; explicit flags therefore override every file.
+Files are UTF-8 (an optional BOM is accepted); values are literal and may contain
+additional `=` characters. Missing/unreadable files and non-comment lines
+without `=` are usage errors with the file and line number, never tracebacks.
 
 ### `--profile`: machine-readable resource usage
 
@@ -230,6 +237,7 @@ just line-buffered rather than a byte-for-byte fd passthrough.
 | `--no-jitter` | Disable restart-delay jitter; jitter is enabled by default. |
 | `--env-clear` | Start the child with an empty environment. |
 | `--inherit-env NAME` | Allow-list a parent variable (implies `--env-clear`). Repeatable. |
+| `--env-file PATH` | Load docker-style `KEY=VALUE` lines. Repeatable; later files win and `--env` wins over files. |
 | `--env KEY=VALUE` | Set or override a child variable. Repeatable. |
 | `--cwd DIR` | Run the child with `DIR` as its working directory. |
 

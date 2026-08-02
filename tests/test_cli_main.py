@@ -14,10 +14,13 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import queue
 import signal
 import socket
 import subprocess
 import sys
+import threading
+from typing import IO
 
 import pytest
 
@@ -27,6 +30,33 @@ from .conftest import NO_SUCH_PROGRAM, PY
 #: here means the CLI itself is stuck, which should fail loud, not time out
 #: the whole test session.
 _SUBPROCESS_TIMEOUT = 30
+
+
+def _read_line_with_deadline(stream: IO[str] | None, deadline: float) -> str | None:
+    """Read one line from `stream` off the main thread, bounded by `deadline`
+    seconds.
+
+    A plain, unbounded ``stream.readline()`` would only unblock once data
+    actually reaches the pipe. If a regression reintroduces block-buffered
+    delivery (see T-209), that data never arrives until the far end's final
+    flush at process exit — which, in the scenarios this helper is used for,
+    never happens on its own (the child deliberately blocks on its own stdin
+    waiting for this test to unblock it). Without a deadline, that would hang
+    the test (and the suite) forever instead of failing loud. Returns `None`
+    on a timed-out read, the line (including its trailing newline) otherwise.
+    """
+    assert stream is not None
+    box: queue.Queue[str] = queue.Queue(maxsize=1)
+
+    def _reader() -> None:
+        box.put(stream.readline())
+
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    reader.join(deadline)
+    if reader.is_alive():
+        return None
+    return box.get()
 
 
 def _run_cli(
@@ -217,6 +247,57 @@ def test_idle_timeout_streams_more_output_than_one_stdio_buffer() -> None:
     assert result.returncode == 0
     assert result.stdout.splitlines() == [f"line {i}" for i in range(lines)]
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_idle_timeout_delivers_a_line_through_a_pipe_before_the_wrapper_exits() -> None:
+    """Regression for T-209: a piped (non-TTY) caller must see a line as soon
+    as it is emitted, not only once the wrapper's own stdout is finally
+    flushed at process exit.
+
+    The child prints one line, then blocks on its own stdin until this test
+    explicitly unblocks it — so, unlike a sleep-based probe, there is no
+    timing race: if the wrapper delivers ``"first\\n"`` without a per-line
+    flush, it sits in the wrapper's block-buffered `sys.stdout` and this test's
+    `readline()` never returns (the wrapper never exits on its own either,
+    since the child is still waiting), which `_read_line_with_deadline` turns
+    into a fast, loud failure instead of a hang.
+    """
+    code = (
+        "import sys\n"
+        "print('first', flush=True)\n"
+        "sys.stdin.readline()\n"
+        "print('second', flush=True)\n"
+    )
+    proc = subprocess.Popen(
+        [PY, "-m", "processkit", "run", "--idle-timeout", "20", "--", PY, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        line = _read_line_with_deadline(proc.stdout, 10.0)
+        if line is None:
+            proc.kill()
+            proc.wait(timeout=_SUBPROCESS_TIMEOUT)
+            pytest.fail(
+                "no line arrived through the pipe before the deadline — "
+                "streamed output is still block-buffered"
+            )
+        assert line == "first\n"
+        # The child is still blocked on its own stdin read, so the wrapper
+        # cannot have exited yet — the line above must have arrived through an
+        # explicit per-line flush, not the final one at exit.
+        assert proc.poll() is None
+        assert proc.stdin is not None
+        proc.stdin.write("\n")
+        proc.stdin.flush()
+        remainder, _stderr = proc.communicate(timeout=_SUBPROCESS_TIMEOUT)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=_SUBPROCESS_TIMEOUT)
+    assert proc.returncode == 0
+    assert remainder == "second\n"
 
 
 def test_intermediate_broken_pipe_is_silent_and_preserves_the_cli_verdict() -> None:
@@ -1819,6 +1900,53 @@ def test_supervise_successful_run_exits_with_final_result_code() -> None:
     result = _run_cli("supervise", "--restart", "never", "--", PY, "-c", "import sys; sys.exit(7)")
     assert result.returncode == 7
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_supervise_tee_delivers_a_line_through_a_pipe_before_the_incarnation_exits() -> None:
+    """Regression for T-209: `supervise`'s ``stdout_tee``/``stderr_tee`` path
+    (`Command.stdout_tee(sys.stdout)`, teed through `PyWriterSink` in
+    `src/convert.rs`) must also deliver a teed line to a piped caller as it
+    happens, not only once the incarnation exits and the wrapper's final
+    flush pushes its block buffer.
+
+    Same no-sleep, no-timing-race construction as the ``run --idle-timeout``
+    counterpart above: the child blocks on its own stdin between the two
+    lines, so an unbuffered `readline()` in this test can only return early if
+    the tee is actually line-delivered.
+    """
+    code = (
+        "import sys\n"
+        "print('first', flush=True)\n"
+        "sys.stdin.readline()\n"
+        "print('second', flush=True)\n"
+    )
+    proc = subprocess.Popen(
+        [PY, "-m", "processkit", "supervise", "--restart", "never", "--", PY, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        line = _read_line_with_deadline(proc.stdout, 10.0)
+        if line is None:
+            proc.kill()
+            proc.wait(timeout=_SUBPROCESS_TIMEOUT)
+            pytest.fail(
+                "no teed line arrived through the pipe before the deadline — "
+                "the supervise tee path is still block-buffered"
+            )
+        assert line == "first\n"
+        assert proc.poll() is None
+        assert proc.stdin is not None
+        proc.stdin.write("\n")
+        proc.stdin.flush()
+        remainder, _stderr = proc.communicate(timeout=_SUBPROCESS_TIMEOUT)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=_SUBPROCESS_TIMEOUT)
+    assert proc.returncode == 0
+    assert remainder == "second\n"
 
 
 def test_supervise_exits_restarts_exhausted_code_on_max_restarts() -> None:

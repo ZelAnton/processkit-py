@@ -323,6 +323,7 @@ from processkit import (
     Command,
     ProcessGroup,
     wait_until,
+    wait_for_named_pipe,
     wait_for_path,
     wait_for_port,
     wait_for_unix_socket,
@@ -340,6 +341,8 @@ async with ProcessGroup() as group:
     # await wait_for_line(proc.stderr_lines(), "listening", timeout=10)
     # or wait for a Unix socket to accept connections (stronger than a path check):
     # await wait_for_unix_socket("/run/my-server.sock", timeout=10)
+    # or wait for a Windows named pipe (a busy server is ready too):
+    # await wait_for_named_pipe(r"\\.\pipe\my-server", timeout=10)
     # or wait for a pid file to appear:
     # await wait_for_path("/run/my-server.pid", timeout=10)
     # or poll any (sync or async) condition:
@@ -370,6 +373,18 @@ async with ProcessGroup() as group:
 
 A `WaitTimeout` (also a `TimeoutError`) is raised if the path never appears
 within `timeout` seconds — it carries `.path` for diagnostics.
+
+On Windows, use the symmetric named-pipe probe for services that publish a
+pipe instead of a Unix socket:
+
+```python
+from processkit import wait_for_named_pipe
+
+await wait_for_named_pipe(r"\\.\pipe\my-daemon", timeout=10, interval=0.05)
+```
+
+An occupied pipe counts as ready because its server is live; on non-Windows
+platforms this probe raises `Unsupported`.
 
 ## Build a shell-free pipeline
 

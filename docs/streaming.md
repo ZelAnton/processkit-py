@@ -485,7 +485,7 @@ await proc.aoutcome()
 
 ## Readiness probes
 
-"Start a server, then use it" needs *ready*, not merely *started*. Six
+"Start a server, then use it" needs *ready*, not merely *started*. Seven
 free async helpers replace the arbitrary `asyncio.sleep`, each bounded by its
 own deadline:
 
@@ -493,6 +493,7 @@ own deadline:
 from processkit import (
     Command,
     wait_until,
+    wait_for_named_pipe,
     wait_for_path,
     wait_for_port,
     wait_for_unix_socket,
@@ -521,10 +522,14 @@ await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
 # 4. A Unix-domain socket accepting connections (stronger than a path check):
 await wait_for_unix_socket("/run/my-server.sock", timeout=10)
 
-# 5. A path appearing on the filesystem (a pid file or other marker, …):
+# 5. A Windows named-pipe server. A busy pipe is ready too: it proves the
+#    server exists even when all pipe instances currently have clients:
+await wait_for_named_pipe(r"\\.\pipe\my-server", timeout=10)
+
+# 6. A path appearing on the filesystem (a pid file or other marker, …):
 await wait_for_path("/run/my-server.sock", timeout=10)
 
-# 6. Any predicate — sync bool OR an awaitable (a DB ping, …):
+# 7. Any predicate — sync bool OR an awaitable (a DB ping, …):
 await wait_until(lambda: health_check_passes(), timeout=10, interval=0.1)
 
 # ready — keep consuming from the SAME iterator:
@@ -538,28 +543,32 @@ async for line in lines:
 
 Semantics, deliberately uniform:
 
-- The six probes are `wait_for_line`, `wait_for_port`, `wait_for_http`,
-  `wait_for_unix_socket`, `wait_for_path`, and `wait_until`.
+- The seven probes are `wait_for_line`, `wait_for_port`, `wait_for_http`,
+  `wait_for_unix_socket`, `wait_for_named_pipe`, `wait_for_path`, and
+  `wait_until`. `wait_for_named_pipe` raises `Unsupported` outside Windows;
+  `wait_for_unix_socket` raises it when the Unix connector is unavailable.
 - A probe that can't pass within its deadline raises **`WaitTimeout`**
   (`ProcessError`, `TimeoutError`) — so `except TimeoutError` catches both run
   and readiness timeouts, and `.timeout_seconds` reads the configured deadline
   either way. `wait_for_port` additionally sets `.host`/`.port`, `wait_for_http`
-  sets `.host`/`.port`/`.path`, and `wait_for_path` / `wait_for_unix_socket` set
-  `.path`. `wait_for_port` / `wait_for_http` / `wait_for_unix_socket` also chain the last failed attempt (a
-  connection error, or — for `wait_for_http` — the last unexpected status) as
-  `__cause__`.
+  sets `.host`/`.port`/`.path`, and `wait_for_path` / `wait_for_named_pipe` /
+  `wait_for_unix_socket` set `.path`. `wait_for_port` / `wait_for_http` /
+  `wait_for_named_pipe` / `wait_for_unix_socket` also chain the last failed
+  attempt (a connection error, or — for `wait_for_http` — the last unexpected
+  status) as `__cause__`.
 - `wait_for_line` additionally raises `ProcessError` if the stdout stream ends
   *before* a match — no waiting out a 10s deadline on a dead server. It
   consumes items up to (and including) a match; iteration may continue
   afterward **only when a match was found** — exactly how far it advanced past
   the last inspected item on a timeout is unspecified, so don't rely on the
-  iterator's position there. `wait_for_port` / `wait_for_http` / `wait_for_path`
-  / `wait_for_unix_socket` / `wait_until` don't touch the pipes at all.
+  iterator's position there. `wait_for_port` / `wait_for_http` /
+  `wait_for_path` / `wait_for_named_pipe` / `wait_for_unix_socket` /
+  `wait_until` don't touch the process output pipes at all.
 - A failed probe **never kills the child** — you decide: retry, log, or tear
   down.
 - `wait_until` / `wait_for_port` / `wait_for_http` / `wait_for_path` /
-  `wait_for_unix_socket` poll every `interval` seconds (`ValueError` if
-  `interval <= 0`). A sync `wait_until`
+  `wait_for_named_pipe` / `wait_for_unix_socket` poll every `interval` seconds
+  (`ValueError` if `interval <= 0`). A sync `wait_until`
   predicate runs on the event loop, so keep it non-blocking; for blocking work,
   pass an awaitable.
 

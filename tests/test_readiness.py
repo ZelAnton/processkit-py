@@ -1,22 +1,26 @@
 """Readiness probes: `wait_until` (predicate polling), `wait_for_port` (TCP
 accept), `wait_for_http` (an HTTP endpoint answers with an expected status),
 `wait_for_line` (match a streamed line), `wait_for_path` (filesystem path
-appears), and `wait_for_unix_socket` (Unix-domain socket accept). Includes the
-probe-socket cleanup wiring that a cancelled/refused `wait_for_port` /
-`wait_for_http` / `wait_for_unix_socket` must run.
+appears), `wait_for_named_pipe` (Windows named-pipe server), and
+`wait_for_unix_socket` (Unix-domain socket accept). Includes the probe-socket
+cleanup wiring that a cancelled/refused `wait_for_port` / `wait_for_http` /
+`wait_for_unix_socket` must run.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import gc
 import inspect
 import socket
 import sys
 import tempfile
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +32,7 @@ from processkit import (
     WaitTimeout,
     wait_for_http,
     wait_for_line,
+    wait_for_named_pipe,
     wait_for_path,
     wait_for_port,
     wait_for_unix_socket,
@@ -103,13 +108,14 @@ def test_wait_until_returns_immediately_when_already_true() -> None:
 
 
 def test_readiness_timeout_is_keyword_only() -> None:
-    # `timeout` is keyword-only across ALL six readiness helpers — pin each
+    # `timeout` is keyword-only across ALL seven readiness helpers — pin each
     # signature so dropping the `*` on any of them fails.
     for fn in (
         wait_until,
         wait_for_port,
         wait_for_http,
         wait_for_line,
+        wait_for_named_pipe,
         wait_for_path,
         wait_for_unix_socket,
     ):
@@ -798,6 +804,130 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
     with refused_port() as port:  # nothing listening -> the OSError path runs the cleanup
         asyncio.run(scenario(port))
     assert called, "wait_for_port should route cleanup through the shared probe settler"
+
+
+def _windows_pipe_api() -> tuple[Any, Any, Any]:
+    win_dll: Any = getattr(ctypes, "WinDLL")
+    kernel32 = win_dll("kernel32", use_last_error=True)
+
+    create_named_pipe_w: Any = kernel32.CreateNamedPipeW
+    create_named_pipe_w.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    create_named_pipe_w.restype = ctypes.c_void_p
+
+    create_file_w: Any = kernel32.CreateFileW
+    create_file_w.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    create_file_w.restype = ctypes.c_void_p
+
+    close_handle: Any = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.c_void_p,)
+    close_handle.restype = ctypes.c_int
+    return create_named_pipe_w, create_file_w, close_handle
+
+
+@contextlib.contextmanager
+def _windows_named_pipe() -> Iterator[tuple[str, Any, Any]]:
+    create_named_pipe_w, create_file_w, close_handle = _windows_pipe_api()
+    name = rf"\\.\pipe\processkit-test-{uuid.uuid4().hex}"
+    handle = create_named_pipe_w(name, 3, 0, 1, 4096, 4096, 0, None)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        win_error: Any = getattr(ctypes, "WinError")
+        raise win_error(ctypes.get_last_error())
+    try:
+        yield name, create_file_w, close_handle
+    finally:
+        close_handle(handle)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
+def test_wait_for_named_pipe_ready() -> None:
+    with _windows_named_pipe() as (name, _create_file_w, _close_handle):
+        asyncio.run(wait_for_named_pipe(name, timeout=5.0))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
+def test_wait_for_named_pipe_busy_is_ready() -> None:
+    with _windows_named_pipe() as (name, create_file_w, close_handle):
+        client = create_file_w(name, 0, 0, None, 3, 0, None)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if client == invalid_handle:
+            win_error: Any = getattr(ctypes, "WinError")
+            raise win_error(ctypes.get_last_error())
+        try:
+            awaitable = wait_for_named_pipe(name, timeout=5.0)
+            asyncio.run(awaitable)
+        finally:
+            close_handle(client)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
+def test_wait_for_named_pipe_timeout_carries_path_and_last_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def passthrough_wait_for(
+        future: asyncio.Future[bool], timeout: float
+    ) -> bool:
+        return await future
+
+    name = rf"\\.\pipe\processkit-missing-{uuid.uuid4().hex}"
+
+    async def scenario() -> None:
+        monkeypatch.setattr(asyncio, "wait_for", passthrough_wait_for)
+        with pytest.raises(WaitTimeout) as excinfo:
+            await wait_for_named_pipe(name, timeout=0.1, interval=0.01)
+        assert excinfo.value.timeout_seconds == 0.1
+        assert excinfo.value.path == name
+        assert isinstance(excinfo.value.__cause__, OSError)
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_named_pipe_without_windows_api_raises_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import processkit._aio as aio
+
+    monkeypatch.setattr(aio, "_named_pipe_probe", None)
+
+    async def scenario() -> None:
+        with pytest.raises(Unsupported) as excinfo:
+            await wait_for_named_pipe(r"\\.\pipe\missing", timeout=1.0)
+        assert excinfo.value.operation == "wait_for_named_pipe"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
+def test_wait_for_named_pipe_rejects_invalid_timeout_and_interval() -> None:
+    name = rf"\\.\pipe\processkit-missing-{uuid.uuid4().hex}"
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            await wait_for_named_pipe(name, timeout=float("nan"))
+        with pytest.raises(ValueError, match="negative"):
+            await wait_for_named_pipe(name, timeout=-1.0)
+        for interval in (0.0, -1.0, float("nan")):
+            with pytest.raises(ValueError, match="positive"):
+                await wait_for_named_pipe(name, timeout=1.0, interval=interval)
+
+    asyncio.run(scenario())
 
 
 @pytest.fixture

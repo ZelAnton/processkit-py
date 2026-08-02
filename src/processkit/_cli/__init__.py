@@ -89,16 +89,21 @@ live, but line-buffered rather than a byte-for-byte fd passthrough. If the
 wrapper itself has no stdout or stderr stream (for example under
 ``pythonw.exe``), the corresponding tee is omitted instead of failing setup.
 
-Exit code contract (its own reserved range, disjoint from `run`'s
-124-127/128+signal above, `doctor`'s 0/1/3/4 below, and argparse's own
-usage-error code `2`):
+Exit code contract (its own reserved range for 120-122, disjoint from
+`run`'s 123/125-127 above, `doctor`'s 0/1/3/4 below, and argparse's own
+usage-error code `2` — but deliberately *reusing*, not avoiding, `run`'s
+124 and 128+signal for the outcomes below where the same meaning applies):
 
 - Normal completion (`SupervisionOutcome.stopped` in
   ``{"policy_satisfied", "predicate", "unhealthy"}``): this process exits with the last
   incarnation's own code (`final_result.code`, unchanged), or
   **128 + signal number** if that incarnation was killed by a signal (POSIX
-  only) — the same convention `run` uses. An unhealthy outcome with neither a
-  code nor a signal is an internal supervision failure and exits **120**.
+  only) — the same convention `run` uses. If that last incarnation instead
+  timed out (`final_result.timed_out`), exit **124** — the same
+  ``EXIT_TIMEOUT`` code `run` uses for its own wall-clock ``--timeout``, not
+  a `supervise`-specific code. An unhealthy outcome with neither a
+  code, a signal, nor a timeout is an internal supervision failure and exits
+  **120**.
 - ``stopped == "restarts_exhausted"``: exit **121** — the restart policy
   wanted another attempt, but `--max-restarts` was exhausted.
 - ``stopped == "gave_up"``: exit **122** — supervision gave up (reserved for

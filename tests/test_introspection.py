@@ -14,6 +14,7 @@ from processkit import (
     process_is_alive,
 )
 
+from ._liveness import wait_until
 from .conftest import PY
 
 
@@ -29,7 +30,10 @@ def test_process_lookup_tracks_a_live_then_finished_child() -> None:
     if info.start_time is not None:
         assert not process_is_alive(pid, info.start_time + 1)
     proc.outcome()
-    assert process_info(pid) is None
+    # A cancel-safe Windows wait can retain a cloned process handle briefly after
+    # reporting the outcome. Release the owner and wait for that handle to close.
+    del proc
+    assert wait_until(lambda: process_info(pid) is None, timeout=5.0)
     assert not process_is_alive(pid, info.start_time)
 
 

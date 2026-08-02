@@ -51,6 +51,12 @@ if sys.platform == "win32":
     ]
     _kernel32.CloseHandle.restype = wintypes.BOOL
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.GetConsoleWindow.restype = wintypes.HWND
+    _kernel32.GetConsoleWindow.argtypes = []
+
+    def pty_control_input_supported() -> bool:
+        """Whether ConPTY can synthesize control input for this launcher."""
+        return bool(_kernel32.GetConsoleWindow())
 
     def is_alive(pid: int) -> bool:
         """Whether the process with this PID is currently running."""
@@ -89,6 +95,10 @@ if sys.platform == "win32":
             _kernel32.CloseHandle(handle)
 
 else:
+
+    def pty_control_input_supported() -> bool:
+        """Whether a PTY can synthesize control input for this launcher."""
+        return True
 
     def is_alive(pid: int) -> bool:
         """Whether the process with this PID is currently running."""

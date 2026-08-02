@@ -168,7 +168,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --group bench
-      # `-p no:xdist -o addopts=""` drops the repo's default `-n auto`:
+      # `-p no:xdist -o addopts=""` drops the repo's default xdist options:
       # pytest-benchmark needs to run un-distributed (single worker) to
       # produce real timings — under xdist it silently skips measuring
       # instead (see benchmarks/README.md).

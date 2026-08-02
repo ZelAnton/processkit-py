@@ -194,7 +194,7 @@ jobs:
       # threading-specific code paths, so instrumenting all 10 legs would only add
       # overhead for an identical number. `--cov` (no path argument) picks up
       # `[tool.coverage.run] source` from pyproject.toml; `parallel = true` there
-      # plus pytest-cov's built-in xdist support combine each `-n auto` worker's
+      # plus pytest-cov's built-in xdist support combine each worker's
       # data so the total isn't undercounted.
       - name: Run tests
         if: >-

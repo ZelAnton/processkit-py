@@ -33,7 +33,13 @@ from processkit import (
     wait_for_line,
 )
 
-from ._liveness import is_alive, read_pid_when_ready, wait_dead, wait_until
+from ._liveness import (
+    is_alive,
+    pty_control_input_supported,
+    read_pid_when_ready,
+    wait_dead,
+    wait_until,
+)
 from .conftest import PY, spawn_grandchild_command
 
 # Prints N lines (flushed so they stream) then exits.
@@ -820,6 +826,10 @@ def test_pty_interactive_input_round_trips_over_terminal_master() -> None:
     assert "reply:hello" in result.stdout
 
 
+@pytest.mark.skipif(
+    not pty_control_input_supported(),
+    reason="ConPTY cannot synthesize Ctrl-C from a headless Windows launcher",
+)
 def test_pty_send_control_interrupts_the_child() -> None:
     async def scenario() -> Outcome:
         code = "import time; print('ready', flush=True); time.sleep(30)"

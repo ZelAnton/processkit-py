@@ -188,11 +188,11 @@ reportPrivateUsage = "none"
 reportUnusedFunction = "none"
 
 [tool.pytest.ini_options]
-# `-n auto` (pytest-xdist): the suite is dominated by sequential interpreter
-# spawns (each test's own subprocess round trip), so it's embarrassingly
-# parallel across worker processes — each test is already independent (no
-# shared global state survives a process boundary; env-mutating tests use
-# monkeypatch, not raw os.environ, since Stage 1).
+# Four file-grouped pytest-xdist workers keep the suite parallel without turning
+# high-core hosts into process storms. Most tests spawn their own child
+# interpreters, so `-n auto` can multiply a host's logical CPU count into enough
+# concurrent processes to starve workers, trip wall-clock timeouts, and leave
+# crashed-worker descendants holding the extension module on Windows.
 #
 # `-m "not leak"` structurally excludes tests/test_memory_leaks.py (marked
 # `leak` below) from this default selection, instead of relying on
@@ -202,9 +202,9 @@ reportUnusedFunction = "none"
 # one interpreter, not split across xdist workers) — callers that actually
 # want it (nightly-hardening.yml's `memory-leaks` job, `just leak-test`)
 # select the file explicitly and override `addopts` wholesale (dropping both
-# `-n auto` and the `-m` filter) rather than trying to subtract just those two
-# pieces from this string.
-addopts = "-ra --strict-markers --strict-config --import-mode=importlib -n auto -m \"not leak\""
+# `-n 4 --dist loadfile` and the `-m` filter) rather than trying to subtract
+# just those pieces from this string.
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib -n 4 --dist loadfile -m \"not leak\""
 markers = [
   "leak: serial memory/reference-stability tests (tests/test_memory_leaks.py) — nightly-hardening only, never part of the default selection; run explicitly via `just leak-test` or `-m leak -p no:xdist`.",
 ]
@@ -212,8 +212,8 @@ filterwarnings = [
   "error",
   # pytest-benchmark (the `bench` dependency-group, autoloaded as a pytest11
   # plugin whenever installed — not scoped to `benchmarks/`) warns once at
-  # configure time that it is disabling itself under `-n auto`/xdist, which
-  # is exactly this suite's default (see the addopts comment above). Harmless
+  # configure time that it is disabling itself under xdist, which is exactly
+  # this suite's default (see the addopts comment above). Harmless
   # here — nothing in `tests/` uses the `benchmark` fixture — but without this
   # one narrow ignore, a dev environment with `bench` installed alongside
   # `dev` would turn that benign self-disabling notice into a hard
@@ -415,22 +415,23 @@ only_mutate = [
 #   - `cliff.toml`: `tests/test_release_scripts.py` parses its `commit_parsers`
 #     table.
 also_copy = ["conftest.py", "README.md", "docs", "examples", "cliff.toml"]
-# `-n auto` (pytest-xdist, the repo-wide default -- see the comment on `addopts`
-# in `[tool.pytest.ini_options]` above) breaks mutmut's in-process stats
+# The repo-wide pytest-xdist default (see the comment on `addopts` in
+# `[tool.pytest.ini_options]` above) breaks mutmut's in-process stats
 # collection: mutmut's `StatsCollector` pytest plugin records which test hit
-# which mutated function via hooks that run in the controller process, but under
-# `-n auto` the actual test bodies execute in xdist worker *sub*processes, so
+# which mutated function via hooks that run in the controller process, but
+# under xdist the actual test bodies execute in worker *sub*processes, so
 # those hook calls never happen in-process and no test ends up associated with
 # any mutant (mutmut then aborts stats collection outright, before running a
 # single mutant). `-p no:xdist` alone is not enough -- once the plugin that
-# registers `-n` is disabled, `-n auto` (still present via the ini file's
-# `addopts`, which mutmut's sandboxed pytest run reads same as any other run)
-# becomes an unrecognized option and pytest itself fails to start; `-o
+# registers `-n`/`--dist` is disabled, the xdist options still present via the
+# ini file's `addopts` (which mutmut's sandboxed pytest run reads same as any
+# other run) become unrecognized and pytest itself fails to start; `-o
 # addopts=...` fully overrides (not appends to) the ini value, so the
 # replacement below must keep every other `addopts` flag verbatim (i.e. stay in
-# sync with `[tool.pytest.ini_options] addopts` above, minus `-n auto`) rather
-# than only dropping `-n auto` from it. That includes `-m "not leak"`: without
-# it this baseline/stats pass would also collect tests/test_memory_leaks.py,
+# sync with `[tool.pytest.ini_options] addopts` above, minus `-n 4 --dist
+# loadfile`) rather than only dropping `-n 4` from it. That includes `-m "not
+# leak"`: without it this baseline/stats pass would also collect
+# tests/test_memory_leaks.py,
 # whose thresholds are tuned for one serial single-run measurement, not
 # mutmut's stats-collection pass -- a spurious failure there would abort the
 # whole mutation run (see the `leak` marker registered in

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from ._liveness import pty_control_input_supported
+
 _EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 _EXAMPLES = sorted(_EXAMPLES_DIR.glob("*.py"))
 
@@ -27,6 +29,8 @@ def test_examples_directory_is_populated() -> None:
 
 @pytest.mark.parametrize("script", _EXAMPLES, ids=lambda p: p.name)
 def test_example_runs_cleanly(script: Path) -> None:
+    if script.name == "06_interactive_pty.py" and not pty_control_input_supported():
+        pytest.skip("ConPTY cannot synthesize Ctrl-C from a headless Windows launcher")
     result = subprocess.run(
         [sys.executable, str(script)],
         capture_output=True,

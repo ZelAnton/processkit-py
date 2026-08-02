@@ -474,14 +474,24 @@ impl PyHubWakeCallback {
             }
             return Ok(());
         }
-        self.event_loop.bind(py).call_method1(
+        if let Err(error) = self.event_loop.bind(py).call_method1(
             intern!(py, "call_soon"),
             (PyHubIdleCallback {
                 hub: Arc::clone(&self.hub),
                 event_loop: self.event_loop.clone_ref(py),
                 reader: self.reader.clone_ref(py),
             },),
-        )?;
+        ) {
+            // Rearming the idle callback failed (e.g. the loop is closing).
+            // Mirror the `cancelled`/`!receive_ok` branches above so the hub
+            // does not remain open with live entries and no scheduled work,
+            // then surface the original `call_soon` failure to the caller.
+            let _ = self.reader.bind(py).call_method0(intern!(py, "close"));
+            for entry in self.hub.close() {
+                let _ = entry.future.bind(py).call_method0(intern!(py, "cancel"));
+            }
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -490,12 +500,24 @@ impl PyHubWakeCallback {
 impl PyHubIdleCallback {
     fn __call__(&self, py: Python<'_>) -> PyResult<()> {
         if self.hub.has_entries() {
-            return arm_hub_receive(
+            if let Err(error) = arm_hub_receive(
                 py,
                 self.event_loop.bind(py),
                 self.reader.bind(py),
                 Arc::clone(&self.hub),
-            );
+            ) {
+                // Rearming the receive failed (e.g. `sock_recv`/`create_task`
+                // raised on a closing loop). Mirror the `!has_entries()`
+                // branch below instead of leaving the hub open with a live
+                // entry and no armed receive, then surface the original
+                // error to the caller.
+                let _ = self.reader.bind(py).call_method0(intern!(py, "close"));
+                for entry in self.hub.close() {
+                    let _ = entry.future.bind(py).call_method0(intern!(py, "cancel"));
+                }
+                return Err(error);
+            }
+            return Ok(());
         }
 
         self.reader.bind(py).call_method0(intern!(py, "close"))?;

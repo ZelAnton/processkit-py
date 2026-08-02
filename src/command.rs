@@ -1390,8 +1390,8 @@ fn which(program: PathBuf) -> PyResult<String> {
         .map_err(map_err)
 }
 
-/// Register this module's pyclasses (`Command`, `Pipeline`) and the module-level
-/// `which` function on `_processkit`.
+/// Register this module's pyclasses (`Command`, `Pipeline`, `DetachedChild`) and
+/// the module-level `which` function on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommand>()?;
     m.add_class::<PyDetachedChild>()?;

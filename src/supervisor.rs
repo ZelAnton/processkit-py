@@ -1031,8 +1031,8 @@ impl PySupervisionSession {
     }
 }
 
-/// Register this module's pyclasses (`Supervisor`, `SupervisionOutcome`) on
-/// `_processkit`.
+/// Register this module's pyclasses (`Supervisor`, `SupervisionOutcome`,
+/// `SupervisionStatus`, `SupervisionSession`) on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySupervisor>()?;
     m.add_class::<PySupervisionOutcome>()?;

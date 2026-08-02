@@ -1,10 +1,11 @@
 """Shared exit-code constants for the ``python -m processkit`` CLI.
 
 See `processkit._cli`'s module docstring for the full exit-code contract
-these implement; kept in one module so `run`, `doctor`, and `supervise`
-(independent exit-code namespaces that must stay disjoint from each other and
-from argparse's own usage-error code `2`) can all import from a single
-source of truth.
+these implement; kept in one module so `run`, `doctor`, and `supervise` can
+all import from a single source of truth. Their subcommand-specific primary
+and reserved ranges stay disjoint from each other and argparse's own
+usage-error code `2` (K-027), while shared semantic codes are deliberately
+reused: 124 for wall-clock timeout and 128+signal for signal termination.
 """
 
 from __future__ import annotations
@@ -20,15 +21,18 @@ from __future__ import annotations
 #: (`BrokenPipeError`/`EPIPE`, e.g. ``... | head``) is deliberately **not**
 #: this case — no exit code can deliver output to an end that is already gone.
 #: One shared code rather than a per-subcommand one, and disjoint from all
-#: three namespaces (K-027): `run`'s 123-127 / 128+signal, `supervise`'s
-#: 120-122, `doctor`'s 0/1/3/4, and argparse's 2 — so it means exactly the same
-#: thing wherever it surfaces.
+#: three primary/reserved namespaces (K-027): `run`'s 123/125-127,
+#: `supervise`'s 120-122 (which also reuses the shared timeout code 124 and
+#: 128+signal convention), `doctor`'s 0/1/3/4, and argparse's 2 — so it means
+#: exactly the same thing wherever it surfaces.
 EXIT_OUTPUT_LOST = 119
 #: `supervise` uses 120-122, deliberately disjoint from argparse's usage-error
-#: code 2, `doctor`'s 0/1/3/4 verdicts, and `run`'s 124-127 reservation below
+#: code 2, `doctor`'s 0/1/3/4 verdicts, and `run`'s 125-127 reservation below
 #: (it reuses the shared `EXIT_SIGNAL_BASE` + signal-number convention below
 #: for a signal-killed final incarnation and for its own Ctrl+C handling,
-#: exactly like `run`, rather than reserving a separate code for either).
+#: and likewise reuses `EXIT_TIMEOUT` (124) for a final incarnation that
+#: timed out, exactly like `run`, rather than reserving a separate code for
+#: any of the three).
 #: `supervise`: an internal error building or running its `Command` / `Supervisor`
 #: (including `ProcessNotFound`, `PermissionDenied`, `ResourceLimit`, or `Unsupported`).
 EXIT_SUPERVISE_INTERNAL_ERROR = 120

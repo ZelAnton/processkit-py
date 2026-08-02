@@ -486,9 +486,9 @@ impl PyHubWakeCallback {
             // Mirror the `cancelled`/`!receive_ok` branches above so the hub
             // does not remain open with live entries and no scheduled work,
             // then surface the original `call_soon` failure to the caller.
-            self.reader.bind(py).call_method0(intern!(py, "close"))?;
+            let _ = self.reader.bind(py).call_method0(intern!(py, "close"));
             for entry in self.hub.close() {
-                entry.future.bind(py).call_method0(intern!(py, "cancel"))?;
+                let _ = entry.future.bind(py).call_method0(intern!(py, "cancel"));
             }
             return Err(error);
         }
@@ -511,9 +511,9 @@ impl PyHubIdleCallback {
                 // branch below instead of leaving the hub open with a live
                 // entry and no armed receive, then surface the original
                 // error to the caller.
-                self.reader.bind(py).call_method0(intern!(py, "close"))?;
+                let _ = self.reader.bind(py).call_method0(intern!(py, "close"));
                 for entry in self.hub.close() {
-                    entry.future.bind(py).call_method0(intern!(py, "cancel"))?;
+                    let _ = entry.future.bind(py).call_method0(intern!(py, "cancel"));
                 }
                 return Err(error);
             }

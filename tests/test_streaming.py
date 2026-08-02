@@ -10,6 +10,7 @@ import contextlib
 import gc
 import io
 import pathlib
+import socket
 import sys
 import time
 
@@ -1571,7 +1572,7 @@ def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:
     assert ticks > 3
 
 
-# --- completion-hub rearm failures (T-206) ----------------------------------
+# --- completion-hub rearm failures ------------------------------------------
 #
 # The completion-hub bridge in `src/runtime.rs` shares one `sock_recv` per
 # event loop across every concurrent async operation (see
@@ -1584,12 +1585,22 @@ def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:
 # force one of those two rearm calls to fail exactly once, via a real
 # concurrent-operation scenario (a slow op stays pending on the shared hub
 # while a fast op's completion drives the forced failure), and assert the
-# slow op's awaiter is cancelled instead of parking forever -- each bounded by
-# `asyncio.wait_for` so a real regression fails the test instead of hanging
-# the suite.
+# slow awaiters are cancelled instead of parking forever. Secondary failures
+# from both `reader.close()` and `future.cancel()` are injected as well: all
+# cancellation attempts must still run and the loop must observe the original
+# rearm error. Each scenario is bounded by `asyncio.wait_for` so a real
+# regression fails the test instead of hanging the suite.
 
 
-def test_hub_wake_call_soon_failure_cancels_the_other_pending_awaiter() -> None:
+class _CloseThenFailSocket(socket.socket):
+    def close(self) -> None:
+        super().close()
+        raise RuntimeError("forced reader close failure")
+
+
+def test_hub_wake_call_soon_failure_preserves_error_and_attempts_all_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Forces the `call_soon` that reschedules `PyHubIdleCallback` (the tail of
     # `PyHubWakeCallback::__call__`) to fail on its first call. That call fires
     # every time the hub's shared `sock_recv` wakes and observes a completed
@@ -1597,21 +1608,48 @@ def test_hub_wake_call_soon_failure_cancels_the_other_pending_awaiter() -> None:
     async def scenario() -> None:
         loop = asyncio.get_running_loop()
         real_call_soon = loop.call_soon
+        real_create_future = loop.create_future
+        real_socketpair = socket.socketpair
         triggered = False
+        cancel_attempts: list[asyncio.Future[object]] = []
+        callback_errors: list[dict[str, object]] = []
+
+        class CancelThenFailFuture(asyncio.Future[object]):
+            def cancel(self, msg: object | None = None) -> bool:
+                cancel_attempts.append(self)
+                super().cancel(msg)
+                raise RuntimeError("forced future cancel failure")
+
+        def create_future() -> asyncio.Future[object]:
+            return CancelThenFailFuture(loop=loop)
+
+        def failing_close_socketpair() -> tuple[socket.socket, socket.socket]:
+            reader, writer = real_socketpair()
+            failing_reader = _CloseThenFailSocket(
+                reader.family,
+                reader.type,
+                reader.proto,
+                fileno=reader.detach(),
+            )
+            return failing_reader, writer
 
         def failing_call_soon(callback: object, *args: object, **kwargs: object) -> object:
             nonlocal triggered
             if not triggered and type(callback).__name__ == "PyHubIdleCallback":
                 triggered = True
-                raise RuntimeError("forced call_soon failure (T-206 regression test)")
+                raise RuntimeError("forced call_soon failure")
             return real_call_soon(callback, *args, **kwargs)  # type: ignore[arg-type]
 
-        loop.call_soon = failing_call_soon  # type: ignore[method-assign]
+        monkeypatch.setattr(socket, "socketpair", failing_close_socketpair)
+        loop.create_future = create_future  # type: ignore[method-assign]
+        loop.call_soon = failing_call_soon  # type: ignore[assignment]
+        loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
         try:
-            slow = asyncio.ensure_future(
-                Command(PY, ["-c", "import time; time.sleep(5)"]).aoutput()
-            )
-            await asyncio.sleep(0.2)  # let the slow op register with the hub first
+            slow = [
+                asyncio.ensure_future(Command(PY, ["-c", "import time; time.sleep(5)"]).aoutput())
+                for _ in range(2)
+            ]
+            await asyncio.sleep(0.2)  # let both slow ops register with the hub first
             fast = await Command(PY, ["-c", "print('done')"]).aoutput()
             assert fast.stdout.strip() == "done"
 
@@ -1620,15 +1658,24 @@ def test_hub_wake_call_soon_failure_cancels_the_other_pending_awaiter() -> None:
             # (which runs synchronously before the fast future's result is even
             # observable here) must already have fired.
             assert triggered, "the forced call_soon failure never fired"
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(slow, timeout=10.0)
+            for pending in slow:
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(pending, timeout=10.0)
+            assert len(cancel_attempts) >= 2
+            assert any(
+                str(context.get("exception")) == "forced call_soon failure"
+                for context in callback_errors
+            )
         finally:
             loop.call_soon = real_call_soon  # type: ignore[method-assign]
+            loop.create_future = real_create_future  # type: ignore[method-assign]
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
 
 
-def test_hub_idle_rearm_sock_recv_failure_cancels_the_pending_awaiter() -> None:
+def test_hub_idle_rearm_failure_preserves_error_and_attempts_all_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Forces the SECOND `sock_recv` call to fail (the first arms the hub at
     # creation and must succeed for the scenario to even get going) -- the
     # rearm `PyHubIdleCallback::__call__` makes via `arm_hub_receive` once it
@@ -1638,21 +1685,48 @@ def test_hub_idle_rearm_sock_recv_failure_cancels_the_pending_awaiter() -> None:
     async def scenario() -> None:
         loop = asyncio.get_running_loop()
         real_sock_recv = loop.sock_recv
+        real_create_future = loop.create_future
+        real_socketpair = socket.socketpair
         calls = 0
+        cancel_attempts: list[asyncio.Future[object]] = []
+        callback_errors: list[dict[str, object]] = []
 
-        async def failing_sock_recv(*args: object, **kwargs: object) -> bytes:
+        class CancelThenFailFuture(asyncio.Future[object]):
+            def cancel(self, msg: object | None = None) -> bool:
+                cancel_attempts.append(self)
+                super().cancel(msg)
+                raise RuntimeError("forced future cancel failure")
+
+        def create_future() -> asyncio.Future[object]:
+            return CancelThenFailFuture(loop=loop)
+
+        def failing_close_socketpair() -> tuple[socket.socket, socket.socket]:
+            reader, writer = real_socketpair()
+            failing_reader = _CloseThenFailSocket(
+                reader.family,
+                reader.type,
+                reader.proto,
+                fileno=reader.detach(),
+            )
+            return failing_reader, writer
+
+        def failing_sock_recv(*args: object, **kwargs: object) -> object:
             nonlocal calls
             calls += 1
             if calls == 2:
-                raise RuntimeError("forced sock_recv failure (T-206 regression test)")
-            return await real_sock_recv(*args, **kwargs)  # type: ignore[arg-type]
+                raise RuntimeError("forced sock_recv failure")
+            return real_sock_recv(*args, **kwargs)  # type: ignore[arg-type]
 
-        loop.sock_recv = failing_sock_recv  # type: ignore[method-assign]
+        monkeypatch.setattr(socket, "socketpair", failing_close_socketpair)
+        loop.create_future = create_future  # type: ignore[method-assign]
+        loop.sock_recv = failing_sock_recv  # type: ignore[assignment]
+        loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
         try:
-            slow = asyncio.ensure_future(
-                Command(PY, ["-c", "import time; time.sleep(5)"]).aoutput()
-            )
-            await asyncio.sleep(0.2)  # let the slow op register + arm the hub first
+            slow = [
+                asyncio.ensure_future(Command(PY, ["-c", "import time; time.sleep(5)"]).aoutput())
+                for _ in range(2)
+            ]
+            await asyncio.sleep(0.2)  # let both slow ops register + arm the hub first
             fast = await Command(PY, ["-c", "print('done')"]).aoutput()
             assert fast.stdout.strip() == "done"
             # A few more loop turns for the idle callback (scheduled after the
@@ -1664,9 +1738,16 @@ def test_hub_idle_rearm_sock_recv_failure_cancels_the_pending_awaiter() -> None:
                 await asyncio.sleep(0)
 
             assert calls >= 2, "the forced sock_recv rearm never fired"
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(slow, timeout=10.0)
+            for pending in slow:
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(pending, timeout=10.0)
+            assert len(cancel_attempts) >= 2
+            assert any(
+                str(context.get("exception")) == "forced sock_recv failure"
+                for context in callback_errors
+            )
         finally:
             loop.sock_recv = real_sock_recv  # type: ignore[method-assign]
+            loop.create_future = real_create_future  # type: ignore[method-assign]
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))

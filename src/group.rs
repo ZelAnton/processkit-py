@@ -615,7 +615,7 @@ impl PyProcessGroup {
 }
 
 /// Register this module's pyclasses (`ProcessGroup`, `ProcessGroupStats`,
-/// `MemberInfo`) on `_processkit`.
+/// `MemberInfo`, `ShutdownReport`) on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProcessGroup>()?;
     m.add_class::<PyProcessGroupStats>()?;

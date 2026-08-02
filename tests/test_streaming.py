@@ -1569,3 +1569,104 @@ def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:
     # The event loop kept running during the blocking writes — had write() run on
     # the loop thread, the ticker could not have advanced. Generous margin.
     assert ticks > 3
+
+
+# --- completion-hub rearm failures (T-206) ----------------------------------
+#
+# The completion-hub bridge in `src/runtime.rs` shares one `sock_recv` per
+# event loop across every concurrent async operation (see
+# `test_completion_reuses_one_wakeup_socket_per_event_loop` in
+# test_async_lifecycle.py). Two of its rearm paths used to leave the hub open
+# -- with pending entries and no armed receive -- when `loop.sock_recv`/
+# `create_task` (inside `arm_hub_receive`) or the trailing `loop.call_soon` in
+# `PyHubWakeCallback::__call__` raised: awaiters of those still-pending
+# entries would then hang forever instead of being cancelled. Both tests below
+# force one of those two rearm calls to fail exactly once, via a real
+# concurrent-operation scenario (a slow op stays pending on the shared hub
+# while a fast op's completion drives the forced failure), and assert the
+# slow op's awaiter is cancelled instead of parking forever -- each bounded by
+# `asyncio.wait_for` so a real regression fails the test instead of hanging
+# the suite.
+
+
+def test_hub_wake_call_soon_failure_cancels_the_other_pending_awaiter() -> None:
+    # Forces the `call_soon` that reschedules `PyHubIdleCallback` (the tail of
+    # `PyHubWakeCallback::__call__`) to fail on its first call. That call fires
+    # every time the hub's shared `sock_recv` wakes and observes a completed
+    # entry, regardless of how many other entries are still outstanding.
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        real_call_soon = loop.call_soon
+        triggered = False
+
+        def failing_call_soon(callback: object, *args: object, **kwargs: object) -> object:
+            nonlocal triggered
+            if not triggered and type(callback).__name__ == "PyHubIdleCallback":
+                triggered = True
+                raise RuntimeError("forced call_soon failure (T-206 regression test)")
+            return real_call_soon(callback, *args, **kwargs)  # type: ignore[arg-type]
+
+        loop.call_soon = failing_call_soon  # type: ignore[method-assign]
+        try:
+            slow = asyncio.ensure_future(
+                Command(PY, ["-c", "import time; time.sleep(5)"]).aoutput()
+            )
+            await asyncio.sleep(0.2)  # let the slow op register with the hub first
+            fast = await Command(PY, ["-c", "print('done')"]).aoutput()
+            assert fast.stdout.strip() == "done"
+
+            # The fast op's completion is what wakes the shared hub and drives the
+            # forced `call_soon` failure -- by the time it returned, that callback
+            # (which runs synchronously before the fast future's result is even
+            # observable here) must already have fired.
+            assert triggered, "the forced call_soon failure never fired"
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(slow, timeout=10.0)
+        finally:
+            loop.call_soon = real_call_soon  # type: ignore[method-assign]
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+
+def test_hub_idle_rearm_sock_recv_failure_cancels_the_pending_awaiter() -> None:
+    # Forces the SECOND `sock_recv` call to fail (the first arms the hub at
+    # creation and must succeed for the scenario to even get going) -- the
+    # rearm `PyHubIdleCallback::__call__` makes via `arm_hub_receive` once it
+    # observes the hub still has entries after a completion. A concurrent slow
+    # op stays pending through that rearm, so its awaiter is what must be
+    # cancelled instead of hanging.
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        real_sock_recv = loop.sock_recv
+        calls = 0
+
+        async def failing_sock_recv(*args: object, **kwargs: object) -> bytes:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("forced sock_recv failure (T-206 regression test)")
+            return await real_sock_recv(*args, **kwargs)  # type: ignore[arg-type]
+
+        loop.sock_recv = failing_sock_recv  # type: ignore[method-assign]
+        try:
+            slow = asyncio.ensure_future(
+                Command(PY, ["-c", "import time; time.sleep(5)"]).aoutput()
+            )
+            await asyncio.sleep(0.2)  # let the slow op register + arm the hub first
+            fast = await Command(PY, ["-c", "print('done')"]).aoutput()
+            assert fast.stdout.strip() == "done"
+            # A few more loop turns for the idle callback (scheduled after the
+            # fast completion resolves, itself a further turn away) to run and
+            # attempt -- and fail -- its rearm.
+            for _ in range(10):
+                if calls >= 2:
+                    break
+                await asyncio.sleep(0)
+
+            assert calls >= 2, "the forced sock_recv rearm never fired"
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(slow, timeout=10.0)
+        finally:
+            loop.sock_recv = real_sock_recv  # type: ignore[method-assign]
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))

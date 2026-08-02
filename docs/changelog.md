@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Block every direct `Command` spawn path under pytest's `no_real_spawn`
   marker, including JSON, async JSON, and deliberately detached launches.
+- Preserve completion-hub rearm errors while still attempting every pending
+  awaiter cancellation when secondary cleanup fails.
 - Let `python -m processkit supervise` run when the parent interpreter has no
   stdout or stderr stream by omitting the unavailable live-output tee.
 - Reject an empty key passed through the CLI's `--env` flag with the same usage

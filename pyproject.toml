@@ -193,7 +193,21 @@ reportUnusedFunction = "none"
 # parallel across worker processes — each test is already independent (no
 # shared global state survives a process boundary; env-mutating tests use
 # monkeypatch, not raw os.environ, since Stage 1).
-addopts = "-ra --strict-markers --strict-config --import-mode=importlib -n auto"
+#
+# `-m "not leak"` structurally excludes tests/test_memory_leaks.py (marked
+# `leak` below) from this default selection, instead of relying on
+# `--ignore=tests/test_memory_leaks.py` scattered across individual call
+# sites (that approach missed several lanes — see the T-221 review). The leak
+# module also needs `-p no:xdist` (RSS is only meaningful measured serially in
+# one interpreter, not split across xdist workers) — callers that actually
+# want it (nightly-hardening.yml's `memory-leaks` job, `just leak-test`)
+# select the file explicitly and override `addopts` wholesale (dropping both
+# `-n auto` and the `-m` filter) rather than trying to subtract just those two
+# pieces from this string.
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib -n auto -m \"not leak\""
+markers = [
+  "leak: serial memory/reference-stability tests (tests/test_memory_leaks.py) — nightly-hardening only, never part of the default selection; run explicitly via `just leak-test` or `-m leak -p no:xdist`.",
+]
 filterwarnings = [
   "error",
   # pytest-benchmark (the `bench` dependency-group, autoloaded as a pytest11
@@ -416,12 +430,17 @@ also_copy = ["conftest.py", "README.md", "docs", "examples", "cliff.toml"]
 # addopts=...` fully overrides (not appends to) the ini value, so the
 # replacement below must keep every other `addopts` flag verbatim (i.e. stay in
 # sync with `[tool.pytest.ini_options] addopts` above, minus `-n auto`) rather
-# than only dropping `-n auto` from it.
+# than only dropping `-n auto` from it. That includes `-m "not leak"`: without
+# it this baseline/stats pass would also collect tests/test_memory_leaks.py,
+# whose thresholds are tuned for one serial single-run measurement, not
+# mutmut's stats-collection pass -- a spurious failure there would abort the
+# whole mutation run (see the `leak` marker registered in
+# `[tool.pytest.ini_options]` above).
 pytest_add_cli_args = [
   "-p",
   "no:xdist",
   "-o",
-  "addopts=-ra --strict-markers --strict-config --import-mode=importlib",
+  "addopts=-ra --strict-markers --strict-config --import-mode=importlib -m \"not leak\"",
 ]
 
 [tool.cibuildwheel]

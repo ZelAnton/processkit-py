@@ -34,6 +34,7 @@ just lint               # ruff format --check + ruff check
 just typecheck          # mypy --strict, then stubtest against the compiled extension
 just docs               # build the mdBook site and validate rendered links
 just api-ref            # regenerate docs/api-reference.md
+just leak-test          # run the serial memory/reference-stability suite (nightly hardening)
 just bench              # run the benchmark suite
 ```
 

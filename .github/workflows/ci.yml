@@ -200,9 +200,7 @@ jobs:
         if: >-
           (matrix.os != 'ubuntu-latest' || matrix.python != '') &&
           (matrix.os != 'windows-11-arm' || matrix.python != '3.14t')
-        run: >-
-          uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
-          --ignore=tests/test_memory_leaks.py
+        run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
       - name: Build and test the native Windows ARM64 free-threaded wheel
         if: matrix.os == 'windows-11-arm' && matrix.python == '3.14t'
         env:
@@ -212,7 +210,6 @@ jobs:
             python -m pytest {project}/tests
             --ignore={project}/tests/test_api_reference.py
             --ignore={project}/tests/test_docs_snippets.py
-            --ignore={project}/tests/test_memory_leaks.py
           CIBW_TEST_REQUIRES: >-
             pytest~=9.1
             pytest-timeout~=2.4
@@ -227,9 +224,7 @@ jobs:
         run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
-        run: >-
-          uv run pytest --ignore=tests/test_memory_leaks.py
-          --cov --cov-report=term-missing --cov-report=xml --cov-report=html
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-report=html
       - name: Stress the last-await interpreter-finalization boundary
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
         # The former bridge failed only in a narrow loaded window: its detached
@@ -310,8 +305,7 @@ jobs:
         run: |
           mkdir -p artifacts
           docker compose run --build --rm -v "$PWD/artifacts:/app/artifacts" test-root \
-            uv run pytest --ignore=tests/test_memory_leaks.py \
-            --junitxml=artifacts/root-junit.xml
+            uv run pytest --junitxml=artifacts/root-junit.xml
       - name: Guard against a silently-skipped privilege-drop test
         run: >-
           python3 scripts/ci-privileged-guard.py artifacts/root-junit.xml
@@ -395,9 +389,7 @@ jobs:
         # falls back to `process_group` (unprivileged container), which the
         # resource-limit tests tolerate -- see the `test-musl` service in
         # compose.yaml.
-        run: >-
-          docker compose run --build --rm test-musl
-          uv run pytest --ignore=tests/test_memory_leaks.py
+        run: docker compose run --build --rm test-musl
 
   event-loops:
     # Dedicated job for tests/test_event_loops.py: turns docs/event-loops.md's

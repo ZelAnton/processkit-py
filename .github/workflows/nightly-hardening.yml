@@ -94,8 +94,7 @@ jobs:
           set -e
           for i in $(seq 1 5); do
             echo "::group::Suite run $i/5"
-            uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest \
-              --ignore=tests/test_memory_leaks.py
+            uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
             echo "::endgroup::"
           done
       - name: Stress the native Windows ARM64 free-threaded wheel
@@ -106,24 +105,19 @@ jobs:
           CIBW_TEST_COMMAND: >-
             python -m pytest {project}/tests
             --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py
-            --ignore={project}/tests/test_memory_leaks.py &&
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py &&
             python -m pytest {project}/tests
             --ignore={project}/tests/test_api_reference.py
             --ignore={project}/tests/test_docs_snippets.py
-            --ignore={project}/tests/test_memory_leaks.py &&
-            python -m pytest {project}/tests
-            --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py
-            --ignore={project}/tests/test_memory_leaks.py &&
-            python -m pytest {project}/tests
-            --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py
-            --ignore={project}/tests/test_memory_leaks.py &&
-            python -m pytest {project}/tests
-            --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py
-            --ignore={project}/tests/test_memory_leaks.py
           CIBW_TEST_REQUIRES: >-
             pytest~=9.1
             pytest-timeout~=2.4

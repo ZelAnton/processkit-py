@@ -33,6 +33,7 @@ import ipaddress
 import math
 import os
 import socket
+import sys
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
@@ -434,36 +435,48 @@ _NMPWAIT_NOWAIT = 1
 _NamedPipeProbe = Callable[[str], bool]
 
 
-def _load_named_pipe_probe() -> _NamedPipeProbe | None:
-    if os.name != "nt":
-        return None
-
+# The platform split is on ``sys.platform`` (not ``os.name``) so that a type
+# checker analyses only the branch for the platform it is run on — the
+# Windows ``ctypes`` calls in the ``win32`` branch are invisible to mypy on
+# Linux, and vice versa (same idiom as tests/_liveness.py). This has to be an
+# if/else pair of full function definitions rather than an early-return
+# fallthrough inside one function body: with ``warn_unreachable = true``
+# (pyproject.toml), a statically-true ``sys.platform`` guard followed by a
+# ``return`` makes mypy treat the remainder of the function as regular
+# unreachable code (an error), not as an elided platform branch.
+if sys.platform == "win32":
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    wait_named_pipe_w: Any = kernel32.WaitNamedPipeW
-    wait_named_pipe_w.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
-    wait_named_pipe_w.restype = wintypes.BOOL
+    def _load_named_pipe_probe() -> _NamedPipeProbe | None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        wait_named_pipe_w: Any = kernel32.WaitNamedPipeW
+        wait_named_pipe_w.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+        wait_named_pipe_w.restype = wintypes.BOOL
 
-    def probe(name: str) -> bool:
-        # Use WaitNamedPipeW for non-destructive pipe availability check.
-        # This avoids consuming the server's pipe instance and correctly
-        # rejects non-pipe paths.
-        result = wait_named_pipe_w(name, _NMPWAIT_NOWAIT)
-        if result:
-            return True
-        error = ctypes.get_last_error()
-        if error == _ERROR_SEM_TIMEOUT:
-            # Pipe exists but server is busy; this is readiness.
-            return True
-        # File not found or bad path means no pipe at this name.
-        if error in (_ERROR_FILE_NOT_FOUND, _ERROR_BAD_PATHNAME):
+        def probe(name: str) -> bool:
+            # Use WaitNamedPipeW for non-destructive pipe availability check.
+            # This avoids consuming the server's pipe instance and correctly
+            # rejects non-pipe paths.
+            result = wait_named_pipe_w(name, _NMPWAIT_NOWAIT)
+            if result:
+                return True
+            error = ctypes.get_last_error()
+            if error == _ERROR_SEM_TIMEOUT:
+                # Pipe exists but server is busy; this is readiness.
+                return True
+            # File not found or bad path means no pipe at this name.
+            if error in (_ERROR_FILE_NOT_FOUND, _ERROR_BAD_PATHNAME):
+                raise ctypes.WinError(error)
+            # Unknown error: also raise.
             raise ctypes.WinError(error)
-        # Unknown error: also raise.
-        raise ctypes.WinError(error)
 
-    return probe
+        return probe
+
+else:
+
+    def _load_named_pipe_probe() -> _NamedPipeProbe | None:
+        return None
 
 
 _named_pipe_probe = _load_named_pipe_probe()

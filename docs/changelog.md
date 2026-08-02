@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `wait_for_named_pipe()` readiness probing for Windows services, including
+  busy-server detection and symmetric `Unsupported` behavior elsewhere.
 - Add Linux/Windows child CPU affinity through `Command.cpu_affinity(...)` and
   the `run`/`supervise` CLI `--cpu-affinity` flag.
 - Add reuse-safe `process_info()` / `process_is_alive()` helpers for bare pids

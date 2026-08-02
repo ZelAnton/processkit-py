@@ -20,7 +20,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -806,56 +806,84 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
     assert called, "wait_for_port should route cleanup through the shared probe settler"
 
 
-def _windows_pipe_api() -> tuple[Any, Any, Any]:
-    # Type checkers (mypy, pyright) see WinDLL/WinError as unavailable on non-Windows.
-    # These functions are only called from Windows-only tests (@pytest.mark.skipif).
-    win_dll: Any = ctypes.WinDLL
-    kernel32 = win_dll("kernel32", use_last_error=True)
+# Type checkers (mypy, pyright) see ``ctypes.WinDLL``/``WinError``/``get_last_error``
+# as unavailable on non-Windows: typeshed declares them only under
+# ``if sys.platform == "win32":``. The platform split below is on
+# ``sys.platform`` (not ``os.name``) for the same reason documented in
+# tests/_liveness.py: it lets the type checker analyse only the branch for the
+# platform it is run on, so the Windows-only ``ctypes`` calls stay invisible to
+# mypy on Linux. The ``else`` branch is never actually exercised (every caller
+# is a test gated by ``@pytest.mark.skipif(sys.platform != "win32", ...)``); it
+# only needs to satisfy the type checker with matching signatures.
+if sys.platform == "win32":
 
-    create_named_pipe_w: Any = kernel32.CreateNamedPipeW
-    create_named_pipe_w.argtypes = (
-        ctypes.c_wchar_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-    )
-    create_named_pipe_w.restype = ctypes.c_void_p
+    def _last_error() -> int:
+        return ctypes.get_last_error()
 
-    create_file_w: Any = kernel32.CreateFileW
-    create_file_w.argtypes = (
-        ctypes.c_wchar_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-    )
-    create_file_w.restype = ctypes.c_void_p
+    def _raise_win_error(code: int) -> NoReturn:
+        raise ctypes.WinError(code)
 
-    close_handle: Any = kernel32.CloseHandle
-    close_handle.argtypes = (ctypes.c_void_p,)
-    close_handle.restype = ctypes.c_int
-    return create_named_pipe_w, create_file_w, close_handle
+    def _windows_pipe_api() -> tuple[Any, Any, Any]:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
+        create_named_pipe_w: Any = kernel32.CreateNamedPipeW
+        create_named_pipe_w.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        )
+        create_named_pipe_w.restype = ctypes.c_void_p
 
-@contextlib.contextmanager
-def _windows_named_pipe() -> Iterator[tuple[str, Any, Any]]:
-    create_named_pipe_w, create_file_w, close_handle = _windows_pipe_api()
-    name = rf"\\.\pipe\processkit-test-{uuid.uuid4().hex}"
-    handle = create_named_pipe_w(name, 3, 0, 1, 4096, 4096, 0, None)
-    invalid_handle = ctypes.c_void_p(-1).value
-    if handle == invalid_handle:
-        win_error: Any = ctypes.WinError
-        raise win_error(ctypes.get_last_error())
-    try:
-        yield name, create_file_w, close_handle
-    finally:
-        close_handle(handle)
+        create_file_w: Any = kernel32.CreateFileW
+        create_file_w.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        )
+        create_file_w.restype = ctypes.c_void_p
+
+        close_handle: Any = kernel32.CloseHandle
+        close_handle.argtypes = (ctypes.c_void_p,)
+        close_handle.restype = ctypes.c_int
+        return create_named_pipe_w, create_file_w, close_handle
+
+    @contextlib.contextmanager
+    def _windows_named_pipe() -> Iterator[tuple[str, Any, Any]]:
+        create_named_pipe_w, create_file_w, close_handle = _windows_pipe_api()
+        name = rf"\\.\pipe\processkit-test-{uuid.uuid4().hex}"
+        handle = create_named_pipe_w(name, 3, 0, 1, 4096, 4096, 0, None)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle == invalid_handle:
+            _raise_win_error(_last_error())
+        try:
+            yield name, create_file_w, close_handle
+        finally:
+            close_handle(handle)
+
+else:
+
+    def _last_error() -> int:
+        raise RuntimeError("Windows named pipes are unavailable on this platform")
+
+    def _raise_win_error(code: int) -> NoReturn:
+        raise RuntimeError("Windows named pipes are unavailable on this platform")
+
+    def _windows_pipe_api() -> tuple[Any, Any, Any]:
+        raise RuntimeError("Windows named pipes are unavailable on this platform")
+
+    @contextlib.contextmanager
+    def _windows_named_pipe() -> Iterator[tuple[str, Any, Any]]:
+        raise RuntimeError("Windows named pipes are unavailable on this platform")
+        yield  # type: ignore[unreachable]  # pragma: no cover -- makes this a generator
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
@@ -870,8 +898,7 @@ def test_wait_for_named_pipe_busy_is_ready() -> None:
         client = create_file_w(name, 0, 0, None, 3, 0, None)
         invalid_handle = ctypes.c_void_p(-1).value
         if client == invalid_handle:
-            win_error: Any = ctypes.WinError
-            raise win_error(ctypes.get_last_error())
+            _raise_win_error(_last_error())
         try:
             awaitable = wait_for_named_pipe(name, timeout=5.0)
             asyncio.run(awaitable)
@@ -912,14 +939,13 @@ def test_wait_for_named_pipe_is_non_destructive() -> None:
         client = create_file_w(name, 0, 0, None, 3, 0, None)
         invalid_handle = ctypes.c_void_p(-1).value
         if client == invalid_handle:
-            error = ctypes.get_last_error()
+            error = _last_error()
             # If we get ERROR_PIPE_BUSY (231), the probe was destructive
             if error == 231:
                 pytest.fail(
                     "wait_for_named_pipe was destructive: real client got ERROR_PIPE_BUSY (231)"
                 )
-            win_error: Any = ctypes.WinError
-            raise win_error(error)
+            _raise_win_error(error)
         # Success: close the client handle
         close_handle(client)
 

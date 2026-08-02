@@ -25,10 +25,12 @@ from __future__ import annotations
 #: thing wherever it surfaces.
 EXIT_OUTPUT_LOST = 119
 #: `supervise` uses 120-122, deliberately disjoint from argparse's usage-error
-#: code 2, `doctor`'s 0/1/3/4 verdicts, and `run`'s 124-127 reservation below
+#: code 2, `doctor`'s 0/1/3/4 verdicts, and `run`'s 125-127 reservation below
 #: (it reuses the shared `EXIT_SIGNAL_BASE` + signal-number convention below
 #: for a signal-killed final incarnation and for its own Ctrl+C handling,
-#: exactly like `run`, rather than reserving a separate code for either).
+#: and likewise reuses `EXIT_TIMEOUT` (124) for a final incarnation that
+#: timed out, exactly like `run`, rather than reserving a separate code for
+#: any of the three).
 #: `supervise`: an internal error building or running its `Command` / `Supervisor`
 #: (including `ProcessNotFound`, `PermissionDenied`, `ResourceLimit`, or `Unsupported`).
 EXIT_SUPERVISE_INTERNAL_ERROR = 120

@@ -73,6 +73,9 @@ fn host_containment() -> PyHostContainment {
     }
 }
 
+/// Register this module's pyclass (`HostContainment`) and the module-level
+/// `process_info`, `process_is_alive`, `host_containment` functions on
+/// `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHostContainment>()?;
     m.add_function(wrap_pyfunction!(process_info, m)?)?;

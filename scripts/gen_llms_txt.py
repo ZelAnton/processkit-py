@@ -91,10 +91,12 @@ class Chapter:
 
 
 def parse_summary(summary: pathlib.Path = _SUMMARY) -> list[Chapter]:
-    """The ordered real chapters of `docs/SUMMARY.md` — every `[Title](file.md)`
-    entry in document order, with the four fileless DRAFT switcher links
-    (`[Rust version]()` etc.) dropped. Comments are stripped first so the format
-    documentation inside SUMMARY.md's own comment can't be read as a chapter."""
+    """Read ordered real chapters from `summary`.
+
+    Every `[Title](file.md)` entry is returned in document order, with fileless
+    DRAFT switcher links dropped. Comments are stripped first so documented link
+    syntax inside a comment cannot be read as a chapter.
+    """
     text = _COMMENT.sub("", summary.read_text(encoding="utf-8"))
     chapters: list[Chapter] = []
     for match in _LINK.finditer(text):
@@ -113,10 +115,13 @@ def _book_value(text: str, key: str) -> str:
 
 
 def _load_book_meta(book_toml: pathlib.Path = _BOOK_TOML) -> tuple[str, str, str]:
-    """`(title, description, site_url)` from `book.toml` — `title`/`description` under
-    `[book]`, `site-url` under `[output.html]`, each a plain quoted scalar. A tiny
-    reader on purpose: like `gen_api_reference.py` it adds no parse dependency, and it
-    keeps the 3.10 floor a `tomllib` (3.11+) import would drop for this dev script."""
+    """Load `(title, description, site_url)` from `book_toml`.
+
+    `title` and `description` live under `[book]`; `site-url` lives under
+    `[output.html]`. Each is a plain quoted scalar. A tiny reader on purpose: like
+    `gen_api_reference.py` it adds no parse dependency, and it keeps the 3.10 floor
+    a `tomllib` (3.11+) import would drop for this dev script.
+    """
     text = book_toml.read_text(encoding="utf-8")
     return (
         _book_value(text, "title"),
@@ -176,11 +181,16 @@ def _annotation(chapter_path: pathlib.Path) -> str:
 
 
 def build_index(docs: pathlib.Path = _DOCS) -> str:
-    """Render `docs/llms.txt` (LF-terminated): the annotated, llmstxt.org-style index
-    of every real `docs/SUMMARY.md` chapter (the Overview included)."""
-    title, description, site_url = _load_book_meta()
+    """Render the docs tree's `llms.txt` annotated index (LF-terminated).
+
+    Chapter order comes from `docs/SUMMARY.md`, and book metadata comes from
+    `book.toml` beside the supplied docs directory.
+    """
+    summary = docs / "SUMMARY.md"
+    book_toml = docs.parent / "book.toml"
+    title, description, site_url = _load_book_meta(book_toml)
     lines = [f"# {title}", "", f"> {description}", "", "## Docs", ""]
-    for chapter in parse_summary():
+    for chapter in parse_summary(summary):
         url = _chapter_url(site_url, chapter.path)
         annotation = _annotation(docs / chapter.path)
         lines.append(f"- [{chapter.title}]({url}): {annotation}")
@@ -188,11 +198,14 @@ def build_index(docs: pathlib.Path = _DOCS) -> str:
 
 
 def build_full(docs: pathlib.Path = _DOCS) -> str:
-    """Render `docs/llms-full.txt` (LF-terminated): the chapter bodies concatenated
-    verbatim in `docs/SUMMARY.md` order, `---`-separated, with the Overview
-    frontispiece (`docs/README.md`) left out."""
+    """Render the docs tree's `llms-full.txt` (LF-terminated).
+
+    Chapter bodies are concatenated verbatim in the supplied docs directory's
+    `SUMMARY.md` order and separated by `---`; the Overview is left out.
+    """
+    summary = docs / "SUMMARY.md"
     bodies: list[str] = []
-    for chapter in parse_summary():
+    for chapter in parse_summary(summary):
         if chapter.path == _OVERVIEW:
             continue
         bodies.append((docs / chapter.path).read_text(encoding="utf-8").strip("\n"))
@@ -202,7 +215,7 @@ def build_full(docs: pathlib.Path = _DOCS) -> str:
 def check(
     docs: pathlib.Path = _DOCS, index: pathlib.Path = _LLMS, full: pathlib.Path = _LLMS_FULL
 ) -> bool:
-    """True if both committed files match a fresh render, byte-for-byte (LF)."""
+    """True if both files match a fresh render from `docs`, byte-for-byte (LF)."""
     return (
         index.is_file()
         and full.is_file()

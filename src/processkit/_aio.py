@@ -3,9 +3,10 @@
 Three families live here:
 
 - **Readiness helpers** (`wait_until` / `wait_for_line` / `wait_for_port` /
-  `wait_for_http` / `wait_for_path` / `wait_for_unix_socket`) compose on top of the compiled async
-  surface (a `StdoutLines` iterator, a plain TCP connect, a hand-rolled HTTP
-  GET) rather than bridging the Rust
+  `wait_for_http` / `wait_for_path` / `wait_for_named_pipe` /
+  `wait_for_unix_socket`) compose on top of the compiled async surface (a
+  `StdoutLines` iterator, a plain TCP connect, a hand-rolled HTTP GET, or an OS
+  pipe/socket probe) rather than bridging the Rust
   crate's borrowing probe methods — simpler, fully composable, and they work
   against any server, not only one this package started. (The `processkit`
   crate's 1.1.0 made its probes `Send`-bridgeable, but these Python helpers are
@@ -32,6 +33,7 @@ import ipaddress
 import math
 import os
 import socket
+import sys
 import unicodedata
 from collections.abc import AsyncIterator, Awaitable, Callable, Container, Sequence
 from pathlib import Path
@@ -55,6 +57,7 @@ __all__ = [
     "sample_stats",
     "wait_for_http",
     "wait_for_line",
+    "wait_for_named_pipe",
     "wait_for_path",
     "wait_for_port",
     "wait_for_unix_socket",
@@ -67,17 +70,19 @@ _ZERO_TIMEOUT_CONNECT_TICK = 0.05
 
 class WaitTimeout(ProcessError, TimeoutError):
     """A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
-    `wait_for_http` / `wait_for_path` / `wait_for_unix_socket`) didn't succeed within its deadline.
+    `wait_for_http` / `wait_for_path` / `wait_for_named_pipe` /
+    `wait_for_unix_socket`) didn't succeed within its deadline.
 
     Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
     the same convention a run's own `.timeout()` uses (see `Timeout`). Always
     carries `timeout_seconds`; `wait_for_port` and `wait_for_http` additionally
     set `host` / `port` (and `wait_for_http` also `path`), while `wait_for_path`
-    and `wait_for_unix_socket` set `path` (all `None` for `wait_until` /
-    `wait_for_line`, which have none of these). `wait_for_port` /
-    `wait_for_http`, and `wait_for_unix_socket` also chain the last attempt's
-    failure as `__cause__` (a connection error, or — for `wait_for_http` — the
-    last unexpected status code).
+    `wait_for_named_pipe`, and `wait_for_unix_socket` set `path` (all `None`
+    for `wait_until` / `wait_for_line`, which have none of these).
+    `wait_for_port` / `wait_for_http` / `wait_for_named_pipe` /
+    `wait_for_unix_socket` also chain the last attempt's failure as `__cause__`
+    (a connection error, or — for `wait_for_http` — the last unexpected status
+    code).
     """
 
     def __init__(
@@ -304,7 +309,7 @@ def _validate_probe_retry(*, timeout: float, interval: float) -> None:
 
 async def _retry_probe(
     attempt: Callable[[], Awaitable[_ProbeResult]],
-    evaluate: Callable[[_ProbeResult], Awaitable[BaseException | None]],
+    evaluate: Callable[[_ProbeResult], BaseException | None | Awaitable[BaseException | None]],
     cleanup_result: Callable[[_ProbeResult], None],
     timeout_error: Callable[[], WaitTimeout],
     *,
@@ -351,7 +356,8 @@ async def _retry_probe(
             _settle_probe(task, cleanup_result)
             raise
         if result is not None:
-            rejection = await evaluate(result)
+            evaluation = evaluate(result)
+            rejection = await evaluation if isinstance(evaluation, Awaitable) else evaluation
             if rejection is None:
                 return
             last_exc = rejection
@@ -415,6 +421,105 @@ async def wait_for_port(
         lambda: asyncio.open_connection(host, port),
         _accept_connection,
         _close_connection_now,
+        timeout_error,
+        retry_exceptions=(OSError, asyncio.TimeoutError),
+        timeout=timeout,
+        interval=interval,
+    )
+
+
+_ERROR_SEM_TIMEOUT = 121
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_BAD_PATHNAME = 161
+_NMPWAIT_NOWAIT = 1
+_NamedPipeProbe = Callable[[str], bool]
+
+
+# The platform split is on ``sys.platform`` (not ``os.name``) so that a type
+# checker analyses only the branch for the platform it is run on — the
+# Windows ``ctypes`` calls in the ``win32`` branch are invisible to mypy on
+# Linux, and vice versa (same idiom as tests/_liveness.py). This has to be an
+# if/else pair of full function definitions rather than an early-return
+# fallthrough inside one function body: with ``warn_unreachable = true``
+# (pyproject.toml), a statically-true ``sys.platform`` guard followed by a
+# ``return`` makes mypy treat the remainder of the function as regular
+# unreachable code (an error), not as an elided platform branch.
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    def _load_named_pipe_probe() -> _NamedPipeProbe | None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        wait_named_pipe_w: Any = kernel32.WaitNamedPipeW
+        wait_named_pipe_w.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+        wait_named_pipe_w.restype = wintypes.BOOL
+
+        def probe(name: str) -> bool:
+            # Use WaitNamedPipeW for non-destructive pipe availability check.
+            # This avoids consuming the server's pipe instance and correctly
+            # rejects non-pipe paths.
+            result = wait_named_pipe_w(name, _NMPWAIT_NOWAIT)
+            if result:
+                return True
+            error = ctypes.get_last_error()
+            if error == _ERROR_SEM_TIMEOUT:
+                # Pipe exists but server is busy; this is readiness.
+                return True
+            # File not found or bad path means no pipe at this name.
+            if error in (_ERROR_FILE_NOT_FOUND, _ERROR_BAD_PATHNAME):
+                raise ctypes.WinError(error)
+            # Unknown error: also raise.
+            raise ctypes.WinError(error)
+
+        return probe
+
+else:
+
+    def _load_named_pipe_probe() -> _NamedPipeProbe | None:
+        return None
+
+
+_named_pipe_probe = _load_named_pipe_probe()
+
+
+async def wait_for_named_pipe(
+    name: str,
+    *,
+    timeout: float,
+    interval: float = 0.05,
+) -> None:
+    """Wait until a Windows named pipe is available or has a busy server.
+
+    ``name`` is the full pipe path, such as ``r"\\\\.\\pipe\\my-service"``.
+    The pipe's availability is checked with `WaitNamedPipeW`, a non-destructive
+    operation that does not consume the pipe's instances. A pipe with a busy
+    server (all instances occupied) is also readiness: it proves that the
+    server exists. Other failures are retried every ``interval`` seconds until
+    ``timeout`` elapses, then raised as the cause of `WaitTimeout`, whose
+    ``path`` is ``name``.
+
+    Platforms without the Windows named-pipe API raise `Unsupported`. At
+    ``timeout=0`` one bounded attempt still runs; negative and NaN timeouts are
+    rejected with `ValueError`.
+    """
+    named_pipe_probe = _named_pipe_probe
+    if named_pipe_probe is None:
+        exc = Unsupported("Windows named pipes are not supported on this platform")
+        exc.operation = "wait_for_named_pipe"
+        raise exc
+    _validate_probe_retry(timeout=timeout, interval=interval)
+
+    def timeout_error() -> WaitTimeout:
+        return WaitTimeout(
+            f"named pipe {name} not ready within {timeout}s",
+            timeout_seconds=timeout,
+            path=name,
+        )
+
+    await _retry_probe(
+        lambda: asyncio.to_thread(named_pipe_probe, name),
+        lambda _ready: None,
+        lambda _ready: None,
         timeout_error,
         retry_exceptions=(OSError, asyncio.TimeoutError),
         timeout=timeout,

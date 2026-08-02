@@ -256,24 +256,23 @@ timeout_method = "thread"
 # "how well the Rust core is tested".
 source = ["src/processkit", "scripts/release"]
 # Carved back out of that scope: the process-driving CLI modules and the
-# `python -m processkit` entry point that calls into them. This is the same
-# "coverage.py structurally cannot see it" exclusion as the compiled extension
-# above, not a "not tested yet" one -- the CLI is in fact exercised end to end
+# `python -m processkit` entry point that calls into them. Unlike the compiled
+# extension above, coverage.py does not see these modules only because of the
+# current test wiring -- the CLI is in fact exercised end to end
 # by `tests/test_cli_main.py` (the exit-code contract of `run`/`supervise`/
-# `doctor`, the `--idle-timeout` streaming path, the final-flush/`os._exit`
+# `doctor`, the `--idle-timeout` streaming path, the final-flush/`SystemExit`
 # path), but every one of those tests drives it in a **child process**
 # (`subprocess.run([PY, "-m", "processkit", ...])`, or a `runpy.run_module`
 # probe), and nothing in the test session ever imports `_cli` in-process.
 # Subprocess coverage (`COVERAGE_PROCESS_START` + coverage's .pth startup
-# hook) cannot recover those lines either, and can never be made to: since
-# T-161 this entry point terminates through `os._exit` (see
-# `processkit._cli.main_and_exit` for why -- an interpreter-finalization race
-# with the binding's async bridge), and `os._exit` skips exactly the
-# interpreter shutdown at which coverage.py writes its data file. A child
-# would collect the data and then die without ever writing it.
+# hook) is now technically possible: the premise recorded in K-062 changed
+# when `main_and_exit` stopped using `os._exit` and began terminating via
+# `raise SystemExit(...)`, allowing normal interpreter finalization. That
+# subprocess-coverage wiring has not been implemented, however, and its setup
+# and maintenance cost has not yet been evaluated.
 #
-# So these files can only ever be reported at 0.00%, however well they are
-# tested -- 440 statements and 140 branches of permanent, information-free
+# With the current wiring these files are therefore reported at 0.00%, however
+# well they are tested -- 440 statements and 140 branches of information-free
 # zero. Left inside `source` they made the percentage below a function of *how
 # much CLI code exists* rather than of how well the code is tested, and they
 # dragged the whole gate down on every CLI change: integration review of batch
@@ -315,9 +314,9 @@ skip_covered = false
 # 1,254 measured units), enough for platform/measurement noise while still
 # catching a real loss in `_aio.py`, the directly-tested CLI helpers,
 # `pytest_plugin.py`, `scripts/release/`, or the package `__init__.py`.
-# Process-driving CLI modules remain outside the denominator for the
-# subprocess/`os._exit` reason documented above, so their growth cannot consume
-# this margin without producing measurable in-process coverage.
+# Process-driving CLI modules remain outside the denominator because subprocess
+# coverage is not currently wired as documented above, so their growth cannot
+# consume this margin without producing measurable in-process coverage.
 fail_under = 72
 exclude_lines = [
   "pragma: no cover",

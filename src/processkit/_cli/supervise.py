@@ -6,6 +6,7 @@ docstring.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import http.client
 import signal
 import socket
@@ -46,6 +47,28 @@ class _SupervisorKwargs(TypedDict, total=False):
     max_memory: int
     max_processes: int
     cpu_quota: float
+
+
+def _line_buffer_for_tee(stream: object) -> None:
+    """Best-effort switch `stream` to line buffering with immediate flush-through,
+    so lines teed onto it (`Command.stdout_tee`/`stderr_tee`) reach a piped
+    caller as each line arrives rather than sitting in the block buffer a
+    redirected `sys.stdout`/`sys.stderr` otherwise uses.
+
+    `reconfigure` is a `TextIOWrapper` method, not a general file-like
+    protocol requirement, so a non-standard stream (a caller-installed
+    file-like object, a stub used in tests) may lack it entirely, and a
+    standard one can still refuse the request (for example, a stream already
+    opened in binary mode). Either case is treated exactly like this module's
+    existing "no usable stdout/stderr" handling: silently proceed without
+    line-buffering rather than failing setup — the tee itself still delivers
+    output, just with the pipe's normal block buffering.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    with contextlib.suppress(Exception):
+        reconfigure(line_buffering=True, write_through=True)
 
 
 def _parse_health_port(parser: argparse.ArgumentParser, endpoint: str) -> tuple[str, int]:
@@ -150,8 +173,10 @@ def _supervise(
         # stderr instead, so output still streams live to the calling terminal.
         command = Command(program, rest).inherit_stdin()
         if sys.stdout is not None:
+            _line_buffer_for_tee(sys.stdout)
             command = command.stdout_tee(sys.stdout)
         if sys.stderr is not None:
+            _line_buffer_for_tee(sys.stderr)
             command = command.stderr_tee(sys.stderr)
         if args.timeout is not None:
             command = command.timeout(args.timeout)

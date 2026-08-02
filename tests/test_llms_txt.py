@@ -65,3 +65,35 @@ def test_full_text_excludes_overview_but_covers_the_guides() -> None:
             continue
         body = (_DOCS / chapter.path).read_text(encoding="utf-8").strip("\n")
         assert body in full, f"{chapter.path} body missing from docs/llms-full.txt"
+
+
+def test_custom_docs_path(tmp_path: pathlib.Path) -> None:
+    """A custom docs path supplies the summary, book metadata, and chapter bodies."""
+    custom_docs = tmp_path / "custom_docs"
+    custom_docs.mkdir()
+    (custom_docs / "SUMMARY.md").write_text(
+        "# Summary\n\n- [Only Custom Chapter](test.md)\n", encoding="utf-8"
+    )
+    (custom_docs / "test.md").write_text(
+        "# Only Custom Chapter\n\nThis is a custom test chapter.\n", encoding="utf-8"
+    )
+    (tmp_path / "book.toml").write_text(
+        '[book]\ntitle = "Custom Book"\ndescription = "Custom Project"\n'
+        '[output.html]\nsite-url = "https://example.com/"\n',
+        encoding="utf-8",
+    )
+
+    index_content = gen_llms_txt.build_index(custom_docs)
+    assert index_content.startswith("# Custom Book\n\n> Custom Project\n")
+    assert "[Only Custom Chapter](https://example.com/test.html)" in index_content
+
+    full_content = gen_llms_txt.build_full(custom_docs)
+    assert "This is a custom test chapter." in full_content
+
+    index = tmp_path / "llms.txt"
+    full = tmp_path / "llms-full.txt"
+    assert not gen_llms_txt.check(docs=custom_docs, index=index, full=full)
+
+    index.write_text(index_content, encoding="utf-8", newline="\n")
+    full.write_text(full_content, encoding="utf-8", newline="\n")
+    assert gen_llms_txt.check(docs=custom_docs, index=index, full=full)

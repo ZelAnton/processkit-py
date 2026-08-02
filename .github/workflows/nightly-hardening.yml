@@ -26,6 +26,33 @@ permissions:
   contents: read
 
 jobs:
+  memory-leaks:
+    # Process-level RSS is meaningful only when the scenarios run serially in
+    # one interpreter. Keep this independent from the scaled/repeated stress
+    # stage below: leak thresholds use their own fixed warmup and iteration set.
+    name: memory leaks (${{ matrix.os }}, ${{ matrix.python || 'abi3' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['', '3.14t']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Run memory leak tests
+        run: >-
+          uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
+          tests/test_memory_leaks.py -p no:xdist
+          -o addopts="-ra --strict-markers --strict-config --import-mode=importlib"
+
   stress:
     # Same (OS x interpreter) matrix as `ci.yml`'s `test` job (full OS coverage
     # + the free-threaded 3.14t build), but every entry here additionally
@@ -67,7 +94,8 @@ jobs:
           set -e
           for i in $(seq 1 5); do
             echo "::group::Suite run $i/5"
-            uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
+            uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest \
+              --ignore=tests/test_memory_leaks.py
             echo "::endgroup::"
           done
       - name: Stress the native Windows ARM64 free-threaded wheel
@@ -78,19 +106,24 @@ jobs:
           CIBW_TEST_COMMAND: >-
             python -m pytest {project}/tests
             --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py &&
-            python -m pytest {project}/tests
-            --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py &&
-            python -m pytest {project}/tests
-            --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py &&
-            python -m pytest {project}/tests
-            --ignore={project}/tests/test_api_reference.py
-            --ignore={project}/tests/test_docs_snippets.py &&
+            --ignore={project}/tests/test_docs_snippets.py
+            --ignore={project}/tests/test_memory_leaks.py &&
             python -m pytest {project}/tests
             --ignore={project}/tests/test_api_reference.py
             --ignore={project}/tests/test_docs_snippets.py
+            --ignore={project}/tests/test_memory_leaks.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py
+            --ignore={project}/tests/test_memory_leaks.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py
+            --ignore={project}/tests/test_memory_leaks.py &&
+            python -m pytest {project}/tests
+            --ignore={project}/tests/test_api_reference.py
+            --ignore={project}/tests/test_docs_snippets.py
+            --ignore={project}/tests/test_memory_leaks.py
           CIBW_TEST_REQUIRES: >-
             pytest~=9.1
             pytest-timeout~=2.4

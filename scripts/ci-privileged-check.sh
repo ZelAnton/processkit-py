@@ -79,5 +79,6 @@ print(f'    mechanism confirmed: {mechanism}')
 #    that nothing failed (a silent skip exits 0 too).
 echo "==> Running the suite as root, delegated cgroup v2 active (JUnit: artifacts/privileged-junit.xml)"
 uv run pytest \
+  --ignore=tests/test_memory_leaks.py \
   --deselect tests/test_command.py::test_privilege_drop_args_actually_drop_privilege \
   --junitxml=artifacts/privileged-junit.xml

@@ -30,6 +30,10 @@ build:
 test:
     uv run pytest
 
+# Run the serial memory/reference stability suite used by nightly hardening.
+leak-test:
+    uv run pytest tests/test_memory_leaks.py -p no:xdist -o addopts="-ra --strict-markers --strict-config --import-mode=importlib"
+
 # Apply ruff formatting.
 fmt:
     uv run ruff format .

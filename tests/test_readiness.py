@@ -807,7 +807,9 @@ def test_wait_for_port_routes_through_cleanup(monkeypatch: pytest.MonkeyPatch) -
 
 
 def _windows_pipe_api() -> tuple[Any, Any, Any]:
-    win_dll: Any = getattr(ctypes, "WinDLL")
+    # Type checkers (mypy, pyright) see WinDLL/WinError as unavailable on non-Windows.
+    # These functions are only called from Windows-only tests (@pytest.mark.skipif).
+    win_dll: Any = ctypes.WinDLL
     kernel32 = win_dll("kernel32", use_last_error=True)
 
     create_named_pipe_w: Any = kernel32.CreateNamedPipeW
@@ -848,7 +850,7 @@ def _windows_named_pipe() -> Iterator[tuple[str, Any, Any]]:
     handle = create_named_pipe_w(name, 3, 0, 1, 4096, 4096, 0, None)
     invalid_handle = ctypes.c_void_p(-1).value
     if handle == invalid_handle:
-        win_error: Any = getattr(ctypes, "WinError")
+        win_error: Any = ctypes.WinError
         raise win_error(ctypes.get_last_error())
     try:
         yield name, create_file_w, close_handle
@@ -868,7 +870,7 @@ def test_wait_for_named_pipe_busy_is_ready() -> None:
         client = create_file_w(name, 0, 0, None, 3, 0, None)
         invalid_handle = ctypes.c_void_p(-1).value
         if client == invalid_handle:
-            win_error: Any = getattr(ctypes, "WinError")
+            win_error: Any = ctypes.WinError
             raise win_error(ctypes.get_last_error())
         try:
             awaitable = wait_for_named_pipe(name, timeout=5.0)
@@ -878,12 +880,55 @@ def test_wait_for_named_pipe_busy_is_ready() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
+def test_wait_for_named_pipe_rejects_non_pipes() -> None:
+    """Verify that wait_for_named_pipe rejects non-pipe paths.
+
+    Paths that exist but are not named pipes (regular files, devices, etc.)
+    should be rejected with WaitTimeout, not reported as ready.
+    This is the rejection test for R-02.
+    """
+    import tempfile
+
+    # Create a temporary file (not a pipe)
+    with tempfile.NamedTemporaryFile() as tmp, pytest.raises(WaitTimeout):
+        # Try to wait for this regular file as if it were a pipe
+        asyncio.run(wait_for_named_pipe(tmp.name, timeout=0.5, interval=0.1))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
+def test_wait_for_named_pipe_is_non_destructive() -> None:
+    """Verify that wait_for_named_pipe does not consume the pipe's instance.
+
+    After a successful probe, a real client should be able to connect
+    immediately without receiving ERROR_PIPE_BUSY. This is the
+    non-destructiveness regression test for R-03.
+    """
+    with _windows_named_pipe() as (name, create_file_w, close_handle):
+        # Call wait_for_named_pipe on an open pipe
+        asyncio.run(wait_for_named_pipe(name, timeout=5.0))
+
+        # Now try to connect as a real client - this should succeed
+        # without ERROR_PIPE_BUSY, proving the probe didn't consume instances
+        client = create_file_w(name, 0, 0, None, 3, 0, None)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if client == invalid_handle:
+            error = ctypes.get_last_error()
+            # If we get ERROR_PIPE_BUSY (231), the probe was destructive
+            if error == 231:
+                pytest.fail(
+                    "wait_for_named_pipe was destructive: real client got ERROR_PIPE_BUSY (231)"
+                )
+            win_error: Any = ctypes.WinError
+            raise win_error(error)
+        # Success: close the client handle
+        close_handle(client)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows named pipes are unavailable")
 def test_wait_for_named_pipe_timeout_carries_path_and_last_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def passthrough_wait_for(
-        future: asyncio.Future[bool], timeout: float
-    ) -> bool:
+    async def passthrough_wait_for(future: asyncio.Future[bool], timeout: float) -> bool:
         return await future
 
     name = rf"\\.\pipe\processkit-missing-{uuid.uuid4().hex}"

@@ -308,9 +308,7 @@ def _validate_probe_retry(*, timeout: float, interval: float) -> None:
 
 async def _retry_probe(
     attempt: Callable[[], Awaitable[_ProbeResult]],
-    evaluate: Callable[
-        [_ProbeResult], BaseException | None | Awaitable[BaseException | None]
-    ],
+    evaluate: Callable[[_ProbeResult], BaseException | None | Awaitable[BaseException | None]],
     cleanup_result: Callable[[_ProbeResult], None],
     timeout_error: Callable[[], WaitTimeout],
     *,
@@ -429,7 +427,10 @@ async def wait_for_port(
     )
 
 
-_ERROR_PIPE_BUSY = 231
+_ERROR_SEM_TIMEOUT = 121
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_BAD_PATHNAME = 161
+_NMPWAIT_NOWAIT = 1
 _NamedPipeProbe = Callable[[str], bool]
 
 
@@ -441,31 +442,26 @@ def _load_named_pipe_probe() -> _NamedPipeProbe | None:
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_file_w: Any = kernel32.CreateFileW
-    create_file_w.argtypes = (
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    )
-    create_file_w.restype = wintypes.HANDLE
-    close_handle: Any = kernel32.CloseHandle
-    close_handle.argtypes = (wintypes.HANDLE,)
-    close_handle.restype = wintypes.BOOL
-    invalid_handle = ctypes.c_void_p(-1).value
+    wait_named_pipe_w: Any = kernel32.WaitNamedPipeW
+    wait_named_pipe_w.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+    wait_named_pipe_w.restype = wintypes.BOOL
 
     def probe(name: str) -> bool:
-        handle = create_file_w(name, 0, 0, None, 3, 0, None)
-        if handle == invalid_handle:
-            error = ctypes.get_last_error()
-            if error == _ERROR_PIPE_BUSY:
-                return True
+        # Use WaitNamedPipeW for non-destructive pipe availability check.
+        # This avoids consuming the server's pipe instance and correctly
+        # rejects non-pipe paths.
+        result = wait_named_pipe_w(name, _NMPWAIT_NOWAIT)
+        if result:
+            return True
+        error = ctypes.get_last_error()
+        if error == _ERROR_SEM_TIMEOUT:
+            # Pipe exists but server is busy; this is readiness.
+            return True
+        # File not found or bad path means no pipe at this name.
+        if error in (_ERROR_FILE_NOT_FOUND, _ERROR_BAD_PATHNAME):
             raise ctypes.WinError(error)
-        close_handle(handle)
-        return True
+        # Unknown error: also raise.
+        raise ctypes.WinError(error)
 
     return probe
 
@@ -482,10 +478,11 @@ async def wait_for_named_pipe(
     """Wait until a Windows named pipe is available or has a busy server.
 
     ``name`` is the full pipe path, such as ``r"\\\\.\\pipe\\my-service"``.
-    An available pipe is opened and immediately closed. ``ERROR_PIPE_BUSY`` is
-    also readiness: it proves that the server exists but all its instances are
-    occupied. Other connection failures are retried every ``interval`` seconds
-    until ``timeout`` elapses, then raised as the cause of `WaitTimeout`, whose
+    The pipe's availability is checked with `WaitNamedPipeW`, a non-destructive
+    operation that does not consume the pipe's instances. A pipe with a busy
+    server (all instances occupied) is also readiness: it proves that the
+    server exists. Other failures are retried every ``interval`` seconds until
+    ``timeout`` elapses, then raised as the cause of `WaitTimeout`, whose
     ``path`` is ``name``.
 
     Platforms without the Windows named-pipe API raise `Unsupported`. At

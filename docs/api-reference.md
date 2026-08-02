@@ -2600,7 +2600,7 @@ default (and fallbacks) as every other batch entry point. See
 
 ## Readiness helpers
 
-Asyncio helpers that wait for a condition — a matching output line, an open TCP port, an HTTP endpoint answering with an expected status, a filesystem path or Unix-domain socket, or any polled predicate — bounded by a deadline.
+Asyncio helpers that wait for a condition — a matching output line, an open TCP port, an HTTP endpoint answering with an expected status, a filesystem path, a Windows named pipe, or a Unix-domain socket, or any polled predicate — bounded by a deadline.
 
 ### `wait_until`
 
@@ -2791,6 +2791,31 @@ instead of failing before it was ever checked. A **negative** ``timeout``
 is rejected outright — raises `ValueError`, same as NaN — rather than
 being treated as "expired" or silently accepted.
 
+### `wait_for_named_pipe`
+
+```text
+async def wait_for_named_pipe(
+    name: str,
+    *,
+    timeout: float,
+    interval: float = 0.05,
+) -> None
+```
+
+Wait until a Windows named pipe is available or has a busy server.
+
+``name`` is the full pipe path, such as ``r"\\.\pipe\my-service"``.
+The pipe's availability is checked with `WaitNamedPipeW`, a non-destructive
+operation that does not consume the pipe's instances. A pipe with a busy
+server (all instances occupied) is also readiness: it proves that the
+server exists. Other failures are retried every ``interval`` seconds until
+``timeout`` elapses, then raised as the cause of `WaitTimeout`, whose
+``path`` is ``name``.
+
+Platforms without the Windows named-pipe API raise `Unsupported`. At
+``timeout=0`` one bounded attempt still runs; negative and NaN timeouts are
+rejected with `ValueError`.
+
 ### `wait_for_unix_socket`
 
 ```text
@@ -2831,17 +2856,19 @@ WaitTimeout(
 ```
 
 A readiness helper (`wait_until` / `wait_for_line` / `wait_for_port` /
-`wait_for_http` / `wait_for_path` / `wait_for_unix_socket`) didn't succeed within its deadline.
+`wait_for_http` / `wait_for_path` / `wait_for_named_pipe` /
+`wait_for_unix_socket`) didn't succeed within its deadline.
 
 Also a builtin `TimeoutError`, so `except TimeoutError` catches it too —
 the same convention a run's own `.timeout()` uses (see `Timeout`). Always
 carries `timeout_seconds`; `wait_for_port` and `wait_for_http` additionally
 set `host` / `port` (and `wait_for_http` also `path`), while `wait_for_path`
-and `wait_for_unix_socket` set `path` (all `None` for `wait_until` /
-`wait_for_line`, which have none of these). `wait_for_port` /
-`wait_for_http`, and `wait_for_unix_socket` also chain the last attempt's
-failure as `__cause__` (a connection error, or — for `wait_for_http` — the
-last unexpected status code).
+`wait_for_named_pipe`, and `wait_for_unix_socket` set `path` (all `None`
+for `wait_until` / `wait_for_line`, which have none of these).
+`wait_for_port` / `wait_for_http` / `wait_for_named_pipe` /
+`wait_for_unix_socket` also chain the last attempt's failure as `__cause__`
+(a connection error, or — for `wait_for_http` — the last unexpected status
+code).
 
 #### `timeout_seconds`
 

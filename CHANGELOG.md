@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add nightly benchmark coverage for PTY relay, lifecycle events,
+  completion-order batches, and live Supervisor restart sessions, with
+  platform-specific PTY handling documented.
 - Add `wait_for_named_pipe()` readiness probing for Windows services, including
   busy-server detection and symmetric `Unsupported` behavior elsewhere.
 - Add Linux/Windows child CPU affinity through `Command.cpu_affinity(...)` and

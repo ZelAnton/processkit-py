@@ -59,6 +59,21 @@ Phase 5 asks with a real measurement instead of only the loose sanity bound in
 - **`test_output_all.py`** — `output_all()` / `aoutput_all()` (see
   [Cookbook](cookbook.md)) at 1/10/50-way concurrency, i.e. how batched
   fan-out scales as concurrency grows.
+- **`test_pty.py`** — merged PTY output relay over a bounded fixed-width
+  workload. POSIX runs use the native pty path; Windows runs require ConPTY
+  (Windows 10 1809 or newer).
+- **`test_lifecycle_events.py`** — the complete `lifecycle_events()` stream,
+  including start, mixed stdout/stderr output, and exit events.
+- **`test_aoutput_as_completed.py`** — completion-order delivery from a bounded
+  `aoutput_as_completed()` batch, including per-slot result handling.
+- **`test_supervisor.py`** — a live `Supervisor` session that performs a fixed
+  number of crash restarts and then waits for the restart policy to finish.
+
+The PTY benchmark is intentionally platform-aware. The nightly benchmark job
+runs on Ubuntu, so its PTY result represents the POSIX implementation only;
+Windows ConPTY measurements are useful on their own host class and are not
+promised to be directly comparable with that nightly point. Unsupported PTY
+platforms skip the scenario instead of contributing a misleading measurement.
 
 ## Reproducing locally
 

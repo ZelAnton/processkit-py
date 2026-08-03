@@ -168,6 +168,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --group bench
+      # Directory discovery intentionally includes every benchmark module,
+      # including test_pty.py, test_lifecycle_events.py,
+      # test_aoutput_as_completed.py, and test_supervisor.py. Keeping one
+      # directory-wide invocation makes the JSON passed to the existing history
+      # and regression-alert action cover the complete benchmark set.
       # `-p no:xdist -o addopts=""` drops the repo's default xdist options:
       # pytest-benchmark needs to run un-distributed (single worker) to
       # produce real timings — under xdist it silently skips measuring

@@ -19,6 +19,13 @@ use std::os::unix::net::UnixStream as WakeWriter;
 #[cfg(windows)]
 use std::os::windows::io::{FromRawSocket, RawSocket};
 
+/// The Windows SDK's `INVALID_SOCKET` — what `socket.detach()` reports for a
+/// socket that no longer owns a handle. (`RawSocket` is unsigned, so Python's
+/// `-1` usually fails to extract as one at all; this keeps the guard honest for
+/// the unsigned spelling of the same sentinel.)
+#[cfg(windows)]
+const INVALID_SOCKET: RawSocket = !0;
+
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::{intern, IntoPyObjectExt};
@@ -314,6 +321,18 @@ impl CompletionHub {
         self.lock_state().entries.remove(&id);
     }
 
+    /// Wake the loop's one armed receive by writing the shared wakeup byte.
+    fn wake(&self) {
+        let mut slot = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(writer) = slot.as_mut() {
+            if writer.write_all(&[1]).is_err() {
+                // Dropping the failed endpoint wakes the loop's receive with
+                // EOF/error, where the queued outcomes are still drained.
+                slot.take();
+            }
+        }
+    }
+
     fn publish(&self, id: u64) {
         let should_wake = {
             let mut state = self.lock_state();
@@ -329,14 +348,38 @@ impl CompletionHub {
             }
         };
         if should_wake {
-            let mut slot = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(writer) = slot.as_mut() {
-                if writer.write_all(&[1]).is_err() {
-                    // Dropping the failed endpoint wakes the loop's receive with
-                    // EOF/error, where the queued outcomes are still drained.
-                    slot.take();
-                }
+            self.wake();
+        }
+    }
+
+    /// Wake the armed receive once the hub has run dry, so `PyHubIdleCallback`
+    /// gets its turn to retire the hub (close the reader, drop the writer).
+    ///
+    /// Only a *completion* wakes the hub through [`publish`](Self::publish); a
+    /// cancelled operation takes its entry out silently via
+    /// [`cancel`](Self::cancel). Cancelling the last outstanding operation would
+    /// otherwise leave the hub armed with nothing left to wake it — holding the
+    /// reader socket and a pending `sock_recv` task on the loop until the loop
+    /// itself goes away — even though the loop is, as far as this binding is
+    /// concerned, idle. Waking here routes that state through the ordinary
+    /// wake -> idle path instead: the receive completes with nothing ready, and
+    /// the idle callback closes the hub (or rearms it, if a new operation
+    /// registered in the meantime).
+    fn wake_if_idle(&self) {
+        let should_wake = {
+            let mut state = self.lock_state();
+            if state.closed || !state.entries.is_empty() || state.wake_outstanding {
+                false
+            } else {
+                // Claim the wakeup exactly like `publish` does, so a completion
+                // racing in behind this cancellation reuses the same byte
+                // instead of queuing a second, spurious one.
+                state.wake_outstanding = true;
+                true
             }
+        };
+        if should_wake {
+            self.wake();
         }
     }
 
@@ -378,7 +421,63 @@ impl CompletionHub {
 #[pyclass]
 struct PyCompletionHub {
     hub: Arc<CompletionHub>,
-    _reader: Py<PyAny>,
+    reader: Py<PyAny>,
+}
+
+/// Retire the hub when its event loop is garbage collected — the last owner of
+/// the reader socket has to close it, or the descriptor dies unclosed.
+///
+/// The hub keeps exactly one `sock_recv` armed while it has outstanding entries,
+/// so a loop can be torn down with that receive still pending: `PyHubIdleCallback`
+/// — the one place that retires an idle hub — only runs after a *completion*
+/// wakes the hub. `asyncio.run` (and `anyio.run`, which uses it) hides that
+/// entirely: its shutdown cancels every leftover task, which drives
+/// `PyHubWakeCallback`'s cancelled branch and closes the reader there. A loop
+/// driven by hand — `loop.run_until_complete(...)` then `loop.close()`, which is
+/// what `tests/test_event_loops.py`'s uvloop runner does, and a perfectly
+/// ordinary way to embed a private loop — cancels nothing, so the armed receive
+/// is destroyed pending and *this anchor* ends up the reader's last strong
+/// owner. It is dropped from the weak-key map's own removal callback when the
+/// loop is collected, which is where an unclosed socket surfaced as
+/// `ResourceWarning: unclosed <socket.socket ...>` (fatal under the suite's
+/// `filterwarnings = ["error"]`), reported against whatever unrelated test
+/// happened to trigger that GC pass.
+impl Drop for PyCompletionHub {
+    fn drop(&mut self) {
+        // `try_attach`, not `attach`: this runs from a deallocation, which can
+        // land during interpreter shutdown (or, in principle, mid-GC-traversal),
+        // where attaching would panic — and a panic here would cross the FFI
+        // boundary from `tp_dealloc`. Nothing is left to clean up by hand in
+        // that case: the process is on its way out and the OS reclaims the
+        // descriptor.
+        Python::try_attach(|py| {
+            // Mark the hub closed and drop its entries: their loop is gone, so
+            // nothing can ever complete them, and this releases the Rust wake
+            // writer (the socketpair's other end) deterministically instead of
+            // waiting for the last `Arc` holder. Their Python futures are only
+            // dropped here — never cancelled: `Future.cancel()` would schedule
+            // callbacks on a loop that is already closed, from inside a GC pass.
+            drop(self.hub.close());
+            let reader = self.reader.bind(py);
+            // An already-closed (or detached) socket has nothing to release, and
+            // re-closing one whose `close()` raises would only re-raise; skip it.
+            if matches!(
+                reader
+                    .call_method0(intern!(py, "fileno"))
+                    .and_then(|handle| handle.extract::<i64>()),
+                Ok(fd) if fd < 0
+            ) {
+                return;
+            }
+            // Best effort by construction: a drop cannot propagate a failure,
+            // and `close_hub_reader` has already released the descriptor at the
+            // OS level even when Python's own `close()` raised. Deliberately not
+            // reported through `write_unraisable` either — that runs
+            // `sys.unraisablehook` from a GC pass, turning a best-effort cleanup
+            // into an error raised against an unrelated caller.
+            let _ = close_hub_reader(py, reader);
+        });
+    }
 }
 
 /// Callback for the hub's one outstanding `sock_recv`. It drains every queued
@@ -453,15 +552,24 @@ fn close_hub_reader(py: Python<'_>, reader: &Bound<'_, PyAny>) -> PyResult<()> {
         Err(error) => {
             // `socket.close()` can raise after closing its descriptor. In that
             // case `detach()` returns no usable handle, and the original close
-            // error remains the only meaningful error to propagate.
+            // error remains the only meaningful error to propagate. A detached
+            // or already-closed socket reports `-1`, which is not a descriptor
+            // this may take ownership of: `OwnedFd`/`OwnedSocket` assert against
+            // the invalid sentinel, and that assert would panic across the FFI
+            // boundary (out of a `Drop`, out of a callback) instead of closing
+            // anything.
             if let Ok(handle) = reader.call_method0(intern!(py, "detach")) {
                 #[cfg(unix)]
                 if let Ok(fd) = handle.extract::<RawFd>() {
-                    drop(unsafe { WakeWriter::from_raw_fd(fd) });
+                    if fd >= 0 {
+                        drop(unsafe { WakeWriter::from_raw_fd(fd) });
+                    }
                 }
                 #[cfg(windows)]
                 if let Ok(socket) = handle.extract::<RawSocket>() {
-                    drop(unsafe { WakeWriter::from_raw_socket(socket) });
+                    if socket != INVALID_SOCKET {
+                        drop(unsafe { WakeWriter::from_raw_socket(socket) });
+                    }
                 }
             }
             Err(error)
@@ -571,6 +679,10 @@ impl PyCancelCallback {
             if let Some(cancel_tx) = self.cancel_tx.take() {
                 let _ = cancel_tx.send(());
             }
+            // This may have been the hub's last outstanding operation. Nothing
+            // else would ever wake the receive it left armed, so hand the hub to
+            // its idle callback for retirement (see `wake_if_idle`).
+            self.hub.wake_if_idle();
         }
         Ok(())
     }
@@ -636,7 +748,7 @@ fn create_completion_hub(
         py,
         PyCompletionHub {
             hub: Arc::clone(&hub),
-            _reader: reader.unbind(),
+            reader: reader.unbind(),
         },
     )?;
     completion_hub_map(py)?.set_item(event_loop, anchor)?;

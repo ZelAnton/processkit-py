@@ -119,6 +119,114 @@ def test_completion_closes_wakeup_socket_when_event_loop_goes_idle(
     assert readers[0].fileno() == -1
 
 
+def test_completion_closes_wakeup_socket_after_last_operation_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled last operation must retire the hub, not park it armed.
+
+    Only a *completion* wakes the shared receiver, and only the idle callback it
+    schedules ever closes an idle hub. A cancelled operation instead drops its
+    entry silently (`PyCancelCallback`), so cancelling the last one left the hub
+    armed with nothing able to wake it -- pinning this socket and a pending
+    `sock_recv` task on a loop that has no processkit work left at all. Asserted
+    from *inside* the loop: `asyncio.run`'s own shutdown cancels leftover tasks
+    and would close the socket afterwards either way, hiding the difference.
+    """
+
+    readers: list[socket.socket] = []
+
+    async def scenario() -> None:
+        real_socketpair = socket.socketpair
+
+        def recording_socketpair() -> tuple[socket.socket, socket.socket]:
+            reader, writer = real_socketpair()
+            readers.append(reader)
+            return reader, writer
+
+        monkeypatch.setattr(socket, "socketpair", recording_socketpair)
+        task = asyncio.ensure_future(Command(PY, ["-c", "import time; time.sleep(60)"]).aoutput())
+        await asyncio.sleep(0.2)  # register with the hub and arm its receive
+        assert len(readers) == 1, "the operation never reached the completion hub"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Retirement costs a few turns: the wakeup byte, the receive it
+        # completes, the drain that finds nothing ready, then the idle callback.
+        for _ in range(200):
+            if readers[0].fileno() == -1:
+                break
+            await asyncio.sleep(0.01)
+        assert readers[0].fileno() == -1, (
+            "the hub stayed armed after its last operation was cancelled"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_completion_closes_wakeup_socket_when_its_event_loop_is_collected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loop collected with its hub still open must not leak the socket.
+
+    `asyncio.run` cancels every leftover task before closing its loop, which
+    drives the hub's cancelled branch and closes the reader there. A loop driven
+    by hand -- `run_until_complete` then `close`, what `tests/test_event_loops.py`
+    does for uvloop and an ordinary way to embed a private loop -- cancels
+    nothing and stops the moment its main coroutine returns, so it can be torn
+    down before `PyHubIdleCallback` (the only thing that retires an idle hub)
+    ever gets its turn. The weak-key map's anchor is then the reader's last
+    owner, and dropping it -- which the collected loop triggers, from the map's
+    own removal callback -- has to close the descriptor, or it dies unclosed as a
+    `ResourceWarning` raised against whatever unrelated code runs that GC pass.
+
+    Dropping that idle callback on the floor pins the "torn down too early"
+    state deterministically, rather than racing a real loop's shutdown.
+    """
+
+    readers: list[socket.socket] = []
+    loop = asyncio.new_event_loop()
+    # Weak, and the real `call_soon` is reached through the class: a bound
+    # method (or a `monkeypatch` undo entry) held by this frame would keep the
+    # loop alive and there would be nothing to collect below.
+    loop_ref = weakref.ref(loop)
+
+    def recording_socketpair() -> tuple[socket.socket, socket.socket]:
+        reader, writer = real_socketpair()
+        readers.append(reader)
+        return reader, writer
+
+    def call_soon_dropping_hub_idle(callback: object, *args: object, **kwargs: object) -> object:
+        if type(callback).__name__ == "PyHubIdleCallback":
+            return None
+        live = loop_ref()
+        assert live is not None
+        return type(live).call_soon(live, callback, *args, **kwargs)  # type: ignore[arg-type]
+
+    real_socketpair = socket.socketpair
+    # Patched only after the loop exists: a loop builds its own self-pipe
+    # socketpair at construction, and only the hub's belongs in `readers`.
+    monkeypatch.setattr(socket, "socketpair", recording_socketpair)
+    loop.call_soon = call_soon_dropping_hub_idle  # type: ignore[assignment]
+
+    async def scenario() -> None:
+        assert await Command(PY, ["-c", "pass"]).aexit_code() == 0
+        # Turns to spare: the hub would retire itself here if its idle callback
+        # were reaching the loop at all.
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    loop.run_until_complete(scenario())
+    loop.close()
+    assert len(readers) == 1
+    assert readers[0].fileno() != -1, (
+        "the hub retired itself, so this never exercised loop collection"
+    )
+
+    del loop
+    gc.collect()
+    assert readers[0].fileno() == -1, "collecting the event loop left the hub's wakeup socket open"
+
+
 def test_dropped_aoutput_without_await_never_spawns(pid_file: pathlib.Path) -> None:
     # Building the awaitable and dropping it without ever awaiting must start
     # nothing: a Rust future is inert until polled, and the lazy bridge does not

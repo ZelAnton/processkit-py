@@ -1602,9 +1602,8 @@ def test_tee_to_slow_writer_does_not_block_the_event_loop() -> None:
 # regression fails the test instead of hanging the suite.
 
 
-class _CloseThenFailSocket(socket.socket):
+class _FailBeforeCloseSocket(socket.socket):
     def close(self) -> None:
-        super().close()
         raise RuntimeError("forced reader close failure")
 
 
@@ -1623,6 +1622,7 @@ def test_hub_wake_call_soon_failure_preserves_error_and_attempts_all_cleanup(
         triggered = False
         cancel_attempts: list[asyncio.Future[object]] = []
         callback_errors: list[dict[str, object]] = []
+        readers: list[_FailBeforeCloseSocket] = []
 
         class CancelThenFailFuture(asyncio.Future[object]):
             def cancel(self, msg: object | None = None) -> bool:
@@ -1635,12 +1635,13 @@ def test_hub_wake_call_soon_failure_preserves_error_and_attempts_all_cleanup(
 
         def failing_close_socketpair() -> tuple[socket.socket, socket.socket]:
             reader, writer = real_socketpair()
-            failing_reader = _CloseThenFailSocket(
+            failing_reader = _FailBeforeCloseSocket(
                 reader.family,
                 reader.type,
                 reader.proto,
                 fileno=reader.detach(),
             )
+            readers.append(failing_reader)
             return failing_reader, writer
 
         def failing_call_soon(callback: object, *args: object, **kwargs: object) -> object:
@@ -1676,6 +1677,7 @@ def test_hub_wake_call_soon_failure_preserves_error_and_attempts_all_cleanup(
                 str(context.get("exception")) == "forced call_soon failure"
                 for context in callback_errors
             )
+            assert readers[0].fileno() == -1
         finally:
             loop.call_soon = real_call_soon  # type: ignore[method-assign]
             loop.create_future = real_create_future  # type: ignore[method-assign]
@@ -1700,6 +1702,7 @@ def test_hub_idle_rearm_failure_preserves_error_and_attempts_all_cleanup(
         calls = 0
         cancel_attempts: list[asyncio.Future[object]] = []
         callback_errors: list[dict[str, object]] = []
+        readers: list[_FailBeforeCloseSocket] = []
 
         class CancelThenFailFuture(asyncio.Future[object]):
             def cancel(self, msg: object | None = None) -> bool:
@@ -1712,12 +1715,13 @@ def test_hub_idle_rearm_failure_preserves_error_and_attempts_all_cleanup(
 
         def failing_close_socketpair() -> tuple[socket.socket, socket.socket]:
             reader, writer = real_socketpair()
-            failing_reader = _CloseThenFailSocket(
+            failing_reader = _FailBeforeCloseSocket(
                 reader.family,
                 reader.type,
                 reader.proto,
                 fileno=reader.detach(),
             )
+            readers.append(failing_reader)
             return failing_reader, writer
 
         def failing_sock_recv(*args: object, **kwargs: object) -> object:
@@ -1756,6 +1760,7 @@ def test_hub_idle_rearm_failure_preserves_error_and_attempts_all_cleanup(
                 str(context.get("exception")) == "forced sock_recv failure"
                 for context in callback_errors
             )
+            assert readers[0].fileno() == -1
         finally:
             loop.sock_recv = real_sock_recv  # type: ignore[method-assign]
             loop.create_future = real_create_future  # type: ignore[method-assign]

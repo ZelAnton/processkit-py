@@ -444,6 +444,31 @@ fn arm_hub_receive(
     Ok(())
 }
 
+/// Close the Python socket backing a completion hub. If Python-level teardown
+/// raises, detach the descriptor and drop a Rust owner so the OS endpoint is
+/// still closed before the callback holding this socket can be destroyed.
+fn close_hub_reader(py: Python<'_>, reader: &Bound<'_, PyAny>) -> PyResult<()> {
+    match reader.call_method0(intern!(py, "close")) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // `socket.close()` can raise after closing its descriptor. In that
+            // case `detach()` returns no usable handle, and the original close
+            // error remains the only meaningful error to propagate.
+            if let Ok(handle) = reader.call_method0(intern!(py, "detach")) {
+                #[cfg(unix)]
+                if let Ok(fd) = handle.extract::<RawFd>() {
+                    drop(unsafe { WakeWriter::from_raw_fd(fd) });
+                }
+                #[cfg(windows)]
+                if let Ok(socket) = handle.extract::<RawSocket>() {
+                    drop(unsafe { WakeWriter::from_raw_socket(socket) });
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
 #[pymethods]
 impl PyHubWakeCallback {
     fn __call__(&self, wake_task: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -486,7 +511,7 @@ impl PyHubWakeCallback {
             // Mirror the `cancelled`/`!receive_ok` branches above so the hub
             // does not remain open with live entries and no scheduled work,
             // then surface the original `call_soon` failure to the caller.
-            let _ = self.reader.bind(py).call_method0(intern!(py, "close"));
+            let _ = close_hub_reader(py, self.reader.bind(py));
             for entry in self.hub.close() {
                 let _ = entry.future.bind(py).call_method0(intern!(py, "cancel"));
             }
@@ -511,7 +536,7 @@ impl PyHubIdleCallback {
                 // branch below instead of leaving the hub open with a live
                 // entry and no armed receive, then surface the original
                 // error to the caller.
-                let _ = self.reader.bind(py).call_method0(intern!(py, "close"));
+                let _ = close_hub_reader(py, self.reader.bind(py));
                 for entry in self.hub.close() {
                     let _ = entry.future.bind(py).call_method0(intern!(py, "cancel"));
                 }

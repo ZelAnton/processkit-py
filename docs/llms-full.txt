@@ -5707,6 +5707,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Close the completion hub's socket at the OS level when Python-level cleanup
+  raises, preventing pending anyio-on-asyncio reader tasks and socket-resource
+  warnings after an awaited operation is cancelled during loop shutdown.
 - Deliver the output `python -m processkit` relays itself line by line when its
   own stdout or stderr is a pipe rather than a terminal: the `run` modes that
   re-emit the child's output (`--idle-timeout`, `--output-limit`, `--pty`) and

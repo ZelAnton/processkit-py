@@ -308,3 +308,37 @@ When adding a new pure helper to `convert.rs`/`supervisor.rs`, prefer a Rust
 behavior that's actually observable through the compiled API (an exception's
 type/message, a builder's resulting policy) rather than the helper's internals
 directly.
+
+## ProcessKit 3.2.0 surface audit
+
+The 3.2.0 crate release adds several public Rust surfaces that are intentionally
+not swept into the Python binding as an automatic parity exercise. Each item
+needs its own contract, tests, and review before it becomes a Python API:
+
+- `SupervisionSession::events()` and `SupervisionEvent` are a plausible future
+  async iterator, but the Python representation of the event enum, including
+  the bounded-channel `Lagged` case, must be designed first.
+- `ProcessGroup::limit_evidence()` is useful post-run evidence, but its
+  `Tripped`/`NotTripped`/`Unknown` result must remain explicitly tri-state; it
+  must not be reduced to a boolean on platforms where the crate cannot prove
+  the verdict.
+- `cancel_signal` and `cancel_grace` require an explicit compatibility design
+  against the binding's current cancellation and timeout behavior. They are
+  not safe as passive builder kwargs until the soft-cancellation ordering and
+  platform defaults are documented and tested.
+- `output_json` is presently a likely duplicate of the binding's existing
+  `run_json()`/`arun_json()` contract. A future proposal should prove a user
+  visible semantic gap before adding another verb.
+- `report-serde` is an opt-in crate feature and is not needed while the Python
+  `ShutdownReport` exposes structured fields directly. Enabling it would be a
+  dependency/feature decision, not a free API-parity improvement.
+- `Mechanism::ProcessReaper` is platform-specific and the crate enum is
+  non-exhaustive. Any Python-facing representation must preserve unknown future
+  mechanisms and document the FreeBSD-only availability.
+- `wait_for_path` and the crate's HTTP probe overlap with the binding's
+  Python-side probes. The Python implementation remains canonical until a
+  measured compatibility or performance gap justifies a separate migration.
+
+This audit deliberately creates follow-up scope rather than adding public
+symbols here. A follow-up that changes `src/*.rs`, `_processkit.pyi`, or the
+top-level exports must carry its own API-surface tests and human-review gate.

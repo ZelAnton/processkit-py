@@ -19,6 +19,21 @@ attached instead of only the loose pass/fail bound in
   lines end to end.
 - **`test_output_all.py`** — `output_all()` / `aoutput_all()` at 1/10/50-way
   concurrency (see [`docs/cookbook.md`](../docs/cookbook.md)).
+- **`test_pty.py`** — PTY/ConPTY merged-output relay with a bounded stream of
+  fixed-width lines. It runs on POSIX and Windows hosts that provide ConPTY;
+  other platforms skip it rather than producing incomparable numbers.
+- **`test_lifecycle_events.py`** — the full `lifecycle_events()` stream over a
+  mixed stdout/stderr workload, including the started and exited events.
+- **`test_aoutput_as_completed.py`** — `aoutput_as_completed()` draining a
+  bounded batch at fixed concurrency, measuring completion-order delivery and
+  per-slot result handling.
+- **`test_supervisor.py`** — a live `Supervisor`/`SupervisionSession` that
+  restarts a bounded crash workload and waits for the restart policy to end.
+
+The PTY benchmark is platform-aware by design: POSIX lanes use the native pty
+path, while Windows requires the ConPTY API (Windows 10 1809 or newer). The
+nightly trend job runs on Ubuntu, so its PTY point is a POSIX measurement and
+must not be compared directly with a Windows ConPTY run.
 
 ## Running locally
 

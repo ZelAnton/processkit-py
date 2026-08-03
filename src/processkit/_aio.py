@@ -444,7 +444,17 @@ _NamedPipeProbe = Callable[[str], bool]
 # (pyproject.toml), a statically-true ``sys.platform`` guard followed by a
 # ``return`` makes mypy treat the remainder of the function as regular
 # unreachable code (an error), not as an elided platform branch.
-if sys.platform == "win32":
+#
+# The ``win32`` clause is excluded from coverage for the same reason: only one
+# of the two definitions is ever imported on a given interpreter, so on the
+# enforcing Linux leg this block is structurally unexecutable, and measuring it
+# there would park 18 permanently missing statements and 7 never-taken branch
+# exits in a denominator whose margin is thin (see `[tool.coverage.report]` in
+# pyproject.toml). The pragma sits on the ``if`` because coverage then drops
+# that clause and its body only: the ``else`` fallback below stays measured on
+# the leg that runs it, and the Windows behavior itself stays covered by the
+# `skipif(sys.platform != "win32")` tests in tests/test_readiness.py.
+if sys.platform == "win32":  # pragma: no cover -- platform-exclusive branch
     import ctypes
     from ctypes import wintypes
 

@@ -66,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Deliver the output `python -m processkit` relays itself line by line when its
+  own stdout or stderr is a pipe rather than a terminal: the `run` modes that
+  re-emit the child's output (`--idle-timeout`, `--output-limit`, `--pty`) and
+  the live tee of `supervise`. A piped reader — `| grep`, a log collector, a CI
+  step — previously got those lines in ~8 KiB blocks or in one dump when the run
+  ended, unlike the inherited-stream default; both paths now match the live
+  output `docs/cli.md` describes.
 - Block every direct `Command` spawn path under pytest's `no_real_spawn`
   marker, including JSON, async JSON, and deliberately detached launches.
 - Preserve completion-hub rearm errors while still attempting every pending

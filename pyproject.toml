@@ -303,22 +303,49 @@ parallel = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# Measured coverage of the scope above (`source` minus `omit` -- 972 statements
-# and 282 branches) is 74.96–75.12% across two Windows dev-box runs. The
-# enforcing Ubuntu leg is expected to remain higher because it runs the
-# POSIX-only tests that Windows skips; its exact post-change baseline will be
-# confirmed by the next CI run.
-# Measured 2026-07-29 with the full suite and four file-grouped xdist workers.
+# The measured scope (`source` minus `omit`, minus the exclusions below) is
+# 1,005 statements and 286 branches = 1,291 units, re-measured 2026-08-03 with
+# coverage's own parser over this configuration -- the same method that produced
+# the 1,254 quoted further down for the previous scope, so the two are directly
+# comparable. The last full-suite *percentage* -- 74.96–75.12% across
+# two Windows dev-box runs, 2026-07-29, four file-grouped xdist workers -- was
+# taken on the 1,254-unit scope that preceded batch B-20260802T121700Z and has
+# not been re-measured since, so treat it as the last known reading rather than
+# the current one. The enforcing Ubuntu leg is expected to sit higher because it
+# runs the POSIX-only tests Windows skips, but it has never had a baseline of
+# its own: nothing but a `--cov` run on that leg establishes one, and the
+# verification profile used for merges does not include `--cov`.
 #
-# `fail_under` sits three points below that lower Windows baseline (~38 of the
-# 1,254 measured units), enough for platform/measurement noise while still
-# catching a real loss in `_aio.py`, the directly-tested CLI helpers,
-# `pytest_plugin.py`, `scripts/release/`, or the package `__init__.py`.
-# Process-driving CLI modules remain outside the denominator because subprocess
-# coverage is not currently wired as documented above, so their growth cannot
-# consume this margin without producing measurable in-process coverage.
+# `fail_under` sits three points below that last Windows reading. One point is
+# ~13 units at this scope, so the margin is ~39 units of slack -- enough for
+# platform/measurement noise while still catching a real loss in `_aio.py`, the
+# directly-tested CLI helpers, `pytest_plugin.py`, `scripts/release/`, or the
+# package `__init__.py`. Process-driving CLI modules remain outside the
+# denominator because subprocess coverage is not currently wired as documented
+# above, so their growth cannot consume this margin without producing
+# measurable in-process coverage.
+#
+# A margin that thin gets eaten from the inside by a batch that only *adds*
+# code, which has now happened twice. B-20260725T170739Z is the first case (see
+# the `omit` rationale above). In B-20260802T121700Z the scope grew 1,254 ->
+# 1,318 units (+64, +5%), and 43 of those 64 would have entered the denominator
+# with nothing in the numerator on the enforcing leg: 25 for a Windows-only
+# named-pipe block Linux never executes, 13 for `flush()` failure handlers no
+# test reached, 5 for the tail of `wait_for_named_pipe` past its `Unsupported`
+# guard. That is why the scope reads 1,291 and not 1,318: the platform block
+# leaves the denominator at its `if` (27 units with the guard line and its
+# never-completable branch; see the rationale beside it in `_aio.py`) and the
+# flush handlers are now covered by name in tests/test_cli_units.py. The
+# `wait_for_named_pipe` tail stays measured on purpose -- `wait_for_unix_socket`
+# has exactly as dead a tail on Windows and is also measured, and excluding one
+# of a symmetric pair only relocates the skew.
 fail_under = 72
 exclude_lines = [
+  # This one marker also retires a platform-exclusive branch: an
+  # `if sys.platform == "win32":  # pragma: no cover ...` clause (as in
+  # `_aio.py`) drops that clause and its body from the scope while the `else`
+  # fallback stays measured, so neither leg carries the other's dead code. No
+  # separate platform regex -- extend the pragma, not this list.
   "pragma: no cover",
   "if TYPE_CHECKING:",
   "raise NotImplementedError",

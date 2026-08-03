@@ -44,6 +44,42 @@ class _FailingStream:
         raise self.error
 
 
+class _FlushFailingStream:
+    """Accepts the write, then fails the per-line flush that follows it.
+
+    `_FailingStream` above never reaches `_emit`'s flush: its `write` raises
+    first. A receiver that goes away (or a device that fills up) between the two
+    calls is a real case for the streaming re-emitters, which flush after every
+    line, so it needs a stream that gets past `write`.
+    """
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.written: list[str] = []
+
+    def write(self, text: str) -> int:
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        raise self.error
+
+
+def _epipe_oserror() -> OSError:
+    """A plain `OSError` carrying `EPIPE`, which its constructor cannot express.
+
+    `OSError(errno.EPIPE, "...")` is *not* one: CPython's constructor maps a
+    2-argument `OSError` onto the matching subclass and hands back a
+    `BrokenPipeError`, which `_emit` catches one clause earlier. The
+    `errno == EPIPE` arm of its `except OSError` therefore only ever sees an
+    error raised as a bare `OSError` whose `errno` was set on the instance --
+    the shape a foreign file-like object standing in for `sys.stdout` raises.
+    """
+    error = OSError("pipe closed")
+    error.errno = errno.EPIPE
+    return error
+
+
 def test_split_child_argv_preserves_the_child_tail() -> None:
     assert parser._split_child_argv(["run", "--timeout", "1", "--", "tool", "--", "x"]) == (
         ["run", "--timeout", "1"],
@@ -166,7 +202,7 @@ def test_emit_writes_one_line_and_handles_a_missing_stream(
 
 @pytest.mark.parametrize(
     "error",
-    [BrokenPipeError(), OSError(errno.EPIPE, "pipe closed")],
+    [BrokenPipeError(), _epipe_oserror()],
 )
 def test_emit_treats_a_vanished_receiver_as_nonfatal(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
@@ -188,6 +224,35 @@ def test_emit_wraps_other_write_failures(
     monkeypatch.setattr(sys, "stderr", stream)
     with pytest.raises(output.OutputWriteError):
         output.emit_stderr("hello")
+    assert sys.stderr is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [BrokenPipeError(), _epipe_oserror()],
+)
+def test_emit_treats_a_receiver_lost_at_flush_as_nonfatal(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    stream = _FlushFailingStream(error)
+    monkeypatch.setattr(sys, "stderr", stream)
+    assert not output.emit_stderr("hello")
+    assert stream.written == ["hello\n"]
+    assert sys.stderr is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError(errno.EIO, "device failed"), ValueError("I/O operation on closed file")],
+)
+def test_emit_wraps_other_flush_failures(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    stream = _FlushFailingStream(error)
+    monkeypatch.setattr(sys, "stderr", stream)
+    with pytest.raises(output.OutputWriteError, match="could not flush stderr"):
+        output.emit_stderr("hello")
+    assert stream.written == ["hello\n"]
     assert sys.stderr is None
 
 

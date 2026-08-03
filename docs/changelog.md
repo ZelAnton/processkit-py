@@ -63,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with this changelog by local and CI drift checks.
 
 ### Changed
+- Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
+  API and cancellation defaults while bringing upstream compatibility fixes for
+  ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.
 - Document and pin idle monitoring per iterator: `stdout_lines()` watches
   stdout activity, while merged-event and stderr-only streams count both pipes.
 - Exercise Windows ARM64 in regular and nightly test matrices, and add a

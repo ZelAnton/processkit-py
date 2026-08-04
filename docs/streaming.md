@@ -165,8 +165,13 @@ while True:
     except StopAsyncIteration:
         break
     except InvalidJson as exc:
-        # str(exc) already reports the NDJSON line/column/byte offset and a
-        # bounded fragment of that line — no need to reconstruct it yourself.
+        # str(exc) already reports the NDJSON line number and a bounded
+        # fragment of that line — no need to reconstruct it yourself. For a
+        # genuine JSON syntax error it also reports the real column/byte
+        # offset; for the rare non-syntax decode failure (e.g. a bare integer
+        # literal past Python's `sys.set_int_max_str_digits()` limit, which
+        # has no parser position at all) it says so honestly instead of
+        # inventing one.
         log.warning("skipping malformed line from %s: %s", exc.program, exc)
     else:
         handle(event)

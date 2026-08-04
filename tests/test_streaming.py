@@ -306,29 +306,98 @@ def test_stdout_json_lines_python_load_error_is_invalid_json_and_continues() -> 
     if not hasattr(sys, "get_int_max_str_digits"):
         pytest.skip("Python 3.10 has no integer-string conversion limit")
 
-    code = "print('9' * 5000)\nprint('{\"ok\": true}')\n"
+    code = "print('{\"before\": true}')\nprint('9' * 5000)\nprint('{\"after\": true}')\n"
     previous_limit = sys.get_int_max_str_digits()
     sys.set_int_max_str_digits(4300)
     try:
 
-        async def scenario() -> tuple[InvalidJson, object, Finished]:
+        async def scenario() -> tuple[object, InvalidJson, object, Finished]:
             proc = await Command(PY, ["-c", code]).astart()
             stream = proc.stdout_json_lines()
+            before = await anext(stream)
             with pytest.raises(InvalidJson) as caught:
                 await anext(stream)
-            item = await anext(stream)
+            after = await anext(stream)
             with pytest.raises(StopAsyncIteration):
                 await anext(stream)
             finished = await proc.afinish()
-            return caught.value, item, finished
+            return before, caught.value, after, finished
 
-        error, item, finished = asyncio.run(scenario())
+        before, error, after, finished = asyncio.run(scenario())
     finally:
         sys.set_int_max_str_digits(previous_limit)
 
     assert error.program == PY
     assert error.stdout is None
-    assert item == {"ok": True}
+    message = str(error)
+    # This is a plain ValueError from the int-string conversion limit, not a
+    # json.JSONDecodeError — it carries no decode position, so the message
+    # says so honestly rather than inventing a column/byte-offset placeholder
+    # that would look like real data (contrast with the genuine
+    # json.JSONDecodeError case below).
+    assert "line 2 (no decode position available)" in message
+    assert "column" not in message
+    assert "byte offset" not in message
+    assert "9" * 2048 in message
+    assert "9" * 2049 not in message
+    assert before == {"before": True}
+    assert after == {"after": True}
+    assert finished.exited_zero
+
+
+def test_stdout_json_lines_json_syntax_error_reports_real_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Contrast with the ValueError case above: a genuine JSON syntax error is
+    # a real json.JSONDecodeError, whose .colno/.pos are real and should show
+    # up verbatim in the message rather than the honest "position unknown"
+    # placeholder that case uses.
+    #
+    # A line that is syntactically bad enough for Python's json.loads() to
+    # raise JSONDecodeError but still passes the crate's own per-line
+    # serde_json syntax check (so the failure actually reaches
+    # invalid_json_stream_err instead of the crate-side invalid_json_line_err
+    # tested above) is not naturally available — the two parsers reject
+    # almost the same grammar. Patch `json.loads` itself to raise a *real*
+    # `json.JSONDecodeError` (still constructed by the stdlib, so its
+    # .colno/.pos are genuine) only for this one line, so the binding's
+    # position-extraction path is exercised end-to-end without relying on a
+    # parser-divergence that may not exist.
+    boom_line = '{"boom": 1}'
+    real_loads = json.loads
+
+    def fake_loads(text: str) -> object:
+        if text == boom_line:
+            raise json.JSONDecodeError("Simulated decode failure", text, 3)
+        return real_loads(text)
+
+    monkeypatch.setattr(json, "loads", fake_loads)
+
+    code = f"print('{{\"ok\": true}}')\nprint('{boom_line}')\nprint('{{\"ok\": false}}')\n"
+
+    async def scenario() -> tuple[object, InvalidJson, object, Finished]:
+        proc = await Command(PY, ["-c", code]).astart()
+        stream = proc.stdout_json_lines()
+        before = await anext(stream)
+        with pytest.raises(InvalidJson) as caught:
+            await anext(stream)
+        after = await anext(stream)
+        finished = await proc.afinish()
+        return before, caught.value, after, finished
+
+    before, error, after, finished = asyncio.run(scenario())
+
+    assert error.program == PY
+    assert error.stdout is None
+    message = str(error)
+    # `json.JSONDecodeError("...", '{"boom": 1}', 3)` computes colno=4
+    # (1-based, pos + 1) for this single-line doc — an ASCII line, so the
+    # char index and byte offset coincide.
+    assert "line 2, column 4, byte offset 3" in message
+    assert boom_line in message
+    assert "no decode position available" not in message
+    assert before == {"ok": True}
+    assert after == {"ok": False}
     assert finished.exited_zero
 
 

@@ -2,6 +2,7 @@
 //! `ProcessStdin`, `StdoutLines`, `JsonLines`, `StderrLines`, and `OutputEvents`.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -348,6 +349,7 @@ impl PyStdoutLines {
 pub(crate) struct PyJsonLines {
     inner: Arc<Mutex<PkJsonLines<Box<RawValue>>>>,
     program: String,
+    line_count: Arc<AtomicUsize>,
     // The idle-timeout watchdog, if the originating command set `idle_timeout`.
     idle: Option<IdleGuard>,
 }
@@ -362,6 +364,7 @@ impl PyJsonLines {
         let stream = self.inner.clone();
         let idle = self.idle.clone();
         let program = self.program.clone();
+        let line_count = self.line_count.clone();
         // `drive_async_py_convert`, not `drive_async_py`: the success value needs
         // a Python API (`json.loads`) to become the object Python actually sees,
         // so that step is deferred to the event-loop-thread `convert` closure
@@ -389,17 +392,29 @@ impl PyJsonLines {
                     // The stream continues after a malformed line (the crate's
                     // `JsonLines` contract) — this is a per-item error, never one
                     // that ends the iterator.
-                    Some(Ok(raw)) => Ok(raw),
-                    Some(Err(error)) => Err(invalid_json_line_err(&error)),
+                    Some(Ok(raw)) => {
+                        let line_number = line_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        Ok((raw, line_number))
+                    }
+                    Some(Err(error)) => {
+                        line_count.fetch_add(1, Ordering::Relaxed);
+                        Err(invalid_json_line_err(&error))
+                    }
                     None => Err(PyStopAsyncIteration::new_err(())),
                 }
             },
-            move |py, raw: Box<RawValue>| match py
+            move |py, (raw, line_number): (Box<RawValue>, usize)| match py
                 .import("json")
                 .and_then(|json| json.call_method1("loads", (raw.get(),)))
             {
                 Ok(value) => Ok(value.unbind()),
-                Err(parse_error) => Err(invalid_json_stream_err(py, &program, &parse_error)),
+                Err(parse_error) => Err(invalid_json_stream_err(
+                    py,
+                    &program,
+                    line_number,
+                    raw.get(),
+                    &parse_error,
+                )),
             },
         )
     }
@@ -1096,12 +1111,18 @@ impl PyRunningProcess {
     /// An async iterator over stdout, one deserialized JSON value per line:
     /// `async for obj in proc.stdout_json_lines(): ...`. Strict NDJSON framing —
     /// every line, including a blank one, must independently parse as JSON. A
-    /// malformed line raises `InvalidJson` (carrying the crate's own
-    /// line/column/byte-offset diagnostic and a bounded fragment of that line in
-    /// its message, plus `.program` — but, unlike `run_json()`/`arun_json()`,
-    /// **no** `.stdout`: a streamed run never buffers the whole payload the way
-    /// those do) and the stream continues with the next line, exactly like every
-    /// other malformed-item case in this library.
+    /// malformed line raises `InvalidJson` (carrying the line number and a
+    /// bounded fragment of that line in its message, plus `.program` — but,
+    /// unlike `run_json()`/`arun_json()`, **no** `.stdout`: a streamed run
+    /// never buffers the whole payload the way those do) and the stream
+    /// continues with the next line, exactly like every other malformed-item
+    /// case in this library. The message also carries a real column/byte
+    /// offset for a genuine JSON syntax error (whether the crate itself
+    /// caught it or Python's own `json.loads()` did — see
+    /// [`invalid_json_line_err`]/[`invalid_json_stream_err`]); the rare
+    /// non-syntax decode failure that carries no parser position (e.g. an
+    /// integer literal past Python's `sys.set_int_max_str_digits()` limit)
+    /// says so instead of inventing one.
     ///
     /// Same one-shot-stdout, same-idle-timeout, and same consuming/streaming-
     /// conflict rules as `stdout_lines()` (they share one crate-level stdout
@@ -1122,6 +1143,7 @@ impl PyRunningProcess {
         Ok(PyJsonLines {
             inner: Arc::new(Mutex::new(lines)),
             program: self.program.clone(),
+            line_count: Arc::new(AtomicUsize::new(0)),
             idle,
         })
     }

@@ -517,10 +517,11 @@ finished = await proc.afinish()
 ```
 
 A malformed line raises `InvalidJson` (its message already reports the NDJSON
-line/column/byte offset and a bounded fragment of that line) and the stream
-continues with the next line rather than ending — see
-[Streaming NDJSON output](streaming.md#streaming-ndjson-output) for the full
-error-handling shape.
+line number and a bounded fragment of that line, plus the real column/byte
+offset for a genuine JSON syntax error — see
+[Streaming NDJSON output](streaming.md#streaming-ndjson-output) for the rare
+non-syntax case that has no parser position to report) and the stream
+continues with the next line rather than ending.
 
 ## Check a tool is installed before running it
 

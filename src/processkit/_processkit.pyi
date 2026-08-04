@@ -819,14 +819,18 @@ class RunningProcess:
     def stdout_json_lines(self) -> JsonLines:
         """Stream stdout as one decoded JSON value per line (strict NDJSON).
 
-        A malformed line raises `InvalidJson` — carrying the crate's own
-        line/column/byte-offset diagnostic and a bounded fragment of that line
-        in its message, plus ``program``, but (unlike ``run_json()`` /
-        ``arun_json()``) **no** ``stdout`` (a streamed run never buffers the
-        whole payload) — and the stream continues with the next line. Same
-        one-shot-stdout and consuming/streaming-conflict rules as
-        ``stdout_lines()``: call once, and never after another consumer
-        already took stdout."""
+        A malformed line raises `InvalidJson` — carrying the line number and a
+        bounded fragment of that line in its message, plus ``program``, but
+        (unlike ``run_json()`` / ``arun_json()``) **no** ``stdout`` (a
+        streamed run never buffers the whole payload) — and the stream
+        continues with the next line. The message also carries a real
+        column/byte offset for a genuine JSON syntax error (whether caught by
+        the crate itself or by Python's own `json.loads()`); the rare
+        non-syntax decode failure (e.g. a bare integer literal past Python's
+        `sys.set_int_max_str_digits()` limit) has no parser position to
+        report and says so instead of inventing one. Same one-shot-stdout and
+        consuming/streaming-conflict rules as ``stdout_lines()``: call once,
+        and never after another consumer already took stdout."""
     def stderr_lines(self) -> StderrLines:
         """Stream decoded stderr lines while background-draining stdout.
 
@@ -1749,11 +1753,15 @@ class InvalidJson(ProcessError):
     A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
     so the failure is attributed and a single `except ProcessError` still
     catches it. `str(exc)` carries the parser's own diagnostic — for the
-    streaming case, the NDJSON line/column/byte-offset location and a bounded
-    fragment of that line. A deliberate *sibling* of `NonZeroExit`, not a
-    subclass: the run itself succeeded — only its output *shape* is wrong — so
-    `except InvalidJson` isolates a bad-payload failure without also catching a
-    genuine non-zero exit."""
+    streaming case, the NDJSON line number and a bounded fragment of that
+    line, plus the real column/byte offset for a genuine JSON syntax error
+    (whether the crate itself caught it or Python's own `json.loads()` did);
+    the rare non-syntax decode failure that has no parser position (e.g. an
+    integer literal past Python's `sys.set_int_max_str_digits()` limit) says
+    so instead of inventing one. A deliberate *sibling* of `NonZeroExit`, not
+    a subclass: the run itself succeeded — only its output *shape* is wrong —
+    so `except InvalidJson` isolates a bad-payload failure without also
+    catching a genuine non-zero exit."""
 
     # The executed command's program.
     program: str

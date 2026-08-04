@@ -165,7 +165,9 @@ asyncio.run(main())
 
 No Python to write? `python -m processkit run -- <cmd> [args...]` gives a
 shell script or CI step the same kill-on-exit containment and resource
-limits from the command line, no code required:
+limits from the command line, no code required. Once installed, the same
+wrapper is also on `PATH` as the shorter `processkit` command — both forms
+share the identical flag set and exit-code contract:
 
 ```bash
 python -m processkit run --timeout 30 --max-memory 536870912 -- pytest -x
@@ -173,10 +175,16 @@ python -m processkit run --env-file ci.env --env MODE=test -- ./build.sh
 python -m processkit run --output-limit 8388608 --stderr-file build.err -- ./build.sh
 python -m processkit run --pty --pty-cols 120 --pty-rows 40 -- color-sensitive-tool
 python -m processkit supervise --health-port 127.0.0.1:8080 -- ./server
+
+# equivalent short form, once `pip install processkit-py` puts `processkit` on PATH:
+processkit run --timeout 30 --max-memory 536870912 -- pytest -x
 ```
 
-See [Command-line usage](https://github.com/ZelAnton/processkit-py/blob/main/docs/cli.md) for the full flag list and exit-code
-contract.
+`python -m processkit` remains fully supported — useful when several
+interpreters are on the machine and the `processkit` command on `PATH` might
+not be the one you mean. See [Command-line
+usage](https://github.com/ZelAnton/processkit-py/blob/main/docs/cli.md) for
+the full flag list and exit-code contract.
 
 ## Documentation
 

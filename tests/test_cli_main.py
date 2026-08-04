@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import queue
+import shutil
 import signal
 import socket
 import subprocess
@@ -2150,4 +2151,72 @@ def test_supervise_successful_program_exits_zero_and_streams_stdout() -> None:
     )
     assert result.returncode == 0
     assert "hello from supervisor" in result.stdout
+
+
+# --- `processkit` console-script entry point ------------------------------
+#
+# `[project.scripts] processkit = "processkit._cli:main_and_exit"` in
+# pyproject.toml installs a short `processkit` command alongside the always
+# supported `python -m processkit` form (see `src/processkit/__main__.py`'s
+# docstring, docs/cli.md, and README). Both ultimately call the very same
+# `main_and_exit`, so they must share one exit-code contract (KB K-027: no
+# new codes, no shifted ranges; KB K-049: this fact must stay durable in a
+# test, not just recorded in a report). `shutil.which` resolves the script
+# through the active virtualenv's PATH entry the same way a real shell
+# invocation would; skip (rather than fail) if the environment used to run
+# this suite did not install console-script entry points at all.
+def _console_script_path() -> str:
+    path = shutil.which("processkit")
+    if path is None:
+        pytest.skip("`processkit` console script not found on PATH")
+    return path
+
+
+def test_console_script_exists_and_is_executable() -> None:
+    _console_script_path()
+
+
+def test_console_script_matches_module_form_exit_code_on_success() -> None:
+    processkit_exe = _console_script_path()
+    result = subprocess.run(
+        [processkit_exe, "run", "--", PY, "-c", "print('hello from console script')"],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "hello from console script" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
+
+
+def test_console_script_matches_module_form_exit_code_on_nonzero_child_exit() -> None:
+    processkit_exe = _console_script_path()
+    module_result = _run_cli("run", "--", PY, "-c", "import sys; sys.exit(7)")
+    script_result = subprocess.run(
+        [processkit_exe, "run", "--", PY, "-c", "import sys; sys.exit(7)"],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert script_result.returncode == module_result.returncode == 7
+    assert "Traceback (most recent call last)" not in script_result.stderr
+
+
+def test_console_script_matches_module_form_doctor_exit_code() -> None:
+    processkit_exe = _console_script_path()
+    module_result = _run_cli("doctor")
+    script_result = subprocess.run(
+        [processkit_exe, "doctor"],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    # doctor's verdict depends on the host's actual kernel-level containment/
+    # resource-limit availability, not on which invocation form was used —
+    # both must land on the exact same one of the documented codes (0/1/3/4).
+    assert script_result.returncode == module_result.returncode
+    assert script_result.returncode in {0, 1, 3, 4}
+    assert "Traceback (most recent call last)" not in script_result.stderr

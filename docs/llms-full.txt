@@ -4666,6 +4666,15 @@ exposes restart-based keep-alive supervision (`Supervisor`) the same way, and
 diagnosis of what this environment's kernel actually grants, without running
 anything (see [below](#doctor-preflight-diagnose-the-environment)).
 
+After `pip install processkit-py`, the same wrapper is also on `PATH` as the
+short `processkit` command — `processkit run -- pytest -x` and `processkit
+doctor` work exactly like their `python -m processkit ...` equivalents below,
+sharing the identical flag set and exit-code contract (both forms delegate to
+the same entry point). `python -m processkit` remains fully supported and is
+what the rest of this page uses throughout — reach for it explicitly when
+several interpreters are on the machine and the `processkit` command on
+`PATH` might not be the one you mean.
+
 - [Basic usage](#basic-usage)
 - [Flags](#flags)
 - [`--profile`: machine-readable resource usage](#--profile-machine-readable-resource-usage)
@@ -4679,6 +4688,8 @@ anything (see [below](#doctor-preflight-diagnose-the-environment)).
 
 ```bash
 python -m processkit run -- pytest -x
+# or, once installed, the shorter console script (identical behavior):
+processkit run -- pytest -x
 ```
 
 Everything after the **first** `--` is the child's own argv, untouched — a
@@ -5664,6 +5675,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add a `processkit` console-script entry point
+  (`processkit run -- pytest -x`, `processkit doctor`), alongside the
+  still-supported `python -m processkit` form, sharing the identical
+  exit-code contract.
+- Add `ProcessGroup.update_limits(*, max_memory=None, max_processes=None,
+  cpu_quota=None)` for full-replacement, synchronous, dynamic adjustment of a
+  live group's resource limits without recreating the group.
+- Add `Command.rlimit(resource, soft, hard)` for POSIX per-process
+  `setrlimit(2)` limits (`RlimitResourceName`: `"cpu"`, `"core"`, `"data"`,
+  `"file_size"`, `"no_file"`, `"stack"`), raising `Unsupported` off-POSIX.
+- Add `RunningProcess.stdout_json_lines()` for built-in NDJSON line
+  streaming — an async iterator that decodes each stdout line as a standalone
+  JSON value, the streaming counterpart to `Command.run_json()`/`arun_json()`.
 - Add nightly benchmark coverage for PTY relay, lifecycle events,
   completion-order batches, and live Supervisor restart sessions, with
   platform-specific PTY handling documented.
@@ -10934,3 +10958,37 @@ When adding a new pure helper to `convert.rs`/`supervisor.rs`, prefer a Rust
 behavior that's actually observable through the compiled API (an exception's
 type/message, a builder's resulting policy) rather than the helper's internals
 directly.
+
+## ProcessKit 3.2.0 surface audit
+
+The 3.2.0 crate release adds several public Rust surfaces that are intentionally
+not swept into the Python binding as an automatic parity exercise. Each item
+needs its own contract, tests, and review before it becomes a Python API:
+
+- `SupervisionSession::events()` and `SupervisionEvent` are a plausible future
+  async iterator, but the Python representation of the event enum, including
+  the bounded-channel `Lagged` case, must be designed first.
+- `ProcessGroup::limit_evidence()` is useful post-run evidence, but its
+  `Tripped`/`NotTripped`/`Unknown` result must remain explicitly tri-state; it
+  must not be reduced to a boolean on platforms where the crate cannot prove
+  the verdict.
+- `cancel_signal` and `cancel_grace` require an explicit compatibility design
+  against the binding's current cancellation and timeout behavior. They are
+  not safe as passive builder kwargs until the soft-cancellation ordering and
+  platform defaults are documented and tested.
+- `output_json` is presently a likely duplicate of the binding's existing
+  `run_json()`/`arun_json()` contract. A future proposal should prove a user
+  visible semantic gap before adding another verb.
+- `report-serde` is an opt-in crate feature and is not needed while the Python
+  `ShutdownReport` exposes structured fields directly. Enabling it would be a
+  dependency/feature decision, not a free API-parity improvement.
+- `Mechanism::ProcessReaper` is platform-specific and the crate enum is
+  non-exhaustive. Any Python-facing representation must preserve unknown future
+  mechanisms and document the FreeBSD-only availability.
+- `wait_for_path` and the crate's HTTP probe overlap with the binding's
+  Python-side probes. The Python implementation remains canonical until a
+  measured compatibility or performance gap justifies a separate migration.
+
+This audit deliberately creates follow-up scope rather than adding public
+symbols here. A follow-up that changes `src/*.rs`, `_processkit.pyi`, or the
+top-level exports must carry its own API-surface tests and human-review gate.

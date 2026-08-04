@@ -12,6 +12,15 @@ exposes restart-based keep-alive supervision (`Supervisor`) the same way, and
 diagnosis of what this environment's kernel actually grants, without running
 anything (see [below](#doctor-preflight-diagnose-the-environment)).
 
+After `pip install processkit-py`, the same wrapper is also on `PATH` as the
+short `processkit` command — `processkit run -- pytest -x` and `processkit
+doctor` work exactly like their `python -m processkit ...` equivalents below,
+sharing the identical flag set and exit-code contract (both forms delegate to
+the same entry point). `python -m processkit` remains fully supported and is
+what the rest of this page uses throughout — reach for it explicitly when
+several interpreters are on the machine and the `processkit` command on
+`PATH` might not be the one you mean.
+
 - [Basic usage](#basic-usage)
 - [Flags](#flags)
 - [`--profile`: machine-readable resource usage](#--profile-machine-readable-resource-usage)
@@ -25,6 +34,8 @@ anything (see [below](#doctor-preflight-diagnose-the-environment)).
 
 ```bash
 python -m processkit run -- pytest -x
+# or, once installed, the shorter console script (identical behavior):
+processkit run -- pytest -x
 ```
 
 Everything after the **first** `--` is the child's own argv, untouched — a

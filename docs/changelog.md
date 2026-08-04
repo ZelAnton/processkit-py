@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add a `processkit` console-script entry point
+  (`processkit run -- pytest -x`, `processkit doctor`), alongside the
+  still-supported `python -m processkit` form, sharing the identical
+  exit-code contract.
+- Add `ProcessGroup.update_limits(*, max_memory=None, max_processes=None,
+  cpu_quota=None)` for full-replacement, synchronous, dynamic adjustment of a
+  live group's resource limits without recreating the group.
+- Add `Command.rlimit(resource, soft, hard)` for POSIX per-process
+  `setrlimit(2)` limits (`RlimitResourceName`: `"cpu"`, `"core"`, `"data"`,
+  `"file_size"`, `"no_file"`, `"stack"`), raising `Unsupported` off-POSIX.
+- Add `RunningProcess.stdout_json_lines()` for built-in NDJSON line
+  streaming — an async iterator that decodes each stdout line as a standalone
+  JSON value, the streaming counterpart to `Command.run_json()`/`arun_json()`.
 - Add nightly benchmark coverage for PTY relay, lifecycle events,
   completion-order batches, and live Supervisor restart sessions, with
   platform-specific PTY handling documented.

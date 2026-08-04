@@ -483,7 +483,11 @@ gh = CliClient("gh")
 try:
     pr = gh.run_json(["pr", "view", "42", "--json", "title,state"])
 except InvalidJson as exc:
-    raise SystemExit(f"{exc.program} did not return JSON: {exc.stdout[:80]!r}")
+    # `run_json()`/`arun_json()` always attach `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`) — narrow the
+    # type before slicing it.
+    stdout = exc.stdout or ""
+    raise SystemExit(f"{exc.program} did not return JSON: {stdout[:80]!r}")
 print(pr["title"], pr["state"])                  # or: await gh.arun_json([...])
 ```
 
@@ -495,6 +499,29 @@ carrying the `program` and a bounded stdout fragment, never a bare
 For testable code, pass `runner=` (a `ScriptedRunner` and friends from
 `processkit.testing`) to drive every verb through a double instead of the real
 runner — see [Testing your code](testing.md#wrapping-a-cli-tool-cliclient).
+
+## Stream NDJSON output line by line
+
+An agent/LLM tool or a build tool with a streaming `--json` mode that emits one
+object per line — `stdout_json_lines()` is `stdout_lines()`'s typed twin: same
+one-shot setup call, but each item is already the decoded object, no manual
+`json.loads()` loop:
+
+```python
+from processkit import Command, InvalidJson
+
+proc = await Command("agent-tool", ["--emit", "ndjson"]).astart()
+async for event in proc.stdout_json_lines():
+    print(event["type"])
+finished = await proc.afinish()
+```
+
+A malformed line raises `InvalidJson` (its message already reports the NDJSON
+line number and a bounded fragment of that line, plus the real column/byte
+offset for a genuine JSON syntax error — see
+[Streaming NDJSON output](streaming.md#streaming-ndjson-output) for the rare
+non-syntax case that has no parser position to report) and the stream
+continues with the next line rather than ending.
 
 ## Check a tool is installed before running it
 

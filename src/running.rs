@@ -1,7 +1,8 @@
 //! The async streaming/interactive handles: `RunningProcess` plus its
-//! `ProcessStdin`, `StdoutLines`, `StderrLines`, and `OutputEvents`.
+//! `ProcessStdin`, `StdoutLines`, `JsonLines`, `StderrLines`, and `OutputEvents`.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -12,6 +13,7 @@ use processkit::Finished as PkFinished;
 // `output_events()` -> `events()`) as the merged stream widened from output to
 // the whole process lifecycle. The Python names are unchanged — see
 // `PyOutputEvents` below.
+use processkit::JsonLines as PkJsonLines;
 use processkit::ProcessEvent as PkProcessEvent;
 use processkit::ProcessEvents as PkProcessEvents;
 use processkit::ProcessStdin as PkProcessStdin;
@@ -19,18 +21,21 @@ use processkit::RunningProcess as PkRunningProcess;
 use processkit::StdoutLines as PkStdoutLines;
 use pyo3::exceptions::{PyOSError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
+use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::convert::{nonnegative_duration, positive_duration};
-use crate::errors::{idle_timeout_err, map_err, ProcessError};
+use crate::errors::{
+    idle_timeout_err, invalid_json_line_err, invalid_json_stream_err, map_err, ProcessError,
+};
 use crate::result::{
     PyBytesResult, PyFinished, PyLifecycleEvent, PyOutcome, PyOutputEvent, PyProcessResult,
     PyRunProfile,
 };
 use crate::runtime::{
-    block_on, block_on_interruptible, drive_async, drive_async_py, reject_reentrant_runtime,
-    require_event_loop, runtime,
+    block_on, block_on_interruptible, drive_async, drive_async_py, drive_async_py_convert,
+    reject_reentrant_runtime, require_event_loop, runtime,
 };
 
 /// The shared process slot: `None` once a consuming verb has taken ownership.
@@ -319,6 +324,99 @@ impl PyStdoutLines {
                 },
             }
         })
+    }
+}
+
+/// An async iterator over a process's stdout, one deserialized JSON value per
+/// line: `async for obj in proc.stdout_json_lines(): ...`. Otherwise the exact
+/// same consuming/streaming-conflict and idle-timeout rules as [`PyStdoutLines`]
+/// (both wrap the crate's own `stdout_lines()`-driven pump under the hood) —
+/// this just decodes each line before handing it to Python instead of yielding
+/// the raw `str`.
+///
+/// Wraps the crate's `JsonLines<Box<RawValue>>`: the crate validates and
+/// captures each line's exact JSON text (a syntax-checking capture, not a full
+/// parse into a value tree — see [`RawValue`]) and produces its own typed,
+/// line/column/byte-offset-bearing decode diagnostic on a malformed line (see
+/// [`invalid_json_line_err`]); `__anext__`'s `convert` step below hands that
+/// captured text to Python's own `json.loads` for the actual object
+/// construction — the same "lean on stdlib `json`, no `serde_json::Value` ->
+/// Python-object bridge" choice `run_json`/`arun_json` made (`cli.rs::parse_json`),
+/// and additionally one that can't silently reorder a decoded object's keys the
+/// way a bare `serde_json::Value` round-trip would without also pulling in
+/// `serde_json`'s `preserve_order` feature.
+#[pyclass(name = "JsonLines", module = "processkit")]
+pub(crate) struct PyJsonLines {
+    inner: Arc<Mutex<PkJsonLines<Box<RawValue>>>>,
+    program: String,
+    line_count: Arc<AtomicUsize>,
+    // The idle-timeout watchdog, if the originating command set `idle_timeout`.
+    idle: Option<IdleGuard>,
+}
+
+#[pymethods]
+impl PyJsonLines {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = self.inner.clone();
+        let idle = self.idle.clone();
+        let program = self.program.clone();
+        let line_count = self.line_count.clone();
+        // `drive_async_py_convert`, not `drive_async_py`: the success value needs
+        // a Python API (`json.loads`) to become the object Python actually sees,
+        // so that step is deferred to the event-loop-thread `convert` closure
+        // below rather than attempted from inside this tokio-driven future.
+        drive_async_py_convert(
+            py,
+            async move {
+                let mut guard = stream.lock().await;
+                let item = match idle {
+                    // Same bounded-wait-then-kill shape as `PyStdoutLines`: a lapse
+                    // between JSON lines is exactly as much "the child went
+                    // silent" as a lapse between raw lines.
+                    Some(guard_idle) => {
+                        match tokio::time::timeout(guard_idle.window, guard.next()).await {
+                            Ok(item) => item,
+                            Err(_elapsed) => {
+                                guard_idle.kill();
+                                return Err(idle_timeout_err(guard_idle.window.as_secs_f64()));
+                            }
+                        }
+                    }
+                    None => guard.next().await,
+                };
+                match item {
+                    // The stream continues after a malformed line (the crate's
+                    // `JsonLines` contract) — this is a per-item error, never one
+                    // that ends the iterator.
+                    Some(Ok(raw)) => {
+                        let line_number = line_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        Ok((raw, line_number))
+                    }
+                    Some(Err(error)) => {
+                        line_count.fetch_add(1, Ordering::Relaxed);
+                        Err(invalid_json_line_err(&error))
+                    }
+                    None => Err(PyStopAsyncIteration::new_err(())),
+                }
+            },
+            move |py, (raw, line_number): (Box<RawValue>, usize)| match py
+                .import("json")
+                .and_then(|json| json.call_method1("loads", (raw.get(),)))
+            {
+                Ok(value) => Ok(value.unbind()),
+                Err(parse_error) => Err(invalid_json_stream_err(
+                    py,
+                    &program,
+                    line_number,
+                    raw.get(),
+                    &parse_error,
+                )),
+            },
+        )
     }
 }
 
@@ -648,6 +746,9 @@ pub(crate) struct PyRunningProcess {
     // channel that could race a consuming verb. Every access still funnels
     // through `lock()`, so the `Arc` is transparent to the methods below.
     pub(crate) inner: SharedProcess,
+    // Retained by the binding because the crate's live handle keeps this
+    // attribution internal, while Python-side streamed JSON conversion can fail.
+    program: String,
     // The binding-only idle (inactivity) timeout carried from the `Command` this
     // handle was started from (`None` if unset). Applied to every stream the
     // streaming verbs hand out (see `idle_guard`).
@@ -665,9 +766,14 @@ impl PyRunningProcess {
     /// output streams enforce it. The single
     /// constructor every `start()`/`astart()` site (on `Command`, `Runner`/the
     /// doubles, and `ProcessGroup`) funnels through.
-    pub(crate) fn started(running: PkRunningProcess, idle_timeout: Option<Duration>) -> Self {
+    pub(crate) fn started(
+        running: PkRunningProcess,
+        idle_timeout: Option<Duration>,
+        program: String,
+    ) -> Self {
         Self {
             inner: Arc::new(StdMutex::new(Some(running))),
+            program,
             idle_timeout,
             finish: Arc::new(StdMutex::new(JointFinish::NotStarted)),
         }
@@ -998,6 +1104,46 @@ impl PyRunningProcess {
         let lines = running.stdout_lines().map_err(map_err)?;
         Ok(PyStdoutLines {
             inner: Arc::new(Mutex::new(lines)),
+            idle,
+        })
+    }
+
+    /// An async iterator over stdout, one deserialized JSON value per line:
+    /// `async for obj in proc.stdout_json_lines(): ...`. Strict NDJSON framing —
+    /// every line, including a blank one, must independently parse as JSON. A
+    /// malformed line raises `InvalidJson` (carrying the line number and a
+    /// bounded fragment of that line in its message, plus `.program` — but,
+    /// unlike `run_json()`/`arun_json()`, **no** `.stdout`: a streamed run
+    /// never buffers the whole payload the way those do) and the stream
+    /// continues with the next line, exactly like every other malformed-item
+    /// case in this library. The message also carries a real column/byte
+    /// offset for a genuine JSON syntax error (whether the crate itself
+    /// caught it or Python's own `json.loads()` did — see
+    /// [`invalid_json_line_err`]/[`invalid_json_stream_err`]); the rare
+    /// non-syntax decode failure that carries no parser position (e.g. an
+    /// integer literal past Python's `sys.set_int_max_str_digits()` limit)
+    /// says so instead of inventing one.
+    ///
+    /// Same one-shot-stdout, same-idle-timeout, and same consuming/streaming-
+    /// conflict rules as `stdout_lines()` (they share one crate-level stdout
+    /// pump) — call this **once**, and never after another consumer already
+    /// took stdout.
+    fn stdout_json_lines(&self) -> PyResult<PyJsonLines> {
+        // Setting up the stream spawns a pump task, so it must run inside the
+        // tokio runtime context, exactly like `stdout_lines()` above.
+        let idle = self.idle_guard();
+        let _guard = runtime()?.enter();
+        let mut inner = self.lock();
+        let running = inner
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+        let lines = running
+            .stdout_json_lines::<Box<RawValue>>()
+            .map_err(map_err)?;
+        Ok(PyJsonLines {
+            inner: Arc::new(Mutex::new(lines)),
+            program: self.program.clone(),
+            line_count: Arc::new(AtomicUsize::new(0)),
             idle,
         })
     }
@@ -1352,12 +1498,13 @@ impl Drop for PyRunningProcess {
 }
 
 /// Register this module's pyclasses (`RunningProcess`, `ProcessStdin`,
-/// `StdoutLines`, `StderrLines`, `OutputEvents`, `LifecycleEvents`) on
-/// `_processkit`.
+/// `StdoutLines`, `JsonLines`, `StderrLines`, `OutputEvents`, `LifecycleEvents`)
+/// on `_processkit`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunningProcess>()?;
     m.add_class::<PyProcessStdin>()?;
     m.add_class::<PyStdoutLines>()?;
+    m.add_class::<PyJsonLines>()?;
     m.add_class::<PyStderrLines>()?;
     m.add_class::<PyOutputEvents>()?;
     m.add_class::<PyLifecycleEvents>()?;

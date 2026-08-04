@@ -62,6 +62,11 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 #     `stats` (`ProcessGroupStats`, `RunningProcess.cpu_time`/`peak_memory_bytes`,
 #     `profile()` / `RunProfile`).
 #   - record — the `RecordReplayRunner` cassette double (pulls serde/serde_json).
+#   - json — `RunningProcess::stdout_json_lines`/`JsonLines<T>` (T-216): typed
+#     NDJSON streaming with line/column/byte-offset decode diagnostics. Pulls
+#     `serde`/`serde_json` too, but `record` above already pulls the identical
+#     pair — this adds no new external dependency, only unlocks the crate's own
+#     `#[cfg(feature = "json")]` surface.
 #   - tracing — lets the crate emit a per-run tracing event, which the opt-in
 #     `enable_logging()` bridges to Python's `logging` (see src/logging.rs).
 # Deliberately NOT enabled: `mock` — a Rust-only `mockall` `MockRunner` for Rust
@@ -74,6 +79,7 @@ processkit = { version = "3", default-features = false, features = [
   "limits",
   "pty",
   "record",
+  "json",
   "tracing",
 ] }
 # `rt-multi-thread` for the managed runtime; `time`/`sync` are used directly by
@@ -89,6 +95,18 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "fs"] }
 # default features stay off to keep wheels lean.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+# Backs `RunningProcess.stdout_json_lines()` (T-216): the crate's typed NDJSON
+# decode (`processkit`'s own `json` feature above) hands back a
+# `serde_json::value::RawValue` per line — the exact original JSON text, not a
+# parsed tree — so this binding can feed it straight to Python's own `json.loads`
+# for the actual object construction, matching `run_json`/`arun_json`'s decision
+# (see `cli.rs::parse_json`) to lean on stdlib `json` rather than write a
+# `serde_json::Value` -> Python-object bridge here (which would also need
+# `preserve_order` to keep dict key order, another feature this avoids).
+# `raw_value` is the only extra feature needed; already in the tree transitively
+# (via `processkit`'s `record`/`json` features), declared directly because this
+# crate names `serde_json::value::RawValue` itself.
+serde_json = { version = "1", features = ["raw_value"] }
 
 # Unix only: `convert.rs::parse_signal` validates a raw signal number against the
 # platform's deliverable range (`1..=SIGRTMAX` on Linux/Android via the runtime

@@ -13,6 +13,7 @@ the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
 - [Streaming stdout or stderr](#streaming-stdout-or-stderr)
+- [Streaming NDJSON output](#streaming-ndjson-output)
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
@@ -131,6 +132,55 @@ current core adapter starts from the merged stream, stdout must remain piped.
 
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*
+
+## Streaming NDJSON output
+
+Some tools (agent/LLM CLIs, build tools with a `--json` streaming mode) emit one
+JSON object per line as they run. `stdout_json_lines()` is `stdout_lines()`'s
+typed twin: same synchronous setup call, same one-shot-stdout and
+consuming/streaming-conflict rules, but each item is already the decoded
+object instead of a raw `str`:
+
+```python
+from processkit import Command, InvalidJson
+
+proc = await Command("agent-tool", ["--emit", "ndjson"]).astart()
+
+async for event in proc.stdout_json_lines():
+    print(event["type"], event.get("message"))
+
+finished = await proc.afinish()
+```
+
+No manual `json.loads()` loop, and a malformed line raises `InvalidJson`
+instead of a bare `json.JSONDecodeError` — the stream continues with the next
+line rather than ending, matching every other malformed-item case in this
+library:
+
+```python
+stream = proc.stdout_json_lines()
+while True:
+    try:
+        event = await anext(stream)
+    except StopAsyncIteration:
+        break
+    except InvalidJson as exc:
+        # str(exc) already reports the NDJSON line number and a bounded
+        # fragment of that line — no need to reconstruct it yourself. For a
+        # genuine JSON syntax error it also reports the real column/byte
+        # offset; for the rare non-syntax decode failure (e.g. a bare integer
+        # literal past Python's `sys.set_int_max_str_digits()` limit, which
+        # has no parser position at all) it says so honestly instead of
+        # inventing one.
+        log.warning("skipping malformed line from %s: %s", exc.program, exc)
+    else:
+        handle(event)
+```
+
+`InvalidJson.stdout` is `None` here (unlike `Command.run_json()` /
+`arun_json()`'s bounded whole-payload fragment): a streamed run never buffers
+the whole payload before parsing, so there is nothing to attach under that
+name — the per-line diagnostic already lives in `str(exc)`.
 
 ## Tee output to a file
 

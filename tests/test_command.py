@@ -96,6 +96,9 @@ def test_command_run_json_invalid_raises_typed_error() -> None:
         Command(PY, ["-c", "print('not-json')"]).run_json()
 
     assert excinfo.value.program == PY
+    # `run_json()` always attaches `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`).
+    assert excinfo.value.stdout is not None
     assert "not-json" in excinfo.value.stdout
     assert not isinstance(excinfo.value, json.JSONDecodeError)
 
@@ -1121,6 +1124,7 @@ def test_builder_knobs_chain_builds() -> None:
         .groups([0])
         .setsid()
         .umask(0o022)
+        .rlimit("no_file", 100, 200)
         .priority("normal")
     )
     assert isinstance(cmd, Command)
@@ -1220,6 +1224,74 @@ def test_umask_unsupported_on_windows() -> None:
     # Never silently skipped: on Windows the run raises `Unsupported`.
     with pytest.raises(Unsupported) as excinfo:
         Command(PY, ["-c", "print('x')"]).umask(0o022).run()
+    assert excinfo.value.operation
+
+
+def test_rlimit_rejects_unknown_resource_name() -> None:
+    with pytest.raises(ValueError, match="rlimit"):
+        Command(PY, ["-c", "print(1)"]).rlimit("bogus", 1, 1)  # type: ignore[arg-type]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="rlimit is a POSIX per-process setrlimit(2) limit"
+)
+def test_rlimit_actually_applies_to_child_and_accumulates_across_resources() -> None:
+    # Different resources accumulate: both a `no_file` and a `cpu` limit
+    # configured on the same command must both reach the child.
+    resource = pytest.importorskip("resource")
+    _, hard_nofile = resource.getrlimit(resource.RLIMIT_NOFILE)
+    nofile = 256 if hard_nofile == resource.RLIM_INFINITY else min(256, hard_nofile)
+    _, hard_cpu = resource.getrlimit(resource.RLIMIT_CPU)
+    cpu = 30 if hard_cpu == resource.RLIM_INFINITY else min(30, hard_cpu)
+    code = (
+        "import json, resource; "
+        "print(json.dumps([list(resource.getrlimit(resource.RLIMIT_NOFILE)), "
+        "list(resource.getrlimit(resource.RLIMIT_CPU))]))"
+    )
+    out = Command(PY, ["-c", code]).rlimit("no_file", nofile, nofile).rlimit("cpu", cpu, cpu).run()
+    nofile_seen, cpu_seen = json.loads(out)
+    assert tuple(nofile_seen) == (nofile, nofile)
+    assert tuple(cpu_seen) == (cpu, cpu)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="rlimit is a POSIX per-process setrlimit(2) limit"
+)
+def test_rlimit_same_resource_repeated_call_is_last_write_wins() -> None:
+    resource = pytest.importorskip("resource")
+    _, hard_nofile = resource.getrlimit(resource.RLIMIT_NOFILE)
+    first = 200 if hard_nofile == resource.RLIM_INFINITY else min(200, hard_nofile)
+    second = 100 if hard_nofile == resource.RLIM_INFINITY else min(100, hard_nofile)
+    code = (
+        "import json, resource; print(json.dumps(list(resource.getrlimit(resource.RLIMIT_NOFILE))))"
+    )
+    out = (
+        Command(PY, ["-c", code])
+        .rlimit("no_file", first, first)
+        .rlimit("no_file", second, second)
+        .run()
+    )
+    assert tuple(json.loads(out)) == (second, second), (
+        "repeating rlimit() for the same resource should be last-write-wins"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="soft>hard validation happens on the POSIX spawn path"
+)
+def test_rlimit_rejects_soft_greater_than_hard_before_spawn() -> None:
+    # A predictable error before the child is ever spawned, not a panic and
+    # not a silent correction to a valid pair.
+    with pytest.raises(ProcessError, match="exceeds hard value"):
+        Command(PY, ["-c", "print('never')"]).rlimit("no_file", 100, 50).run()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="rlimit is POSIX-only")
+def test_rlimit_unsupported_on_windows() -> None:
+    # Never silently skipped: on Windows the run raises `Unsupported`, even for
+    # an otherwise-valid soft<=hard pair.
+    with pytest.raises(Unsupported) as excinfo:
+        Command(PY, ["-c", "print('x')"]).rlimit("no_file", 100, 100).run()
     assert excinfo.value.operation
 
 

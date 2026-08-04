@@ -483,7 +483,11 @@ gh = CliClient("gh")
 try:
     pr = gh.run_json(["pr", "view", "42", "--json", "title,state"])
 except InvalidJson as exc:
-    raise SystemExit(f"{exc.program} did not return JSON: {exc.stdout[:80]!r}")
+    # `run_json()`/`arun_json()` always attach `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`) — narrow the
+    # type before slicing it.
+    stdout = exc.stdout or ""
+    raise SystemExit(f"{exc.program} did not return JSON: {stdout[:80]!r}")
 print(pr["title"], pr["state"])                  # or: await gh.arun_json([...])
 ```
 
@@ -495,6 +499,29 @@ carrying the `program` and a bounded stdout fragment, never a bare
 For testable code, pass `runner=` (a `ScriptedRunner` and friends from
 `processkit.testing`) to drive every verb through a double instead of the real
 runner — see [Testing your code](testing.md#wrapping-a-cli-tool-cliclient).
+
+## Stream NDJSON output line by line
+
+An agent/LLM tool or a build tool with a streaming `--json` mode that emits one
+object per line — `stdout_json_lines()` is `stdout_lines()`'s typed twin: same
+one-shot setup call, but each item is already the decoded object, no manual
+`json.loads()` loop:
+
+```python
+from processkit import Command, InvalidJson
+
+proc = await Command("agent-tool", ["--emit", "ndjson"]).astart()
+async for event in proc.stdout_json_lines():
+    print(event["type"])
+finished = await proc.afinish()
+```
+
+A malformed line raises `InvalidJson` (its message already reports the NDJSON
+line number and a bounded fragment of that line, plus the real column/byte
+offset for a genuine JSON syntax error — see
+[Streaming NDJSON output](streaming.md#streaming-ndjson-output) for the rare
+non-syntax case that has no parser position to report) and the stream
+continues with the next line rather than ending.
 
 ## Check a tool is installed before running it
 
@@ -1641,6 +1668,42 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
+## Per-process resource limits
+
+`rlimit(resource, soft, hard)` sets a POSIX `setrlimit(2)` limit for the
+child, installed after `fork` and before `exec` — before it has run any of
+its own code:
+
+```python
+# Cap the child's open-file-descriptor count and CPU time, and disable core
+# dumps for a process that may handle secrets.
+(
+    Command("worker")
+    .rlimit("no_file", 256, 256)
+    .rlimit("cpu", 30, 30)
+    .rlimit("core", 0, 0)
+    .run()
+)
+```
+
+`resource` is one of the `RlimitResourceName` presets: `"cpu"` (seconds),
+`"core"` (bytes), `"data"` (bytes), `"file_size"` (bytes), `"no_file"` (a
+count), `"stack"` (bytes) — an unknown name raises `ValueError` immediately.
+`soft`/`hard` use each resource's native unit; `soft` must not exceed `hard`
+— an invalid pair is a predictable error before the child is ever spawned,
+never a silent correction. Calls for different resources accumulate; a
+repeated call for the same resource is last-write-wins. Descendants inherit
+the values but may lower them further (and raise a lowered soft value back up
+to `hard`).
+
+`rlimit` is **POSIX-only**: on Windows the run raises `Unsupported`, the same
+platform-honest contract as `uid` / `gid` / `groups` / `setsid` above. It
+complements the whole-tree caps on `ProcessGroup` — `max_memory=...` /
+`max_processes=...` / `cpu_quota=...`, see
+[Sandboxing untrusted tools](sandboxing.md) — with a finer, per-command knob
+that also works where a cgroup limit isn't available: a non-root cgroup, or
+macOS/BSD, which have no cgroup equivalent at all.
+
 ## CPU affinity
 
 `cpu_affinity(cpus)` pins the child to logical CPU indices; descendants inherit
@@ -2175,9 +2238,8 @@ secrets, and redaction is a policy the consumer must own.
 
 ## Resource limits: the sandbox
 
-The three limit keywords turn the group into a sandbox. They are a property of
-the group, set once at construction and enforced by the same kernel object that
-contains the tree:
+The three limit keywords turn the group into a sandbox. They are enforced by
+the same kernel object that contains the tree:
 
 ```python
 from processkit import Command, ProcessGroup
@@ -2190,12 +2252,45 @@ with ProcessGroup(
     group.start(Command("untrusted-tool"))
 ```
 
+`update_limits(*, max_memory=None, max_processes=None, cpu_quota=None)` changes
+those caps without recreating the group or restarting its children. It is a
+**full replacement**, not a merge: every call describes all three axes, and an
+omitted axis becomes unbounded. Reissuing the complete desired set is therefore
+idempotent when the previous update was attempted. `update_limits()` can return
+`ProcessError("busy")` while another operation on the same group is in flight
+(including an incomplete `await group.arun(...)`). Wait for that operation to
+complete, then retry the complete desired set:
+
+```python
+with ProcessGroup(max_memory=512 * 1024 * 1024) as group:
+    group.start(Command("worker"))
+    group.update_limits(
+        max_memory=1024 * 1024 * 1024,
+        max_processes=64,
+        cpu_quota=1.0,
+    )
+    group.update_limits(max_processes=32)  # memory and CPU are lifted
+```
+
+The method is synchronous; the core update does no asynchronous work. Invalid
+values and platform failures use the same typed `ResourceLimit` path as the
+constructor: the message distinguishes an invalid value, a mechanism without
+whole-tree accounting, and a capable mechanism that could not enforce the
+request.
+
+Applying several OS caps is not atomic. A failure does **not** roll back writes
+that already succeeded, so the live container may hold a mix of old and new
+caps; retry the complete desired set or tear the group down. Every axis named by
+an update that reached the OS is nevertheless added to the sticky cap record,
+whether the call succeeds or fails. That record remains conservative and never
+supports a fabricated "not tripped" verdict for a possibly-applied cap.
+
 `cpu_quota` is a fraction of a **single** core. On Windows it is converted
 against the host CPU count and is approximate (a CPU-*rate* cap, not a hard
 quota); on the Linux cgroup it is exact.
 
 Limits need a **real container** — a Windows Job Object or a Linux **cgroup-v2
-root**. If a requested cap can't be enforced, the constructor raises
+root**. If a requested cap can't be enforced, construction or `update_limits()` raises
 `ResourceLimit` rather than handing you a silently-unbounded group:
 
 ```python
@@ -2436,6 +2531,16 @@ isn't available, the constructor raises `ResourceLimit` rather than handing
 back a silently-unbounded group. Full treatment, including the platform
 matrix: [Resource limits: the sandbox](process-groups.md#resource-limits-the-sandbox).
 
+For a long-lived sandbox, `group.update_limits(max_memory=...,
+max_processes=..., cpu_quota=...)` replaces the caps on the live kernel
+container without restarting its children. The call is a **full replacement**:
+an omitted axis is lifted, not retained. A failed multi-axis update is not
+rolled back and may have applied some axes, so retry the complete desired set;
+the crate's sticky cap record includes every requested capped axis even on that
+failure path. If another operation on the group is in flight,
+`update_limits()` raises `ProcessError("busy")`; wait for that operation to
+complete, then retry the complete desired set.
+
 ### 4. A timeout
 
 Untrusted code should never run unbounded. `.timeout(seconds)` kills the
@@ -2529,6 +2634,7 @@ the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
 - [Streaming stdout or stderr](#streaming-stdout-or-stderr)
+- [Streaming NDJSON output](#streaming-ndjson-output)
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
@@ -2647,6 +2753,55 @@ current core adapter starts from the merged stream, stdout must remain piped.
 
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*
+
+## Streaming NDJSON output
+
+Some tools (agent/LLM CLIs, build tools with a `--json` streaming mode) emit one
+JSON object per line as they run. `stdout_json_lines()` is `stdout_lines()`'s
+typed twin: same synchronous setup call, same one-shot-stdout and
+consuming/streaming-conflict rules, but each item is already the decoded
+object instead of a raw `str`:
+
+```python
+from processkit import Command, InvalidJson
+
+proc = await Command("agent-tool", ["--emit", "ndjson"]).astart()
+
+async for event in proc.stdout_json_lines():
+    print(event["type"], event.get("message"))
+
+finished = await proc.afinish()
+```
+
+No manual `json.loads()` loop, and a malformed line raises `InvalidJson`
+instead of a bare `json.JSONDecodeError` — the stream continues with the next
+line rather than ending, matching every other malformed-item case in this
+library:
+
+```python
+stream = proc.stdout_json_lines()
+while True:
+    try:
+        event = await anext(stream)
+    except StopAsyncIteration:
+        break
+    except InvalidJson as exc:
+        # str(exc) already reports the NDJSON line number and a bounded
+        # fragment of that line — no need to reconstruct it yourself. For a
+        # genuine JSON syntax error it also reports the real column/byte
+        # offset; for the rare non-syntax decode failure (e.g. a bare integer
+        # literal past Python's `sys.set_int_max_str_digits()` limit, which
+        # has no parser position at all) it says so honestly instead of
+        # inventing one.
+        log.warning("skipping malformed line from %s: %s", exc.program, exc)
+    else:
+        handle(event)
+```
+
+`InvalidJson.stdout` is `None` here (unlike `Command.run_json()` /
+`arun_json()`'s bounded whole-payload fragment): a streamed run never buffers
+the whole payload before parsing, so there is nothing to attach under that
+name — the per-line diagnostic already lives in `str(exc)`.
 
 ## Tee output to a file
 
@@ -4634,6 +4789,10 @@ try:
     gh.run_json(["pr", "view"])
 except InvalidJson as exc:
     assert exc.program == "gh"
+    # `run_json()`/`arun_json()` always attach `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`) — narrow the
+    # type before indexing/membership-testing it.
+    assert exc.stdout is not None
     assert "not json at all" in exc.stdout
 ```
 
@@ -7546,6 +7705,28 @@ def setsid() -> Command
 def umask(mask: int) -> Command
 ```
 
+#### `rlimit`
+
+```text
+def rlimit(resource: RlimitResourceName, soft: int, hard: int) -> Command
+```
+
+Set a POSIX per-process ``setrlimit(2)`` resource limit for the child,
+installed after ``fork`` and before ``exec``.
+
+``resource`` is one of ``RlimitResourceName``: ``"cpu"``, ``"core"``,
+``"data"``, ``"file_size"``, ``"no_file"``, ``"stack"`` — an unknown
+name raises ``ValueError`` immediately. ``soft``/``hard`` use the
+resource's native unit (bytes for size limits, seconds for CPU, a
+count for open files); ``soft`` must not exceed ``hard`` — an invalid
+pair raises a predictable error before spawning, never a silent
+correction. Calls for different resources accumulate; repeating the
+same resource is last-write-wins. Complements the group-wide
+``ProcessGroup(max_memory=...)`` cap with a finer per-command knob
+that also works where cgroup limits are unavailable (non-root
+cgroup, macOS/BSD). Raises ``Unsupported`` off-POSIX, like
+``uid``/``gid``/``groups``/``setsid``/``umask``.
+
 #### `priority`
 
 ```text
@@ -8064,6 +8245,27 @@ owns_group: bool | None
 ```text
 def stdout_lines() -> StdoutLines
 ```
+
+#### `stdout_json_lines`
+
+```text
+def stdout_json_lines() -> JsonLines
+```
+
+Stream stdout as one decoded JSON value per line (strict NDJSON).
+
+A malformed line raises `InvalidJson` — carrying the line number and a
+bounded fragment of that line in its message, plus ``program``, but
+(unlike ``run_json()`` / ``arun_json()``) **no** ``stdout`` (a
+streamed run never buffers the whole payload) — and the stream
+continues with the next line. The message also carries a real
+column/byte offset for a genuine JSON syntax error (whether caught by
+the crate itself or by Python's own `json.loads()`); the rare
+non-syntax decode failure (e.g. a bare integer literal past Python's
+`sys.set_int_max_str_digits()` limit) has no parser position to
+report and says so instead of inventing one. Same one-shot-stdout and
+consuming/streaming-conflict rules as ``stdout_lines()``: call once,
+and never after another consumer already took stdout.
 
 #### `stderr_lines`
 
@@ -8661,6 +8863,17 @@ class StdoutLines
 
 Async iterator over a process's stdout, line by line.
 
+### `JsonLines`
+
+```text
+class JsonLines
+```
+
+Async iterator over a process's stdout, one decoded JSON value per line
+(strict NDJSON: every line, including a blank one, must independently
+parse). A malformed line raises `InvalidJson` and the stream continues with
+the next line — see `RunningProcess.stdout_json_lines()`.
+
 ### `StderrLines`
 
 ```text
@@ -8902,6 +9115,25 @@ def kill_all() -> None
 ```text
 def stats() -> ProcessGroupStats
 ```
+
+#### `update_limits`
+
+```text
+def update_limits(
+    *,
+    max_memory: int | None = ...,
+    max_processes: int | None = ...,
+    cpu_quota: float | None = ...,
+) -> None
+```
+
+Replace the live group's complete resource-limit set.
+
+Omitted axes become unbounded; this is not a partial merge. The method
+is synchronous because the core operation does no asynchronous work.
+It raises ``ProcessError`` with ``"busy"`` if another operation on this
+group is in flight; after that operation completes, retry the complete
+desired set.
 
 #### `stop`
 
@@ -10311,15 +10543,24 @@ program: str
 class InvalidJson
 ```
 
-A `Command` or `CliClient` JSON verb ran the command successfully (a
-zero exit, like `run`) but its stdout did not parse as JSON.
+A JSON verb ran the command successfully (a zero exit, like `run`) but
+its output did not parse as JSON: a `Command`/`CliClient` `run_json()` /
+`arun_json()` whose whole stdout failed to parse, or a
+`RunningProcess.stdout_json_lines()` whose current NDJSON line did
+(the stream continues with the next line rather than ending).
 
 A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
-so the failure is attributed (which program, and what the parser reported in
-`str(exc)`) and a single `except ProcessError` still catches it. A deliberate
-*sibling* of `NonZeroExit`, not a subclass: the run itself succeeded — only
-its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
-failure without also catching a genuine non-zero exit.
+so the failure is attributed and a single `except ProcessError` still
+catches it. `str(exc)` carries the parser's own diagnostic — for the
+streaming case, the NDJSON line number and a bounded fragment of that
+line, plus the real column/byte offset for a genuine JSON syntax error
+(whether the crate itself caught it or Python's own `json.loads()` did);
+the rare non-syntax decode failure that has no parser position (e.g. an
+integer literal past Python's `sys.set_int_max_str_digits()` limit) says
+so instead of inventing one. A deliberate *sibling* of `NonZeroExit`, not
+a subclass: the run itself succeeded — only its output *shape* is wrong —
+so `except InvalidJson` isolates a bad-payload failure without also
+catching a genuine non-zero exit.
 
 #### `program`
 
@@ -10330,7 +10571,7 @@ program: str
 #### `stdout`
 
 ```text
-stdout: str
+stdout: str | None
 ```
 
 ## Type aliases
@@ -10371,6 +10612,12 @@ ReadableBuffer = bytes | bytearray | memoryview
 
 ```text
 RetryIf = Literal['transient', 'transient_or_timeout']
+```
+
+### `RlimitResourceName`
+
+```text
+RlimitResourceName = Literal['cpu', 'core', 'data', 'file_size', 'no_file', 'stack']
 ```
 
 ### `SignalName`

@@ -243,6 +243,77 @@ def test_resource_limited_group_runs() -> None:
         pytest.skip("resource limits not enforceable in this environment")
 
 
+def test_update_limits_replaces_each_axis_on_live_group() -> None:
+    with ProcessGroup() as group:
+        running = group.start(Command(PY, ["-c", "import time; time.sleep(60)"]))
+        assert running.pid is not None
+        try:
+            group.update_limits(max_memory=1024 * 1024 * 1024)
+            group.update_limits(max_memory=512 * 1024 * 1024)
+            group.update_limits(max_memory=1024 * 1024 * 1024)
+            group.update_limits(max_processes=128)
+            group.update_limits(max_processes=64)
+            group.update_limits(max_processes=128)
+            group.update_limits(cpu_quota=1.0)
+            group.update_limits(cpu_quota=0.5)
+            group.update_limits(cpu_quota=1.0)
+            group.update_limits()  # full replacement with no axes lifts every cap
+        except (Unsupported, ResourceLimit):
+            pytest.skip("live resource-limit updates not enforceable in this environment")
+
+
+def test_update_limits_invalid_values_are_resource_limits() -> None:
+    with ProcessGroup() as group:
+        with pytest.raises(ResourceLimit, match="is invalid"):
+            group.update_limits(max_memory=0)
+        with pytest.raises(ResourceLimit, match="is invalid"):
+            group.update_limits(max_processes=0)
+        with pytest.raises(ResourceLimit, match="is invalid"):
+            group.update_limits(cpu_quota=0.0)
+
+
+def test_update_limits_unsupported_without_whole_tree_accounting() -> None:
+    with ProcessGroup() as group:
+        if group.mechanism != "process_group":
+            pytest.skip("active mechanism has whole-tree accounting")
+        with pytest.raises(ResourceLimit, match="not supported on this platform"):
+            group.update_limits(max_memory=512 * 1024 * 1024)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="cgroup-v2 delegation is Linux-specific")
+def test_update_limits_unenforceable_outside_real_cgroup_root() -> None:
+    with ProcessGroup() as group:
+        if group.mechanism != "cgroup_v2":
+            pytest.skip("cgroup v2 is unavailable")
+        try:
+            group.update_limits(max_memory=512 * 1024 * 1024)
+        except ResourceLimit as exc:
+            assert "could not be enforced" in str(exc)
+        else:
+            pytest.skip("running at a delegated real cgroup-v2 root")
+
+
+def test_update_limits_after_close_raises() -> None:
+    group = ProcessGroup()
+    group.shutdown()
+    with pytest.raises(ProcessError, match="already closed"):
+        group.update_limits(max_processes=64)
+
+
+def test_update_limits_while_arun_is_in_flight_raises_busy() -> None:
+    async def scenario() -> None:
+        async with ProcessGroup() as group:
+            task = asyncio.ensure_future(
+                group.arun(Command(PY, ["-c", "import time; time.sleep(0.1)"]))
+            )
+            await asyncio.sleep(0)
+            with pytest.raises(ProcessError, match="busy"):
+                group.update_limits()
+            await task
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.skipif(
     sys.platform != "win32", reason="Job Object active-process limit is Windows-specific"
 )

@@ -367,8 +367,9 @@ fn runner_start<R: ProcessRunner + Sync + ?Sized>(
     // needed. Carry the command's binding-only idle-timeout onto the handle so
     // its `stdout_lines()`/`output_events()` streams enforce it.
     let idle = command.idle_timeout;
+    let program = command.inner.program().to_string_lossy().into_owned();
     with_when_capture_sync(py, runner.start(&command.inner))
-        .map(|r| PyRunningProcess::started(r, idle))
+        .map(|r| PyRunningProcess::started(r, idle, program))
 }
 
 // Async run verbs over an owned `Arc<R>` so the future can hold the runner with
@@ -430,11 +431,12 @@ fn runner_astart<'py, R: ProcessRunner + Send + Sync + 'static>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let cmd = command.inner.clone();
     let idle = command.idle_timeout;
+    let program = cmd.program().to_string_lossy().into_owned();
     with_when_capture_async(py, async move {
         runner
             .start(&cmd)
             .await
-            .map(|r| PyRunningProcess::started(r, idle))
+            .map(|r| PyRunningProcess::started(r, idle, program))
     })
 }
 

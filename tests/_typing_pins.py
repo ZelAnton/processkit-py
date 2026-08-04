@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         Finished,
         InvalidJson,
         IoPriorityClass,
+        JsonLines,
         LifecycleEvent,
         LifecycleEvents,
         NonZeroExit,
@@ -205,6 +206,7 @@ if TYPE_CHECKING:
     def _streaming_awaitable_return_types(
         stdin: ProcessStdin,
         lines: StdoutLines,
+        json_lines: JsonLines,
         events: OutputEvents,
         lifecycle: LifecycleEvents,
     ) -> None:
@@ -214,6 +216,7 @@ if TYPE_CHECKING:
         assert_type(stdin.flush(), Awaitable[None])
         assert_type(stdin.close(), Awaitable[None])
         assert_type(lines.__anext__(), Awaitable[str])
+        assert_type(json_lines.__anext__(), Awaitable[Any])
         assert_type(events.__anext__(), Awaitable[OutputEvent])
         assert_type(lifecycle.__anext__(), Awaitable[LifecycleEvent])
 
@@ -319,6 +322,7 @@ if TYPE_CHECKING:
         assert_type(proc.finish(), Finished)
         assert_type(proc.output(), ProcessResult)
         assert_type(proc.resize_pty(120, 40), None)
+        assert_type(proc.stdout_json_lines(), JsonLines)
         assert_type(proc.lifecycle_events(), LifecycleEvents)
 
     def _detached_child_property_types(child: DetachedChild) -> None:
@@ -389,4 +393,4 @@ if TYPE_CHECKING:
         assert_type(otl.total_bytes, int)
         assert_type(un.operation, str)
         assert_type(ij.program, str)
-        assert_type(ij.stdout, str)
+        assert_type(ij.stdout, str | None)

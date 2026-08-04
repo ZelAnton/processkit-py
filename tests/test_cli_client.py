@@ -588,6 +588,9 @@ def test_cli_client_run_json_invalid_raises_typed_error_not_jsondecodeerror() ->
     assert isinstance(exc, ProcessError)
     assert not isinstance(exc, json.JSONDecodeError)
     assert "python" in exc.program.lower() or exc.program == PY
+    # `run_json()` always attaches `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`).
+    assert exc.stdout is not None
     assert "this is not json" in exc.stdout
     # The parser's own message is attributed in str(exc) (not the raw payload).
     assert "not valid JSON" in str(exc)
@@ -635,6 +638,9 @@ def test_cli_client_run_json_scripted_invalid_json_carries_attributes() -> None:
         gh.run_json(["api", "/rate_limit"])
     exc = excinfo.value
     assert exc.program == "gh"
+    # `run_json()` always attaches `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`).
+    assert exc.stdout is not None
     assert "rate limited" in exc.stdout
 
 
@@ -649,5 +655,8 @@ def test_cli_client_run_json_invalid_stdout_fragment_is_bounded() -> None:
     with pytest.raises(InvalidJson) as excinfo:
         client.run_json(["dump"])
     fragment = excinfo.value.stdout
+    # `run_json()` always attaches `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`).
+    assert fragment is not None
     assert 0 < len(fragment) < len(big)
     assert big.startswith(fragment)  # a clean prefix, not a mangled slice

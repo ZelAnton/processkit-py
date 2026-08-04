@@ -96,6 +96,9 @@ def test_command_run_json_invalid_raises_typed_error() -> None:
         Command(PY, ["-c", "print('not-json')"]).run_json()
 
     assert excinfo.value.program == PY
+    # `run_json()` always attaches `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`).
+    assert excinfo.value.stdout is not None
     assert "not-json" in excinfo.value.stdout
     assert not isinstance(excinfo.value, json.JSONDecodeError)
 

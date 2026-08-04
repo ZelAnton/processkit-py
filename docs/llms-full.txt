@@ -483,7 +483,11 @@ gh = CliClient("gh")
 try:
     pr = gh.run_json(["pr", "view", "42", "--json", "title,state"])
 except InvalidJson as exc:
-    raise SystemExit(f"{exc.program} did not return JSON: {exc.stdout[:80]!r}")
+    # `run_json()`/`arun_json()` always attach `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`) — narrow the
+    # type before slicing it.
+    stdout = exc.stdout or ""
+    raise SystemExit(f"{exc.program} did not return JSON: {stdout[:80]!r}")
 print(pr["title"], pr["state"])                  # or: await gh.arun_json([...])
 ```
 
@@ -495,6 +499,28 @@ carrying the `program` and a bounded stdout fragment, never a bare
 For testable code, pass `runner=` (a `ScriptedRunner` and friends from
 `processkit.testing`) to drive every verb through a double instead of the real
 runner — see [Testing your code](testing.md#wrapping-a-cli-tool-cliclient).
+
+## Stream NDJSON output line by line
+
+An agent/LLM tool or a build tool with a streaming `--json` mode that emits one
+object per line — `stdout_json_lines()` is `stdout_lines()`'s typed twin: same
+one-shot setup call, but each item is already the decoded object, no manual
+`json.loads()` loop:
+
+```python
+from processkit import Command, InvalidJson
+
+proc = await Command("agent-tool", ["--emit", "ndjson"]).astart()
+async for event in proc.stdout_json_lines():
+    print(event["type"])
+finished = await proc.afinish()
+```
+
+A malformed line raises `InvalidJson` (its message already reports the NDJSON
+line/column/byte offset and a bounded fragment of that line) and the stream
+continues with the next line rather than ending — see
+[Streaming NDJSON output](streaming.md#streaming-ndjson-output) for the full
+error-handling shape.
 
 ## Check a tool is installed before running it
 
@@ -2529,6 +2555,7 @@ the tree down deterministically.
 
 - [Lifecycle](#lifecycle)
 - [Streaming stdout or stderr](#streaming-stdout-or-stderr)
+- [Streaming NDJSON output](#streaming-ndjson-output)
 - [Tee output to a file](#tee-output-to-a-file)
 - [Live per-line callbacks](#live-per-line-callbacks)
 - [Interleaved stdout and stderr](#interleaved-stdout-and-stderr)
@@ -2647,6 +2674,45 @@ current core adapter starts from the merged stream, stdout must remain piped.
 
 *Deeper: output buffering and capture limits apply to streamed runs too —
 [Running commands](commands.md).*
+
+## Streaming NDJSON output
+
+Some tools (agent/LLM CLIs, build tools with a `--json` streaming mode) emit one
+JSON object per line as they run. `stdout_json_lines()` is `stdout_lines()`'s
+typed twin: same synchronous setup call, same one-shot-stdout and
+consuming/streaming-conflict rules, but each item is already the decoded
+object instead of a raw `str`:
+
+```python
+from processkit import Command, InvalidJson
+
+proc = await Command("agent-tool", ["--emit", "ndjson"]).astart()
+
+async for event in proc.stdout_json_lines():
+    print(event["type"], event.get("message"))
+
+finished = await proc.afinish()
+```
+
+No manual `json.loads()` loop, and a malformed line raises `InvalidJson`
+instead of a bare `json.JSONDecodeError` — the stream continues with the next
+line rather than ending, matching every other malformed-item case in this
+library:
+
+```python
+async for event in proc.stdout_json_lines():
+    try:
+        handle(event)
+    except InvalidJson as exc:
+        # str(exc) already reports the NDJSON line/column/byte offset and a
+        # bounded fragment of that line — no need to reconstruct it yourself.
+        log.warning("skipping malformed line from %s: %s", exc.program, exc)
+```
+
+`InvalidJson.stdout` is `None` here (unlike `Command.run_json()` /
+`arun_json()`'s bounded whole-payload fragment): a streamed run never buffers
+the whole payload before parsing, so there is nothing to attach under that
+name — the per-line diagnostic already lives in `str(exc)`.
 
 ## Tee output to a file
 
@@ -4634,6 +4700,10 @@ try:
     gh.run_json(["pr", "view"])
 except InvalidJson as exc:
     assert exc.program == "gh"
+    # `run_json()`/`arun_json()` always attach `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`) — narrow the
+    # type before indexing/membership-testing it.
+    assert exc.stdout is not None
     assert "not json at all" in exc.stdout
 ```
 
@@ -8041,6 +8111,23 @@ owns_group: bool | None
 def stdout_lines() -> StdoutLines
 ```
 
+#### `stdout_json_lines`
+
+```text
+def stdout_json_lines() -> JsonLines
+```
+
+Stream stdout as one decoded JSON value per line (strict NDJSON).
+
+A malformed line raises `InvalidJson` — carrying the crate's own
+line/column/byte-offset diagnostic and a bounded fragment of that line
+in its message, plus ``program``, but (unlike ``run_json()`` /
+``arun_json()``) **no** ``stdout`` (a streamed run never buffers the
+whole payload) — and the stream continues with the next line. Same
+one-shot-stdout and consuming/streaming-conflict rules as
+``stdout_lines()``: call once, and never after another consumer
+already took stdout.
+
 #### `stderr_lines`
 
 ```text
@@ -8636,6 +8723,17 @@ class StdoutLines
 ```
 
 Async iterator over a process's stdout, line by line.
+
+### `JsonLines`
+
+```text
+class JsonLines
+```
+
+Async iterator over a process's stdout, one decoded JSON value per line
+(strict NDJSON: every line, including a blank one, must independently
+parse). A malformed line raises `InvalidJson` and the stream continues with
+the next line — see `RunningProcess.stdout_json_lines()`.
 
 ### `StderrLines`
 
@@ -10287,15 +10385,20 @@ program: str
 class InvalidJson
 ```
 
-A `Command` or `CliClient` JSON verb ran the command successfully (a
-zero exit, like `run`) but its stdout did not parse as JSON.
+A JSON verb ran the command successfully (a zero exit, like `run`) but
+its output did not parse as JSON: a `Command`/`CliClient` `run_json()` /
+`arun_json()` whose whole stdout failed to parse, or a
+`RunningProcess.stdout_json_lines()` whose current NDJSON line did
+(the stream continues with the next line rather than ending).
 
 A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
-so the failure is attributed (which program, and what the parser reported in
-`str(exc)`) and a single `except ProcessError` still catches it. A deliberate
-*sibling* of `NonZeroExit`, not a subclass: the run itself succeeded — only
-its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
-failure without also catching a genuine non-zero exit.
+so the failure is attributed and a single `except ProcessError` still
+catches it. `str(exc)` carries the parser's own diagnostic — for the
+streaming case, the NDJSON line/column/byte-offset location and a bounded
+fragment of that line. A deliberate *sibling* of `NonZeroExit`, not a
+subclass: the run itself succeeded — only its output *shape* is wrong — so
+`except InvalidJson` isolates a bad-payload failure without also catching a
+genuine non-zero exit.
 
 #### `program`
 
@@ -10306,7 +10409,7 @@ program: str
 #### `stdout`
 
 ```text
-stdout: str
+stdout: str | None
 ```
 
 ## Type aliases
@@ -10934,3 +11037,37 @@ When adding a new pure helper to `convert.rs`/`supervisor.rs`, prefer a Rust
 behavior that's actually observable through the compiled API (an exception's
 type/message, a builder's resulting policy) rather than the helper's internals
 directly.
+
+## ProcessKit 3.2.0 surface audit
+
+The 3.2.0 crate release adds several public Rust surfaces that are intentionally
+not swept into the Python binding as an automatic parity exercise. Each item
+needs its own contract, tests, and review before it becomes a Python API:
+
+- `SupervisionSession::events()` and `SupervisionEvent` are a plausible future
+  async iterator, but the Python representation of the event enum, including
+  the bounded-channel `Lagged` case, must be designed first.
+- `ProcessGroup::limit_evidence()` is useful post-run evidence, but its
+  `Tripped`/`NotTripped`/`Unknown` result must remain explicitly tri-state; it
+  must not be reduced to a boolean on platforms where the crate cannot prove
+  the verdict.
+- `cancel_signal` and `cancel_grace` require an explicit compatibility design
+  against the binding's current cancellation and timeout behavior. They are
+  not safe as passive builder kwargs until the soft-cancellation ordering and
+  platform defaults are documented and tested.
+- `output_json` is presently a likely duplicate of the binding's existing
+  `run_json()`/`arun_json()` contract. A future proposal should prove a user
+  visible semantic gap before adding another verb.
+- `report-serde` is an opt-in crate feature and is not needed while the Python
+  `ShutdownReport` exposes structured fields directly. Enabling it would be a
+  dependency/feature decision, not a free API-parity improvement.
+- `Mechanism::ProcessReaper` is platform-specific and the crate enum is
+  non-exhaustive. Any Python-facing representation must preserve unknown future
+  mechanisms and document the FreeBSD-only availability.
+- `wait_for_path` and the crate's HTTP probe overlap with the binding's
+  Python-side probes. The Python implementation remains canonical until a
+  measured compatibility or performance gap justifies a separate migration.
+
+This audit deliberately creates follow-up scope rather than adding public
+symbols here. A follow-up that changes `src/*.rs`, `_processkit.pyi`, or the
+top-level exports must carry its own API-surface tests and human-review gate.

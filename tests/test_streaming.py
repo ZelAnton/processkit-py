@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import gc
 import io
+import json
 import pathlib
 import socket
 import sys
@@ -21,6 +22,7 @@ from processkit import (
     Command,
     Finished,
     IdleTimeout,
+    InvalidJson,
     LifecycleEvent,
     Outcome,
     ProcessError,
@@ -44,6 +46,11 @@ from .conftest import PY, spawn_grandchild_command
 
 # Prints N lines (flushed so they stream) then exits.
 _PRINT_LINES = "[print(f'line{i}', flush=True) for i in range(5)]"
+
+# Prints N NDJSON objects (flushed so they stream) then exits.
+_PRINT_JSON_LINES = (
+    "import json\n[print(json.dumps({'i': i, 'ok': True}), flush=True) for i in range(3)]\n"
+)
 
 # A `\r`-redrawn progress bar: three frames with no `\n` until the very end —
 # `curl`/`pip`/`apt`-style. Under the default "newline" framing this is ONE
@@ -204,6 +211,149 @@ def test_stdout_lines_idle_timeout_watches_stdout_only() -> None:
         with pytest.raises(IdleTimeout, match="no watched output line"):
             async for _line in proc.stdout_lines():
                 pass
+
+    asyncio.run(scenario())
+
+
+# --- stdout_json_lines() (T-216) ----------------------------------------------
+#
+# Wraps the same one-shot stdout pump as stdout_lines() (upstream's own
+# stdout_json_lines() is built ON TOP OF stdout_lines(), not events()), so it
+# shares stdout_lines()'s consuming/streaming-conflict class, idle-timeout
+# behavior, and drain-then-finish() ordering wholesale — it does NOT touch the
+# events()/joint-finisher shared-slot machinery (KB K-064/K-065), which only
+# events()/lifecycle_events()/stderr_lines() drive.
+
+
+def test_stdout_json_lines_streams_decoded_objects_in_order() -> None:
+    async def scenario() -> tuple[list[object], Finished]:
+        proc = await Command(PY, ["-c", _PRINT_JSON_LINES]).astart()
+        items = [item async for item in proc.stdout_json_lines()]
+        finished = await proc.afinish()
+        return items, finished
+
+    items, finished = asyncio.run(scenario())
+    assert items == [{"i": i, "ok": True} for i in range(3)]
+    assert finished.exited_zero
+
+
+def test_stdout_json_lines_setup_is_sync_only_iteration_is_async() -> None:
+    # stdout_json_lines() is a synchronous setup call, exactly like
+    # stdout_lines() — usable on a handle from sync start() too; only the
+    # iteration itself (__anext__) is async.
+    proc = Command(PY, ["-c", _PRINT_JSON_LINES]).start()
+    stream = proc.stdout_json_lines()
+
+    async def drain() -> list[object]:
+        return [item async for item in stream]
+
+    items = asyncio.run(drain())
+    assert items == [{"i": i, "ok": True} for i in range(3)]
+    assert proc.outcome().exited_zero
+
+
+def test_stdout_json_lines_preserves_object_key_order() -> None:
+    # Pins the RawValue -> json.loads() bridge (running.rs::PyJsonLines): a
+    # naive `serde_json::Value` round-trip would silently alphabetize keys
+    # without also pulling in serde_json's `preserve_order` feature.
+    code = "import json; print(json.dumps({'z': 1, 'a': 2, 'm': 3}))"
+
+    async def scenario() -> list[list[str]]:
+        proc = await Command(PY, ["-c", code]).astart()
+        items = [item async for item in proc.stdout_json_lines()]
+        await proc.afinish()
+        return [list(item.keys()) for item in items]
+
+    assert asyncio.run(scenario()) == [["z", "a", "m"]]
+
+
+def test_stdout_json_lines_malformed_line_raises_invalid_json_and_continues() -> None:
+    code = "print('{\"ok\": true}')\nprint('not-json')\nprint('{\"ok\": false}')\n"
+
+    async def scenario() -> tuple[list[object], list[InvalidJson], Finished]:
+        proc = await Command(PY, ["-c", code]).astart()
+        stream = proc.stdout_json_lines()
+        items: list[object] = []
+        errors: list[InvalidJson] = []
+        while True:
+            try:
+                items.append(await stream.__anext__())
+            except StopAsyncIteration:
+                break
+            except InvalidJson as exc:
+                errors.append(exc)
+        finished = await proc.afinish()
+        return items, errors, finished
+
+    items, errors, finished = asyncio.run(scenario())
+    # The malformed line does not end the stream — both valid lines around it
+    # still come through.
+    assert items == [{"ok": True}, {"ok": False}]
+    assert len(errors) == 1
+    assert errors[0].program == PY
+    # Unlike run_json()/arun_json(), a streamed InvalidJson never buffers the
+    # whole payload — there is no `.stdout` to attach.
+    assert errors[0].stdout is None
+    # str(exc) carries the crate's own NDJSON line/column/byte-offset diagnostic
+    # (this is the 2nd line the iterator pulled) in place of the whole-payload
+    # `run_json()` message.
+    assert "line 2" in str(errors[0])
+    assert not isinstance(errors[0], json.JSONDecodeError)
+    assert finished.exited_zero
+
+
+def test_stdout_json_lines_idle_timeout_kills_a_silent_child() -> None:
+    code = "import time; time.sleep(5)"
+
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", code]).idle_timeout(0.3).astart()
+        with pytest.raises(IdleTimeout, match="no watched output line"):
+            async for _item in proc.stdout_json_lines():
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_stdout_json_lines_conflicts_with_a_second_stdout_lines_call() -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "print('{}')"]).astart()
+        proc.stdout_json_lines()
+        with pytest.raises(ProcessError):
+            proc.stdout_lines()
+        await proc.afinish()
+
+    asyncio.run(scenario())
+
+
+def test_stdout_lines_conflicts_with_a_later_stdout_json_lines_call() -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "print('{}')"]).astart()
+        proc.stdout_lines()
+        with pytest.raises(ProcessError):
+            proc.stdout_json_lines()
+        await proc.afinish()
+
+    asyncio.run(scenario())
+
+
+def test_stdout_json_lines_conflicts_with_output_events() -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "print('{}')"]).astart()
+        proc.stdout_json_lines()
+        with pytest.raises(ProcessError):
+            proc.output_events()
+        await proc.afinish()
+
+    asyncio.run(scenario())
+
+
+def test_stdout_json_lines_called_twice_raises() -> None:
+    async def scenario() -> None:
+        proc = await Command(PY, ["-c", "print('{}')"]).astart()
+        proc.stdout_json_lines()
+        with pytest.raises(ProcessError):
+            proc.stdout_json_lines()
+        await proc.afinish()
 
     asyncio.run(scenario())
 

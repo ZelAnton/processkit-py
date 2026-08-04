@@ -711,6 +711,16 @@ class StdoutLines:
     def __anext__(self) -> Awaitable[str]: ...
 
 @final
+class JsonLines:
+    """Async iterator over a process's stdout, one decoded JSON value per line
+    (strict NDJSON: every line, including a blank one, must independently
+    parse). A malformed line raises `InvalidJson` and the stream continues with
+    the next line — see `RunningProcess.stdout_json_lines()`."""
+
+    def __aiter__(self) -> AsyncIterator[Any]: ...
+    def __anext__(self) -> Awaitable[Any]: ...
+
+@final
 class OutputEvents:
     """Async iterator over stdout + stderr as interleaved `OutputEvent`s.
 
@@ -806,6 +816,17 @@ class RunningProcess:
         traceback: TracebackType | None = ...,
     ) -> Awaitable[Literal[False]]: ...
     def stdout_lines(self) -> StdoutLines: ...
+    def stdout_json_lines(self) -> JsonLines:
+        """Stream stdout as one decoded JSON value per line (strict NDJSON).
+
+        A malformed line raises `InvalidJson` — carrying the crate's own
+        line/column/byte-offset diagnostic and a bounded fragment of that line
+        in its message, plus ``program``, but (unlike ``run_json()`` /
+        ``arun_json()``) **no** ``stdout`` (a streamed run never buffers the
+        whole payload) — and the stream continues with the next line. Same
+        one-shot-stdout and consuming/streaming-conflict rules as
+        ``stdout_lines()``: call once, and never after another consumer
+        already took stdout."""
     def stderr_lines(self) -> StderrLines:
         """Stream decoded stderr lines while background-draining stdout.
 
@@ -1719,22 +1740,31 @@ class IdleTimeout(ProcessError):
     idle_timeout_seconds: float
 
 class InvalidJson(ProcessError):
-    """A `Command` or `CliClient` JSON verb ran the command successfully (a
-    zero exit, like `run`) but its stdout did not parse as JSON.
+    """A JSON verb ran the command successfully (a zero exit, like `run`) but
+    its output did not parse as JSON: a `Command`/`CliClient` `run_json()` /
+    `arun_json()` whose whole stdout failed to parse, or a
+    `RunningProcess.stdout_json_lines()` whose current NDJSON line did
+    (the stream continues with the next line rather than ending).
 
     A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
-    so the failure is attributed (which program, and what the parser reported in
-    `str(exc)`) and a single `except ProcessError` still catches it. A deliberate
-    *sibling* of `NonZeroExit`, not a subclass: the run itself succeeded — only
-    its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
-    failure without also catching a genuine non-zero exit."""
+    so the failure is attributed and a single `except ProcessError` still
+    catches it. `str(exc)` carries the parser's own diagnostic — for the
+    streaming case, the NDJSON line/column/byte-offset location and a bounded
+    fragment of that line. A deliberate *sibling* of `NonZeroExit`, not a
+    subclass: the run itself succeeded — only its output *shape* is wrong — so
+    `except InvalidJson` isolates a bad-payload failure without also catching a
+    genuine non-zero exit."""
 
     # The executed command's program.
     program: str
     # A length-capped fragment of the stdout that failed to parse — a bounded
     # head for diagnosis, not the whole payload (which can be large or hold
-    # secrets). The underlying parser message is in `str(exc)`.
-    stdout: str
+    # secrets). The underlying parser message is in `str(exc)`. `None` only
+    # when raised from `stdout_json_lines()`: a streamed run never buffers the
+    # whole payload the way `run_json()`/`arun_json()` do before parsing, so
+    # there is no whole `stdout` string to attach — the per-line diagnostic is
+    # already in `str(exc)`.
+    stdout: str | None
 
 # Program resolution: resolve a program to its concrete executable path *without*
 # launching it — a spawn-free, side-effect-free preflight ("is this tool

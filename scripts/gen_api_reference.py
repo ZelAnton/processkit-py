@@ -116,6 +116,7 @@ SECTIONS: tuple[Section, ...] = (
         "and a writable stdin.",
         (
             "StdoutLines",
+            "JsonLines",
             "StderrLines",
             "OutputEvents",
             "OutputEvent",

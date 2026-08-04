@@ -543,6 +543,10 @@ try:
     gh.run_json(["pr", "view"])
 except InvalidJson as exc:
     assert exc.program == "gh"
+    # `run_json()`/`arun_json()` always attach `.stdout` (unlike the streaming
+    # `RunningProcess.stdout_json_lines()` case, where it is `None`) — narrow the
+    # type before indexing/membership-testing it.
+    assert exc.stdout is not None
     assert "not json at all" in exc.stdout
 ```
 

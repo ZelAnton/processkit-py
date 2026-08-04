@@ -1090,6 +1090,23 @@ owns_group: bool | None
 def stdout_lines() -> StdoutLines
 ```
 
+#### `stdout_json_lines`
+
+```text
+def stdout_json_lines() -> JsonLines
+```
+
+Stream stdout as one decoded JSON value per line (strict NDJSON).
+
+A malformed line raises `InvalidJson` — carrying the crate's own
+line/column/byte-offset diagnostic and a bounded fragment of that line
+in its message, plus ``program``, but (unlike ``run_json()`` /
+``arun_json()``) **no** ``stdout`` (a streamed run never buffers the
+whole payload) — and the stream continues with the next line. Same
+one-shot-stdout and consuming/streaming-conflict rules as
+``stdout_lines()``: call once, and never after another consumer
+already took stdout.
+
 #### `stderr_lines`
 
 ```text
@@ -1685,6 +1702,17 @@ class StdoutLines
 ```
 
 Async iterator over a process's stdout, line by line.
+
+### `JsonLines`
+
+```text
+class JsonLines
+```
+
+Async iterator over a process's stdout, one decoded JSON value per line
+(strict NDJSON: every line, including a blank one, must independently
+parse). A malformed line raises `InvalidJson` and the stream continues with
+the next line — see `RunningProcess.stdout_json_lines()`.
 
 ### `StderrLines`
 
@@ -3336,15 +3364,20 @@ program: str
 class InvalidJson
 ```
 
-A `Command` or `CliClient` JSON verb ran the command successfully (a
-zero exit, like `run`) but its stdout did not parse as JSON.
+A JSON verb ran the command successfully (a zero exit, like `run`) but
+its output did not parse as JSON: a `Command`/`CliClient` `run_json()` /
+`arun_json()` whose whole stdout failed to parse, or a
+`RunningProcess.stdout_json_lines()` whose current NDJSON line did
+(the stream continues with the next line rather than ending).
 
 A `ProcessError` subclass raised in place of a bare `json.JSONDecodeError`,
-so the failure is attributed (which program, and what the parser reported in
-`str(exc)`) and a single `except ProcessError` still catches it. A deliberate
-*sibling* of `NonZeroExit`, not a subclass: the run itself succeeded — only
-its output *shape* is wrong — so `except InvalidJson` isolates a bad-payload
-failure without also catching a genuine non-zero exit.
+so the failure is attributed and a single `except ProcessError` still
+catches it. `str(exc)` carries the parser's own diagnostic — for the
+streaming case, the NDJSON line/column/byte-offset location and a bounded
+fragment of that line. A deliberate *sibling* of `NonZeroExit`, not a
+subclass: the run itself succeeded — only its output *shape* is wrong — so
+`except InvalidJson` isolates a bad-payload failure without also catching a
+genuine non-zero exit.
 
 #### `program`
 
@@ -3355,7 +3388,7 @@ program: str
 #### `stdout`
 
 ```text
-stdout: str
+stdout: str | None
 ```
 
 ## Type aliases

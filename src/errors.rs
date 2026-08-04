@@ -42,12 +42,20 @@ create_exception!(_processkit, Cancelled, ProcessError);
 // by `map_err`: the crate has no native idle-timeout, so no crate `Error`
 // variant maps to it.
 create_exception!(_processkit, IdleTimeout, ProcessError);
-// `InvalidJson` is raised by the binding-only `Command` and `CliClient`
+// `InvalidJson` is raised by the binding-only `Command`/`CliClient`
 // `run_json`/`arun_json` verbs when a run that succeeded (a zero exit, like
-// `run`) produced stdout that does not parse as JSON. Like `IdleTimeout`, it is
-// synthesized entirely on the binding side (constructed by `invalid_json_err`,
-// never by `map_err`): the crate has no "invalid JSON" concept, so no crate
-// `Error` variant maps to it. Kept a
+// `run`) produced stdout that does not parse as JSON, and by
+// `RunningProcess.stdout_json_lines()` (T-216) when one streamed NDJSON line
+// doesn't. The first two are synthesized on the binding side from a `json.loads`
+// `PyErr` (`invalid_json_err`); the streaming one instead carries the crate's OWN
+// typed per-line decode failure verbatim (`invalid_json_line_err`) — neither maps
+// through `map_err`: the crate itself has no "invalid JSON" concept for the
+// one-shot verbs (no `Error` variant maps to it there), and the streaming verb's
+// `ErrorReason::Parse` is deliberately re-typed to this class rather than surfaced
+// as the crate's own generic `ProcessError` fallback, so every JSON-decode failure
+// in this library — one-shot or streamed — is catchable the same way. `.stdout`
+// is `None` from the streaming call site only (see `invalid_json_line_err`): a
+// streamed run never buffers the whole payload the one-shot verbs parse. Kept a
 // plain sibling under `ProcessError` and deliberately NOT a subclass of
 // `NonZeroExit` — the run itself succeeded; only its *output shape* is wrong — so
 // `except InvalidJson` isolates a bad-payload failure while `except ProcessError`
@@ -238,6 +246,47 @@ pub(crate) fn invalid_json_err(
     let value = err.value(py);
     let _ = value.setattr("program", program);
     let _ = value.setattr("stdout", truncate_chars(stdout, INVALID_JSON_STDOUT_CHARS));
+    err
+}
+
+/// Build an [`InvalidJson`] for a `RunningProcess.stdout_json_lines()` item
+/// whose NDJSON line failed to parse — the streaming counterpart of
+/// [`invalid_json_err`], used by `Command`/`CliClient`'s `run_json`/`arun_json`.
+///
+/// Unlike `invalid_json_err` (built from a whole buffered stdout string plus
+/// the `PyErr` `json.loads` itself raised), this comes from the crate's OWN
+/// typed per-line decode failure — `RunningProcess::stdout_json_lines`'s
+/// `ErrorReason::Parse`, produced by its `json`-feature decode helper. That
+/// helper's `message` already carries the NDJSON line/column/byte-offset
+/// location plus a bounded, control-escaped fragment of *that line* — capped
+/// and escaped by the crate itself before the variant is even constructed (see
+/// the crate's own `ErrorReason::Parse` doc) — so it is used verbatim as
+/// `str(exc)` rather than re-derived from a `json.loads` call this streaming
+/// path never makes (`stdout_json_lines()` hands Python the crate's typed
+/// `RawValue` per line, converted with `json.loads` only on success — see
+/// `running.rs::PyJsonLines`).
+///
+/// **Deliberately does not set `.stdout`** — `InvalidJson.stdout: str | None`,
+/// `None` only from this call site: a streamed run never buffers the whole
+/// payload the way `run()`/`run_json()` does before parsing, so there is no
+/// whole `stdout` string to attach here. The per-line diagnostic already lives
+/// in `str(exc)` (and `.program`, attached below like every other case).
+///
+/// Panics if `error`'s reason is not `ErrorReason::Parse` — a caller bug, since
+/// every `JsonLines` stream item error is one (see the crate's `JsonLines` doc).
+pub(crate) fn invalid_json_line_err(error: &processkit::Error) -> PyErr {
+    let processkit::ErrorReason::Parse {
+        program, message, ..
+    } = error.reason()
+    else {
+        unreachable!("RunningProcess.stdout_json_lines() item errors are always ErrorReason::Parse")
+    };
+    let err = InvalidJson::new_err(message.clone());
+    let _ = Python::try_attach(|py| {
+        let value = err.value(py);
+        let _ = value.setattr("program", program.as_str());
+        let _ = value.setattr("stdout", py.None());
+    });
     err
 }
 

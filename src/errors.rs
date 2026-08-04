@@ -193,6 +193,61 @@ pub(crate) fn idle_timeout_err(seconds: f64) -> PyErr {
     err
 }
 
+/// The readiness-deadline exception this library's probes raise:
+/// `processkit._aio.WaitTimeout`, a `ProcessError` **and** a builtin
+/// `TimeoutError` carrying `timeout_seconds`.
+///
+/// Deliberately the *same* class the pure-Python readiness helpers
+/// (`wait_for_line` / `wait_for_port` / `wait_for_http` / …) already raise,
+/// rather than a new binding-side sibling: `RunningProcess.wait_for_output()`
+/// and its twins are one more probe in that family, and `docs/streaming.md`
+/// ("Readiness probes") states one uniform rule — *a probe that can't pass
+/// within its deadline raises `WaitTimeout`*. A second, differently-named
+/// deadline class would split `except WaitTimeout` / `except TimeoutError` for
+/// no semantic gain.
+///
+/// It is therefore the one exception this module cannot `create_exception!`
+/// itself: the class is defined in Python (`src/processkit/_aio.py`) and is
+/// already published API, so it is imported once and cached here instead of
+/// being duplicated under the same name. The import is lazy — at *raise* time,
+/// never at module init, which could not work anyway (`processkit._aio` imports
+/// this extension module).
+///
+/// Every failure mode degrades to a plain `ProcessError` carrying the identical
+/// message: a finalizing interpreter (`try_attach` → `None`), a missing or
+/// renamed `processkit._aio.WaitTimeout`, or a constructor that rejects the
+/// keyword. The message is the faithful part; the class is the convenience.
+pub(crate) fn wait_timeout_err(message: String, timeout_seconds: f64) -> PyErr {
+    match Python::try_attach(|py| build_wait_timeout(py, &message, timeout_seconds)) {
+        Some(Some(err)) => err,
+        _ => ProcessError::new_err(message),
+    }
+}
+
+/// Cached `processkit._aio.WaitTimeout`, resolved on the first probe deadline.
+static WAIT_TIMEOUT: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
+/// Construct a `WaitTimeout`, or `None` if anything about the lookup/call fails
+/// (the caller then falls back to a plain `ProcessError`).
+fn build_wait_timeout(py: Python<'_>, message: &str, timeout_seconds: f64) -> Option<PyErr> {
+    let class = WAIT_TIMEOUT
+        .get_or_try_init(py, || -> PyResult<Py<PyType>> {
+            Ok(py
+                .import("processkit._aio")?
+                .getattr("WaitTimeout")?
+                .cast_into::<PyType>()?
+                .unbind())
+        })
+        .ok()?;
+    let kwargs = PyDict::new(py);
+    // `timeout_seconds` is keyword-only on `WaitTimeout.__init__`, like every
+    // other structured field it carries (`host`/`port`/`path` stay unset — a
+    // partial-tail probe watches an output stream, not an endpoint).
+    kwargs.set_item("timeout_seconds", timeout_seconds).ok()?;
+    let value = class.bind(py).call((message,), Some(&kwargs)).ok()?;
+    Some(PyErr::from_value(value))
+}
+
 /// Character cap for the `stdout` fragment carried on an [`InvalidJson`]. A
 /// wrapped tool can emit a large payload — and stdout may hold secrets — so the
 /// exception keeps only a bounded head for diagnosis, mirroring the truncated-

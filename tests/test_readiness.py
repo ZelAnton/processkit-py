@@ -5,6 +5,12 @@ appears), `wait_for_named_pipe` (Windows named-pipe server), and
 `wait_for_unix_socket` (Unix-domain socket accept). Includes the probe-socket
 cleanup wiring that a cancelled/refused `wait_for_port` / `wait_for_http` /
 `wait_for_unix_socket` must run.
+
+Also covers the handle-level partial-tail probes — `RunningProcess`'s
+`wait_for_output`/`await_for_output` and `wait_for_stderr_output`/
+`await_for_stderr_output` — which match an *un-terminated* prompt the
+line-oriented probes above can never see (the PTY dialog case lives in
+`test_streaming.py`, next to the other PTY tests).
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import inspect
 import socket
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
@@ -40,6 +47,7 @@ from processkit import (
 )
 from processkit._aio import _format_host_header, _http_connection_host
 
+from ._liveness import is_alive
 from ._programs import free_port, refused_port
 
 PY = sys.executable
@@ -740,6 +748,245 @@ def test_wait_for_line_matches() -> None:
             return await wait_for_line(lines, lambda line: "READY" in line, timeout=10.0)
 
     assert "READY" in asyncio.run(scenario())
+
+
+# --- partial-tail probes (RunningProcess.wait_for_output & co.) ---------------
+#
+# The line probes above only ever see COMPLETE lines. An interactive prompt is
+# written without a trailing newline and then blocked on, so it never becomes a
+# line: these four handle methods watch the live *partial* tail instead.
+
+#: Writes an un-terminated prompt, waits for an answer, then writes a second
+#: un-terminated prompt — i.e. a two-turn dialog made entirely of tails that
+#: `wait_for_line`/`stdout_lines()` can never observe while the child is alive.
+_PROMPT_DIALOG = (
+    "import sys; sys.stdout.write('Password: '); sys.stdout.flush(); "
+    "ans = sys.stdin.readline(); "
+    "sys.stdout.write('granted, welcome> '); sys.stdout.flush(); "
+    "sys.stdin.readline()"
+)
+
+#: Prompts on stderr while stdout stays a data channel.
+_STDERR_PROMPT = (
+    "import sys, time; sys.stderr.write('Continue? (y/N) '); sys.stderr.flush(); time.sleep(30)"
+)
+
+#: A child that prints one complete line and exits — no partial tail ever.
+_ONE_LINE_THEN_EXIT = "print('done', flush=True)"
+
+
+def test_wait_for_output_matches_an_unterminated_prompt_tail() -> None:
+    # The core promise: a prompt with no trailing newline is invisible to the
+    # line-oriented probes, and is exactly what this one returns.
+    with Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc:
+        assert proc.wait_for_output("Password: ", timeout=20.0) == "Password: "
+
+
+def test_await_for_output_accepts_a_callable_predicate() -> None:
+    # The `str` argument above is the substring shorthand; a callable is the
+    # general form, exactly as for `wait_for_line`.
+    async def scenario() -> str:
+        async with await Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().astart() as proc:
+            return await proc.await_for_output(lambda tail: tail.endswith(": "), timeout=20.0)
+
+    assert asyncio.run(scenario()) == "Password: "
+
+
+def test_wait_for_output_is_non_consuming_and_repeatable() -> None:
+    # Unlike the one-shot line probes, this only peeks: the same still-standing
+    # prompt matches again, and the handle keeps its live getters.
+    with Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc:
+        first = proc.wait_for_output("Password", timeout=20.0)
+        # timeout=0 exercises the "evaluate at least once" contract on a handle
+        # whose output pump the first probe already installed.
+        second = proc.wait_for_output("Password", timeout=0.0)
+        assert first == second == "Password: "
+        assert proc.pid is not None
+
+
+def test_wait_for_output_dialog_answers_the_prompt_over_take_stdin() -> None:
+    # The whole point of the probe: match a prompt, answer it, match the NEXT
+    # (also un-terminated) prompt — proving the handle survives a probe.
+    async def scenario() -> tuple[str, str, str]:
+        proc = await Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().astart()
+        prompt = await proc.await_for_output("Password: ", timeout=20.0)
+        stdin = proc.take_stdin()
+        await stdin.write_line("s3cret")
+        second = await proc.await_for_output("welcome> ", timeout=20.0)
+        await stdin.write_line("")
+        result = await proc.aoutput()
+        return prompt, second, result.stdout
+
+    prompt, second, stdout = asyncio.run(scenario())
+    assert prompt == "Password: "
+    # The tail is the WHOLE current partial line, and this child never ends it
+    # with a newline — so the second prompt arrives appended to the first rather
+    # than replacing it. Match prompts with `in`/`endswith`, not equality.
+    assert second == "Password: granted, welcome> "
+    # `output()` still reports the run after a probe (the drained lines are
+    # retained); only `output_bytes()` is ruled out, see the test below.
+    assert "granted, welcome>" in stdout
+
+
+def test_wait_for_output_deadline_neither_kills_nor_times_out_the_run() -> None:
+    # Paired with the line probes' own non-killing contract: an expired probe
+    # deadline is a `WaitTimeout` and nothing else — the child keeps running and
+    # its outcome is whatever it would have been.
+    with Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc:
+        with pytest.raises(WaitTimeout) as excinfo:
+            proc.wait_for_output("never-printed", timeout=0.3)
+        assert isinstance(excinfo.value, TimeoutError)  # stdlib-catchable, like its siblings
+        assert isinstance(excinfo.value, ProcessError)
+        assert excinfo.value.timeout_seconds == 0.3
+        pid = proc.pid
+        assert pid is not None and is_alive(pid), "a failed probe must not kill the child"
+        # Still fully usable afterwards — the prompt is right there.
+        assert proc.wait_for_output("Password", timeout=20.0) == "Password: "
+
+
+def test_wait_for_output_fails_fast_when_the_stream_ends_unmatched() -> None:
+    # No waiting out a long deadline on output that can no longer arrive —
+    # the same "stream ended" contract `wait_for_line` gives.
+    with Command(PY, ["-c", _ONE_LINE_THEN_EXIT]).start() as proc:
+        started = time.monotonic()
+        with pytest.raises(ProcessError, match="ended before a matching tail") as excinfo:
+            proc.wait_for_output("never-printed", timeout=30.0)
+        assert not isinstance(excinfo.value, WaitTimeout), "a dead stream is not a deadline"
+        assert time.monotonic() - started < 15.0, "must not wait out the 30s deadline"
+
+
+def test_wait_for_output_propagates_a_predicate_exception_untouched() -> None:
+    # Like `wait_for_line`, the caller's own failure is never masked behind the
+    # deadline — even though the predicate runs on a runtime worker.
+    def boom(tail: str) -> bool:
+        raise RuntimeError("predicate exploded")
+
+    with (
+        Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc,
+        pytest.raises(RuntimeError, match="predicate exploded"),
+    ):
+        proc.wait_for_output(boom, timeout=20.0)
+
+
+def test_wait_for_output_rejects_a_bad_predicate_and_a_bad_timeout() -> None:
+    with Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc:
+        with pytest.raises(TypeError, match="predicate must be a str"):
+            proc.wait_for_output(123, timeout=1.0)  # type: ignore[arg-type]
+        for bad in (-1.0, float("nan")):
+            with pytest.raises(ValueError, match="timeout"):
+                proc.wait_for_output("x", timeout=bad)
+        with pytest.raises(TypeError):
+            proc.wait_for_output("x", 1.0)  # type: ignore[call-arg]  # timeout is keyword-only
+
+
+def test_wait_for_output_on_a_consumed_handle_raises() -> None:
+    proc = Command(PY, ["-c", _ONE_LINE_THEN_EXIT]).start()
+    proc.outcome()
+    with pytest.raises(ProcessError, match="consumed"):
+        proc.wait_for_output("done", timeout=1.0)
+
+
+def test_await_for_output_without_a_running_loop_raises() -> None:
+    # The same guard every other `a`-verb has: reach for the sync twin instead.
+    with (
+        Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc,
+        pytest.raises(ProcessError, match="no running asyncio event loop"),
+    ):
+        proc.await_for_output("Password", timeout=1.0)
+
+
+def test_wait_for_stderr_output_matches_a_prompt_on_stderr() -> None:
+    # K-043: stdout and stderr are NOT symmetrical here, so the stderr twin is
+    # exercised independently rather than inferred from the stdout one.
+    with Command(PY, ["-c", _STDERR_PROMPT]).start() as proc:
+        assert proc.wait_for_stderr_output("(y/N)", timeout=20.0) == "Continue? (y/N) "
+
+
+def test_await_for_stderr_output_matches_a_prompt_on_stderr() -> None:
+    async def scenario() -> str:
+        async with await Command(PY, ["-c", _STDERR_PROMPT]).astart() as proc:
+            return await proc.await_for_stderr_output("(y/N)", timeout=20.0)
+
+    assert asyncio.run(scenario()) == "Continue? (y/N) "
+
+
+def test_wait_for_output_requires_an_observable_stdout() -> None:
+    # The stdout half of the same asymmetry: a non-piped stdout has no live tail
+    # either, but the crate diagnoses it differently from the stderr half below
+    # (K-043 — check both streams, never infer one from the other).
+    with (
+        Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().stdout("null").start() as proc,
+        pytest.raises(ProcessError, match="not observable for readiness probing"),
+    ):
+        proc.wait_for_output("Password", timeout=20.0)
+
+
+def test_wait_for_stderr_output_requires_a_piped_stderr() -> None:
+    # The asymmetry itself: a non-piped stderr has no observable tail and says
+    # so immediately, instead of waiting out the deadline.
+    with (
+        Command(PY, ["-c", _STDERR_PROMPT]).stderr("null").start() as proc,
+        pytest.raises(ProcessError, match="stderr is not piped"),
+    ):
+        proc.wait_for_stderr_output("(y/N)", timeout=20.0)
+
+
+def test_wait_for_output_tail_is_raw_even_under_sanitize_vt() -> None:
+    # `sanitize_vt()` scrubs each *complete line* on its way into the capture
+    # backlog; the partial tail is published straight off the pump's pending
+    # buffer, so it still carries the escape sequences. Match prompts on their
+    # plain text (or strip in a callable), never assume a scrubbed tail.
+    code = (
+        "import sys, time; sys.stdout.write('\\x1b[32mPassword: '); "
+        "sys.stdout.flush(); time.sleep(30)"
+    )
+    with Command(PY, ["-c", code]).sanitize_vt().start() as proc:
+        tail = proc.wait_for_output("Password: ", timeout=20.0)
+        assert tail == "\x1b[32mPassword: "
+
+
+def test_wait_for_output_composes_with_a_stream_bound_first() -> None:
+    # Ordering contract, half one: a stream bound BEFORE the probe keeps
+    # working — the tail is a side channel and steals nothing from the iterator.
+    async def scenario() -> tuple[str, str, int | None]:
+        code = (
+            "import sys; print('line-1', flush=True); "
+            "sys.stdout.write('Password: '); sys.stdout.flush(); sys.stdin.readline()"
+        )
+        async with await Command(PY, ["-c", code]).keep_stdin_open().astart() as proc:
+            lines = proc.stdout_lines()
+            tail = await proc.await_for_output("Password", timeout=20.0)
+            line = await anext(lines)
+            return tail, line, proc.stdout_line_count
+
+    tail, line, captured_lines = asyncio.run(scenario())
+    assert tail == "Password: "
+    assert line.rstrip() == "line-1", "the probe must not consume the stream's line"
+    # …and the prompt itself never became a line: exactly the one real line was
+    # captured while the child sits on it. That gap between "written" and
+    # "a line" is the whole reason this probe exists.
+    assert captured_lines == 1
+
+
+def test_stream_bound_after_a_probe_is_diagnosed() -> None:
+    # Ordering contract, half two: probing installs stdout's one line pump (like
+    # every other readiness probe), so a stream opened afterwards is refused with
+    # the crate's own diagnosis rather than silently yielding nothing.
+    with Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start() as proc:
+        proc.wait_for_output("Password", timeout=20.0)
+        with pytest.raises(ProcessError, match="already consumed"):
+            proc.stdout_lines()
+        with pytest.raises(ProcessError, match="already consumed"):
+            proc.output_events()
+
+
+def test_output_bytes_after_a_probe_is_diagnosed() -> None:
+    # Raw bytes can't be recovered once stdout is being decoded into lines; the
+    # text-capturing `output()` still works (see the dialog test above).
+    proc = Command(PY, ["-c", _PROMPT_DIALOG]).keep_stdin_open().start()
+    proc.wait_for_output("Password", timeout=20.0)
+    with pytest.raises(ProcessError, match="output_bytes cannot follow"):
+        proc.output_bytes()
 
 
 # --- probe-socket cleanup ---------------------------------------------------

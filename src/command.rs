@@ -606,6 +606,44 @@ impl PyCommand {
         ))
     }
 
+    /// Strip VT/ANSI escape sequences and lone terminal control codes from
+    /// captured **stdout and stderr**. This is most useful with `pty()`, whose
+    /// merged stdout commonly contains colors, cursor movement, OSC titles, and
+    /// other terminal protocol rather than plain text.
+    ///
+    /// **Transform order.** Raw bytes are decoded with the configured
+    /// `encoding`/per-stream encoding first, then split with the configured
+    /// `line_terminator`; sanitization runs on each decoded line immediately
+    /// before it enters the capture backlog. Consequently `ProcessResult`,
+    /// `run()`/`output()`, and streamed `stdout_lines()`/`stderr_lines()`/
+    /// `output_events()` expose clean text with the same line boundaries.
+    ///
+    /// **Boundaries.** The transform is capture-only. `on_stdout_line` /
+    /// `on_stderr_line` and decoded `stdout_tee` / `stderr_tee` observe the
+    /// original decoded line. `output_bytes()` preserves raw **stdout** bytes,
+    /// but stderr remains line-decoded and is therefore sanitized when stderr
+    /// sanitization is enabled. Direct `stdout_file`/`stderr_file` redirects
+    /// preserve the original bytes. It is inert for a stream using `"inherit"`
+    /// or `"null"`, because no line-capture pump runs. Off by default and
+    /// available on every supported platform.
+    fn sanitize_vt(&self) -> Self {
+        self.rewrap(self.inner.clone().sanitize_vt())
+    }
+
+    /// Enable `sanitize_vt` for captured **stdout** only; stderr is unchanged.
+    /// Decoding and line splitting happen first, and tees/direct redirects stay
+    /// unsanitized exactly as described by `sanitize_vt`.
+    fn stdout_sanitize_vt(&self) -> Self {
+        self.rewrap(self.inner.clone().stdout_sanitize_vt())
+    }
+
+    /// Enable `sanitize_vt` for captured **stderr** only; stdout is unchanged.
+    /// Decoding and line splitting happen first, and tees/direct redirects stay
+    /// unsanitized exactly as described by `sanitize_vt`.
+    fn stderr_sanitize_vt(&self) -> Self {
+        self.rewrap(self.inner.clone().stderr_sanitize_vt())
+    }
+
     /// Tee every decoded stdout line to `sink` as it is produced — the line
     /// **plus** a trailing `\n` — while the run *also* keeps capturing the full
     /// output: the sink does not steal output from `ProcessResult.stdout`. The

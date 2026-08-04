@@ -79,6 +79,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--profile [FILE]` | `RunningProcess.profile(...)` | After the child exits, emit a JSON resource profile — to stderr if `FILE` is omitted, or written to `FILE` otherwise. See [below](#--profile-machine-readable-resource-usage). |
 | `--create-no-window` | `Command.create_no_window()` | Do not create a console window for the child. No-op outside Windows (same as the underlying binding method). |
 | `--output-limit BYTES` | `Command.output_limit(max_bytes=..., on_overflow="error")` | Pipe and re-emit output line-by-line, failing with `125` if captured stdout/stderr exceeds the raw-byte ceiling. Incompatible with `--profile` and `--stdout-file`. |
+| `--sanitize-vt` | `Command.sanitize_vt()` | Strip ANSI/VT terminal escapes from captured stdout/stderr and re-emit clean text line-by-line. Incompatible with `--profile` and `--stdout-file`. |
 | `--stdout-file PATH` | `Command.stdout_file(path)` | Redirect stdout directly to a newly created or truncated file. |
 | `--stderr-file PATH` | `Command.stderr_file(path)` | Redirect stderr directly to a newly created or truncated file. |
 | `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
@@ -99,6 +100,23 @@ entry in the same layer wins; explicit flags therefore override every file.
 Files are UTF-8 (an optional BOM is accepted); values are literal and may contain
 additional `=` characters. Missing/unreadable files and non-comment lines
 without `=` are usage errors with the file and line number, never tracebacks.
+
+### `--sanitize-vt`: clean terminal output
+
+Use `--sanitize-vt` for a color-sensitive tool whose output must become plain
+text for CI logs or downstream parsing. It is particularly useful with `--pty`,
+where stdout and stderr are one escape-heavy terminal stream:
+
+```bash
+python -m processkit run --pty --sanitize-vt -- colorful-tool status
+```
+
+The flag selects the managed line relay even without `--pty`: bytes are decoded,
+split into lines, sanitized through `Command.sanitize_vt()`, and then re-emitted
+to the wrapper's stdout/stderr. This preserves stream identity in pipe mode and
+uses stdout for PTY's merged stream. It is incompatible with `--profile`
+(which consumes the live handle through the profiling wait) and `--stdout-file`
+(which removes the stdout capture pipe).
 
 ### `--profile`: machine-readable resource usage
 

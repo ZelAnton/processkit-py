@@ -123,8 +123,12 @@ def _run(
         run_parser.error("--idle-timeout cannot be combined with --profile")
     if args.output_limit is not None and args.profile is not None:
         run_parser.error("--output-limit cannot be combined with --profile")
+    if args.sanitize_vt and args.profile is not None:
+        run_parser.error("--sanitize-vt cannot be combined with --profile")
     if args.output_limit is not None and args.stdout_file is not None:
         run_parser.error("--output-limit cannot be combined with --stdout-file")
+    if args.sanitize_vt and args.stdout_file is not None:
+        run_parser.error("--sanitize-vt cannot be combined with --stdout-file")
     if args.idle_timeout is not None and args.stdout_file is not None:
         run_parser.error("--idle-timeout cannot be combined with --stdout-file")
     if (args.pty_cols is not None or args.pty_rows is not None) and not args.pty:
@@ -140,17 +144,19 @@ def _run(
 
     program, *rest = child_argv
     idle_requested = args.idle_timeout is not None
-    streaming_requested = idle_requested or args.output_limit is not None or args.pty
+    streaming_requested = (
+        idle_requested or args.output_limit is not None or args.sanitize_vt or args.pty
+    )
     command = Command(program, rest)
     if args.pty:
         command = command.pty(cols=args.pty_cols, rows=args.pty_rows)
     else:
         command = command.inherit_stdin()
     if streaming_requested:
-        # Idle monitoring rides the per-line output channel, so keep stdout/stderr
-        # piped (the Command default) — `_drive_streaming` re-emits each line — rather
-        # than inheriting raw. The output-limit path uses the same pump so its
-        # fail-loud captured-byte ceiling is actually enforced.
+        # These features ride the per-line output channel, so keep stdout/stderr
+        # piped (the Command default) — `_drive_streaming` re-emits each line —
+        # rather than inheriting raw. The same pump enforces the captured-byte
+        # ceiling and carries sanitized or merged PTY text.
         if idle_requested:
             assert args.idle_timeout is not None
             command = command.idle_timeout(args.idle_timeout)
@@ -164,6 +170,8 @@ def _run(
         command = command.stderr("inherit")
     if args.output_limit is not None:
         command = command.output_limit(max_bytes=args.output_limit, on_overflow="error")
+    if args.sanitize_vt:
+        command = command.sanitize_vt()
     if args.create_no_window:
         command = command.create_no_window()
     if args.kill_on_parent_death:

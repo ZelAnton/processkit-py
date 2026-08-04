@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `Command.sanitize_vt()`, `stdout_sanitize_vt()`, and
+  `stderr_sanitize_vt()` for clean captured and streaming terminal text, plus
+  `processkit run --sanitize-vt` for ANSI-free CLI relay output.
 - Add a `processkit` console-script entry point
   (`processkit run -- pytest -x`, `processkit doctor`), alongside the
   still-supported `python -m processkit` form, sharing the identical

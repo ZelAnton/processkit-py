@@ -1075,6 +1075,25 @@ def test_pty_interactive_input_round_trips_over_terminal_master() -> None:
     assert "reply:hello" in result.stdout
 
 
+def test_pty_sanitize_vt_cleans_merged_streaming_output() -> None:
+    async def scenario() -> list[str]:
+        code = (
+            "import sys; "
+            "sys.stdout.write('\\x1b[31mstdout-clean\\x1b[0m\\n'); sys.stdout.flush(); "
+            "sys.stderr.write('\\x1b]0;title\\x07\\x1b[32mstderr-clean\\x1b[0m\\n'); "
+            "sys.stderr.flush()"
+        )
+        proc = await Command(PY, ["-c", code]).pty().sanitize_vt().astart()
+        lines = [event.text async for event in proc.output_events()]
+        await proc.aoutcome()
+        return lines
+
+    lines = asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+    assert "stdout-clean" in lines
+    assert "stderr-clean" in lines
+    assert all("\x1b" not in line for line in lines)
+
+
 @pytest.mark.skipif(
     not pty_control_input_supported(),
     reason="ConPTY cannot synthesize Ctrl-C from a headless Windows launcher",

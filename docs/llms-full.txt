@@ -194,6 +194,24 @@ async for event in proc.output_events():
     print(event.stream, event.text)   # "stdout" / "stderr"
 ```
 
+## Clean ANSI/VT escapes from PTY output
+
+TTY-sensitive tools may emit colors, cursor movement, and OSC metadata into a
+PTY's merged output. Sanitize the captured and streamed text before logging,
+parsing, or asserting on it:
+
+```python
+from processkit import Command
+
+result = Command("colorful-tool", ["status"]).pty().sanitize_vt().output()
+print(result.stdout)  # plain text; terminal escape sequences removed
+```
+
+In pipe mode, use `stdout_sanitize_vt()` or `stderr_sanitize_vt()` to clean only
+one captured stream. Sanitization runs after decoding and line splitting. A
+simultaneous `stdout_tee()` still receives the original escape-laden decoded
+lines, so it can remain a faithful terminal log while `result.stdout` is clean.
+
 ## Stream a log to a file and still get the captured result
 
 `stdout_tee(path)` / `stderr_tee(path)` write the live stream to a file *and*
@@ -3103,6 +3121,34 @@ Existing line framing still applies, including
 bare `\r`. `resize_pty(cols, rows)` requires positive dimensions and raises
 `ProcessError` for a non-PTY or already-exited process.
 
+Terminal-aware tools often fill that merged stream with ANSI colors, cursor
+movement, alternate-screen switches, and OSC titles or hyperlinks. Add
+`sanitize_vt()` when the consumer needs plain text for logging, parsing, or
+assertions:
+
+```python
+result = Command("colorful-tool").pty().sanitize_vt().output()
+assert "\x1b" not in result.stdout
+```
+
+`sanitize_vt()` targets both capture channels; `stdout_sanitize_vt()` and
+`stderr_sanitize_vt()` target one channel in ordinary pipe mode. The processing
+order is fixed and identical for stdout, stderr, and PTY's merged stdout: raw
+bytes are decoded with the configured encoding, decoded text is split using the
+configured line terminator, then each line is sanitized before entering the
+capture backlog. `ProcessResult`, `run()`/`output()`, and the streaming
+`stdout_lines()`/`stderr_lines()`/`output_events()` APIs therefore see clean
+text without changing line boundaries.
+
+The sanitizer deliberately does not rewrite independent output paths.
+Per-line callbacks and decoded `stdout_tee()`/`stderr_tee()` sinks see the
+original decoded lines. `output_bytes()` preserves raw stdout bytes, but stderr
+remains line-decoded and is therefore sanitized when stderr sanitization is
+enabled. Direct `stdout_file()`/`stderr_file()` redirects preserve original
+bytes. It is also inert for an inherited or null stream because no capture pump
+runs. This makes it safe to keep a faithful terminal log in a tee while parsing
+the cleaned capture.
+
 PTY mode is mutually exclusive with inherited, null, or file-redirected stdio.
 Conflicts are rejected while constructing the command. It preserves the same
 private-tree containment and context-manager teardown as an ordinary launch.
@@ -4892,6 +4938,7 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--profile [FILE]` | `RunningProcess.profile(...)` | After the child exits, emit a JSON resource profile — to stderr if `FILE` is omitted, or written to `FILE` otherwise. See [below](#--profile-machine-readable-resource-usage). |
 | `--create-no-window` | `Command.create_no_window()` | Do not create a console window for the child. No-op outside Windows (same as the underlying binding method). |
 | `--output-limit BYTES` | `Command.output_limit(max_bytes=..., on_overflow="error")` | Pipe and re-emit output line-by-line, failing with `125` if captured stdout/stderr exceeds the raw-byte ceiling. Incompatible with `--profile` and `--stdout-file`. |
+| `--sanitize-vt` | `Command.sanitize_vt()` | Strip ANSI/VT terminal escapes from captured stdout/stderr and re-emit clean text line-by-line. Incompatible with `--profile` and `--stdout-file`. |
 | `--stdout-file PATH` | `Command.stdout_file(path)` | Redirect stdout directly to a newly created or truncated file. |
 | `--stderr-file PATH` | `Command.stderr_file(path)` | Redirect stderr directly to a newly created or truncated file. |
 | `--kill-on-parent-death` | `Command.kill_on_parent_death()` | Best-effort abrupt-owner-death cleanup; platform scope is unchanged from the API. |
@@ -4912,6 +4959,23 @@ entry in the same layer wins; explicit flags therefore override every file.
 Files are UTF-8 (an optional BOM is accepted); values are literal and may contain
 additional `=` characters. Missing/unreadable files and non-comment lines
 without `=` are usage errors with the file and line number, never tracebacks.
+
+### `--sanitize-vt`: clean terminal output
+
+Use `--sanitize-vt` for a color-sensitive tool whose output must become plain
+text for CI logs or downstream parsing. It is particularly useful with `--pty`,
+where stdout and stderr are one escape-heavy terminal stream:
+
+```bash
+python -m processkit run --pty --sanitize-vt -- colorful-tool status
+```
+
+The flag selects the managed line relay even without `--pty`: bytes are decoded,
+split into lines, sanitized through `Command.sanitize_vt()`, and then re-emitted
+to the wrapper's stdout/stderr. This preserves stream identity in pipe mode and
+uses stdout for PTY's merged stream. It is incompatible with `--profile`
+(which consumes the live handle through the profiling wait) and `--stdout-file`
+(which removes the stdout capture pipe).
 
 ### `--profile`: machine-readable resource usage
 
@@ -5834,6 +5898,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `Command.sanitize_vt()`, `stdout_sanitize_vt()`, and
+  `stderr_sanitize_vt()` for clean captured and streaming terminal text, plus
+  `processkit run --sanitize-vt` for ANSI-free CLI relay output.
 - Add a `processkit` console-script entry point
   (`processkit run -- pytest -x`, `processkit doctor`), alongside the
   still-supported `python -m processkit` form, sharing the identical
@@ -7461,6 +7528,46 @@ def stderr_line_terminator(mode: LineTerminatorName) -> Command
 Choose where the line pump splits **stderr** into lines (see
 ``line_terminator``); stdout framing is left untouched. Handy when
 progress output lands on stderr while stdout stays newline-structured.
+
+#### `sanitize_vt`
+
+```text
+def sanitize_vt() -> Command
+```
+
+Strip VT/ANSI escapes and lone terminal controls from captured
+**stdout and stderr**, especially a PTY's merged stdout.
+
+Bytes are decoded first, then split using the configured
+``line_terminator``; sanitization runs on each decoded line immediately
+before capture. ``ProcessResult`` and the line-streaming iterators
+therefore expose clean text with unchanged line boundaries.
+
+Capture-only: per-line callbacks and ``stdout_tee``/``stderr_tee`` see
+the original decoded lines. ``output_bytes()`` preserves raw stdout
+bytes, but stderr remains line-decoded and is therefore sanitized when
+stderr sanitization is enabled. Direct ``stdout_file``/``stderr_file``
+redirects preserve original bytes. Inert for an inherited or null
+stream because no capture pump runs. Available on every supported
+platform and off by default.
+
+#### `stdout_sanitize_vt`
+
+```text
+def stdout_sanitize_vt() -> Command
+```
+
+Enable ``sanitize_vt`` for captured **stdout** only. Decoding and
+line splitting happen first; tees and direct redirects remain raw.
+
+#### `stderr_sanitize_vt`
+
+```text
+def stderr_sanitize_vt() -> Command
+```
+
+Enable ``sanitize_vt`` for captured **stderr** only. Decoding and
+line splitting happen first; tees and direct redirects remain raw.
 
 #### `stdout_tee`
 

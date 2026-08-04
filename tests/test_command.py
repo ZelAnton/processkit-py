@@ -897,6 +897,58 @@ def test_per_stream_encoding_overrides() -> None:
     assert "é" in result.stderr
 
 
+# --- VT/ANSI sanitization ----------------------------------------------------
+
+
+def test_sanitize_vt_cleans_separate_stdout_and_stderr_capture() -> None:
+    code = (
+        "import sys; "
+        "sys.stdout.write('\\x1b[31mout\\x1b[0m\\n'); "
+        "sys.stderr.write('\\x1b]0;title\\x07\\x1b[32merr\\x1b[0m\\n')"
+    )
+    result = Command(PY, ["-c", code]).sanitize_vt().output()
+    assert result.stdout == "out"
+    assert result.stderr == "err"
+
+
+def test_sanitize_vt_output_bytes_keeps_stdout_raw_but_cleans_stderr() -> None:
+    code = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'\\x1b[31mOUT\\x1b[0m'); "
+        "sys.stderr.buffer.write(b'\\x1b[32mERR\\x1b[0m')"
+    )
+    result = Command(PY, ["-c", code]).sanitize_vt().output_bytes()
+    assert result.stdout == b"\x1b[31mOUT\x1b[0m"
+    assert result.stderr == "ERR"
+
+
+def test_per_stream_sanitize_vt_only_changes_its_capture() -> None:
+    code = (
+        "import sys; "
+        "sys.stdout.write('\\x1b[31mout\\x1b[0m\\n'); "
+        "sys.stderr.write('\\x1b[32merr\\x1b[0m\\n')"
+    )
+    stdout_clean = Command(PY, ["-c", code]).stdout_sanitize_vt().output()
+    assert stdout_clean.stdout == "out"
+    assert "\x1b[32m" in stdout_clean.stderr
+
+    stderr_clean = Command(PY, ["-c", code]).stderr_sanitize_vt().output()
+    assert "\x1b[31m" in stderr_clean.stdout
+    assert stderr_clean.stderr == "err"
+
+
+def test_sanitize_vt_runs_after_decode_and_line_splitting() -> None:
+    code = "import sys; sys.stdout.buffer.write(b'\\x1b[31m\\xe9\\x1b[0m\\rnext\\n')"
+    result = (
+        Command(PY, ["-c", code])
+        .stdout_encoding("iso-8859-1")
+        .stdout_line_terminator("carriage_return")
+        .stdout_sanitize_vt()
+        .output()
+    )
+    assert result.stdout.splitlines() == ["é", "next"]
+
+
 # --- stdout/stderr redirection ----------------------------------------------
 
 
@@ -980,6 +1032,19 @@ def test_stdout_null_works_with_start_then_wait() -> None:
     assert asyncio.run(scenario()) == 0
 
 
+def test_sanitize_vt_is_inert_for_null_and_inherited_stdout(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    raw_code = "import sys; sys.stdout.buffer.write(b'\\x1b[31mraw\\x1b[0m\\n')"
+    with Command(PY, ["-c", raw_code]).stdout("null").sanitize_vt().start() as proc:
+        assert proc.outcome().code == 0
+    assert capfd.readouterr().out == ""
+
+    with Command(PY, ["-c", raw_code]).stdout("inherit").sanitize_vt().start() as proc:
+        assert proc.outcome().code == 0
+    assert capfd.readouterr().out == "\x1b[31mraw\x1b[0m\n"
+
+
 def test_stdout_rejects_unknown_mode() -> None:
     with pytest.raises(ValueError):
         # An invalid mode is the point of the test; mypy would flag the literal.
@@ -1015,6 +1080,18 @@ def test_stdout_file_writes_child_output_to_the_file(tmp_path: pathlib.Path) -> 
     assert outcome.code == 0
     # The child wrote directly to the file — no parent capture involved.
     assert path.read_text(encoding="utf-8").strip() == "to-file"
+
+
+def test_stdout_sanitize_vt_is_inert_for_direct_file_redirect(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "raw-vt.log"
+    code = "import sys; sys.stdout.buffer.write(b'\\x1b[36mraw\\x1b[0m\\n')"
+    cmd = Command(PY, ["-c", code]).stdout_file(path).stdout_sanitize_vt()
+    with cmd.start() as proc:
+        outcome = proc.outcome()
+    assert outcome.code == 0
+    assert path.read_bytes() == b"\x1b[36mraw\x1b[0m\n"
 
 
 def test_stdout_file_truncate_overwrites_on_each_spawn(tmp_path: pathlib.Path) -> None:
@@ -1880,6 +1957,16 @@ def test_stdout_tee_writes_lines_and_keeps_capture(tmp_path: pathlib.Path) -> No
     assert result.is_success
     assert result.stdout.splitlines() == ["alpha", "beta"]
     assert sink.read_bytes() == b"alpha\nbeta\n"
+
+
+def test_stdout_sanitize_vt_coexists_with_tee_without_rewriting_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    sink = tmp_path / "raw.log"
+    code = "import sys; sys.stdout.write('\\x1b[35mclean\\x1b[0m\\n'); sys.stdout.flush()"
+    result = Command(PY, ["-c", code]).stdout_tee(sink).stdout_sanitize_vt().output()
+    assert result.stdout == "clean"
+    assert sink.read_bytes() == b"\x1b[35mclean\x1b[0m\n"
 
 
 def test_stderr_tee_writes_lines_and_keeps_capture(tmp_path: pathlib.Path) -> None:

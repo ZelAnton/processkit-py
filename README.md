@@ -342,8 +342,10 @@ with Command("interactive-tool").pty(cols=120, rows=40).keep_stdin_open().start(
     proc.resize_pty(160, 50)
 ```
 
-The existing `stdout_lines()` and `take_stdin()` APIs work with the PTY; in
-async code `send_control("c")` delivers terminal Ctrl-C semantics.
+The existing `stdout_lines()` and `take_stdin()` APIs work with the PTY;
+`sanitize_vt()` strips colors, cursor controls, and other terminal escapes from
+captured/streamed text for logging or parsing. In async code
+`send_control("c")` delivers terminal Ctrl-C semantics.
 
 ### Waiting for a child to be ready
 

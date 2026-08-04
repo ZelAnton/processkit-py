@@ -2175,9 +2175,8 @@ secrets, and redaction is a policy the consumer must own.
 
 ## Resource limits: the sandbox
 
-The three limit keywords turn the group into a sandbox. They are a property of
-the group, set once at construction and enforced by the same kernel object that
-contains the tree:
+The three limit keywords turn the group into a sandbox. They are enforced by
+the same kernel object that contains the tree:
 
 ```python
 from processkit import Command, ProcessGroup
@@ -2190,12 +2189,45 @@ with ProcessGroup(
     group.start(Command("untrusted-tool"))
 ```
 
+`update_limits(*, max_memory=None, max_processes=None, cpu_quota=None)` changes
+those caps without recreating the group or restarting its children. It is a
+**full replacement**, not a merge: every call describes all three axes, and an
+omitted axis becomes unbounded. Reissuing the complete desired set is therefore
+idempotent when the previous update was attempted. `update_limits()` can return
+`ProcessError("busy")` while another operation on the same group is in flight
+(including an incomplete `await group.arun(...)`). Wait for that operation to
+complete, then retry the complete desired set:
+
+```python
+with ProcessGroup(max_memory=512 * 1024 * 1024) as group:
+    group.start(Command("worker"))
+    group.update_limits(
+        max_memory=1024 * 1024 * 1024,
+        max_processes=64,
+        cpu_quota=1.0,
+    )
+    group.update_limits(max_processes=32)  # memory and CPU are lifted
+```
+
+The method is synchronous; the core update does no asynchronous work. Invalid
+values and platform failures use the same typed `ResourceLimit` path as the
+constructor: the message distinguishes an invalid value, a mechanism without
+whole-tree accounting, and a capable mechanism that could not enforce the
+request.
+
+Applying several OS caps is not atomic. A failure does **not** roll back writes
+that already succeeded, so the live container may hold a mix of old and new
+caps; retry the complete desired set or tear the group down. Every axis named by
+an update that reached the OS is nevertheless added to the sticky cap record,
+whether the call succeeds or fails. That record remains conservative and never
+supports a fabricated "not tripped" verdict for a possibly-applied cap.
+
 `cpu_quota` is a fraction of a **single** core. On Windows it is converted
 against the host CPU count and is approximate (a CPU-*rate* cap, not a hard
 quota); on the Linux cgroup it is exact.
 
 Limits need a **real container** — a Windows Job Object or a Linux **cgroup-v2
-root**. If a requested cap can't be enforced, the constructor raises
+root**. If a requested cap can't be enforced, construction or `update_limits()` raises
 `ResourceLimit` rather than handing you a silently-unbounded group:
 
 ```python
@@ -2435,6 +2467,16 @@ real container (a Windows Job Object or a Linux cgroup-v2 root); where one
 isn't available, the constructor raises `ResourceLimit` rather than handing
 back a silently-unbounded group. Full treatment, including the platform
 matrix: [Resource limits: the sandbox](process-groups.md#resource-limits-the-sandbox).
+
+For a long-lived sandbox, `group.update_limits(max_memory=...,
+max_processes=..., cpu_quota=...)` replaces the caps on the live kernel
+container without restarting its children. The call is a **full replacement**:
+an omitted axis is lifted, not retained. A failed multi-axis update is not
+rolled back and may have applied some axes, so retry the complete desired set;
+the crate's sticky cap record includes every requested capped axis even on that
+failure path. If another operation on the group is in flight,
+`update_limits()` raises `ProcessError("busy")`; wait for that operation to
+complete, then retry the complete desired set.
 
 ### 4. A timeout
 
@@ -8879,6 +8921,25 @@ def kill_all() -> None
 def stats() -> ProcessGroupStats
 ```
 
+#### `update_limits`
+
+```text
+def update_limits(
+    *,
+    max_memory: int | None = ...,
+    max_processes: int | None = ...,
+    cpu_quota: float | None = ...,
+) -> None
+```
+
+Replace the live group's complete resource-limit set.
+
+Omitted axes become unbounded; this is not a partial merge. The method
+is synchronous because the core operation does no asynchronous work.
+It raises ``ProcessError`` with ``"busy"`` if another operation on this
+group is in flight; after that operation completes, retry the complete
+desired set.
+
 #### `stop`
 
 ```text
@@ -10934,3 +10995,37 @@ When adding a new pure helper to `convert.rs`/`supervisor.rs`, prefer a Rust
 behavior that's actually observable through the compiled API (an exception's
 type/message, a builder's resulting policy) rather than the helper's internals
 directly.
+
+## ProcessKit 3.2.0 surface audit
+
+The 3.2.0 crate release adds several public Rust surfaces that are intentionally
+not swept into the Python binding as an automatic parity exercise. Each item
+needs its own contract, tests, and review before it becomes a Python API:
+
+- `SupervisionSession::events()` and `SupervisionEvent` are a plausible future
+  async iterator, but the Python representation of the event enum, including
+  the bounded-channel `Lagged` case, must be designed first.
+- `ProcessGroup::limit_evidence()` is useful post-run evidence, but its
+  `Tripped`/`NotTripped`/`Unknown` result must remain explicitly tri-state; it
+  must not be reduced to a boolean on platforms where the crate cannot prove
+  the verdict.
+- `cancel_signal` and `cancel_grace` require an explicit compatibility design
+  against the binding's current cancellation and timeout behavior. They are
+  not safe as passive builder kwargs until the soft-cancellation ordering and
+  platform defaults are documented and tested.
+- `output_json` is presently a likely duplicate of the binding's existing
+  `run_json()`/`arun_json()` contract. A future proposal should prove a user
+  visible semantic gap before adding another verb.
+- `report-serde` is an opt-in crate feature and is not needed while the Python
+  `ShutdownReport` exposes structured fields directly. Enabling it would be a
+  dependency/feature decision, not a free API-parity improvement.
+- `Mechanism::ProcessReaper` is platform-specific and the crate enum is
+  non-exhaustive. Any Python-facing representation must preserve unknown future
+  mechanisms and document the FreeBSD-only availability.
+- `wait_for_path` and the crate's HTTP probe overlap with the binding's
+  Python-side probes. The Python implementation remains canonical until a
+  measured compatibility or performance gap justifies a separate migration.
+
+This audit deliberately creates follow-up scope rather than adding public
+symbols here. A follow-up that changes `src/*.rs`, `_processkit.pyi`, or the
+top-level exports must carry its own API-surface tests and human-review gate.

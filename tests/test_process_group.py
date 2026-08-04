@@ -300,6 +300,20 @@ def test_update_limits_after_close_raises() -> None:
         group.update_limits(max_processes=64)
 
 
+def test_update_limits_while_arun_is_in_flight_raises_busy() -> None:
+    async def scenario() -> None:
+        async with ProcessGroup() as group:
+            task = asyncio.ensure_future(
+                group.arun(Command(PY, ["-c", "import time; time.sleep(0.1)"]))
+            )
+            await asyncio.sleep(0)
+            with pytest.raises(ProcessError, match="busy"):
+                group.update_limits()
+            await task
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.skipif(
     sys.platform != "win32", reason="Job Object active-process limit is Windows-specific"
 )

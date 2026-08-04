@@ -314,7 +314,10 @@ with ProcessGroup(
 those caps without recreating the group or restarting its children. It is a
 **full replacement**, not a merge: every call describes all three axes, and an
 omitted axis becomes unbounded. Reissuing the complete desired set is therefore
-an idempotent retry:
+idempotent when the previous update was attempted. `update_limits()` can return
+`ProcessError("busy")` while another operation on the same group is in flight
+(including an incomplete `await group.arun(...)`). Wait for that operation to
+complete, then retry the complete desired set:
 
 ```python
 with ProcessGroup(max_memory=512 * 1024 * 1024) as group:
@@ -337,8 +340,8 @@ Applying several OS caps is not atomic. A failure does **not** roll back writes
 that already succeeded, so the live container may hold a mix of old and new
 caps; retry the complete desired set or tear the group down. Every axis named by
 an update that reached the OS is nevertheless added to the sticky cap record,
-whether the call succeeds or fails, so `limit_evidence()` remains conservative
-and never fabricates a "not tripped" verdict for a possibly-applied cap.
+whether the call succeeds or fails. That record remains conservative and never
+supports a fabricated "not tripped" verdict for a possibly-applied cap.
 
 `cpu_quota` is a fraction of a **single** core. On Windows it is converted
 against the host CPU count and is approximate (a CPU-*rate* cap, not a hard

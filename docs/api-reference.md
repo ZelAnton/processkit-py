@@ -1943,6 +1943,9 @@ Replace the live group's complete resource-limit set.
 
 Omitted axes become unbounded; this is not a partial merge. The method
 is synchronous because the core operation does no asynchronous work.
+It raises ``ProcessError`` with ``"busy"`` if another operation on this
+group is in flight; after that operation completes, retry the complete
+desired set.
 
 #### `stop`
 

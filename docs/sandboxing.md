@@ -155,8 +155,10 @@ max_processes=..., cpu_quota=...)` replaces the caps on the live kernel
 container without restarting its children. The call is a **full replacement**:
 an omitted axis is lifted, not retained. A failed multi-axis update is not
 rolled back and may have applied some axes, so retry the complete desired set;
-the sticky record used by `limit_evidence()` includes every requested capped
-axis even on that failure path.
+the crate's sticky cap record includes every requested capped axis even on that
+failure path. If another operation on the group is in flight,
+`update_limits()` raises `ProcessError("busy")`; wait for that operation to
+complete, then retry the complete desired set.
 
 ### 4. A timeout
 

@@ -132,12 +132,17 @@ by `members()` and `members_info()` are observations, not enrollment inputs. The
 supported path is to move process creation to a `Command` and run that command
 through the group's entry points above.
 
-Containment and completion observation are separate concerns. OS-level
-containment does not make a foreign process a child of the current Python
-process. A process that is not its child cannot be reaped by it, so processkit
-cannot provide wait-for-completion or an exit status for that process. Placing
-a foreign process under a common teardown boundary is therefore about
+Containment and completion observation are separate concerns. processkit does
+not provide wait-for-completion or exit-status observation for processes it did
+not create because those processes are not its children and cannot be reaped by
+it. Its completion surface (`outcome()`, `finish()`, and `exit_code()`) is built
+on reaping semantics, so this is a structural limitation of the library.
+Placing a foreign process under a common teardown boundary is therefore about
 containment and teardown, not observing its completion.
+
+To observe a foreign process without taking ownership, use the module-level
+`process_info()` and `process_is_alive()` lookup helpers documented in
+[Commands](commands.md).
 
 If several independent launchers must live under one operational umbrella, run
 the entire supervisor inside a host-managed container, Job Object, or cgroup.

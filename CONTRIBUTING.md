@@ -18,6 +18,10 @@ parity), and how the stub/runtime/`__all__` drift guard works.
 - [`just`](https://github.com/casey/just#installation) — the dev task runner
   used below (`cargo install just`, `uv tool install rust-just`,
   `winget install --id Casey.Just`, or `brew install just` all work).
+- On Windows only: [PowerShell 7](https://aka.ms/powershell) (`pwsh`) on your
+  PATH. It is the shell this repository's helper scripts and `just` recipes use,
+  and Cargo starts the Rust test binaries through one of them — see
+  [Build and test](#build-and-test).
 
 ## Build and test
 
@@ -27,8 +31,8 @@ command below; run `just --list` for the full, up-to-date list with descriptions
 ```sh
 just build              # build the Rust extension and install it in-place
 just test               # run the tests (requires `just build` first)
-just rust-test          # Rust unit tests (Linux/macOS)
-just rust-test-windows  # Rust unit tests (Windows; after `just build`)
+just rust-test          # Rust unit tests (all platforms, Windows included)
+just rust-test-windows  # Windows alias of the above that also pins PYO3_PYTHON
 just fmt                # apply ruff formatting
 just lint               # ruff format --check + ruff check
 just typecheck          # mypy --strict, then stubtest against the compiled extension
@@ -44,9 +48,63 @@ part of the day-to-day dev cycle, so it has no `just` recipe).
 `ruff check`, `mypy --strict`, and `pytest` (with warnings promoted to errors)
 are the gates CI enforces, so run them locally before opening a pull request.
 CI additionally runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and
-the Rust unit tests. On Windows, `just rust-test-windows` obtains uv's selected
-Python base prefix programmatically and adds it to `PATH`, allowing the Cargo
-test binary to find the base Python DLL without a machine-specific path.
+the Rust unit tests.
+
+### Rust tests on Windows
+
+`cargo test` needs nothing special on Windows — no `PATH` edits, no wrapper to
+remember, no Python of your own beyond the one `uv sync` provisions.
+[`.cargo/config.toml`](.cargo/config.toml) registers
+[`scripts/cargo-runner-windows.ps1`](scripts/cargo-runner-windows.ps1) as Cargo's
+`runner` for the Windows targets, so Cargo starts *every* test binary through it.
+The shim asks uv which interpreter this project uses and prepends the directory
+holding its base Python DLL to that process's `PATH`. Without it the binary
+cannot resolve `python3.dll` (PyO3 links it for the abi3 build, and a virtualenv
+does not put its directory on `PATH`): it dies with `STATUS_DLL_NOT_FOUND`
+behind a modal *"python3.dll was not found"* dialog — which, in a headless CI or
+agent session, waits forever for an OK nobody will click. As a second line of
+defense the shim also turns Windows' error dialogs off for the binaries it
+starts, so such a failure is always an exit code rather than a hang; set
+`PROCESSKIT_RUNNER_ERROR_DIALOGS=1` to keep the dialogs, e.g. to attach a
+just-in-time debugger to a crashing test.
+
+The *build* needs no interpreter of its own either — worth spelling out, because
+PyO3 normally looks one up (`PYO3_PYTHON`, then `VIRTUAL_ENV`/`CONDA_PREFIX`,
+then `python`/`python3` on `PATH`; an unactivated `.venv` is not in that list, so
+you would expect a bare `cargo test` to fail here). It does not, because this
+crate's `abi3-py310` build links `python3.dll` through `raw-dylib` on Windows:
+PyO3 0.29 needs neither an import library nor a working interpreter for that and
+falls back to its stable-ABI configuration. A `uv sync`'d checkout therefore
+builds and runs `cargo test` on a machine whose only Python belongs to uv. If you
+*do* have a `python` on `PATH`, PyO3 will build against it instead — which is
+what the wrapper below is for.
+
+Neither promise is left to trust. CI runs
+[`scripts/rust-test-no-system-python.ps1`](scripts/rust-test-no-system-python.ps1),
+which strips every directory offering a `python*.exe`/`python3*.dll` from `PATH`,
+verifies none is left, and only then runs `cargo test --all-targets`. That makes
+the shim the only possible source of the DLL, so a regression in it turns the
+build red instead of passing on some unrelated system Python — and it keeps the
+build-side claim above honest too, since `PYO3_PYTHON` is left unset. The script
+also sets `PROCESSKIT_RUNNER_REQUIRE_PYTHON`, which makes the shim's
+(deliberately fail-open) interpreter lookup fatal; the shim turns that on by
+itself whenever `CI` is set, so no automated context can quietly lose the fix.
+Run it locally as `just rust-test-no-system-python` to reproduce a CI failure, or
+to see for yourself that the shim is load-bearing.
+
+`just rust-test-windows` runs
+[`scripts/cargo-test-windows.ps1`](scripts/cargo-test-windows.ps1), which stays
+supported and adds the one thing a runner cannot: it pins `PYO3_PYTHON`, so the
+*build* also uses uv's interpreter rather than whichever `python` comes first on
+`PATH`. Both paths resolve the interpreter through the same helper
+(`scripts/python-runtime.ps1`), so they cannot drift apart.
+
+One practical cost of keeping both entry points: `PYO3_PYTHON` is a
+`rerun-if-env-changed` input of PyO3's build script, so alternating
+`just rust-test` (which leaves it unset) with `just rust-test-windows` (which
+pins it) recompiles `pyo3-ffi`, `pyo3`, `pyo3-async-runtimes` and this crate
+every time you switch. Stick to one of them within a working session; CI pays
+that rebuild exactly once, on purpose, to keep both of its checks meaningful.
 
 ## Pre-commit (optional but recommended)
 

@@ -1,0 +1,37 @@
+# Cargo configuration for this checkout. (Mutation-testing settings live next to
+# it in .cargo/mutants.toml, which cargo-mutants reads separately.)
+#
+# `runner` is the command Cargo starts a built binary through. On Windows every
+# test/example binary goes through scripts/cargo-runner-windows.ps1, which puts
+# the base Python DLL directory on PATH for the child: the binary links
+# `python3.dll` (PyO3's abi3 build), uv keeps that DLL beside the interpreter it
+# provisioned, and a virtual environment does not put that directory on PATH.
+# Without the shim a bare `cargo test` dies with STATUS_DLL_NOT_FOUND behind a
+# modal "python3.dll was not found" dialog that blocks a headless session
+# forever. With it, plain `cargo test` / `just rust-test` work on Windows with no
+# preparation, and scripts/cargo-test-windows.ps1 stays an equivalent explicit
+# alias (it additionally pins PYO3_PYTHON for the build). See CONTRIBUTING.md.
+#
+# Both Windows triples the project targets are listed: the x64 one developers and
+# CI's `rust-test (windows)` job build for, and the ARM64 one CI builds and tests
+# wheels for (`windows-11-arm` in ci.yml / _build-dists.yml). Other targets get no
+# runner — on Linux/macOS the interpreter's shared library is found without help,
+# so `cargo test` there is untouched by this file.
+#
+# The shim path is relative on purpose: Cargo runs a wrapped binary with the
+# package root as its working directory, so it resolves no matter which
+# subdirectory `cargo test` was invoked from. It needs PowerShell 7 (`pwsh`) on
+# PATH — already this repository's documented Windows shell (justfile, CI).
+#
+# The shim is fail-open at a developer's prompt, so it can never itself be the
+# reason a test does not start — which would also hide its own regressions, so it
+# fails closed under CI (or PROCESSKIT_RUNNER_REQUIRE_PYTHON), and
+# scripts/rust-test-no-system-python.ps1 runs the suite with every system Python
+# hidden from PATH to keep proving that this file, and not some unrelated
+# interpreter that happened to be installed, is what makes `cargo test` work.
+
+[target.x86_64-pc-windows-msvc]
+runner = ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", "scripts/cargo-runner-windows.ps1"]
+
+[target.aarch64-pc-windows-msvc]
+runner = ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", "scripts/cargo-runner-windows.ps1"]

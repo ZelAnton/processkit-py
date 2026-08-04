@@ -157,9 +157,38 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
-      # Build/install the extension exactly as a normal local checkout does,
-      # then expose uv's base Python DLL while Cargo starts its test executable.
+      # Build/install the extension exactly as a normal local checkout does.
       - run: uv run maturin develop
+      # `cargo test --all-targets`, the command CONTRIBUTING.md documents for
+      # developers — but with every system Python hidden first, which is the only
+      # way this job can check the thing it exists for.
+      #
+      # Run plainly here, it would prove nothing: `windows-latest` ships a
+      # preinstalled CPython on PATH (the rust-lint job above pins its own
+      # interpreter rather than rely on it), and that directory contains
+      # python3.dll — exactly the DLL PyO3's abi3 build links. The loader would
+      # find it whether .cargo/config.toml's runner shim did its job, silently
+      # degraded, or was deleted, so the fix could rot here undetected.
+      #
+      # scripts/rust-test-no-system-python.ps1 strips every directory offering a
+      # python*.exe/python3*.dll from PATH and verifies none is left, which makes
+      # the shim the only possible source of the DLL, and sets
+      # PROCESSKIT_RUNNER_REQUIRE_PYTHON so the shim's deliberately fail-open
+      # lookup is fatal here rather than a diagnostic nobody reads. Either way a
+      # broken shim is now a red build: exit 3 if it cannot resolve the
+      # interpreter, STATUS_DLL_NOT_FOUND if it stops putting it on PATH.
+      #
+      # It also leaves PYO3_PYTHON unset on purpose, which covers the other
+      # documented promise: a bare `cargo test` needs no interpreter to BUILD
+      # either, because PyO3 0.29 configures this crate's abi3-py310 build for
+      # Windows without one. The next step pins PYO3_PYTHON itself and so pays
+      # for one extra PyO3 rebuild — the price of two checks that can fail
+      # instead of one that cannot.
+      - run: pwsh ./scripts/rust-test-no-system-python.ps1
+      # The explicit script alias stays supported (justfile, CONTRIBUTING.md), so
+      # keep it covered too — with PATH untouched, the way a developer runs it.
+      # It pins PYO3_PYTHON to uv's interpreter, so it checks the other end: the
+      # build following uv's choice instead of whatever `python` comes first.
       - run: pwsh ./scripts/cargo-test-windows.ps1
 
   test:

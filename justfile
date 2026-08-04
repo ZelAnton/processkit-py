@@ -48,13 +48,29 @@ typecheck:
     uv run mypy
     uv run python -m mypy.stubtest processkit --ignore-disjoint-bases --allowlist stubtest-allowlist.txt
 
-# Rust unit tests (Linux/macOS only — on Windows use `just rust-test-windows`).
+# The three recipes below share one note. On Windows .cargo/config.toml routes
+# every test binary through scripts/cargo-runner-windows.ps1, which puts the base
+# Python DLL on PATH, so `just rust-test` needs no PATH juggling there either —
+# prefer it. `rust-test-windows` stays a supported alias that additionally pins
+# PYO3_PYTHON, so the BUILD ignores whatever python comes first on PATH; note
+# that alternating the two recompiles pyo3 every time (CONTRIBUTING.md explains
+# why). `rust-test-no-system-python` is the guard that keeps the first one
+# honest. All three are described under "Rust tests on Windows" there.
+#
+# `just` uses the single comment line directly above a recipe as its `--list`
+# description (that is why this block is set off by a blank line).
+
+# Rust unit tests (every platform, Windows included).
 rust-test:
     cargo test --all-targets
 
-# Rust unit tests (Windows only, after `just build` — on Linux/macOS use `just rust-test`).
+# Rust unit tests on Windows, with the build interpreter pinned to uv's.
 rust-test-windows:
     pwsh ./scripts/cargo-test-windows.ps1
+
+# Rust unit tests on Windows with no system Python on PATH (CI's regression guard).
+rust-test-no-system-python:
+    pwsh ./scripts/rust-test-no-system-python.ps1
 
 # Build the mdBook documentation site and validate rendered local links/anchors.
 docs:

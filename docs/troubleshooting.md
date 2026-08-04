@@ -30,6 +30,16 @@ calls `setsid()` or `setpgid()` leaves that group, so `killpg` cannot reach it;
 see [Tearing down](process-groups.md#tearing-down) for the escape boundary and
 the stronger backends.
 
+## A process started by another library survives group teardown
+
+`ProcessGroup` begins containment only with a root process created through its
+own `Command` entry points; it cannot add a process that `subprocess`, `asyncio`,
+or another library already started. Move that process's creation to `Command` /
+`ProcessGroup`, or put the whole supervisor under a host-managed containment
+boundary. See
+[Existing processes and
+containment](process-groups.md#existing-processes-and-containment).
+
 ## `a`-prefixed verbs report no running asyncio event loop
 
 The async surface is asyncio-native, so `aoutput()`, `arun()`, and related

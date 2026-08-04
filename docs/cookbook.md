@@ -324,6 +324,13 @@ async with ProcessGroup() as group:
     await group.astart(Command("dev-server"))
 ```
 
+If `subprocess`, `asyncio`, or another library currently starts the process,
+move that creation point to a `Command` passed to `group.start()` / `astart()`.
+Creating the group after the process is already running cannot bring it under
+the group's containment. See [Existing processes and
+containment](process-groups.md#existing-processes-and-containment) for the
+boundary and the host-level alternative.
+
 ## Cancel a run and reap its tree (async)
 
 Cancelling the awaiting task — directly, or via `asyncio.wait_for` /

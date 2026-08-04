@@ -18,6 +18,7 @@ member listing, resource limits, and stats.
 
 - [Creating a group and the mechanism](#creating-a-group-and-the-mechanism)
 - [Spawning into the group](#spawning-into-the-group)
+- [Existing processes and containment](#existing-processes-and-containment)
 - [Tearing down](#tearing-down)
 - [Signalling the whole tree](#signalling-the-whole-tree)
 - [Suspending and resuming](#suspending-and-resuming)
@@ -114,6 +115,33 @@ with ProcessGroup() as group:
     result = group.output(Command("check-something"))   # a non-zero exit is data
     version = group.run(Command("tool", ["--version"]))  # requires a zero exit
 ```
+
+## Existing processes and containment
+
+A `ProcessGroup` establishes containment when **processkit creates a root
+process through that group**; descendants that root later spawns are included
+automatically. The entry points are `start()`, `astart()`, `output()`,
+`output_bytes()`, `run()`, `exit_code()`, and `probe()`, plus the async
+`aoutput()`, `aoutput_bytes()`, `arun()`, `aexit_code()`, and `aprobe()` twins;
+each takes a `Command`.
+
+The current API cannot add an already-running process to a `ProcessGroup`,
+including one started with `subprocess`, `asyncio.create_subprocess_exec()` /
+`asyncio.create_subprocess_shell()`, or a third-party library. The PIDs returned
+by `members()` and `members_info()` are observations, not enrollment inputs. The
+supported path is to move process creation to a `Command` and run that command
+through the group's entry points above.
+
+Containment and completion observation are separate concerns. OS-level
+containment does not make a foreign process a child of the current Python
+process. A process that is not its child cannot be reaped by it, so processkit
+cannot provide wait-for-completion or an exit status for that process. Placing
+a foreign process under a common teardown boundary is therefore about
+containment and teardown, not observing its completion.
+
+If several independent launchers must live under one operational umbrella, run
+the entire supervisor inside a host-managed container, Job Object, or cgroup.
+That outer boundary belongs to the deployment environment, not to this library.
 
 ## Tearing down
 

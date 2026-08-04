@@ -6,6 +6,7 @@ use std::time::Duration;
 use processkit::Mechanism;
 use processkit::ProcessGroup as PkProcessGroup;
 use processkit::ProcessGroupOptions;
+use processkit::ResourceLimits;
 use processkit::ShutdownReport as PkShutdownReport;
 use processkit::SoftSignal;
 use pyo3::prelude::*;
@@ -549,6 +550,34 @@ impl PyProcessGroup {
             peak_memory_bytes: stats.peak_memory_bytes,
             total_cpu_time: stats.total_cpu_time,
         })
+    }
+
+    /// Replace all resource limits on this live group. An omitted axis is
+    /// lifted rather than inherited from the previous set. Synchronous only,
+    /// matching the crate API; no runtime or await is involved.
+    #[pyo3(signature = (*, max_memory=None, max_processes=None, cpu_quota=None))]
+    fn update_limits(
+        &self,
+        max_memory: Option<u64>,
+        max_processes: Option<u32>,
+        cpu_quota: Option<f64>,
+    ) -> PyResult<()> {
+        let mut limits = ResourceLimits::default();
+        limits.max_memory = max_memory;
+        limits.max_processes = max_processes;
+        limits.cpu_quota = cpu_quota;
+
+        // The upstream operation needs `&mut ProcessGroup`. Keep the existing
+        // slot lock only for this synchronous call; sequential live handles have
+        // one strong Arc reference, while an overlapping operation owns another
+        // clone and is rejected cleanly instead of panicking at the FFI boundary.
+        let mut slot = self.lock();
+        let group = slot
+            .as_mut()
+            .ok_or_else(|| ProcessError::new_err("ProcessGroup is already closed"))?;
+        let group = Arc::get_mut(group)
+            .ok_or_else(|| ProcessError::new_err("ProcessGroup is busy with another operation"))?;
+        group.update_limits(limits).map_err(map_err)
     }
 
     /// Gracefully stop the current tree and report what actually happened.

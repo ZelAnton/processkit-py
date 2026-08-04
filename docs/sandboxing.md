@@ -150,6 +150,16 @@ isn't available, the constructor raises `ResourceLimit` rather than handing
 back a silently-unbounded group. Full treatment, including the platform
 matrix: [Resource limits: the sandbox](process-groups.md#resource-limits-the-sandbox).
 
+For a long-lived sandbox, `group.update_limits(max_memory=...,
+max_processes=..., cpu_quota=...)` replaces the caps on the live kernel
+container without restarting its children. The call is a **full replacement**:
+an omitted axis is lifted, not retained. A failed multi-axis update is not
+rolled back and may have applied some axes, so retry the complete desired set;
+the crate's sticky cap record includes every requested capped axis even on that
+failure path. If another operation on the group is in flight,
+`update_limits()` raises `ProcessError("busy")`; wait for that operation to
+complete, then retry the complete desired set.
+
 ### 4. A timeout
 
 Untrusted code should never run unbounded. `.timeout(seconds)` kills the

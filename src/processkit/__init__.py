@@ -100,6 +100,7 @@ from ._types import (
     Priority,
     ReadableBuffer,
     RetryIf,
+    RlimitResourceName,
     SignalName,
     StrPath,
 )
@@ -168,6 +169,7 @@ __all__ = [
     "ReadableBuffer",
     "ResourceLimit",
     "RetryIf",
+    "RlimitResourceName",
     "RunProfile",
     "Runner",
     "RunningProcess",

@@ -639,6 +639,42 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
+## Per-process resource limits
+
+`rlimit(resource, soft, hard)` sets a POSIX `setrlimit(2)` limit for the
+child, installed after `fork` and before `exec` — before it has run any of
+its own code:
+
+```python
+# Cap the child's open-file-descriptor count and CPU time, and disable core
+# dumps for a process that may handle secrets.
+(
+    Command("worker")
+    .rlimit("no_file", 256, 256)
+    .rlimit("cpu", 30, 30)
+    .rlimit("core", 0, 0)
+    .run()
+)
+```
+
+`resource` is one of the `RlimitResourceName` presets: `"cpu"` (seconds),
+`"core"` (bytes), `"data"` (bytes), `"file_size"` (bytes), `"no_file"` (a
+count), `"stack"` (bytes) — an unknown name raises `ValueError` immediately.
+`soft`/`hard` use each resource's native unit; `soft` must not exceed `hard`
+— an invalid pair is a predictable error before the child is ever spawned,
+never a silent correction. Calls for different resources accumulate; a
+repeated call for the same resource is last-write-wins. Descendants inherit
+the values but may lower them further (and raise a lowered soft value back up
+to `hard`).
+
+`rlimit` is **POSIX-only**: on Windows the run raises `Unsupported`, the same
+platform-honest contract as `uid` / `gid` / `groups` / `setsid` above. It
+complements the whole-tree caps on `ProcessGroup` — `max_memory=...` /
+`max_processes=...` / `cpu_quota=...`, see
+[Sandboxing untrusted tools](sandboxing.md) — with a finer, per-command knob
+that also works where a cgroup limit isn't available: a non-root cgroup, or
+macOS/BSD, which have no cgroup equivalent at all.
+
 ## CPU affinity
 
 `cpu_affinity(cpus)` pins the child to logical CPU indices; descendants inherit

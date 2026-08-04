@@ -236,6 +236,7 @@ SECTIONS: tuple[Section, ...] = (
             "Priority",
             "ReadableBuffer",
             "RetryIf",
+            "RlimitResourceName",
             "SignalName",
             "StrPath",
         ),

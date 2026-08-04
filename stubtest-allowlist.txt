@@ -37,6 +37,7 @@ processkit._types.RetryIf
 processkit._types.LineTerminatorName
 processkit._types.Priority
 processkit._types.IoPriorityClass
+processkit._types.RlimitResourceName
 
 # --- compiled-module __all__ ------------------------------------------------
 # PyO3 emits a module-level __all__ on the extension; the stub does not redeclare

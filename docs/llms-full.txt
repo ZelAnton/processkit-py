@@ -1641,6 +1641,42 @@ Platform honesty, not silent no-ops:
   and describes only abrupt owner death — graceful teardown still kills the whole
   tree everywhere.
 
+## Per-process resource limits
+
+`rlimit(resource, soft, hard)` sets a POSIX `setrlimit(2)` limit for the
+child, installed after `fork` and before `exec` — before it has run any of
+its own code:
+
+```python
+# Cap the child's open-file-descriptor count and CPU time, and disable core
+# dumps for a process that may handle secrets.
+(
+    Command("worker")
+    .rlimit("no_file", 256, 256)
+    .rlimit("cpu", 30, 30)
+    .rlimit("core", 0, 0)
+    .run()
+)
+```
+
+`resource` is one of the `RlimitResourceName` presets: `"cpu"` (seconds),
+`"core"` (bytes), `"data"` (bytes), `"file_size"` (bytes), `"no_file"` (a
+count), `"stack"` (bytes) — an unknown name raises `ValueError` immediately.
+`soft`/`hard` use each resource's native unit; `soft` must not exceed `hard`
+— an invalid pair is a predictable error before the child is ever spawned,
+never a silent correction. Calls for different resources accumulate; a
+repeated call for the same resource is last-write-wins. Descendants inherit
+the values but may lower them further (and raise a lowered soft value back up
+to `hard`).
+
+`rlimit` is **POSIX-only**: on Windows the run raises `Unsupported`, the same
+platform-honest contract as `uid` / `gid` / `groups` / `setsid` above. It
+complements the whole-tree caps on `ProcessGroup` — `max_memory=...` /
+`max_processes=...` / `cpu_quota=...`, see
+[Sandboxing untrusted tools](sandboxing.md) — with a finer, per-command knob
+that also works where a cgroup limit isn't available: a non-root cgroup, or
+macOS/BSD, which have no cgroup equivalent at all.
+
 ## CPU affinity
 
 `cpu_affinity(cpus)` pins the child to logical CPU indices; descendants inherit
@@ -7522,6 +7558,28 @@ def setsid() -> Command
 def umask(mask: int) -> Command
 ```
 
+#### `rlimit`
+
+```text
+def rlimit(resource: RlimitResourceName, soft: int, hard: int) -> Command
+```
+
+Set a POSIX per-process ``setrlimit(2)`` resource limit for the child,
+installed after ``fork`` and before ``exec``.
+
+``resource`` is one of ``RlimitResourceName``: ``"cpu"``, ``"core"``,
+``"data"``, ``"file_size"``, ``"no_file"``, ``"stack"`` — an unknown
+name raises ``ValueError`` immediately. ``soft``/``hard`` use the
+resource's native unit (bytes for size limits, seconds for CPU, a
+count for open files); ``soft`` must not exceed ``hard`` — an invalid
+pair raises a predictable error before spawning, never a silent
+correction. Calls for different resources accumulate; repeating the
+same resource is last-write-wins. Complements the group-wide
+``ProcessGroup(max_memory=...)`` cap with a finer per-command knob
+that also works where cgroup limits are unavailable (non-root
+cgroup, macOS/BSD). Raises ``Unsupported`` off-POSIX, like
+``uid``/``gid``/``groups``/``setsid``/``umask``.
+
 #### `priority`
 
 ```text
@@ -10349,6 +10407,12 @@ ReadableBuffer = bytes | bytearray | memoryview
 RetryIf = Literal['transient', 'transient_or_timeout']
 ```
 
+### `RlimitResourceName`
+
+```text
+RlimitResourceName = Literal['cpu', 'core', 'data', 'file_size', 'no_file', 'stack']
+```
+
 ### `SignalName`
 
 ```text
@@ -10934,3 +10998,37 @@ When adding a new pure helper to `convert.rs`/`supervisor.rs`, prefer a Rust
 behavior that's actually observable through the compiled API (an exception's
 type/message, a builder's resulting policy) rather than the helper's internals
 directly.
+
+## ProcessKit 3.2.0 surface audit
+
+The 3.2.0 crate release adds several public Rust surfaces that are intentionally
+not swept into the Python binding as an automatic parity exercise. Each item
+needs its own contract, tests, and review before it becomes a Python API:
+
+- `SupervisionSession::events()` and `SupervisionEvent` are a plausible future
+  async iterator, but the Python representation of the event enum, including
+  the bounded-channel `Lagged` case, must be designed first.
+- `ProcessGroup::limit_evidence()` is useful post-run evidence, but its
+  `Tripped`/`NotTripped`/`Unknown` result must remain explicitly tri-state; it
+  must not be reduced to a boolean on platforms where the crate cannot prove
+  the verdict.
+- `cancel_signal` and `cancel_grace` require an explicit compatibility design
+  against the binding's current cancellation and timeout behavior. They are
+  not safe as passive builder kwargs until the soft-cancellation ordering and
+  platform defaults are documented and tested.
+- `output_json` is presently a likely duplicate of the binding's existing
+  `run_json()`/`arun_json()` contract. A future proposal should prove a user
+  visible semantic gap before adding another verb.
+- `report-serde` is an opt-in crate feature and is not needed while the Python
+  `ShutdownReport` exposes structured fields directly. Enabling it would be a
+  dependency/feature decision, not a free API-parity improvement.
+- `Mechanism::ProcessReaper` is platform-specific and the crate enum is
+  non-exhaustive. Any Python-facing representation must preserve unknown future
+  mechanisms and document the FreeBSD-only availability.
+- `wait_for_path` and the crate's HTTP probe overlap with the binding's
+  Python-side probes. The Python implementation remains canonical until a
+  measured compatibility or performance gap justifies a separate migration.
+
+This audit deliberately creates follow-up scope rather than adding public
+symbols here. A follow-up that changes `src/*.rs`, `_processkit.pyi`, or the
+top-level exports must carry its own API-surface tests and human-review gate.

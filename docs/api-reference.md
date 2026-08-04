@@ -571,6 +571,28 @@ def setsid() -> Command
 def umask(mask: int) -> Command
 ```
 
+#### `rlimit`
+
+```text
+def rlimit(resource: RlimitResourceName, soft: int, hard: int) -> Command
+```
+
+Set a POSIX per-process ``setrlimit(2)`` resource limit for the child,
+installed after ``fork`` and before ``exec``.
+
+``resource`` is one of ``RlimitResourceName``: ``"cpu"``, ``"core"``,
+``"data"``, ``"file_size"``, ``"no_file"``, ``"stack"`` — an unknown
+name raises ``ValueError`` immediately. ``soft``/``hard`` use the
+resource's native unit (bytes for size limits, seconds for CPU, a
+count for open files); ``soft`` must not exceed ``hard`` — an invalid
+pair raises a predictable error before spawning, never a silent
+correction. Calls for different resources accumulate; repeating the
+same resource is last-write-wins. Complements the group-wide
+``ProcessGroup(max_memory=...)`` cap with a finer per-command knob
+that also works where cgroup limits are unavailable (non-root
+cgroup, macOS/BSD). Raises ``Unsupported`` off-POSIX, like
+``uid``/``gid``/``groups``/``setsid``/``umask``.
+
 #### `priority`
 
 ```text
@@ -3396,6 +3418,12 @@ ReadableBuffer = bytes | bytearray | memoryview
 
 ```text
 RetryIf = Literal['transient', 'transient_or_timeout']
+```
+
+### `RlimitResourceName`
+
+```text
+RlimitResourceName = Literal['cpu', 'core', 'data', 'file_size', 'no_file', 'stack']
 ```
 
 ### `SignalName`

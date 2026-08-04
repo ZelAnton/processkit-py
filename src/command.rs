@@ -18,7 +18,8 @@ use crate::cli::parse_json;
 use crate::convert::{
     build_output_buffer_policy, build_retry_policy, is_python_writer, nonnegative_duration,
     open_tee_sink, parse_encoding, parse_io_priority, parse_line_terminator, parse_priority,
-    parse_retry_if, parse_signal, parse_stdio_mode, positive_duration, PyWriterSink,
+    parse_retry_if, parse_rlimit_resource, parse_signal, parse_stdio_mode, positive_duration,
+    PyWriterSink,
 };
 use crate::errors::{map_err, unsupported_err};
 use crate::result::{PyBytesResult, PyProcessResult};
@@ -938,6 +939,24 @@ impl PyCommand {
     /// non-POSIX platform the run raises `Unsupported`.
     fn umask(&self, mask: u32) -> Self {
         self.rewrap(self.inner.clone().umask(mask))
+    }
+
+    /// POSIX: set a per-process `setrlimit(2)` resource limit for the child,
+    /// installed after `fork` and before `exec`. `resource` is one of
+    /// `RlimitResourceName` (see `_types.py`): `"cpu"`, `"core"`, `"data"`,
+    /// `"file_size"`, `"no_file"`, `"stack"` — an unknown name raises
+    /// `ValueError` immediately. `soft`/`hard` use the resource's native unit
+    /// (bytes for size limits, seconds for CPU, a count for open files);
+    /// `soft` must not exceed `hard` — an invalid pair raises a predictable
+    /// error before spawning. Calls for different resources accumulate;
+    /// repeating the same resource is last-write-wins. Complements the
+    /// group-wide `ProcessGroup(max_memory=...)` cap with a finer per-command
+    /// knob that also works where cgroup limits are unavailable (non-root
+    /// cgroup, macOS/BSD). On a non-POSIX platform the run raises
+    /// `Unsupported`.
+    fn rlimit(&self, resource: &str, soft: u64, hard: u64) -> PyResult<Self> {
+        let resource = parse_rlimit_resource(resource)?;
+        Ok(self.rewrap(self.inner.clone().rlimit(resource, soft, hard)))
     }
 
     /// Set the child's CPU-scheduling priority: one of `"idle"`,

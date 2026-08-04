@@ -16,6 +16,7 @@ use processkit::OutputBufferPolicy;
 use processkit::OverflowMode;
 use processkit::Priority;
 use processkit::RetryPolicy;
+use processkit::RlimitResource;
 use processkit::Signal as PkSignal;
 use processkit::StdioMode;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
@@ -384,6 +385,21 @@ pub(crate) fn parse_priority(level: &str) -> PyResult<Priority> {
             "unknown priority {other:?}; use one of: idle, below_normal, normal, above_normal, high"
         ))),
     }
+}
+
+/// Map a `Command.rlimit(resource, ...)` preset name to the crate
+/// `RlimitResource` — a direct snake_case mirror of the crate's stable
+/// `RlimitResource::name()` identifiers (`"cpu"`, `"core"`, `"data"`,
+/// `"file_size"`, `"no_file"`, `"stack"`). Named presets are ASCII-case-
+/// insensitive so this fixed vocabulary follows the same contract as every
+/// other named preset parser.
+pub(crate) fn parse_rlimit_resource(resource: &str) -> PyResult<RlimitResource> {
+    let key = normalize_named_preset(resource);
+    RlimitResource::from_name(&key).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "unknown rlimit resource {key:?}; use one of: cpu, core, data, file_size, no_file, stack"
+        ))
+    })
 }
 
 /// Map the flat Python `Command.io_priority(class_name, level=...)` arguments

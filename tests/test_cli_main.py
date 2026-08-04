@@ -15,12 +15,13 @@ import json
 import os
 import pathlib
 import queue
-import shutil
 import signal
 import socket
 import subprocess
 import sys
+import sysconfig
 import threading
+from importlib import metadata
 from typing import IO
 
 import pytest
@@ -2161,15 +2162,60 @@ def test_supervise_successful_program_exits_zero_and_streams_stdout() -> None:
 # docstring, docs/cli.md, and README). Both ultimately call the very same
 # `main_and_exit`, so they must share one exit-code contract (KB K-027: no
 # new codes, no shifted ranges; KB K-049: this fact must stay durable in a
-# test, not just recorded in a report). `shutil.which` resolves the script
-# through the active virtualenv's PATH entry the same way a real shell
-# invocation would; skip (rather than fail) if the environment used to run
-# this suite did not install console-script entry points at all.
+# test, not just recorded in a report).
+#
+# Deliberately resolve the launcher from the active `sys.executable` runtime's
+# Scripts/bin directory, rather than with `shutil.which`: PATH may select an
+# unrelated processkit installation. Validating this at collection time makes
+# the installed entry point a durable test requirement instead of a skip.
 def _console_script_path() -> str:
-    path = shutil.which("processkit")
-    if path is None:
-        pytest.skip("`processkit` console script not found on PATH")
-    return path
+    scripts_dir = sysconfig.get_path("scripts")
+    if scripts_dir is None:
+        pytest.fail("the active interpreter has no configured scripts directory")
+
+    suffix = ".exe" if sys.platform == "win32" else ""
+    path = pathlib.Path(scripts_dir) / f"processkit{suffix}"
+    if not path.is_file():
+        pytest.fail(f"`processkit` console script is missing from {scripts_dir!r}")
+    if not os.access(path, os.X_OK):
+        pytest.fail(f"`processkit` console script is not executable: {path}")
+
+    try:
+        distribution = metadata.distribution("processkit-py")
+    except metadata.PackageNotFoundError:
+        pytest.fail("the active interpreter does not have processkit-py installed")
+    entry_point = next(
+        (
+            candidate
+            for candidate in distribution.entry_points
+            if candidate.group == "console_scripts" and candidate.name == "processkit"
+        ),
+        None,
+    )
+    if entry_point is None or entry_point.value != "processkit._cli:main_and_exit":
+        pytest.fail(
+            "the active interpreter's processkit-py distribution does not provide "
+            "the expected processkit console entry point"
+        )
+
+    from processkit._cli import main_and_exit
+
+    if entry_point.load() is not main_and_exit:
+        pytest.fail("the processkit console entry point does not resolve to this package")
+    return str(path)
+
+
+_CONSOLE_SCRIPT_PATH = _console_script_path()
+
+
+def _run_console_script(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_CONSOLE_SCRIPT_PATH, *args],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
 
 
 def test_console_script_exists_and_is_executable() -> None:
@@ -2177,46 +2223,95 @@ def test_console_script_exists_and_is_executable() -> None:
 
 
 def test_console_script_matches_module_form_exit_code_on_success() -> None:
-    processkit_exe = _console_script_path()
-    result = subprocess.run(
-        [processkit_exe, "run", "--", PY, "-c", "print('hello from console script')"],
-        capture_output=True,
-        text=True,
-        timeout=_SUBPROCESS_TIMEOUT,
-        check=False,
-    )
+    result = _run_console_script("run", "--", PY, "-c", "print('hello from console script')")
     assert result.returncode == 0
     assert "hello from console script" in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 
 def test_console_script_matches_module_form_exit_code_on_nonzero_child_exit() -> None:
-    processkit_exe = _console_script_path()
     module_result = _run_cli("run", "--", PY, "-c", "import sys; sys.exit(7)")
-    script_result = subprocess.run(
-        [processkit_exe, "run", "--", PY, "-c", "import sys; sys.exit(7)"],
-        capture_output=True,
-        text=True,
-        timeout=_SUBPROCESS_TIMEOUT,
-        check=False,
-    )
+    script_result = _run_console_script("run", "--", PY, "-c", "import sys; sys.exit(7)")
     assert script_result.returncode == module_result.returncode == 7
     assert "Traceback (most recent call last)" not in script_result.stderr
 
 
 def test_console_script_matches_module_form_doctor_exit_code() -> None:
-    processkit_exe = _console_script_path()
     module_result = _run_cli("doctor")
-    script_result = subprocess.run(
-        [processkit_exe, "doctor"],
-        capture_output=True,
-        text=True,
-        timeout=_SUBPROCESS_TIMEOUT,
-        check=False,
-    )
+    script_result = _run_console_script("doctor")
     # doctor's verdict depends on the host's actual kernel-level containment/
     # resource-limit availability, not on which invocation form was used —
     # both must land on the exact same one of the documented codes (0/1/3/4).
     assert script_result.returncode == module_result.returncode
     assert script_result.returncode in {0, 1, 3, 4}
     assert "Traceback (most recent call last)" not in script_result.stderr
+
+
+@pytest.mark.parametrize("args", [("--unknown-flag",), ("unknown-command",)])
+def test_console_script_matches_module_form_argparse_usage_errors(args: tuple[str, ...]) -> None:
+    """Both entry points reserve argparse's usage-error code 2 (KB K-027)."""
+    module_result = _run_cli(*args)
+    script_result = _run_console_script(*args)
+    assert script_result.returncode == module_result.returncode == 2
+
+
+@pytest.mark.parametrize("exit_code", range(123, 128))
+def test_console_script_matches_module_form_large_child_exit_codes(exit_code: int) -> None:
+    args = ("run", "--", PY, "-c", f"import sys; sys.exit({exit_code})")
+    module_result = _run_cli(*args)
+    script_result = _run_console_script(*args)
+    assert script_result.returncode == module_result.returncode == exit_code
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM exit statuses are POSIX-only")
+def test_console_script_matches_module_form_signal_exit_code() -> None:
+    args = (
+        "run",
+        "--",
+        PY,
+        "-c",
+        "import os, signal; os.kill(os.getpid(), signal.SIGTERM)",
+    )
+    module_result = _run_cli(*args)
+    script_result = _run_console_script(*args)
+    expected = 128 + signal.SIGTERM
+    assert script_result.returncode == module_result.returncode == expected
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("supervise", "--restart", "never", "--", NO_SUCH_PROGRAM), 120),
+        (
+            (
+                "supervise",
+                "--restart",
+                "on_crash",
+                "--max-restarts",
+                "2",
+                "--backoff-initial",
+                "0.01",
+                "--backoff-factor",
+                "1",
+                "--no-jitter",
+                "--",
+                PY,
+                "-c",
+                "import sys; sys.exit(1)",
+            ),
+            121,
+        ),
+    ],
+)
+def test_console_script_matches_module_form_supervise_reserved_exit_codes(
+    args: tuple[str, ...], expected: int
+) -> None:
+    module_result = _run_cli(*args)
+    script_result = _run_console_script(*args)
+    assert script_result.returncode == module_result.returncode == expected
+
+
+# Exit 122 is intentionally absent here: it represents the API-only
+# `Supervisor.give_up_when` outcome, for which the CLI exposes no flag. The
+# direct CLI mapping remains covered by
+# `test_supervise_exits_gave_up_code_when_outcome_reports_gave_up`.

@@ -344,6 +344,7 @@ jobs:
         run: >-
           python3 scripts/ci-privileged-guard.py artifacts/privileged-junit.xml
           tests/test_process_group.py::test_resource_limited_group_runs
+          tests/test_process_group.py::test_update_limits_replaces_each_axis_on_live_group
           tests/test_process_group.py::test_group_cpu_quota_kwarg_accepted
           tests/test_process_group.py::test_group_reports_a_mechanism
 

@@ -296,9 +296,8 @@ secrets, and redaction is a policy the consumer must own.
 
 ## Resource limits: the sandbox
 
-The three limit keywords turn the group into a sandbox. They are a property of
-the group, set once at construction and enforced by the same kernel object that
-contains the tree:
+The three limit keywords turn the group into a sandbox. They are enforced by
+the same kernel object that contains the tree:
 
 ```python
 from processkit import Command, ProcessGroup
@@ -311,12 +310,42 @@ with ProcessGroup(
     group.start(Command("untrusted-tool"))
 ```
 
+`update_limits(*, max_memory=None, max_processes=None, cpu_quota=None)` changes
+those caps without recreating the group or restarting its children. It is a
+**full replacement**, not a merge: every call describes all three axes, and an
+omitted axis becomes unbounded. Reissuing the complete desired set is therefore
+an idempotent retry:
+
+```python
+with ProcessGroup(max_memory=512 * 1024 * 1024) as group:
+    group.start(Command("worker"))
+    group.update_limits(
+        max_memory=1024 * 1024 * 1024,
+        max_processes=64,
+        cpu_quota=1.0,
+    )
+    group.update_limits(max_processes=32)  # memory and CPU are lifted
+```
+
+The method is synchronous; the core update does no asynchronous work. Invalid
+values and platform failures use the same typed `ResourceLimit` path as the
+constructor: the message distinguishes an invalid value, a mechanism without
+whole-tree accounting, and a capable mechanism that could not enforce the
+request.
+
+Applying several OS caps is not atomic. A failure does **not** roll back writes
+that already succeeded, so the live container may hold a mix of old and new
+caps; retry the complete desired set or tear the group down. Every axis named by
+an update that reached the OS is nevertheless added to the sticky cap record,
+whether the call succeeds or fails, so `limit_evidence()` remains conservative
+and never fabricates a "not tripped" verdict for a possibly-applied cap.
+
 `cpu_quota` is a fraction of a **single** core. On Windows it is converted
 against the host CPU count and is approximate (a CPU-*rate* cap, not a hard
 quota); on the Linux cgroup it is exact.
 
 Limits need a **real container** — a Windows Job Object or a Linux **cgroup-v2
-root**. If a requested cap can't be enforced, the constructor raises
+root**. If a requested cap can't be enforced, construction or `update_limits()` raises
 `ResourceLimit` rather than handing you a silently-unbounded group:
 
 ```python

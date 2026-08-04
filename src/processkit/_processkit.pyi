@@ -1108,6 +1108,19 @@ class ProcessGroup(_RunnerVerbs):
     def resume(self) -> None: ...
     def kill_all(self) -> None: ...
     def stats(self) -> ProcessGroupStats: ...
+    def update_limits(
+        self,
+        *,
+        max_memory: int | None = ...,
+        max_processes: int | None = ...,
+        cpu_quota: float | None = ...,
+    ) -> None:
+        """Replace the live group's complete resource-limit set.
+
+        Omitted axes become unbounded; this is not a partial merge. The method
+        is synchronous because the core operation does no asynchronous work.
+        """
+
     def stop(self, grace_seconds: float, *, escalate: bool = ...) -> ShutdownReport: ...
     def astop(self, grace_seconds: float, *, escalate: bool = ...) -> Awaitable[ShutdownReport]: ...
     def shutdown(self) -> None: ...

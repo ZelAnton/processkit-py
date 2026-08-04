@@ -1928,6 +1928,22 @@ def kill_all() -> None
 def stats() -> ProcessGroupStats
 ```
 
+#### `update_limits`
+
+```text
+def update_limits(
+    *,
+    max_memory: int | None = ...,
+    max_processes: int | None = ...,
+    cpu_quota: float | None = ...,
+) -> None
+```
+
+Replace the live group's complete resource-limit set.
+
+Omitted axes become unbounded; this is not a partial merge. The method
+is synchronous because the core operation does no asynchronous work.
+
 #### `stop`
 
 ```text

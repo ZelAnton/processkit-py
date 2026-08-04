@@ -281,6 +281,31 @@ class Command:
         ``line_terminator``); stdout framing is left untouched. Handy when
         progress output lands on stderr while stdout stays newline-structured."""
 
+    def sanitize_vt(self) -> Command:
+        """Strip VT/ANSI escapes and lone terminal controls from captured
+        **stdout and stderr**, especially a PTY's merged stdout.
+
+        Bytes are decoded first, then split using the configured
+        ``line_terminator``; sanitization runs on each decoded line immediately
+        before capture. ``ProcessResult`` and the line-streaming iterators
+        therefore expose clean text with unchanged line boundaries.
+
+        Capture-only: per-line callbacks and ``stdout_tee``/``stderr_tee`` see
+        the original decoded lines. ``output_bytes()`` preserves raw stdout
+        bytes, but stderr remains line-decoded and is therefore sanitized when
+        stderr sanitization is enabled. Direct ``stdout_file``/``stderr_file``
+        redirects preserve original bytes. Inert for an inherited or null
+        stream because no capture pump runs. Available on every supported
+        platform and off by default."""
+
+    def stdout_sanitize_vt(self) -> Command:
+        """Enable ``sanitize_vt`` for captured **stdout** only. Decoding and
+        line splitting happen first; tees and direct redirects remain raw."""
+
+    def stderr_sanitize_vt(self) -> Command:
+        """Enable ``sanitize_vt`` for captured **stderr** only. Decoding and
+        line splitting happen first; tees and direct redirects remain raw."""
+
     def stdout_tee(self, sink: StrPath | SupportsWrite, *, append: bool = ...) -> Command:
         """Tee every decoded stdout line (line + ``\\n``) to ``sink`` as it is
         produced, while the run *also* keeps capturing the full output (the sink

@@ -194,6 +194,24 @@ async for event in proc.output_events():
     print(event.stream, event.text)   # "stdout" / "stderr"
 ```
 
+## Clean ANSI/VT escapes from PTY output
+
+TTY-sensitive tools may emit colors, cursor movement, and OSC metadata into a
+PTY's merged output. Sanitize the captured and streamed text before logging,
+parsing, or asserting on it:
+
+```python
+from processkit import Command
+
+result = Command("colorful-tool", ["status"]).pty().sanitize_vt().output()
+print(result.stdout)  # plain text; terminal escape sequences removed
+```
+
+In pipe mode, use `stdout_sanitize_vt()` or `stderr_sanitize_vt()` to clean only
+one captured stream. Sanitization runs after decoding and line splitting. A
+simultaneous `stdout_tee()` still receives the original escape-laden decoded
+lines, so it can remain a faithful terminal log while `result.stdout` is clean.
+
 ## Stream a log to a file and still get the captured result
 
 `stdout_tee(path)` / `stderr_tee(path)` write the live stream to a file *and*

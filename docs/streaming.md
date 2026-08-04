@@ -482,6 +482,34 @@ Existing line framing still applies, including
 bare `\r`. `resize_pty(cols, rows)` requires positive dimensions and raises
 `ProcessError` for a non-PTY or already-exited process.
 
+Terminal-aware tools often fill that merged stream with ANSI colors, cursor
+movement, alternate-screen switches, and OSC titles or hyperlinks. Add
+`sanitize_vt()` when the consumer needs plain text for logging, parsing, or
+assertions:
+
+```python
+result = Command("colorful-tool").pty().sanitize_vt().output()
+assert "\x1b" not in result.stdout
+```
+
+`sanitize_vt()` targets both capture channels; `stdout_sanitize_vt()` and
+`stderr_sanitize_vt()` target one channel in ordinary pipe mode. The processing
+order is fixed and identical for stdout, stderr, and PTY's merged stdout: raw
+bytes are decoded with the configured encoding, decoded text is split using the
+configured line terminator, then each line is sanitized before entering the
+capture backlog. `ProcessResult`, `run()`/`output()`, and the streaming
+`stdout_lines()`/`stderr_lines()`/`output_events()` APIs therefore see clean
+text without changing line boundaries.
+
+The sanitizer deliberately does not rewrite independent output paths.
+Per-line callbacks and decoded `stdout_tee()`/`stderr_tee()` sinks see the
+original decoded lines. `output_bytes()` preserves raw stdout bytes, but stderr
+remains line-decoded and is therefore sanitized when stderr sanitization is
+enabled. Direct `stdout_file()`/`stderr_file()` redirects preserve original
+bytes. It is also inert for an inherited or null stream because no capture pump
+runs. This makes it safe to keep a faithful terminal log in a tee while parsing
+the cleaned capture.
+
 PTY mode is mutually exclusive with inherited, null, or file-redirected stdio.
 Conflicts are rejected while constructing the command. It preserves the same
 private-tree containment and context-manager teardown as an ordinary launch.

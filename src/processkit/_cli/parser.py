@@ -233,6 +233,15 @@ def _build_parser() -> tuple[
         ),
     )
     run_parser.add_argument(
+        "--sanitize-vt",
+        dest="sanitize_vt",
+        action="store_true",
+        help=(
+            "Strip VT/ANSI terminal escapes from captured stdout/stderr before "
+            "re-emitting them line-by-line (Command.sanitize_vt())."
+        ),
+    )
+    run_parser.add_argument(
         "--stdout-file",
         dest="stdout_file",
         default=None,

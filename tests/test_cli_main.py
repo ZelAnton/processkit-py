@@ -99,6 +99,7 @@ def test_run_help_does_not_raise() -> None:
     assert "--profile" in result.stdout
     assert "--create-no-window" in result.stdout
     assert "--output-limit" in result.stdout
+    assert "--sanitize-vt" in result.stdout
     assert "--stdout-file" in result.stdout
     assert "--stderr-file" in result.stdout
     assert "--kill-on-parent-death" in result.stdout
@@ -894,6 +895,32 @@ def test_run_rejects_output_limit_with_direct_stdout_redirect(tmp_path: pathlib.
     )
     assert result.returncode == 2
     assert "--output-limit cannot be combined with --stdout-file" in result.stderr
+
+
+def test_run_sanitize_vt_cleans_both_relayed_streams() -> None:
+    code = (
+        "import sys; "
+        "sys.stdout.write('\\x1b[31mout\\x1b[0m\\n'); sys.stdout.flush(); "
+        "sys.stderr.write('\\x1b[32merr\\x1b[0m\\n'); sys.stderr.flush()"
+    )
+    result = _run_cli("run", "--sanitize-vt", "--", PY, "-c", code)
+    assert result.returncode == 0
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+
+
+def test_run_rejects_sanitize_vt_with_non_streaming_modes(tmp_path: pathlib.Path) -> None:
+    cases = [
+        (["--profile"], "cannot be combined with --profile"),
+        (
+            ["--stdout-file", str(tmp_path / "out.log")],
+            "cannot be combined with --stdout-file",
+        ),
+    ]
+    for flags, message in cases:
+        result = _run_cli("run", "--sanitize-vt", *flags, "--", PY)
+        assert result.returncode == 2
+        assert message in result.stderr
 
 
 def test_run_rejects_idle_timeout_with_direct_stdout_redirect(tmp_path: pathlib.Path) -> None:

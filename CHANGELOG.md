@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with this changelog by local and CI drift checks.
 
 ### Changed
+- Widen `InvalidJson.stdout` from `str` to `str | None`: it is `None` only when
+  the exception comes from the new `RunningProcess.stdout_json_lines()`
+  streaming iterator, which cannot buffer the full payload, while
+  `run_json()`/`arun_json()` still always populate it. Typed consumers should
+  narrow the type before use; the full diagnostic remains available through
+  `str(exc)` regardless of the source.
 - Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
   API and cancellation defaults while bringing upstream compatibility fixes for
   ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.

@@ -388,7 +388,9 @@ impl PyProcessGroup {
     fn start(&self, py: Python<'_>, command: &PyCommand) -> PyResult<PyRunningProcess> {
         let group = self.group()?;
         let idle = command.idle_timeout;
-        block_on(py, group.start(&command.inner)).map(|r| PyRunningProcess::started(r, idle))
+        let program = command.inner.program().to_string_lossy().into_owned();
+        block_on(py, group.start(&command.inner))
+            .map(|r| PyRunningProcess::started(r, idle, program))
     }
 
     /// Async counterpart of `start()`.
@@ -396,11 +398,12 @@ impl PyProcessGroup {
         let group = self.group()?;
         let cmd = command.inner.clone();
         let idle = command.idle_timeout;
+        let program = cmd.program().to_string_lossy().into_owned();
         drive_async(py, async move {
             group
                 .start(&cmd)
                 .await
-                .map(|r| PyRunningProcess::started(r, idle))
+                .map(|r| PyRunningProcess::started(r, idle, program))
         })
     }
 

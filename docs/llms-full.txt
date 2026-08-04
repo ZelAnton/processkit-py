@@ -2700,13 +2700,18 @@ line rather than ending, matching every other malformed-item case in this
 library:
 
 ```python
-async for event in proc.stdout_json_lines():
+stream = proc.stdout_json_lines()
+while True:
     try:
-        handle(event)
+        event = await anext(stream)
+    except StopAsyncIteration:
+        break
     except InvalidJson as exc:
         # str(exc) already reports the NDJSON line/column/byte offset and a
         # bounded fragment of that line — no need to reconstruct it yourself.
         log.warning("skipping malformed line from %s: %s", exc.program, exc)
+    else:
+        handle(event)
 ```
 
 `InvalidJson.stdout` is `None` here (unlike `Command.run_json()` /
@@ -5798,6 +5803,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Wrap every Python-side `stdout_json_lines()` decoding failure as `InvalidJson`
+  and document recovery from malformed lines, including the first streamed item.
 - Close the completion hub's socket at the OS level when Python-level cleanup
   raises, preventing pending anyio-on-asyncio reader tasks and socket-resource
   warnings after an awaited operation is cancelled during loop shutdown.

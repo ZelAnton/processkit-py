@@ -249,6 +249,24 @@ pub(crate) fn invalid_json_err(
     err
 }
 
+/// Build an [`InvalidJson`] for a Python-side conversion failure while decoding
+/// one streamed NDJSON item. Unlike [`invalid_json_err`], this path has no whole
+/// stdout payload to attach, so `.stdout` is always `None`.
+pub(crate) fn invalid_json_stream_err(py: Python<'_>, program: &str, parse_error: &PyErr) -> PyErr {
+    let parser_message = parse_error
+        .value(py)
+        .str()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| parse_error.to_string());
+    let err = InvalidJson::new_err(format!(
+        "{program}: streamed output is not valid JSON: {parser_message}"
+    ));
+    let value = err.value(py);
+    let _ = value.setattr("program", program);
+    let _ = value.setattr("stdout", py.None());
+    err
+}
+
 /// Build an [`InvalidJson`] for a `RunningProcess.stdout_json_lines()` item
 /// whose NDJSON line failed to parse — the streaming counterpart of
 /// [`invalid_json_err`], used by `Command`/`CliClient`'s `run_json`/`arun_json`.

@@ -1171,7 +1171,8 @@ impl PyCommand {
     /// it has spawned, not when it finishes. Sync counterpart of `astart()`.
     fn start(&self, py: Python<'_>) -> PyResult<PyRunningProcess> {
         let idle = self.idle_timeout;
-        block_on(py, self.inner.start()).map(|r| PyRunningProcess::started(r, idle))
+        let program = self.inner.program().to_string_lossy().into_owned();
+        block_on(py, self.inner.start()).map(|r| PyRunningProcess::started(r, idle, program))
     }
 
     /// Start the command and return a `RunningProcess` for streaming and
@@ -1180,10 +1181,11 @@ impl PyCommand {
     fn astart<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let cmd = self.inner.clone();
         let idle = self.idle_timeout;
+        let program = cmd.program().to_string_lossy().into_owned();
         drive_async(py, async move {
             cmd.start()
                 .await
-                .map(|r| PyRunningProcess::started(r, idle))
+                .map(|r| PyRunningProcess::started(r, idle, program))
         })
     }
 

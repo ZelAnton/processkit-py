@@ -302,6 +302,36 @@ def test_stdout_json_lines_malformed_line_raises_invalid_json_and_continues() ->
     assert finished.exited_zero
 
 
+def test_stdout_json_lines_python_load_error_is_invalid_json_and_continues() -> None:
+    if not hasattr(sys, "get_int_max_str_digits"):
+        pytest.skip("Python 3.10 has no integer-string conversion limit")
+
+    code = "print('9' * 5000)\nprint('{\"ok\": true}')\n"
+    previous_limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    try:
+
+        async def scenario() -> tuple[InvalidJson, object, Finished]:
+            proc = await Command(PY, ["-c", code]).astart()
+            stream = proc.stdout_json_lines()
+            with pytest.raises(InvalidJson) as caught:
+                await anext(stream)
+            item = await anext(stream)
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+            finished = await proc.afinish()
+            return caught.value, item, finished
+
+        error, item, finished = asyncio.run(scenario())
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+
+    assert error.program == PY
+    assert error.stdout is None
+    assert item == {"ok": True}
+    assert finished.exited_zero
+
+
 def test_stdout_json_lines_idle_timeout_kills_a_silent_child() -> None:
     code = "import time; time.sleep(5)"
 

@@ -25,7 +25,9 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::convert::{nonnegative_duration, positive_duration};
-use crate::errors::{idle_timeout_err, invalid_json_line_err, map_err, ProcessError};
+use crate::errors::{
+    idle_timeout_err, invalid_json_line_err, invalid_json_stream_err, map_err, ProcessError,
+};
 use crate::result::{
     PyBytesResult, PyFinished, PyLifecycleEvent, PyOutcome, PyOutputEvent, PyProcessResult,
     PyRunProfile,
@@ -345,6 +347,7 @@ impl PyStdoutLines {
 #[pyclass(name = "JsonLines", module = "processkit")]
 pub(crate) struct PyJsonLines {
     inner: Arc<Mutex<PkJsonLines<Box<RawValue>>>>,
+    program: String,
     // The idle-timeout watchdog, if the originating command set `idle_timeout`.
     idle: Option<IdleGuard>,
 }
@@ -358,6 +361,7 @@ impl PyJsonLines {
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stream = self.inner.clone();
         let idle = self.idle.clone();
+        let program = self.program.clone();
         // `drive_async_py_convert`, not `drive_async_py`: the success value needs
         // a Python API (`json.loads`) to become the object Python actually sees,
         // so that step is deferred to the event-loop-thread `convert` closure
@@ -390,10 +394,12 @@ impl PyJsonLines {
                     None => Err(PyStopAsyncIteration::new_err(())),
                 }
             },
-            |py, raw: Box<RawValue>| {
-                py.import("json")?
-                    .call_method1("loads", (raw.get(),))
-                    .map(Bound::unbind)
+            move |py, raw: Box<RawValue>| match py
+                .import("json")
+                .and_then(|json| json.call_method1("loads", (raw.get(),)))
+            {
+                Ok(value) => Ok(value.unbind()),
+                Err(parse_error) => Err(invalid_json_stream_err(py, &program, &parse_error)),
             },
         )
     }
@@ -725,6 +731,9 @@ pub(crate) struct PyRunningProcess {
     // channel that could race a consuming verb. Every access still funnels
     // through `lock()`, so the `Arc` is transparent to the methods below.
     pub(crate) inner: SharedProcess,
+    // Retained by the binding because the crate's live handle keeps this
+    // attribution internal, while Python-side streamed JSON conversion can fail.
+    program: String,
     // The binding-only idle (inactivity) timeout carried from the `Command` this
     // handle was started from (`None` if unset). Applied to every stream the
     // streaming verbs hand out (see `idle_guard`).
@@ -742,9 +751,14 @@ impl PyRunningProcess {
     /// output streams enforce it. The single
     /// constructor every `start()`/`astart()` site (on `Command`, `Runner`/the
     /// doubles, and `ProcessGroup`) funnels through.
-    pub(crate) fn started(running: PkRunningProcess, idle_timeout: Option<Duration>) -> Self {
+    pub(crate) fn started(
+        running: PkRunningProcess,
+        idle_timeout: Option<Duration>,
+        program: String,
+    ) -> Self {
         Self {
             inner: Arc::new(StdMutex::new(Some(running))),
+            program,
             idle_timeout,
             finish: Arc::new(StdMutex::new(JointFinish::NotStarted)),
         }
@@ -1107,6 +1121,7 @@ impl PyRunningProcess {
             .map_err(map_err)?;
         Ok(PyJsonLines {
             inner: Arc::new(Mutex::new(lines)),
+            program: self.program.clone(),
             idle,
         })
     }

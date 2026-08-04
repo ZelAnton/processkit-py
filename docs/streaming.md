@@ -158,13 +158,18 @@ line rather than ending, matching every other malformed-item case in this
 library:
 
 ```python
-async for event in proc.stdout_json_lines():
+stream = proc.stdout_json_lines()
+while True:
     try:
-        handle(event)
+        event = await anext(stream)
+    except StopAsyncIteration:
+        break
     except InvalidJson as exc:
         # str(exc) already reports the NDJSON line/column/byte offset and a
         # bounded fragment of that line — no need to reconstruct it yourself.
         log.warning("skipping malformed line from %s: %s", exc.program, exc)
+    else:
+        handle(event)
 ```
 
 `InvalidJson.stdout` is `None` here (unlike `Command.run_json()` /

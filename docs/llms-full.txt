@@ -1196,6 +1196,11 @@ all keep using `program`; only the argument vector delivered to the child
 changes. Read back what's configured with `configured_arg0` (`None` if
 unset); a repeat call is last-write-wins.
 
+`arg0` is an argv value like any other, so the redaction above covers it too:
+`repr()` renders it as `arg0: Some("<redacted>")`, never the configured string.
+`configured_arg0` and `command_line()` (`busybox [argv0=ls] -l`) stay the opt-in
+ways to read the real value.
+
 **Unix only.** On a non-Unix platform a run raises `Unsupported` rather than
 silently passing the executable name instead — `configured_arg0` stays
 observable there even though a run can never use it.

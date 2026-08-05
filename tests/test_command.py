@@ -1670,6 +1670,22 @@ def test_repr_does_not_leak_argv() -> None:
     assert "login" in text
 
 
+def test_repr_does_not_leak_arg0() -> None:
+    # arg0() sets argv[0], so it falls under the same rule as the rest of the
+    # vector (test_repr_does_not_leak_argv): repr() renders a placeholder, never
+    # the configured value. Redaction is repr-only — configured_arg0 and
+    # command_line() stay the opt-in ways to read it back.
+    cmd = Command("login", ["--password", "hunter2-SECRET"]).arg0("ARGV0-SECRET")
+    text = repr(cmd)
+    assert "ARGV0-SECRET" not in text
+    assert "<redacted>" in text
+    assert "login" in text
+    assert cmd.configured_arg0 == "ARGV0-SECRET"
+    assert "ARGV0-SECRET" in cmd.command_line()
+    # An unset arg0 still renders as None, with no placeholder smuggled in.
+    assert "<redacted>" not in repr(Command("login", ["--password", "hunter2-SECRET"]))
+
+
 def test_program_and_arguments_getters() -> None:
     cmd = Command("login", ["--password", "hunter2-SECRET"])
     assert cmd.program == "login"

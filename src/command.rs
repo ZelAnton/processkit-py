@@ -45,6 +45,11 @@ const PTY_CONFLICT_STDIN: u8 = 1;
 const PTY_CONFLICT_STDOUT: u8 = 2;
 const PTY_CONFLICT_STDERR: u8 = 4;
 
+/// Stand-in printed in place of a configured `arg0` by `Command.__repr__` (see
+/// there for why). `configured_arg0` and `command_line()` stay the explicit,
+/// opt-in ways to read the real value.
+const REDACTED_ARG0: &str = "<redacted>";
+
 /// A pid-only handle to a deliberately uncontained child.
 #[pyclass(name = "DetachedChild", frozen, module = "processkit")]
 pub(crate) struct PyDetachedChild {
@@ -1418,7 +1423,21 @@ impl PyCommand {
         // tracebacks), so it must not leak secrets passed as arguments. The full
         // command line stays behind the crate's explicit `command_line()` escape
         // hatch, not the default repr.
-        format!("{:?}", self.inner)
+        //
+        // One gap to close by hand: the crate's `Debug` renders the `arg0`
+        // override *verbatim* (`.field("arg0", &self.arg0)`) while collapsing the
+        // rest of argv to a count — but `arg0` IS an argv value, so printing it
+        // would make the rule above (and the same promise in `docs/commands.md`)
+        // false for exactly the callers who use `arg0()`. Redact it by rendering a
+        // throwaway clone that carries the placeholder instead of by rewriting the
+        // formatted text: the crate keeps doing the formatting (nothing here is
+        // coupled to its field order or `Debug` layout), and the substitution
+        // touches only that clone — the command this wrapper actually spawns keeps
+        // the configured `arg0` unchanged.
+        match self.inner.configured_arg0() {
+            None => format!("{:?}", self.inner),
+            Some(_) => format!("{:?}", self.inner.clone().arg0(REDACTED_ARG0)),
+        }
     }
 }
 
@@ -1589,5 +1608,56 @@ mod tests {
         for (scope, expected) in cases {
             assert_eq!(parent_death_cleanup_str(scope), expected, "{scope:?}");
         }
+    }
+
+    fn command_for_repr(inner: PkCommand) -> PyCommand {
+        PyCommand {
+            inner,
+            idle_timeout: None,
+            pty_requested: false,
+            pty_conflicts: 0,
+        }
+    }
+
+    // `Command.__repr__` leans on the crate's redacted `Debug` for everything but
+    // `arg0`, which the crate prints verbatim while collapsing the rest of argv to
+    // a count. Pin the hand-redaction here — against the crate's real `Debug`
+    // output — so an upstream change (a redacted `arg0`, a renamed field, a
+    // dropped `configured_arg0`) shows up as a Rust test failure rather than as a
+    // silently reinstated argv leak.
+    #[test]
+    fn repr_redacts_a_configured_arg0() {
+        let secret = "SUPER-SECRET-ARGV0";
+        let cmd = command_for_repr(
+            PkCommand::new("login")
+                .args(["--password", "hunter2-SECRET"])
+                .arg0(secret),
+        );
+        let text = cmd.__repr__();
+
+        assert!(
+            !text.contains(secret),
+            "arg0 value leaked into repr: {text}"
+        );
+        assert!(
+            text.contains(REDACTED_ARG0),
+            "expected the arg0 placeholder in repr: {text}"
+        );
+        // The rest of the crate's redacted rendering is still what's shown.
+        assert!(text.contains("program: \"login\""), "{text}");
+        assert!(!text.contains("hunter2-SECRET"), "{text}");
+        assert!(text.contains("args: 2"), "{text}");
+        // Redaction is repr-only: the command still spawns with the real `arg0`.
+        assert_eq!(cmd.configured_arg0().as_deref(), Some(secret));
+    }
+
+    #[test]
+    fn repr_leaves_an_unset_arg0_alone() {
+        let cmd = command_for_repr(PkCommand::new("login"));
+        let text = cmd.__repr__();
+
+        assert!(text.contains("arg0: None"), "{text}");
+        assert!(!text.contains(REDACTED_ARG0), "{text}");
+        assert_eq!(cmd.configured_arg0(), None);
     }
 }

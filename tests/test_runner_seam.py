@@ -147,7 +147,7 @@ def test_real_runner_async() -> None:
 
 def test_runner_probe_reads_exit_code() -> None:
     # `probe` is one of the run verbs the runner macro generates for every runner;
-    # exercise it so a mis-wired forwarder (e.g. to exit_code) can't slip through.
+    # exercise it so a miswired forwarder (e.g. to exit_code) can't slip through.
     runner = ScriptedRunner()
     runner.on(["ok"], Reply.ok(""))
     runner.on(["bad"], Reply.fail(1, ""))

@@ -1,0 +1,28 @@
+[files]
+extend-exclude = [
+    # Generated from source docstrings and Markdown.
+    "docs/api-reference.md",
+    "docs/llms*.txt",
+    "docs/changelog.md",  # Generated from CHANGELOG.md; tool names like delocate-wheel
+]
+
+[default]
+locale = "en"
+
+[default.extend-words]
+abi3 = "abi3"
+cgroup = "cgroup"
+ConPTY = "ConPTY"
+delocate = "delocate"
+# Regex fragment in cliff.toml's case-insensitive release matcher.
+elease = "elease"
+manylinux = "manylinux"
+maturin = "maturin"
+miswired = "miswired"  # T-223: fixed typo from mis-wired
+musllinux = "musllinux"
+mypy = "mypy"
+PyO3 = "PyO3"
+pytest = "pytest"
+pyright = "pyright"
+rustup = "rustup"
+uvloop = "uvloop"

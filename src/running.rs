@@ -19,15 +19,17 @@ use processkit::ProcessEvents as PkProcessEvents;
 use processkit::ProcessStdin as PkProcessStdin;
 use processkit::RunningProcess as PkRunningProcess;
 use processkit::StdoutLines as PkStdoutLines;
-use pyo3::exceptions::{PyOSError, PyStopAsyncIteration, PyValueError};
+use pyo3::exceptions::{PyOSError, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::convert::{nonnegative_duration, positive_duration};
 use crate::errors::{
-    idle_timeout_err, invalid_json_line_err, invalid_json_stream_err, map_err, ProcessError,
+    idle_timeout_err, invalid_json_line_err, invalid_json_stream_err, map_err, wait_timeout_err,
+    ProcessError,
 };
 use crate::result::{
     PyBytesResult, PyFinished, PyLifecycleEvent, PyOutcome, PyOutputEvent, PyProcessResult,
@@ -190,6 +192,254 @@ fn probe_exit_now(slot: &SharedProcess) -> ProbeVerdict {
     match probe.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(_) => ProbeVerdict::Exited,
         Poll::Pending => ProbeVerdict::Running,
+    }
+}
+
+/// Which stream's live partial tail a readiness probe watches.
+///
+/// Both are bound (`wait_for_output` / `wait_for_stderr_output`, plus their
+/// `a`-twins) rather than stdout alone, because the crate treats the two
+/// asymmetrically and neither can be inferred from the other: a stderr probe is
+/// rejected outright when stderr is not piped — which includes *every* PTY run,
+/// whose single merged terminal stream is exposed as stdout — while a stdout
+/// probe is rejected only once nothing observable is left there.
+#[derive(Clone, Copy)]
+enum TailStream {
+    Stdout,
+    Stderr,
+}
+
+impl TailStream {
+    /// The stream's Python-facing name, for the deadline message.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
+/// How a caller's `predicate` argument is applied to a tail snapshot: the same
+/// two shapes the pure-Python readiness helper `wait_for_line` accepts, so the
+/// method-level probes and the free-function ones read alike.
+enum TailMatcher {
+    /// `"Password: "` — shorthand for "this substring appears in the tail".
+    Substring(String),
+    /// `lambda tail: tail.endswith("$ ")` — re-evaluated per snapshot.
+    Callable(Py<PyAny>),
+}
+
+impl TailMatcher {
+    /// Accept a `str` (substring shorthand) or any callable, and reject anything
+    /// else *before* the probe starts rather than at the first snapshot — a
+    /// misspelled predicate then fails immediately instead of after the deadline.
+    fn extract(predicate: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // `cast`, not a bare `extract::<String>()`: only a real `str` takes the
+        // substring path, so a `str`-like object that also happens to be callable
+        // cannot silently change meaning.
+        if predicate.cast::<PyString>().is_ok() {
+            return Ok(Self::Substring(predicate.extract()?));
+        }
+        if predicate.is_callable() {
+            return Ok(Self::Callable(predicate.clone().unbind()));
+        }
+        Err(PyTypeError::new_err(
+            "predicate must be a str (a substring of the tail) or a callable \
+             taking the tail and returning a bool",
+        ))
+    }
+
+    /// Apply the predicate to one tail snapshot.
+    ///
+    /// This runs on a runtime worker, without the GIL held (the sync twin
+    /// released it inside `block_on_interruptible`; the async twin never had
+    /// it) — so a Python callable needs an attachment, and gets `try_attach`,
+    /// never `attach`: runtime workers are not joined at `Py_Finalize`, where
+    /// an unconditional attach can panic across the FFI boundary. A refused
+    /// attachment yields the least-disruptive answer, "not a match", leaving the
+    /// probe to run out its own deadline rather than taking the interpreter down
+    /// with it. A predicate that *raises* propagates untouched (like
+    /// `wait_for_line`'s), ending the probe with the caller's own exception
+    /// rather than a deadline it never really hit.
+    fn matches(&self, tail: &str) -> PyResult<bool> {
+        match self {
+            Self::Substring(needle) => Ok(tail.contains(needle.as_str())),
+            Self::Callable(callable) => {
+                Python::try_attach(|py| callable.bind(py).call1((tail,))?.is_truthy())
+                    .unwrap_or(Ok(false))
+            }
+        }
+    }
+}
+
+/// Cadence of the partial-tail probe's snapshot loop while nothing has matched.
+///
+/// Matches [`EXIT_POLL_INTERVAL`] and the crate's own readiness cadence. The
+/// probe polls rather than parking inside the crate's event-driven
+/// `wait_for_output` wait for the same reason the events drive does: every look
+/// at the tail must take — and release — the shared process slot's lock, and
+/// parking inside the crate's own wait would mean borrowing the process for the
+/// whole deadline. Holding it there is precisely what this binding never does
+/// (see [`probe_exit_now`]): `pid`, `kill()`, `take_stdin()` and the context
+/// manager's teardown must keep working, from any thread, *while* a probe waits
+/// — which is the entire point of the "wait for the prompt, then answer it"
+/// flow this probe exists for.
+const TAIL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Upper bound on a partial-tail probe's deadline (~10 years — the same horizon
+/// the crate clamps its own probes to). A caller may legitimately pass a huge
+/// `timeout` meaning "effectively forever"; clamping keeps `Instant::now() +
+/// timeout` from overflowing and panicking across the FFI boundary, while
+/// staying indistinguishable from "forever" in practice.
+const MAX_TAIL_TIMEOUT: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
+
+/// What one look at a stream's live tail found.
+struct TailLook {
+    /// The current un-terminated tail, if the stream has one right now.
+    tail: Option<String>,
+    /// Whether the stream has ended. No further output can arrive, so a tail
+    /// that has not matched by now never will.
+    closed: bool,
+}
+
+/// Take one **non-consuming** look at the stream's current un-terminated tail,
+/// leaving the process in the shared slot throughout.
+///
+/// The crate's `wait_for_output` is a *waiting* probe: it snapshots the tail,
+/// offers it to the predicate and — when the predicate declines — checks whether
+/// the stream has closed, parking on the sink's change notification if it has
+/// not. Handing it an always-false predicate that merely *records* what it was
+/// shown, under a horizon that cannot expire, therefore extracts both facts this
+/// binding needs from a **single poll**:
+///
+/// - `Pending` — the predicate declined and the stream is still open, so the
+///   recorded tail (possibly none) is the current state and more may come.
+/// - `Ready(NotReady)` — the only other way that wait can end here: the stream
+///   closed with the predicate still unsatisfied.
+/// - `Ready(Io)` — the stream was never piped, or an earlier consuming verb took
+///   it; no tail can ever appear.
+///
+/// Neither outcome suspends *this* call, so it completes under the same
+/// `StdMutex` every other method on this handle takes, with the process never
+/// observably absent from its slot — the invariant [`probe_exit_now`] documents
+/// at length, and the one that keeps `pid`, `kill()` and `take_stdin()` working
+/// on another thread *while* a probe waits, rather than raising "the process
+/// handle has been consumed" at them.
+///
+/// The recording predicate is deliberately pure Rust rather than the caller's
+/// own: a Python predicate handed to the crate would run inside that wait — on a
+/// runtime worker, under the slot's lock, with the process mutably borrowed.
+/// Testing the caller's predicate in [`probe_partial_tail`]'s loop instead keeps
+/// the locked section free of the interpreter entirely.
+///
+/// Non-consuming in the strict sense: the crate publishes the partial tail on a
+/// side channel that never touches the retained-line state, so peeking here can
+/// neither steal a line from a live `stdout_lines()` / `output_events()` stream
+/// nor shift the byte accounting a later `finish()` reports.
+fn snapshot_tail(slot: &SharedProcess, stream: TailStream) -> PyResult<TailLook> {
+    let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let running = guard
+        .as_mut()
+        .ok_or_else(|| ProcessError::new_err("the process handle has been consumed"))?;
+    // `StdMutex`, not a `Cell`: the crate requires a `Send` predicate, which a
+    // captured `&Cell` (not `Sync`) would not satisfy. Uncontended and taken once
+    // per look, so the lock costs nothing measurable.
+    let seen = StdMutex::new(None);
+    let observe = |tail: &str| {
+        *seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(tail.to_owned());
+        false
+    };
+    // Same no-op waker rationale as `probe_exit_now`: nothing waits to be woken,
+    // because the future is dropped at the end of this call and rebuilt on the
+    // next tick. The only thing it may have set up is the crate's idempotent
+    // background drain, which lives in its own spawned task. `Duration::MAX` is
+    // never reached — `tokio::time::timeout` saturates it to a far-future
+    // deadline (no overflow panic) and the value future is polled first — so it
+    // reads simply as "this look never expires on its own".
+    let verdict = {
+        let look = async {
+            match stream {
+                TailStream::Stdout => running.wait_for_output(observe, Duration::MAX).await,
+                TailStream::Stderr => running.wait_for_stderr_output(observe, Duration::MAX).await,
+            }
+        };
+        let mut look = std::pin::pin!(look);
+        look.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+    };
+    let tail = seen.into_inner().unwrap_or_else(PoisonError::into_inner);
+    match verdict {
+        Poll::Pending => Ok(TailLook {
+            tail,
+            closed: false,
+        }),
+        Poll::Ready(Err(error))
+            if matches!(error.reason(), processkit::ErrorReason::NotReady { .. }) =>
+        {
+            Ok(TailLook { tail, closed: true })
+        }
+        // A permanent failure: the stream was never piped, or an earlier
+        // consuming verb took it. Fail loud rather than burn the caller's whole
+        // deadline on an impossibility.
+        Poll::Ready(Err(error)) => Err(map_err(error)),
+        // Unreachable (the recording predicate never accepts a tail, and the
+        // horizon cannot elapse on a first poll), but answered rather than
+        // assumed away: a returned tail is a tail.
+        Poll::Ready(Ok(matched)) => Ok(TailLook {
+            tail: Some(matched),
+            closed: false,
+        }),
+    }
+}
+
+/// The shared driver behind all four partial-tail probes: look, test, sleep,
+/// repeat until the tail matches, the stream ends, or the deadline passes.
+///
+/// The deadline is checked only *after* a look has been tested, so `timeout=0`
+/// still evaluates the predicate exactly once — the "evaluate at least once"
+/// contract the pure-Python readiness helpers give at a zero timeout.
+///
+/// A closed stream ends the probe immediately with `ProcessError`, rather than
+/// waiting out a deadline nothing can satisfy — matching `wait_for_line()`'s
+/// "the output stream ended before a matching line" and the crate's own probes,
+/// which likewise refuse to wait on an impossibility.
+///
+/// Expiry raises `WaitTimeout` and does nothing else: the child is neither
+/// killed nor signalled, and the run's own `Command.timeout()` watchdog is never
+/// armed (the crate deliberately routes probes around it), so a failed probe can
+/// never flip a run's outcome to timed-out.
+async fn probe_partial_tail(
+    slot: SharedProcess,
+    stream: TailStream,
+    matcher: TailMatcher,
+    program: String,
+    within: Duration,
+    timeout_seconds: f64,
+) -> PyResult<String> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let TailLook { tail, closed } = snapshot_tail(&slot, stream)?;
+        if let Some(tail) = tail {
+            if matcher.matches(&tail)? {
+                return Ok(tail);
+            }
+        }
+        if closed {
+            return Err(ProcessError::new_err(format!(
+                "`{program}`: {} ended before a matching tail",
+                stream.name()
+            )));
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(wait_timeout_err(
+                format!(
+                    "`{program}`: no matching {} tail within {timeout_seconds}s",
+                    stream.name()
+                ),
+                timeout_seconds,
+            ));
+        }
+        tokio::time::sleep(TAIL_POLL_INTERVAL.min(remaining)).await;
     }
 }
 
@@ -723,7 +973,12 @@ impl PyLifecycleEvents {
 /// `finish`/`afinish`, `output`/`aoutput`, `output_bytes`/`aoutput_bytes`,
 /// `profile`/`aprofile`, `shutdown`/`ashutdown`) each come in a sync/async
 /// pair like everywhere else in this library — leave the handle spent after
-/// either is called; using it afterwards raises. Usable as a context manager
+/// either is called; using it afterwards raises. The partial-tail readiness
+/// probes (`wait_for_output`/`await_for_output`,
+/// `wait_for_stderr_output`/`await_for_stderr_output`) follow the same naming
+/// rule but are non-consuming: they only peek at the live output tail, leaving
+/// the handle fully usable — which is what makes the "wait for the prompt, then
+/// answer it over `take_stdin()`" dialog possible. Usable as a context manager
 /// (`with` / `async with`): exiting the block tears the process down — a hard
 /// kill of the whole private tree for a standalone handle.
 // `frozen` so every method takes `&self`: the consuming verbs used to take an
@@ -788,6 +1043,21 @@ impl PyRunningProcess {
             window,
             process: self.inner.clone(),
         })
+    }
+
+    /// Validate a partial-tail probe's arguments once for all four entry points,
+    /// *before* either the reentrancy/event-loop guard or the first snapshot: a
+    /// bad predicate type or a NaN/negative timeout is the caller's mistake and
+    /// should surface as `TypeError`/`ValueError` regardless of where it was
+    /// called from.
+    fn tail_probe_args(
+        &self,
+        predicate: &Bound<'_, PyAny>,
+        timeout: f64,
+    ) -> PyResult<(TailMatcher, Duration)> {
+        let matcher = TailMatcher::extract(predicate)?;
+        let within = nonnegative_duration(timeout, "timeout")?.min(MAX_TAIL_TIMEOUT);
+        Ok((matcher, within))
     }
 
     /// Lock the inner slot, recovering from a (never-expected) poisoned mutex
@@ -1225,6 +1495,183 @@ impl PyRunningProcess {
             })),
             idle,
         })
+    }
+
+    /// Wait until stdout's current **un-terminated tail** matches `predicate`,
+    /// and return that tail.
+    ///
+    /// This is the `expect`-style probe for prompts that are never lines:
+    /// `Password: `, `(y/N) `, a REPL `>>> ` — written with no trailing newline
+    /// and then blocked on, so a line-oriented reader (`stdout_lines()`, or the
+    /// free `wait_for_line()` helper over it) cannot see them until the stream
+    /// ends. This one watches the live partial line the output pump has decoded
+    /// but not yet split, and hands it back so you can `take_stdin()` and answer.
+    /// PTY sessions are the motivating case — a terminal dialog is made of such
+    /// tails — but an ordinary piped run benefits too (a progress meter that
+    /// rewrites one line and never emits a newline).
+    ///
+    /// `predicate` is a `str` (shorthand for "this substring is in the tail") or
+    /// a callable `predicate(tail) -> bool`, exactly like `wait_for_line()`.
+    /// `timeout` is keyword-only and in seconds; a negative or NaN value raises
+    /// `ValueError`, and `timeout=0` still checks the current tail exactly once
+    /// before giving up — "whatever has been decoded by now", which on the call
+    /// that itself installs the output pump is normally nothing, so a zero
+    /// timeout is only meaningful on a handle already probed or streamed. On
+    /// expiry this raises `WaitTimeout` (a `ProcessError` *and* a `TimeoutError`,
+    /// carrying `timeout_seconds`) — the same deadline exception every other
+    /// readiness probe in this library raises. If the stream *ends* before a
+    /// match, it raises `ProcessError` right away instead of waiting out the
+    /// deadline on output that can no longer arrive, exactly as `wait_for_line()`
+    /// does.
+    ///
+    /// **A failed probe never kills the child**, never signals it, and never
+    /// touches the run's own `Command.timeout()` watchdog, so it cannot flip an
+    /// outcome to timed-out: decide for yourself whether to retry, log, or tear
+    /// the tree down. The handle stays fully usable either way — `pid`,
+    /// `kill()`, `take_stdin()` and the context manager's teardown all keep
+    /// working *during* a probe on another thread, and after it returns.
+    ///
+    /// **Non-consuming and repeatable.** The tail is only peeked at, so a
+    /// multi-turn dialog is just a sequence of probe → answer turns. Answer a
+    /// prompt before waiting for the next one, though: a still-standing tail
+    /// matches again, and a tail only moves on once the child terminates that
+    /// line (at which point it becomes an ordinary line, visible to
+    /// `stdout_lines()` instead).
+    ///
+    /// **The tail is the whole current partial line**, not just the newest
+    /// fragment — a child that prompts twice without ever emitting a newline
+    /// leaves the first prompt sitting in front of the second. Match with `in` /
+    /// `endswith` (the `str` shorthand is a substring test for exactly this
+    /// reason) rather than equality.
+    ///
+    /// **The tail is raw.** It is observed *before* any capture redaction *and
+    /// before `sanitize_vt()`*, which run per completed line — like the per-line
+    /// callbacks and tees. A prompt is a synchronization token you must match
+    /// verbatim, and a partial line cannot be put through a per-line policy. So
+    /// on a real terminal the tail carries the escape sequences too: match the
+    /// plain text of a prompt (or strip in a callable), don't treat the returned
+    /// fragment as scrubbed, and match on prompts rather than on secret-bearing
+    /// text. What `finish()` reports later is sanitized/redacted independently,
+    /// as always.
+    ///
+    /// **Ordering against the streaming verbs.** Probing installs stdout's one
+    /// line pump, exactly as the crate's own line probes do — so it *composes*
+    /// with a stream that already exists (bind `stdout_lines()` /
+    /// `stdout_json_lines()` / `output_events()` / `stderr_lines()` /
+    /// `lifecycle_events()` **first**, then probe as often as you like: the tail
+    /// is a side channel and steals nothing from the iterator), but a stream
+    /// opened *after* a probe raises `ProcessError` ("stdout was already
+    /// consumed by an earlier readiness or streaming call"). `finish()`/
+    /// `outcome()`/`output()` and their `a`-twins still report the run
+    /// afterwards; `output_bytes()`/`aoutput_bytes()` do not — raw bytes cannot
+    /// be recovered once stdout is being decoded into lines, and the crate says
+    /// so explicitly.
+    #[pyo3(signature = (predicate, *, timeout))]
+    fn wait_for_output(
+        &self,
+        py: Python<'_>,
+        predicate: &Bound<'_, PyAny>,
+        timeout: f64,
+    ) -> PyResult<String> {
+        let (matcher, within) = self.tail_probe_args(predicate, timeout)?;
+        reject_reentrant_runtime()?;
+        block_on_interruptible(
+            py,
+            probe_partial_tail(
+                self.inner.clone(),
+                TailStream::Stdout,
+                matcher,
+                self.program.clone(),
+                within,
+                timeout,
+            ),
+        )?
+    }
+
+    /// Async counterpart of `wait_for_output()`.
+    ///
+    /// (Named `await_for_output` under this library's uniform `a`-prefix rule
+    /// for async twins — `outcome`/`aoutcome`, `output`/`aoutput` — since
+    /// `await` itself is a reserved word.) Awaiting it never blocks the event
+    /// loop: the snapshot cadence runs on the binding's runtime, so other tasks
+    /// — the one writing the answer to the previous prompt, say — keep running.
+    #[pyo3(signature = (predicate, *, timeout))]
+    fn await_for_output<'py>(
+        &self,
+        py: Python<'py>,
+        predicate: &Bound<'_, PyAny>,
+        timeout: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (matcher, within) = self.tail_probe_args(predicate, timeout)?;
+        require_event_loop(py)?;
+        drive_async_py(
+            py,
+            probe_partial_tail(
+                self.inner.clone(),
+                TailStream::Stdout,
+                matcher,
+                self.program.clone(),
+                within,
+                timeout,
+            ),
+        )
+    }
+
+    /// Wait until **stderr's** current un-terminated tail matches `predicate`.
+    ///
+    /// The stderr counterpart of `wait_for_output()` — same predicate shapes,
+    /// same keyword-only `timeout` and `WaitTimeout` deadline, same
+    /// non-consuming, non-killing, repeatable semantics — for the tools that
+    /// prompt on stderr and keep stdout for data.
+    ///
+    /// The two streams are **not** symmetrical here, so pick deliberately:
+    /// this raises `ProcessError` when stderr is not piped, which includes every
+    /// `Command.pty()` run (a PTY has a single merged terminal stream, exposed
+    /// as stdout — use `wait_for_output()` for terminal prompts) and any command
+    /// built with `stderr("null")`/`stderr("inherit")`/`stderr_file(...)`.
+    #[pyo3(signature = (predicate, *, timeout))]
+    fn wait_for_stderr_output(
+        &self,
+        py: Python<'_>,
+        predicate: &Bound<'_, PyAny>,
+        timeout: f64,
+    ) -> PyResult<String> {
+        let (matcher, within) = self.tail_probe_args(predicate, timeout)?;
+        reject_reentrant_runtime()?;
+        block_on_interruptible(
+            py,
+            probe_partial_tail(
+                self.inner.clone(),
+                TailStream::Stderr,
+                matcher,
+                self.program.clone(),
+                within,
+                timeout,
+            ),
+        )?
+    }
+
+    /// Async counterpart of `wait_for_stderr_output()`.
+    #[pyo3(signature = (predicate, *, timeout))]
+    fn await_for_stderr_output<'py>(
+        &self,
+        py: Python<'py>,
+        predicate: &Bound<'_, PyAny>,
+        timeout: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (matcher, within) = self.tail_probe_args(predicate, timeout)?;
+        require_event_loop(py)?;
+        drive_async_py(
+            py,
+            probe_partial_tail(
+                self.inner.clone(),
+                TailStream::Stderr,
+                matcher,
+                self.program.clone(),
+                within,
+                timeout,
+            ),
+        )
     }
 
     /// Take the writable stdin handle. Raises `ProcessError` if stdin was not

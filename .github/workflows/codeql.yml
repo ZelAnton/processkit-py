@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1 # v4
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
         with:
           languages: python
           queries: security-and-quality
@@ -37,7 +37,7 @@ jobs:
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1 # v4
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
         with:
           category: "/language:python"
 
@@ -55,12 +55,12 @@ jobs:
           persist-credentials: false
 
       # Rust requires compilation for CodeQL analysis.
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           toolchain: stable
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1 # v4
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
         with:
           languages: rust
           queries: security-and-quality
@@ -71,6 +71,6 @@ jobs:
         run: cargo build --features extension-module
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1 # v4
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
         with:
           category: "/language:rust"

@@ -97,6 +97,20 @@ class SupportsWrite(Protocol):
     def write(self, data: str, /) -> object: ...
 
 
+class SupportsWriteBytes(Protocol):
+    """A minimal binary sink accepted by `Command.stdout_raw_tee` /
+    `stderr_raw_tee` alongside a file path: any object with a callable
+    `write(bytes)` — an `io.BytesIO`, a `"wb"` file. The raw tee passes each
+    undecoded pipe chunk to `write` as `bytes`, verbatim (no line splitting,
+    no UTF-8 decoding — that is the entire point of the raw tee), so a *text*
+    writer (`io.StringIO`, `sys.stderr`) is the wrong sink here, unlike
+    `SupportsWrite` for the decoded `stdout_tee`/`stderr_tee`. The return
+    value is ignored, hence `object`. Lives here for the same
+    `mypy.stubtest`-runtime-presence reason as `SupportsWrite`."""
+
+    def write(self, data: bytes, /) -> object: ...
+
+
 Args = list[str] | list[Path] | list[os.PathLike[str]] | tuple[StrPath, ...]
 SignalName = Literal["term", "kill", "int", "hup", "quit", "usr1", "usr2"]
 RetryIf = Literal["transient", "transient_or_timeout"]

@@ -128,6 +128,24 @@ cmd.command_line()       # "login --password hunter2" — includes the secret!
 repr(cmd)                # redacted: shows arg COUNT, never values
 ```
 
+### Overriding `argv[0]`
+
+`arg0(value)` overrides the child's `argv[0]` independently of `program` — for
+a multicall binary (BusyBox/Toybox) or a login-shell convention (`-bash`):
+
+```python
+Command("busybox").arg0("ls").args(["-l"]).run()  # busybox dispatches on argv[0]
+```
+
+Program lookup, `prefer_local`, preflight, spawn diagnostics, and containment
+all keep using `program`; only the argument vector delivered to the child
+changes. Read back what's configured with `configured_arg0` (`None` if
+unset); a repeat call is last-write-wins.
+
+**Unix only.** On a non-Unix platform a run raises `Unsupported` rather than
+silently passing the executable name instead — `configured_arg0` stays
+observable there even though a run can never use it.
+
 ## Local program search
 
 Use `prefer_local(dir)` when a bare-name program should resolve from a project or

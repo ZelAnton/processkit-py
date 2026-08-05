@@ -492,6 +492,37 @@ def test_builder_chaining_returns_new_command() -> None:
     assert "args: 0" in repr(base)
 
 
+def test_arg0_configured_arg0_is_last_write_wins() -> None:
+    cmd = Command(PY, ["-c", "print(1)"]).arg0("first").arg0("second")
+    assert cmd.configured_arg0 == "second"
+    # Unset by default, and unaffected on a sibling Command that never called
+    # arg0() (builder methods return a new Command, see
+    # test_builder_chaining_returns_new_command).
+    assert Command(PY, ["-c", "print(1)"]).configured_arg0 is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="arg0 is a Unix argv[0] override")
+def test_arg0_overrides_argv0_observed_by_the_child() -> None:
+    # `$0` in a shell script is literally the delivered argv[0] -- the
+    # standard way a multicall binary/login shell (`-bash`) convention is
+    # tested. `program()` (`/bin/sh`) stays the executable actually looked up
+    # and launched; only the argument vector the child observes changes.
+    out = Command("/bin/sh", ["-c", 'echo "$0"']).arg0("login-shell-mode").run()
+    assert out.strip() == "login-shell-mode"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="arg0 is Unix-only")
+def test_arg0_unsupported_on_windows() -> None:
+    # Never silently skipped: on a non-Unix platform the run raises
+    # `Unsupported` rather than silently passing the executable name instead.
+    # `configured_arg0` stays observable even though the run itself fails.
+    cmd = Command(PY, ["-c", "print('x')"]).arg0("multicall-mode")
+    assert cmd.configured_arg0 == "multicall-mode"
+    with pytest.raises(Unsupported) as excinfo:
+        cmd.run()
+    assert excinfo.value.operation
+
+
 def test_cwd_is_applied() -> None:
     result = Command(PY, ["-c", "import os; print(os.getcwd())"]).cwd(os.getcwd()).output()
     assert os.path.realpath(result.stdout.strip()) == os.path.realpath(os.getcwd())
@@ -1699,6 +1730,20 @@ def test_unchecked_in_pipe_is_a_noop_outside_a_pipeline() -> None:
     assert result.code == 1
 
 
+def test_merge_stderr_in_pipe_is_a_noop_outside_a_pipeline() -> None:
+    # Outside a Pipeline, merge_stderr_in_pipe() has no effect: stdout and
+    # stderr are captured separately exactly as if it had never been called.
+    code = (
+        "import sys; "
+        "sys.stdout.write('OUT\\n'); sys.stdout.flush(); "
+        "sys.stderr.write('ERR\\n'); sys.stderr.flush()"
+    )
+    result = Command(PY, ["-c", code]).merge_stderr_in_pipe().output()
+    assert result.is_success
+    assert result.stdout.splitlines() == ["OUT"]
+    assert result.stderr.splitlines() == ["ERR"]
+
+
 # --- ensure_success (C7 batch A) ---------------------------------------------
 
 
@@ -2364,6 +2409,194 @@ def test_tee_writer_is_inert_under_output_bytes() -> None:
     result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(buf).output_bytes()
     assert result.stdout.split() == [b"alpha", b"beta"]
     assert buf.getvalue() == ""
+
+
+# --- stdout_raw_tee / stderr_raw_tee — undecoded byte tee (T-219) ------------
+
+# Writes raw bytes with an explicit CRLF line ending via the binary stream
+# (sys.stdout.buffer), bypassing Python's own text-mode newline translation —
+# the raw tee must preserve these bytes verbatim, unlike the decoded
+# stdout_tee (which normalizes to a single "\n" per line, see
+# test_stdout_tee_writes_lines_and_keeps_capture).
+_RAW_TEE_CRLF_BYTES = b"alpha\r\nbeta\r\n"
+_RAW_TEE_CRLF_CODE = (
+    "import sys; sys.stdout.buffer.write(b'alpha\\r\\nbeta\\r\\n'); sys.stdout.buffer.flush()"
+)
+
+
+def test_stdout_raw_tee_preserves_bytes_verbatim_unlike_decoded_tee(
+    tmp_path: pathlib.Path,
+) -> None:
+    sink = tmp_path / "out.raw"
+    result = Command(PY, ["-c", _RAW_TEE_CRLF_CODE]).stdout_raw_tee(sink).output()
+    assert result.is_success
+    # The raw tee kept the CRLF bytes exactly as the child wrote them...
+    assert sink.read_bytes() == _RAW_TEE_CRLF_BYTES
+    # ...while the decoded capture went through the crate's line splitting,
+    # which does not fabricate or preserve the "\r" as line content.
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+def test_stderr_raw_tee_preserves_bytes_verbatim(tmp_path: pathlib.Path) -> None:
+    sink = tmp_path / "err.raw"
+    code = _RAW_TEE_CRLF_CODE.replace("sys.stdout", "sys.stderr")
+    result = Command(PY, ["-c", code]).stderr_raw_tee(sink).output()
+    assert result.is_success
+    assert sink.read_bytes() == _RAW_TEE_CRLF_BYTES
+
+
+def test_stdout_raw_tee_keeps_capture_intact(tmp_path: pathlib.Path) -> None:
+    # Strictly additive: capture is unaffected whether or not a raw tee is set.
+    sink = tmp_path / "out.raw"
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_raw_tee(sink).output()
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
+def test_stdout_raw_tee_independent_of_decoded_tee_and_on_stdout_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    # All three stdout sinks — decoded tee, raw tee, and the per-line callback
+    # — coexist and fire independently from the same pump.
+    decoded_sink = tmp_path / "decoded.log"
+    raw_sink = tmp_path / "raw.log"
+    seen: list[str] = []
+    result = (
+        Command(PY, ["-c", _RAW_TEE_CRLF_CODE])
+        .stdout_tee(decoded_sink)
+        .stdout_raw_tee(raw_sink)
+        .on_stdout_line(seen.append)
+        .output()
+    )
+    assert result.is_success
+    assert raw_sink.read_bytes() == _RAW_TEE_CRLF_BYTES
+    assert decoded_sink.read_bytes() == b"alpha\nbeta\n"
+    assert seen == ["alpha", "beta"]
+
+
+def test_stdout_raw_tee_to_bytesio_object() -> None:
+    # The Python-writer sink form: a BINARY writer receives each raw chunk as
+    # `bytes`, verbatim — the binary-sink twin of stdout_tee's text writer.
+    buf = io.BytesIO()
+    result = Command(PY, ["-c", _RAW_TEE_CRLF_CODE]).stdout_raw_tee(buf).output()
+    assert result.is_success
+    assert buf.getvalue() == _RAW_TEE_CRLF_BYTES
+
+
+def test_stderr_raw_tee_to_bytesio_object() -> None:
+    buf = io.BytesIO()
+    code = _RAW_TEE_CRLF_CODE.replace("sys.stdout", "sys.stderr")
+    result = Command(PY, ["-c", code]).stderr_raw_tee(buf).output()
+    assert result.is_success
+    assert buf.getvalue() == _RAW_TEE_CRLF_BYTES
+
+
+def test_raw_tee_writer_receives_bytes_not_str() -> None:
+    # The raw sink is a BINARY sink: a text writer's write(bytes) raises
+    # TypeError, the inverse of test_tee_writer_receives_str_not_bytes.
+    seen_types: set[type] = set()
+
+    class TypeProbe:
+        def write(self, data: object) -> None:
+            seen_types.add(type(data))
+
+    Command(PY, ["-c", _TEE_TWO_LINES]).stdout_raw_tee(TypeProbe()).output()
+    assert seen_types == {bytes}
+
+
+def test_raw_tee_writer_rejects_append_true() -> None:
+    with pytest.raises(ValueError, match="append"):
+        Command(PY, ["-c", "pass"]).stdout_raw_tee(io.BytesIO(), append=True)
+    with pytest.raises(ValueError, match="append"):
+        Command(PY, ["-c", "pass"]).stderr_raw_tee(io.BytesIO(), append=True)
+
+
+def test_raw_tee_writer_is_not_closed_after_the_run() -> None:
+    buf = io.BytesIO()
+    Command(PY, ["-c", _RAW_TEE_CRLF_CODE]).stdout_raw_tee(buf).output()
+    assert not buf.closed
+    buf.write(b"still-usable")  # would raise on a closed BytesIO
+    assert buf.getvalue() == _RAW_TEE_CRLF_BYTES + b"still-usable"
+
+
+def test_raw_tee_writer_raising_write_is_isolated_and_disables_the_tee() -> None:
+    # Same isolation contract as the decoded tee: a raising write() is
+    # reported via sys.unraisablehook, never propagated, and the tee is
+    # disabled after the first failure while the captured result stays intact.
+    captured: list[BaseException] = []
+    calls: list[bytes] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    class Boom:
+        def write(self, data: bytes) -> None:
+            calls.append(data)
+            raise ValueError("raw writer exploded")
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_raw_tee(Boom()).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert captured
+    assert isinstance(captured[0], ValueError)
+    assert calls  # at least the first chunk was attempted
+
+
+def test_stdout_raw_tee_is_inert_under_stdout_null(tmp_path: pathlib.Path) -> None:
+    sink = tmp_path / "out.raw"
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("null").stdout_raw_tee(sink)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert sink.read_bytes() == b""
+
+
+def test_stdout_raw_tee_is_inert_under_stdout_inherit(tmp_path: pathlib.Path) -> None:
+    sink = tmp_path / "out.raw"
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout("inherit").stdout_raw_tee(sink)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert sink.read_bytes() == b""
+
+
+def test_stdout_raw_tee_is_inert_under_stdout_file_redirect(tmp_path: pathlib.Path) -> None:
+    # K-043: stdout_file()'s capture gate is stdout-only — drive via
+    # start()/outcome() (the capture verbs reject a non-piped stdout).
+    redirect = tmp_path / "redirected.out"
+    raw_sink = tmp_path / "out.raw"
+    cmd = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_file(redirect).stdout_raw_tee(raw_sink)
+    outcome = cmd.start().outcome()
+    assert outcome.exited_zero
+    assert raw_sink.read_bytes() == b""
+    assert redirect.exists()  # the child's stdout went straight to the file
+
+
+def test_stdout_raw_tee_is_inert_under_output_bytes(tmp_path: pathlib.Path) -> None:
+    # output_bytes()'s own return value already *is* the raw stdout (a
+    # separate raw drain, no line pump), so the raw tee never fires.
+    sink = tmp_path / "out.raw"
+    result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_raw_tee(sink).output_bytes()
+    assert result.stdout.split() == [b"alpha", b"beta"]
+    assert sink.read_bytes() == b""
+
+
+def test_stdout_and_stderr_raw_tee_to_separate_files(tmp_path: pathlib.Path) -> None:
+    out = tmp_path / "out.raw"
+    err = tmp_path / "err.raw"
+    code = (
+        "import sys; sys.stdout.buffer.write(b'o1\\r\\n'); "
+        "sys.stderr.buffer.write(b'e1\\r\\n'); sys.stdout.buffer.write(b'o2\\r\\n')"
+    )
+    result = Command(PY, ["-c", code]).stdout_raw_tee(out).stderr_raw_tee(err).output()
+    assert result.is_success
+    assert out.read_bytes() == b"o1\r\no2\r\n"
+    assert err.read_bytes() == b"e1\r\n"
 
 
 # --- on_stdout_line / on_stderr_line — live per-line callbacks (T-037) -------

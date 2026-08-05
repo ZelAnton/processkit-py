@@ -21,7 +21,7 @@ use processkit::Signal as PkSignal;
 use processkit::StdioMode;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyInt};
+use pyo3::types::{PyBool, PyBytes, PyInt};
 use tokio::io::AsyncWrite;
 use tokio::task::{JoinError, JoinHandle};
 
@@ -102,30 +102,45 @@ pub(crate) fn is_python_writer(sink: &Bound<'_, PyAny>) -> PyResult<bool> {
     }
 }
 
-/// A `tokio::io::AsyncWrite` sink that mirrors the decoded line stream of
-/// `stdout_tee`/`stderr_tee` into a caller-supplied Python object's `write()`
-/// method — an `io.StringIO`, `sys.stderr`, an open text file, a logger wrapper.
+/// A `tokio::io::AsyncWrite` sink that mirrors a capture-pump byte stream into
+/// a caller-supplied Python object's `write()` method — an `io.StringIO`,
+/// `sys.stderr`, an open file, a logger wrapper. Backs both the **decoded**
+/// line tees (`stdout_tee`/`stderr_tee`, text mode) and the **raw** byte tees
+/// (`stdout_raw_tee`/`stderr_raw_tee`, binary mode) — see `raw` below and
+/// [`PyWriterSink::new`] / [`PyWriterSink::new_raw`].
 ///
 /// **Why a bridge is needed.** The crate's `Command::stdout_tee<W: AsyncWrite +
-/// Send + Unpin>` awaits each write **on the capture pump** (that await is the
-/// backpressure point: a slow sink slows the pump, fills the OS pipe, and makes
-/// the child block on its next write, rather than stalling the runtime). A
-/// Python `write()` needs the GIL and may block arbitrarily long (a real file, a
-/// socket, a logging handler), so calling it *inline on the pump task* would
-/// pin a runtime worker for the duration and re-couple the async loop to the
-/// writer's latency. Instead every write is dispatched to the runtime's
-/// **blocking pool** (`spawn_blocking`), which re-acquires the GIL there; the
-/// pump task only holds the returned `JoinHandle` and yields `Poll::Pending`
-/// until it resolves — so backpressure is preserved without blocking the event
-/// loop, and a slow (even sleeping) `write()` cannot deadlock the runtime.
+/// Send + Unpin>` (and the raw-tee twin) awaits each write **on the capture
+/// pump** (that await is the backpressure point: a slow sink slows the pump,
+/// fills the OS pipe, and makes the child block on its next write, rather than
+/// stalling the runtime). A Python `write()` needs the GIL and may block
+/// arbitrarily long (a real file, a socket, a logging handler), so calling it
+/// *inline on the pump task* would pin a runtime worker for the duration and
+/// re-couple the async loop to the writer's latency. Instead every write is
+/// dispatched to the runtime's **blocking pool** (`spawn_blocking`), which
+/// re-acquires the GIL there; the pump task only holds the returned
+/// `JoinHandle` and yields `Poll::Pending` until it resolves — so backpressure
+/// is preserved without blocking the event loop, and a slow (even sleeping)
+/// `write()` cannot deadlock the runtime.
 ///
-/// **What `write()` receives.** The crate feeds this sink the *decoded* line
-/// text (already run through the configured encoding) re-encoded as UTF-8: each
-/// line's bytes, then `b"\n"`, per line. Each chunk is decoded back to `str` and
+/// **What `write()` receives — text mode (`raw = false`, `stdout_tee`/
+/// `stderr_tee`).** The crate feeds this sink the *decoded* line text (already
+/// run through the configured encoding) re-encoded as UTF-8: each line's
+/// bytes, then `b"\n"`, per line. Each chunk is decoded back to `str` and
 /// passed to `write()`, so this is a **text** sink — pass a text-mode writer
 /// (`io.StringIO`, `sys.stderr`, a file opened in text mode, a logger wrapper),
 /// not a binary one (`io.BytesIO`, a `"wb"` file), whose `write(str)` would
 /// raise `TypeError`.
+///
+/// **What `write()` receives — raw mode (`raw = true`, `stdout_raw_tee`/
+/// `stderr_raw_tee`).** The crate feeds this sink the *undecoded* pipe bytes
+/// verbatim (arbitrary binary, CRLF, a lone `\r`, no line framing) — passing
+/// them through `String::from_utf8_lossy` the way text mode does would mangle
+/// genuinely non-UTF-8 output into U+FFFD replacement characters, silently
+/// breaking the raw tee's byte-exact contract. So raw mode instead wraps each
+/// chunk as a Python `bytes` object and calls `write()` with *that* — a
+/// **binary** sink (`io.BytesIO`, a `"wb"` file), not a text one, whose
+/// `write(bytes)` would raise `TypeError`.
 ///
 /// **Errors.** A `write()` (or `flush()`) exception is reported via
 /// `sys.unraisablehook` (so it is never silent, even without `enable_logging()`)
@@ -148,6 +163,11 @@ pub(crate) struct PyWriterSink {
     /// the end-of-stream flush) to completion before starting the next, so a
     /// single slot suffices; it is polled to completion before a new op starts.
     pending: Option<Pending>,
+    /// `false` (text): decode each chunk as UTF-8 `str` before calling
+    /// `write()` (backs `stdout_tee`/`stderr_tee`). `true` (raw): wrap each
+    /// chunk as `bytes` and call `write()` with that instead, preserving
+    /// non-UTF-8 bytes verbatim (backs `stdout_raw_tee`/`stderr_raw_tee`).
+    raw: bool,
 }
 
 /// The in-flight `spawn_blocking` op held across `Poll::Pending`. A `write`
@@ -164,19 +184,34 @@ enum Pending {
 type BlockingOp = JoinHandle<Result<(), String>>;
 
 impl PyWriterSink {
+    /// Text mode — backs `stdout_tee`/`stderr_tee`. Each chunk is decoded to
+    /// `str` before `write()` (see the type docs' "text mode" section).
     pub(crate) fn new(writer: &Bound<'_, PyAny>) -> Self {
         Self {
             writer: Arc::new(writer.clone().unbind()),
             pending: None,
+            raw: false,
+        }
+    }
+
+    /// Raw mode — backs `stdout_raw_tee`/`stderr_raw_tee`. Each chunk is
+    /// passed to `write()` as `bytes`, verbatim, never decoded (see the type
+    /// docs' "raw mode" section).
+    pub(crate) fn new_raw(writer: &Bound<'_, PyAny>) -> Self {
+        Self {
+            writer: Arc::new(writer.clone().unbind()),
+            pending: None,
+            raw: true,
         }
     }
 }
 
-/// Call `writer.write(text)` under the GIL, decoding the crate's UTF-8 line
-/// bytes back to `str`. Runs on a blocking-pool thread. A raising `write()` is
-/// reported via the unraisable hook here (we hold the GIL) and its message
-/// returned so the caller can build a matching `io::Error`.
-fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>) -> Result<(), String> {
+/// Call `writer.write(...)` under the GIL with `data`, either decoded to `str`
+/// (text mode, `raw = false`) or wrapped as `bytes` (raw mode, `raw = true`).
+/// Runs on a blocking-pool thread. A raising `write()` is reported via the
+/// unraisable hook here (we hold the GIL) and its message returned so the
+/// caller can build a matching `io::Error`.
+fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>, raw: bool) -> Result<(), String> {
     // `try_attach`, not `attach`: this runs on a tokio blocking-pool worker that
     // is not joined at `Py_Finalize` (the runtime is an immortal singleton).
     // Once the interpreter is finalizing `try_attach` returns `None`; we reject
@@ -186,11 +221,20 @@ fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>) -> Result<(), String> {
     // guard as `logging.rs`'s bridge.
     Python::try_attach(|py| {
         let bound = writer.bind(py);
-        // The crate emits a whole decoded line, then `b"\n"`, so `data` is
-        // always valid UTF-8; `from_utf8_lossy` is a panic-proof guard, not an
-        // expected lossy path.
-        let text = String::from_utf8_lossy(&data);
-        match bound.call_method1("write", (text.as_ref(),)) {
+        let result = if raw {
+            // Raw mode: pass the pipe bytes through verbatim, never decoded —
+            // the whole point of the raw tee is byte-exact fidelity, including
+            // non-UTF-8 output that text mode's `from_utf8_lossy` would mangle.
+            let payload = PyBytes::new(py, &data);
+            bound.call_method1("write", (payload,))
+        } else {
+            // Text mode: the crate emits a whole decoded line, then `b"\n"`, so
+            // `data` is always valid UTF-8; `from_utf8_lossy` is a panic-proof
+            // guard, not an expected lossy path.
+            let text = String::from_utf8_lossy(&data);
+            bound.call_method1("write", (text.as_ref(),))
+        };
+        match result {
             Ok(_) => Ok(()),
             Err(err) => {
                 let message = err.to_string();
@@ -290,7 +334,9 @@ impl AsyncWrite for PyWriterSink {
                     }
                     let writer = Arc::clone(&this.writer);
                     let data = buf.to_vec();
-                    let handle = tokio::task::spawn_blocking(move || call_py_write(&writer, data));
+                    let raw = this.raw;
+                    let handle =
+                        tokio::task::spawn_blocking(move || call_py_write(&writer, data, raw));
                     this.pending = Some(Pending::Write {
                         handle,
                         len: buf.len(),

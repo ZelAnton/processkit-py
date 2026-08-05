@@ -107,6 +107,31 @@ Outside a `Pipeline`, `unchecked_in_pipe()` is a no-op — a single run's status
 is already plain data on its own `ProcessResult`, and `ensure_success()` stays
 opt-in.
 
+## Merging a stage's stderr into the pipe
+
+`Command.merge_stderr_in_pipe()` is the shell-free equivalent of
+`command 2>&1 | next` — set on a **non-final** stage, it sends that stage's
+stderr into its own stdout pipe (cloned handles to the same anonymous-pipe
+writer, so the OS preserves write order), so the downstream stage reads both
+combined over its stdin:
+
+```python
+merged = (
+    Command("tool").merge_stderr_in_pipe()  # tool's stderr joins its stdout
+    | Command("grep", ["WARN"])
+).run()
+```
+
+It is opt-in per stage and a **no-op** outside a `Pipeline` or on the **final**
+stage — a pipeline only activates it on a stage with a downstream neighbor, so
+marking the last stage (or a standalone `Command`) has no effect.
+
+**Pipefail diagnostic trade-off.** Once a stage's stderr enters the downstream
+pipe it is no longer available as that stage's own stderr capture: if pipefail
+attributes the chain's failure to this stage, `ProcessResult.stderr` is empty
+for it — the merged bytes may instead surface in the final stage's stdout,
+having passed through the rest of the pipeline.
+
 ## stdin and stdout at the ends; per-stage env/cwd
 
 The ends of the chain behave like a single `Command`:

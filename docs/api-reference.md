@@ -39,6 +39,25 @@ def arg(arg: StrPath) -> Command
 def args(args: Args) -> Command
 ```
 
+#### `arg0`
+
+```text
+def arg0(arg0: str) -> Command
+```
+
+Override the child's ``argv[0]`` independently of the executable
+``program`` — supports multicall binaries (BusyBox/Toybox) and
+conventions like a login shell's ``-bash``. Program lookup,
+``prefer_local``, preflight, spawn diagnostics, and containment all
+keep using ``program``; only the argument vector delivered to the
+child changes.
+
+**Unix only.** Applied through the OS command's ``arg0`` spawn seam.
+On a non-Unix platform the run raises ``Unsupported`` rather than
+silently passing the executable name instead — ``configured_arg0``
+stays observable there even though a run can never use it. Repeated
+calls are last-write-wins.
+
 #### `cwd`
 
 ```text
@@ -409,6 +428,50 @@ or ``append``) or a Python writer object with a callable ``write()`` (fed
 each decoded line as a ``str`` via the same blocking-pool async-write
 bridge, never closed for you), coexisting with capture, inert unless
 stderr is piped through the line pump.
+
+#### `stdout_raw_tee`
+
+```text
+def stdout_raw_tee(sink: StrPath | SupportsWriteBytes, *, append: bool = ...) -> Command
+```
+
+Tee the child's stdout to ``sink`` **byte for byte, before any
+decoding or line splitting** — the raw-bytes cousin of ``stdout_tee``.
+
+Same sink forms as ``stdout_tee`` — a file path (opened at build time,
+truncated by default or ``append``) or a Python writer with a callable
+``write()`` — but since the whole point is byte-exact fidelity, a
+writer here receives each chunk as ``bytes``, never decoded, so it must
+be a **binary** writer (``io.BytesIO``, a ``"wb"`` file — not
+``sys.stderr`` or an ``io.StringIO``, whose ``write(bytes)`` raises
+``TypeError``). Non-UTF-8 output, CRLF, a lone ``\r``, and a missing
+final newline all pass through untouched, and a line an
+``OutputBufferPolicy`` drops from every decoded sink still reaches this
+tee whole.
+
+Independent of the decoded path — coexists with ``stdout_tee``,
+``on_stdout_line``, and ordinary capture; all configured sinks fire
+from the same pump. Requires a piped stdout: a no-op under
+``stdout("inherit")`` / ``stdout("null")`` / a ``stdout_file()``
+redirect (no capture pump runs) and under ``output_bytes()`` (its own
+return value already *is* the raw stdout, a separate raw drain with no
+line pump) — use it alongside the line/streaming verbs instead. A
+second call replaces an earlier one; a write error disables the raw
+tee for the rest of the run, leaving the run and its captured result
+unaffected.
+
+#### `stderr_raw_tee`
+
+```text
+def stderr_raw_tee(sink: StrPath | SupportsWriteBytes, *, append: bool = ...) -> Command
+```
+
+Tee the child's stderr to ``sink`` byte for byte, before any
+decoding or line splitting. Same contract as ``stdout_raw_tee`` —
+verbatim bytes (non-UTF-8, CRLF, a missing final newline, and
+buffer-policy-dropped lines all preserved), a binary writer required
+for the Python-writer sink form, independent of
+``stderr_tee``/``on_stderr_line``, and requiring stderr to be piped.
 
 #### `stdout_file`
 
@@ -803,6 +866,31 @@ def astart() -> Awaitable[RunningProcess]
 def unchecked_in_pipe() -> Command
 ```
 
+#### `merge_stderr_in_pipe`
+
+```text
+def merge_stderr_in_pipe() -> Command
+```
+
+Merge this stage's stderr into its stdout pipe when it is a
+**non-final** ``Pipeline`` stage — the shell-free equivalent of
+``command 2>&1 | next``. Stdout and stderr get cloned handles to the
+same anonymous-pipe writer; the OS preserves write order, and the
+downstream stage reads the combined byte stream from its stdin.
+
+Opt-in per stage and a **no-op outside a ``Pipeline`` or on the final
+stage** — no effect on a standalone command, and a pipeline only
+activates it on a non-final stage. On an affected stage it overrides
+that stage's configured stdout/stderr destinations, since both
+streams must point at the downstream pipe.
+
+**Pipefail diagnostic trade-off.** Once stderr enters the downstream
+pipe it is no longer available as that stage's own stderr capture: if
+pipefail attributes the chain's failure to this stage,
+``ProcessResult.stderr`` is empty for it — the merged bytes may
+instead surface in the final stage's stdout after passing through the
+rest of the pipeline.
+
 #### `program`
 
 ```text
@@ -814,6 +902,19 @@ program: str
 ```text
 arguments: list[str]
 ```
+
+#### `configured_arg0`
+
+```text
+configured_arg0: str | None
+```
+
+The explicit Unix ``argv[0]`` override configured via ``arg0()``,
+or ``None`` if unset. Exposes the routing input to
+``ScriptedRunner.when()`` predicates and other command inspection
+without conflating it with ``program``, which remains the executable
+lookup key. Still set on a non-Unix platform before a run would
+reject it (see ``arg0()``).
 
 #### `command_line`
 
@@ -1145,6 +1246,30 @@ stdout_line_count: int | None
 ```text
 stderr_line_count: int | None
 ```
+
+#### `stdout_bytes_seen`
+
+```text
+stdout_bytes_seen: int | None
+```
+
+Raw bytes read from stdout's pipe so far, before decoding or line
+splitting (``None`` once consumed). Monotonic; includes bytes
+discarded by any ``OutputBufferPolicy`` (including oversized lines);
+stable after the process and its pump complete. ``0`` — not a
+sentinel — for a stream that is never pumped (a file redirect,
+``stdout("null")``, ``stdout("inherit")``).
+
+#### `stderr_bytes_seen`
+
+```text
+stderr_bytes_seen: int | None
+```
+
+Raw bytes read from stderr's pipe so far, before decoding or line
+splitting (``None`` once consumed). Same contract as
+``stdout_bytes_seen`` — monotonic, includes discarded bytes, stable
+after completion, ``0`` (not a sentinel) for an unpumped stream.
 
 #### `owns_group`
 

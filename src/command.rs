@@ -175,6 +175,21 @@ impl PyCommand {
         self.rewrap(self.inner.clone().args(args))
     }
 
+    /// Override the child's `argv[0]` independently of the executable
+    /// `program()` — supports multicall binaries (BusyBox/Toybox) and
+    /// conventions like a login shell's `-bash`. Program lookup, `prefer_local`,
+    /// preflight, spawn diagnostics, and containment all keep using `program()`;
+    /// only the argument vector delivered to the child changes.
+    ///
+    /// **Unix only.** Applied through the OS command's `arg0` spawn seam. On a
+    /// non-Unix platform the run raises `Unsupported` rather than silently
+    /// passing the executable name instead — `configured_arg0` stays
+    /// observable there even though a run can never use it. Repeated calls are
+    /// last-write-wins.
+    fn arg0(&self, arg0: &str) -> Self {
+        self.rewrap(self.inner.clone().arg0(arg0))
+    }
+
     fn cwd(&self, path: PathBuf) -> Self {
         self.rewrap(self.inner.clone().current_dir(path))
     }
@@ -723,6 +738,68 @@ impl PyCommand {
         Ok(self.rewrap(inner))
     }
 
+    /// Tee the child's stdout to `sink` **byte for byte, before any decoding
+    /// or line splitting** — the raw-bytes cousin of `stdout_tee`. Same sink
+    /// forms as `stdout_tee` — a file path (opened at build time, truncated
+    /// by default or ``append``) or a Python writer object with a callable
+    /// `write()` — but since the whole point is byte-exact fidelity, a
+    /// writer here receives each chunk as `bytes`, never decoded, so it must
+    /// be a **binary** writer (`io.BytesIO`, a `"wb"` file, not `sys.stderr`
+    /// or an `io.StringIO`): non-UTF-8 output, CRLF, a lone `\r`, and a
+    /// missing final newline all pass through untouched, and a line an
+    /// `OutputBufferPolicy` drops from every decoded sink still reaches this
+    /// tee whole.
+    ///
+    /// **Independent of the decoded path.** Coexists with `stdout_tee`,
+    /// `on_stdout_line`, and ordinary capture — all configured sinks fire
+    /// independently from the same pump. **Requires a piped stdout**: a
+    /// no-op under ``stdout("inherit")`` / ``stdout("null")`` / a
+    /// `stdout_file()` redirect (no capture pump runs) and under
+    /// `output_bytes()` (its own return value already *is* the raw stdout, a
+    /// separate raw drain with no line pump) — reach for this alongside the
+    /// line/streaming verbs (`output()`, `run()`, or `start()` +
+    /// `stdout_lines()` / `output_events()`) instead. A second call replaces
+    /// an earlier one; a write error disables the raw tee for the rest of the
+    /// run (surfaced the same way as `stdout_tee`'s write errors), leaving
+    /// the run and its captured result unaffected.
+    #[pyo3(signature = (sink, *, append = false))]
+    fn stdout_raw_tee(&self, sink: &Bound<'_, PyAny>, append: bool) -> PyResult<Self> {
+        let inner = if is_python_writer(sink)? {
+            reject_append_for_writer(append)?;
+            self.inner
+                .clone()
+                .stdout_raw_tee(PyWriterSink::new_raw(sink))
+        } else {
+            let path: PathBuf = sink.extract()?;
+            self.inner
+                .clone()
+                .stdout_raw_tee(open_tee_sink(&path, append)?)
+        };
+        Ok(self.rewrap(inner))
+    }
+
+    /// Tee the child's stderr to `sink` byte for byte, before any decoding or
+    /// line splitting. Same contract as `stdout_raw_tee` — verbatim bytes
+    /// (non-UTF-8, CRLF, a missing final newline, and buffer-policy-dropped
+    /// lines all preserved), a binary writer required for the Python-writer
+    /// sink form, independent of `stderr_tee`/`on_stderr_line`, and requiring
+    /// stderr to be piped.
+    #[pyo3(signature = (sink, *, append = false))]
+    fn stderr_raw_tee(&self, sink: &Bound<'_, PyAny>, append: bool) -> PyResult<Self> {
+        let inner = if is_python_writer(sink)? {
+            reject_append_for_writer(append)?;
+            self.inner
+                .clone()
+                .stderr_raw_tee(PyWriterSink::new_raw(sink))
+        } else {
+            let path: PathBuf = sink.extract()?;
+            self.inner
+                .clone()
+                .stderr_raw_tee(open_tee_sink(&path, append)?)
+        };
+        Ok(self.rewrap(inner))
+    }
+
     /// Redirect the child's stdout **straight to a file**, opened at spawn time —
     /// the child writes to the file's own descriptor, with no parent-side pump,
     /// tee, or capture buffer in between. This is the direct-redirect cousin of
@@ -1259,6 +1336,29 @@ impl PyCommand {
         self.rewrap(self.inner.clone().unchecked_in_pipe())
     }
 
+    /// Merge this stage's stderr into its stdout pipe when it is a
+    /// **non-final** `Pipeline` stage — the shell-free equivalent of
+    /// `command 2>&1 | next`. Stdout and stderr get cloned handles to the same
+    /// anonymous-pipe writer; the OS preserves write order (no userspace
+    /// interleaving of two reader tasks), and the downstream stage reads the
+    /// combined byte stream from its stdin.
+    ///
+    /// This is opt-in per stage and a **no-op outside a `Pipeline` or on the
+    /// final stage** — it has no effect on a standalone command, and a
+    /// pipeline only activates it on a non-final stage. On an affected stage
+    /// it overrides that stage's configured stdout/stderr destinations,
+    /// since both streams must point at the downstream pipe.
+    ///
+    /// **Pipefail diagnostic trade-off.** Once stderr enters the downstream
+    /// pipe it is no longer available as that stage's own stderr capture: if
+    /// pipefail attributes the chain's failure to this stage,
+    /// `ProcessResult.stderr` is empty for it — the merged bytes may instead
+    /// surface in the final stage's stdout after passing through the rest of
+    /// the pipeline.
+    fn merge_stderr_in_pipe(&self) -> Self {
+        self.rewrap(self.inner.clone().merge_stderr_in_pipe())
+    }
+
     /// The program to launch.
     #[getter]
     fn program(&self) -> String {
@@ -1274,6 +1374,18 @@ impl PyCommand {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// The explicit Unix `argv[0]` override configured via `arg0()`, or `None`
+    /// if unset. Exposes the routing input to `ScriptedRunner.when()`
+    /// predicates and other command inspection without conflating it with
+    /// `program`, which remains the executable lookup key. Still `Some` on a
+    /// non-Unix platform before a run would reject it (see `arg0()`).
+    #[getter]
+    fn configured_arg0(&self) -> Option<String> {
+        self.inner
+            .configured_arg0()
+            .map(|arg0| arg0.to_string_lossy().into_owned())
     }
 
     /// Render this command as a single shell-quoted line for **display** — logs,

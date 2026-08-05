@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `Command.arg0()`/`configured_arg0`, `Command.merge_stderr_in_pipe()`,
+  `Command.stdout_raw_tee()`/`stderr_raw_tee()`, and
+  `RunningProcess.stdout_bytes_seen`/`stderr_bytes_seen` — the last remaining
+  small binding gaps against the `processkit` core: a Unix-only `argv[0]`
+  override (raising `Unsupported` off-Unix), a per-stage `2>&1 |`-equivalent
+  pipeline marker, an undecoded byte-exact stdout/stderr tee alongside the
+  existing decoded `stdout_tee()`/`stderr_tee()`, and raw pipe byte counters
+  alongside the existing `stdout_line_count`/`stderr_line_count`.
 - Add partial-tail readiness probes on `RunningProcess` —
   `wait_for_output()`/`await_for_output()` for stdout and
   `wait_for_stderr_output()`/`await_for_stderr_output()` for stderr — which

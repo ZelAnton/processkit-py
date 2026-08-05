@@ -87,12 +87,14 @@ class SupportsWrite(Protocol):
     `io.StringIO`, `sys.stderr`, a text-mode file, a logger wrapper. The tee
     passes each decoded line (and the trailing `"\\n"`) to `write` as a `str`,
     so a *binary* writer (`io.BytesIO`, a `"wb"` file) is the wrong sink here.
-    The return value is ignored (`io.StringIO.write` returns an `int`, a bare
-    logger wrapper may return `None`), hence `object`. Lives here — not inline
-    in `_processkit.pyi` — because `mypy.stubtest` requires every name the
-    compiled module's stub references to exist at runtime, and a compiled
-    extension's `.pyi` has no backing runtime source (the same reason
-    `RunnerLike` lives here)."""
+    An `int` return value is interpreted as the number of characters accepted,
+    and a short write is retried. `None` and other non-`int` return values mean
+    that the full buffer was accepted, hence `object`. An invalid count disables
+    the tee and is reported via `sys.unraisablehook`. Lives here — not inline in
+    `_processkit.pyi` — because `mypy.stubtest` requires every name the compiled
+    module's stub references to exist at runtime, and a compiled extension's
+    `.pyi` has no backing runtime source (the same reason `RunnerLike` lives
+    here)."""
 
     def write(self, data: str, /) -> object: ...
 
@@ -104,8 +106,11 @@ class SupportsWriteBytes(Protocol):
     undecoded pipe chunk to `write` as `bytes`, verbatim (no line splitting,
     no UTF-8 decoding — that is the entire point of the raw tee), so a *text*
     writer (`io.StringIO`, `sys.stderr`) is the wrong sink here, unlike
-    `SupportsWrite` for the decoded `stdout_tee`/`stderr_tee`. The return
-    value is ignored, hence `object`. Lives here for the same
+    `SupportsWrite` for the decoded `stdout_tee`/`stderr_tee`. An `int` return
+    value is interpreted as the number of bytes accepted, and a short write is
+    retried. `None` and other non-`int` return values mean that the full buffer
+    was accepted, hence `object`. An invalid count disables the tee and is
+    reported via `sys.unraisablehook`. Lives here for the same
     `mypy.stubtest`-runtime-presence reason as `SupportsWrite`."""
 
     def write(self, data: bytes, /) -> object: ...

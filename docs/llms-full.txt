@@ -2963,6 +2963,12 @@ Things to know:
   Python writer, a `write()` (or `flush()`) exception is additionally reported
   via `sys.unraisablehook`, so it is visible even without `enable_logging()`
   (and catchable in a test via a custom hook).
+
+  An invalid integer count from `write()` — negative, zero before the buffer is
+  empty, or larger than the remaining buffer — also disables the tee and is
+  reported via `sys.unraisablehook`, making it visible on stderr even without
+  logging. This report is separate from, and visible alongside, exception-based
+  errors.
 - **No-op unless the line pump runs.** The tee fires from the line-capture pump,
   so it is inert under `stdout("inherit")` / `stdout("null")` (no pump) and under
   `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs
@@ -6198,6 +6204,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Python writer objects used by decoded and raw output tees now retry partial
+  integer `write()` counts to completion without truncating mirrored output;
+  `None` and other non-integer return values remain supported and mean the full
+  buffer was accepted, while invalid integer counts are reported via
+  `sys.unraisablehook`.
 - Close the completion hub's socket at the OS level when Python-level cleanup
   raises, preventing pending anyio-on-asyncio reader tasks and socket-resource
   warnings after an awaited operation is cancelled during loop shutdown.
@@ -7362,11 +7373,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry no separate `.message` attribute. Read the reason via `str(exc)`.
 
 ### Fixed
-- Python writer objects used by decoded and raw output tees now retry partial
-  integer `write()` counts to completion without truncating mirrored output;
-  `None` and other non-integer return values remain supported and mean the full
-  buffer was accepted, while invalid integer counts are reported via
-  `sys.unraisablehook`.
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no
   longer re-enters the tokio runtime and panics (the panic was previously
   swallowed, so the predicate silently never fired); it now raises a clear

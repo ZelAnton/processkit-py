@@ -109,6 +109,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Python writer objects used by decoded and raw output tees now retry partial
+  integer `write()` counts to completion without truncating mirrored output;
+  `None` and other non-integer return values remain supported and mean the full
+  buffer was accepted, while invalid integer counts are reported via
+  `sys.unraisablehook`.
 - Close the completion hub's socket at the OS level when Python-level cleanup
   raises, preventing pending anyio-on-asyncio reader tasks and socket-resource
   warnings after an awaited operation is cancelled during loop shutdown.
@@ -1273,11 +1278,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry no separate `.message` attribute. Read the reason via `str(exc)`.
 
 ### Fixed
-- Python writer objects used by decoded and raw output tees now retry partial
-  integer `write()` counts to completion without truncating mirrored output;
-  `None` and other non-integer return values remain supported and mean the full
-  buffer was accepted, while invalid integer counts are reported via
-  `sys.unraisablehook`.
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no
   longer re-enters the tokio runtime and panics (the panic was previously
   swallowed, so the predicate silently never fired); it now raises a clear

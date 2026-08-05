@@ -266,6 +266,12 @@ Things to know:
   Python writer, a `write()` (or `flush()`) exception is additionally reported
   via `sys.unraisablehook`, so it is visible even without `enable_logging()`
   (and catchable in a test via a custom hook).
+
+  An invalid integer count from `write()` — negative, zero before the buffer is
+  empty, or larger than the remaining buffer — also disables the tee and is
+  reported via `sys.unraisablehook`, making it visible on stderr even without
+  logging. This report is separate from, and visible alongside, exception-based
+  errors.
 - **No-op unless the line pump runs.** The tee fires from the line-capture pump,
   so it is inert under `stdout("inherit")` / `stdout("null")` (no pump) and under
   `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs

@@ -2322,14 +2322,34 @@ def test_stdout_tee_to_custom_writer_object() -> None:
     assert "".join(sink.chunks) == "alpha\nbeta\n"
 
 
+def test_stdout_tee_retries_partial_text_writer_by_character() -> None:
+    class PartialWriter:
+        def __init__(self) -> None:
+            self.data = ""
+            self.calls = 0
+
+        def write(self, data: str) -> int:
+            self.data += data[:1]
+            self.calls += 1
+            return min(1, len(data))
+
+    sink = PartialWriter()
+    result = Command(PY, ["-c", "print('h\u00e9llo', flush=True)"]).stdout_tee(sink).output()
+
+    assert sink.calls > 1
+    assert sink.data == "h\u00e9llo\n"
+    assert result.stdout == "h\u00e9llo"
+
+
 def test_tee_writer_receives_str_not_bytes() -> None:
     # The sink is a TEXT sink: the decoded line is passed to write() as `str`,
     # not `bytes` (so io.StringIO / sys.stderr fit; a binary sink would not).
     seen_types: set[type] = set()
 
     class TypeProbe:
-        def write(self, data: object) -> None:
+        def write(self, data: object) -> int:
             seen_types.add(type(data))
+            return len(data) if isinstance(data, str | bytes) else 0
 
     Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(TypeProbe()).output()
     assert seen_types == {str}
@@ -2482,6 +2502,27 @@ def test_stdout_raw_tee_to_bytesio_object() -> None:
     assert buf.getvalue() == _RAW_TEE_CRLF_BYTES
 
 
+def test_stdout_raw_tee_retries_partial_writer_without_truncating_capture() -> None:
+    class PartialWriter:
+        def __init__(self, quota: int) -> None:
+            self.quota = quota
+            self.data = bytearray()
+            self.calls = 0
+
+        def write(self, data: bytes) -> int:
+            accepted = data[: self.quota]
+            self.data.extend(accepted)
+            self.calls += 1
+            return len(accepted)
+
+    sink = PartialWriter(quota=3)
+    result = Command(PY, ["-c", _RAW_TEE_CRLF_CODE]).stdout_raw_tee(sink).output()
+
+    assert sink.calls > 1
+    assert bytes(sink.data) == _RAW_TEE_CRLF_BYTES
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+
+
 def test_stderr_raw_tee_to_bytesio_object() -> None:
     buf = io.BytesIO()
     code = _RAW_TEE_CRLF_CODE.replace("sys.stdout", "sys.stderr")
@@ -2496,8 +2537,9 @@ def test_raw_tee_writer_receives_bytes_not_str() -> None:
     seen_types: set[type] = set()
 
     class TypeProbe:
-        def write(self, data: object) -> None:
+        def write(self, data: object) -> int:
             seen_types.add(type(data))
+            return len(data) if isinstance(data, str | bytes) else 0
 
     Command(PY, ["-c", _TEE_TWO_LINES]).stdout_raw_tee(TypeProbe()).output()
     assert seen_types == {bytes}

@@ -1273,6 +1273,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry no separate `.message` attribute. Read the reason via `str(exc)`.
 
 ### Fixed
+- Python writer objects used by decoded and raw output tees now retry partial
+  `write()` calls to completion and reject invalid counts instead of silently
+  truncating mirrored output.
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no
   longer re-enters the tokio runtime and panics (the panic was previously
   swallowed, so the predicate silently never fired); it now raises a clear

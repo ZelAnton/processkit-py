@@ -148,7 +148,8 @@ pub(crate) fn is_python_writer(sink: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// isolation: the tee is disabled for the rest of the run (a `tracing` warn
 /// under `enable_logging()`) while the run and its captured result continue
 /// unaffected — the same contract as the file-path tee, plus the Python
-/// traceback via the unraisable hook.
+/// traceback via the unraisable hook. An invalid `write()` return value is also
+/// an `io::Error`; a short positive write is retried until the chunk is complete.
 ///
 /// We do **not** own the Python object (the caller keeps writing to their
 /// `sys.stderr` / open file after the run), so this never closes it: shutdown
@@ -179,8 +180,8 @@ enum Pending {
 }
 
 /// A dispatched blocking Python call: `Ok(())` on success, `Err(message)` when
-/// `write()`/`flush()` raised (the exception was already sent to the unraisable
-/// hook; the message rides along only to enrich the `io::Error`).
+/// `write()`/`flush()` failed or returned an invalid count. Raised exceptions
+/// were already sent to the unraisable hook; the message enriches the `io::Error`.
 type BlockingOp = JoinHandle<Result<(), String>>;
 
 impl PyWriterSink {
@@ -208,9 +209,9 @@ impl PyWriterSink {
 
 /// Call `writer.write(...)` under the GIL with `data`, either decoded to `str`
 /// (text mode, `raw = false`) or wrapped as `bytes` (raw mode, `raw = true`).
-/// Runs on a blocking-pool thread. A raising `write()` is reported via the
-/// unraisable hook here (we hold the GIL) and its message returned so the
-/// caller can build a matching `io::Error`.
+/// Runs on a blocking-pool thread. Short writes are retried to completion. A
+/// raising `write()` is reported via the unraisable hook here (we hold the GIL)
+/// and its message returned so the caller can build a matching `io::Error`.
 fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>, raw: bool) -> Result<(), String> {
     // `try_attach`, not `attach`: this runs on a tokio blocking-pool worker that
     // is not joined at `Py_Finalize` (the runtime is an immortal singleton).
@@ -221,29 +222,87 @@ fn call_py_write(writer: &Arc<Py<PyAny>>, data: Vec<u8>, raw: bool) -> Result<()
     // guard as `logging.rs`'s bridge.
     Python::try_attach(|py| {
         let bound = writer.bind(py);
-        let result = if raw {
-            // Raw mode: pass the pipe bytes through verbatim, never decoded —
-            // the whole point of the raw tee is byte-exact fidelity, including
-            // non-UTF-8 output that text mode's `from_utf8_lossy` would mangle.
-            let payload = PyBytes::new(py, &data);
-            bound.call_method1("write", (payload,))
+        if raw {
+            let mut remaining = data.as_slice();
+            while !remaining.is_empty() {
+                // Raw mode: pass the pipe bytes through verbatim, never decoded —
+                // the whole point of the raw tee is byte-exact fidelity, including
+                // non-UTF-8 output that text mode's `from_utf8_lossy` would mangle.
+                let payload = PyBytes::new(py, remaining);
+                let written = validate_py_write_result(
+                    bound.call_method1("write", (payload,)),
+                    py,
+                    bound,
+                    remaining.len(),
+                    "bytes",
+                )?;
+                remaining = &remaining[written..];
+            }
         } else {
             // Text mode: the crate emits a whole decoded line, then `b"\n"`, so
             // `data` is always valid UTF-8; `from_utf8_lossy` is a panic-proof
             // guard, not an expected lossy path.
             let text = String::from_utf8_lossy(&data);
-            bound.call_method1("write", (text.as_ref(),))
-        };
-        match result {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                let message = err.to_string();
-                err.write_unraisable(py, Some(bound));
-                Err(message)
+            let mut remaining = text.as_ref();
+            while !remaining.is_empty() {
+                let remaining_chars = remaining.chars().count();
+                let written = validate_py_write_result(
+                    bound.call_method1("write", (remaining,)),
+                    py,
+                    bound,
+                    remaining_chars,
+                    "characters",
+                )?;
+                let next_byte = remaining
+                    .char_indices()
+                    .nth(written)
+                    .map_or(remaining.len(), |(index, _)| index);
+                remaining = &remaining[next_byte..];
             }
         }
+        Ok(())
     })
     .unwrap_or_else(|| Err("tee write skipped: Python interpreter is finalizing".to_string()))
+}
+
+fn validate_py_write_result<'py>(
+    result: PyResult<Bound<'py, PyAny>>,
+    py: Python<'py>,
+    writer: &Bound<'py, PyAny>,
+    remaining: usize,
+    unit: &str,
+) -> Result<usize, String> {
+    let value = match result {
+        Ok(value) => value,
+        Err(err) => {
+            let message = err.to_string();
+            err.write_unraisable(py, Some(writer));
+            return Err(message);
+        }
+    };
+    if !value.is_instance_of::<PyInt>() || value.is_instance_of::<PyBool>() {
+        return Err("tee writer write() must return an integer".to_string());
+    }
+    let written = value.extract::<i64>().map_err(|_| {
+        "tee writer write() returned an integer outside the supported range".to_string()
+    })?;
+    if written < 0 {
+        return Err(format!(
+            "tee writer write() returned a negative count: {written}"
+        ));
+    }
+    let written = usize::try_from(written).map_err(|_| {
+        "tee writer write() returned an integer outside the supported range".to_string()
+    })?;
+    if written == 0 {
+        return Err("tee writer write() returned zero before the buffer was complete".to_string());
+    }
+    if written > remaining {
+        return Err(format!(
+            "tee writer write() returned {written} {unit}, more than the {remaining} remaining"
+        ));
+    }
+    Ok(written)
 }
 
 /// Call `writer.flush()` under the GIL if the object exposes a callable `flush`

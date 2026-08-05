@@ -1075,6 +1075,36 @@ def test_pty_interactive_input_round_trips_over_terminal_master() -> None:
     assert "reply:hello" in result.stdout
 
 
+def test_pty_partial_tail_dialog_waits_for_a_prompt_then_answers_it() -> None:
+    # The PTY case the partial-tail probe exists for: a terminal dialog is made
+    # of prompts written WITHOUT a newline, so `stdout_lines()` sees nothing at
+    # all while the child waits — `await_for_output` matches the live tail, the
+    # answer goes back over `take_stdin()`, and the next prompt is matched the
+    # same way.
+    #
+    # Matched on `"Password:"`/`"welcome>"` rather than the full `"Password: "`:
+    # the tail is raw, and a real terminal renders the trailing space as cursor
+    # movement (ConPTY emits `\x1b[1C`) amid its setup/title sequences.
+    code = (
+        "import sys; sys.stdout.write('Password: '); sys.stdout.flush(); "
+        "ans = sys.stdin.readline(); "
+        "sys.stdout.write('welcome ' + ans.strip() + '> '); sys.stdout.flush(); "
+        "sys.stdin.readline()"
+    )
+
+    async def scenario() -> tuple[str, str]:
+        async with await Command(PY, ["-c", code]).pty().keep_stdin_open().astart() as proc:
+            prompt = await proc.await_for_output("Password:", timeout=30.0)
+            stdin = proc.take_stdin()
+            await stdin.write_line("s3cret")
+            answered = await proc.await_for_output("welcome", timeout=30.0)
+            return prompt, answered
+
+    prompt, answered = asyncio.run(asyncio.wait_for(scenario(), timeout=60.0))
+    assert "Password:" in prompt
+    assert "welcome" in answered
+
+
 def test_pty_sanitize_vt_cleans_merged_streaming_output() -> None:
     async def scenario() -> list[str]:
         code = (

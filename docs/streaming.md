@@ -565,7 +565,9 @@ await proc.aoutcome()
 
 "Start a server, then use it" needs *ready*, not merely *started*. Seven
 free async helpers replace the arbitrary `asyncio.sleep`, each bounded by its
-own deadline:
+own deadline (an eighth kind — waiting on an un-terminated *prompt* — is a
+handle method instead; see [Waiting for a prompt](#waiting-for-a-prompt-partial-output)
+below):
 
 ```python
 from processkit import (
@@ -649,6 +651,72 @@ Semantics, deliberately uniform:
   (`ValueError` if `interval <= 0`). A sync `wait_until`
   predicate runs on the event loop, so keep it non-blocking; for blocking work,
   pass an awaitable.
+
+### Waiting for a prompt (partial output)
+
+Every probe above is line-shaped or endpoint-shaped. An interactive **prompt** is
+neither: `Password: `, `(y/N) `, a REPL `>>> ` are written *without* a trailing
+newline and then blocked on, so they never become a line at all — `wait_for_line`
+cannot see them until the stream ends, which for a tool waiting on your answer is
+never. PTY sessions are made almost entirely of such prompts.
+
+`RunningProcess` therefore carries its own probe over the live **partial tail** —
+the decoded output the pump has not yet split into a line — as the usual
+sync/async pair (plus a stderr twin for tools that prompt on stderr):
+
+```python
+from processkit import Command
+
+proc = await Command("unlock-tool").pty().keep_stdin_open().astart()
+
+# 1. Wait for the un-terminated prompt itself (str = substring of the tail):
+await proc.await_for_output("passphrase", timeout=10)
+
+# 2. …answer it over the stdin writer the handle still owns…
+stdin = proc.take_stdin()
+await stdin.write_line(passphrase)
+
+# 3. …and wait for whatever the tool prints next — a callable predicate here:
+prompt = await proc.await_for_output(lambda tail: tail.endswith("$ "), timeout=10)
+
+outcome = await proc.aoutcome()
+```
+
+`wait_for_output` / `await_for_output` watch stdout (which is also a PTY's single
+merged terminal stream); `wait_for_stderr_output` / `await_for_stderr_output`
+watch stderr. Their semantics:
+
+- `predicate` is a `str` (substring of the tail) or a callable
+  `predicate(tail) -> bool`, exactly like `wait_for_line`, and `timeout` is
+  keyword-only seconds with the same `ValueError` on NaN/negative. The matching
+  tail is returned.
+- The deadline raises **`WaitTimeout`** like every other probe, and a failed
+  probe **never kills the child** nor arms the run's own `timeout()` watchdog. If
+  the stream *ends* before a match, it raises `ProcessError` immediately instead
+  of waiting out the deadline — the same "stream ended" rule `wait_for_line` has.
+- **Non-consuming and repeatable**: the tail is only peeked at, so a multi-turn
+  dialog is a sequence of probe → answer turns, and `pid` / `kill()` /
+  `take_stdin()` / context-manager teardown keep working throughout. Answer a
+  prompt before waiting for the next one — a still-standing tail matches again.
+- The tail is the **whole current partial line**, not just the newest fragment:
+  a tool that prints two prompts with no newline between them yields both at once.
+  Match with `in` / `endswith`, not equality.
+- The tail is **raw**. Capture redaction and `sanitize_vt()` both run per
+  *completed line*, so a terminal's escape sequences are still in there (ConPTY
+  even renders the space in `"Password: "` as a cursor-move). Match a prompt's
+  plain text — `"Password:"` — or strip inside a callable, and never assume the
+  fragment is scrubbed.
+- stdout and stderr are **not** symmetrical: the stderr twin raises
+  `ProcessError` when stderr is not piped, which includes every `pty()` run (a
+  PTY has one merged stream — use `wait_for_output` there) and any
+  `stderr("null")` / `stderr("inherit")` / `stderr_file(...)` command.
+- Probing installs stdout's one line pump, just like the crate's line probes. So
+  bind `stdout_lines()` / `stdout_json_lines()` / `output_events()` /
+  `stderr_lines()` / `lifecycle_events()` **before** your first probe if you want
+  both — they then coexist, since the tail is a side channel that steals nothing
+  from the iterator — while a stream opened *after* a probe raises `ProcessError`.
+  `finish()` / `outcome()` / `output()` still report the run afterwards;
+  `output_bytes()` does not (raw bytes are gone once stdout is decoded to lines).
 
 *Deeper: bounding the whole run (not just the wait) is
 [Timeouts & cancellation](timeouts-and-cancellation.md).*

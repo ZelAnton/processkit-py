@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add partial-tail readiness probes on `RunningProcess` —
+  `wait_for_output()`/`await_for_output()` for stdout and
+  `wait_for_stderr_output()`/`await_for_stderr_output()` for stderr — which
+  match an *un-terminated* prompt (`Password: `, `(y/N) `, a REPL `>>> `) that
+  the line-oriented probes can never see, so a PTY or CLI dialog can wait for a
+  prompt and answer it over `take_stdin()`. Non-consuming and repeatable, they
+  raise `WaitTimeout` on their own deadline without ever killing the child.
 - Add `Command.sanitize_vt()`, `stdout_sanitize_vt()`, and
   `stderr_sanitize_vt()` for clean captured and streaming terminal text, plus
   `processkit run --sanitize-vt` for ANSI-free CLI relay output.

@@ -1274,8 +1274,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Python writer objects used by decoded and raw output tees now retry partial
-  `write()` calls to completion and reject invalid counts instead of silently
-  truncating mirrored output.
+  integer `write()` counts to completion without truncating mirrored output;
+  `None` and other non-integer return values remain supported and mean the full
+  buffer was accepted, while invalid integer counts are reported via
+  `sys.unraisablehook`.
 - A synchronous verb called from inside a `Supervisor` `stop_when` predicate no
   longer re-enters the tokio runtime and panics (the panic was previously
   swallowed, so the predicate silently never fired); it now raises a clear

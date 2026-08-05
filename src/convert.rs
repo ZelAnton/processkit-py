@@ -148,8 +148,10 @@ pub(crate) fn is_python_writer(sink: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// isolation: the tee is disabled for the rest of the run (a `tracing` warn
 /// under `enable_logging()`) while the run and its captured result continue
 /// unaffected — the same contract as the file-path tee, plus the Python
-/// traceback via the unraisable hook. An invalid `write()` return value is also
-/// an `io::Error`; a short positive write is retried until the chunk is complete.
+/// traceback via the unraisable hook. A non-integer `write()` result is ignored,
+/// preserving the documented logger-wrapper protocol; an invalid integer count
+/// is also an `io::Error`. A short positive write is retried until the chunk is
+/// complete.
 ///
 /// We do **not** own the Python object (the caller keeps writing to their
 /// `sys.stderr` / open file after the run), so this never closes it: shutdown
@@ -280,29 +282,66 @@ fn validate_py_write_result<'py>(
             return Err(message);
         }
     };
+    // The public writer protocols deliberately declare `write()` as returning
+    // `object`: logger wrappers commonly return None. Only an actual integer is
+    // a short-write count; every other result means the writer accepted the
+    // complete buffer.
     if !value.is_instance_of::<PyInt>() || value.is_instance_of::<PyBool>() {
-        return Err("tee writer write() must return an integer".to_string());
+        return Ok(remaining);
     }
-    let written = value.extract::<i64>().map_err(|_| {
-        "tee writer write() returned an integer outside the supported range".to_string()
-    })?;
+    let written = match value.extract::<i64>() {
+        Ok(written) => written,
+        Err(_) => {
+            return report_invalid_py_write_count(
+                py,
+                writer,
+                "tee writer write() returned an integer outside the supported range".to_string(),
+            );
+        }
+    };
     if written < 0 {
-        return Err(format!(
-            "tee writer write() returned a negative count: {written}"
-        ));
+        return report_invalid_py_write_count(
+            py,
+            writer,
+            format!("tee writer write() returned a negative count: {written}"),
+        );
     }
-    let written = usize::try_from(written).map_err(|_| {
-        "tee writer write() returned an integer outside the supported range".to_string()
-    })?;
+    let written = match usize::try_from(written) {
+        Ok(written) => written,
+        Err(_) => {
+            return report_invalid_py_write_count(
+                py,
+                writer,
+                "tee writer write() returned an integer outside the supported range".to_string(),
+            );
+        }
+    };
     if written == 0 {
-        return Err("tee writer write() returned zero before the buffer was complete".to_string());
+        return report_invalid_py_write_count(
+            py,
+            writer,
+            "tee writer write() returned zero before the buffer was complete".to_string(),
+        );
     }
     if written > remaining {
-        return Err(format!(
-            "tee writer write() returned {written} {unit}, more than the {remaining} remaining"
-        ));
+        return report_invalid_py_write_count(
+            py,
+            writer,
+            format!(
+                "tee writer write() returned {written} {unit}, more than the {remaining} remaining"
+            ),
+        );
     }
     Ok(written)
+}
+
+fn report_invalid_py_write_count<'py>(
+    py: Python<'py>,
+    writer: &Bound<'py, PyAny>,
+    message: String,
+) -> Result<usize, String> {
+    PyValueError::new_err(message.clone()).write_unraisable(py, Some(writer));
+    Err(message)
 }
 
 /// Call `writer.flush()` under the GIL if the object exposes a callable `flush`

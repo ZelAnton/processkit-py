@@ -2341,15 +2341,69 @@ def test_stdout_tee_retries_partial_text_writer_by_character() -> None:
     assert result.stdout == "h\u00e9llo"
 
 
+def test_tee_text_writer() -> None:
+    class NoneCollector:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, data: str) -> None:
+            self.chunks.append(data)
+
+    class PartialWriter:
+        def __init__(self) -> None:
+            self.data = ""
+            self.calls = 0
+
+        def write(self, data: str) -> int:
+            self.data += data[:1]
+            self.calls += 1
+            return min(1, len(data))
+
+    none_sink = NoneCollector()
+    none_result = (
+        Command(PY, ["-c", "for i in range(5): print(f'line{i}', flush=True)"])
+        .stdout_tee(none_sink)
+        .output()
+    )
+    partial_sink = PartialWriter()
+    partial_result = (
+        Command(PY, ["-c", "print('h\u00e9llo', flush=True)"]).stdout_tee(partial_sink).output()
+    )
+
+    assert none_result.is_success
+    assert "".join(none_sink.chunks) == "line0\nline1\nline2\nline3\nline4\n"
+    assert partial_result.is_success
+    assert partial_sink.calls > 1
+    assert partial_sink.data == "h\u00e9llo\n"
+
+
+def test_stdout_tee_none_returning_writer_accepts_every_line() -> None:
+    class Collector:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, data: str) -> None:
+            self.chunks.append(data)
+
+    sink = Collector()
+    result = (
+        Command(PY, ["-c", "for i in range(5): print(f'line{i}', flush=True)"])
+        .stdout_tee(sink)
+        .output()
+    )
+
+    assert result.is_success
+    assert "".join(sink.chunks) == "line0\nline1\nline2\nline3\nline4\n"
+
+
 def test_tee_writer_receives_str_not_bytes() -> None:
     # The sink is a TEXT sink: the decoded line is passed to write() as `str`,
     # not `bytes` (so io.StringIO / sys.stderr fit; a binary sink would not).
     seen_types: set[type] = set()
 
     class TypeProbe:
-        def write(self, data: object) -> int:
+        def write(self, data: object) -> None:
             seen_types.add(type(data))
-            return len(data) if isinstance(data, str | bytes) else 0
 
     Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(TypeProbe()).output()
     assert seen_types == {str}
@@ -2386,6 +2440,33 @@ def test_tee_writer_raising_write_is_isolated_and_disables_the_tee() -> None:
     assert isinstance(captured[0], ValueError)
     # Disabled after the first error: only the first line's write was attempted.
     assert calls == ["alpha"]
+
+
+@pytest.mark.parametrize("count", [-1, 0, 10_000])
+def test_tee_writer_invalid_integer_count_is_reported_via_unraisablehook(count: int) -> None:
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    class InvalidCount:
+        def write(self, data: str) -> int:
+            return count
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        result = (
+            Command(PY, ["-c", "print('line', flush=True)"]).stdout_tee(InvalidCount()).output()
+        )
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert len(captured) == 1
+    assert isinstance(captured[0], ValueError)
 
 
 def test_stdout_tee_file_and_stderr_tee_object_coexist(tmp_path: pathlib.Path) -> None:
@@ -2523,6 +2604,32 @@ def test_stdout_raw_tee_retries_partial_writer_without_truncating_capture() -> N
     assert result.stdout.splitlines() == ["alpha", "beta"]
 
 
+def test_stdout_raw_tee_none_returning_writer_accepts_every_chunk() -> None:
+    class Collector:
+        def __init__(self) -> None:
+            self.chunks: list[bytes] = []
+
+        def write(self, data: bytes) -> None:
+            self.chunks.append(data)
+
+    sink = Collector()
+    result = (
+        Command(
+            PY,
+            [
+                "-c",
+                "import sys; [sys.stdout.buffer.write(f'line{i}\\n'.encode()) for i in range(5)]; "
+                "sys.stdout.buffer.flush()",
+            ],
+        )
+        .stdout_raw_tee(sink)
+        .output()
+    )
+
+    assert result.is_success
+    assert b"".join(sink.chunks) == b"line0\nline1\nline2\nline3\nline4\n"
+
+
 def test_stderr_raw_tee_to_bytesio_object() -> None:
     buf = io.BytesIO()
     code = _RAW_TEE_CRLF_CODE.replace("sys.stdout", "sys.stderr")
@@ -2537,9 +2644,8 @@ def test_raw_tee_writer_receives_bytes_not_str() -> None:
     seen_types: set[type] = set()
 
     class TypeProbe:
-        def write(self, data: object) -> int:
+        def write(self, data: object) -> None:
             seen_types.add(type(data))
-            return len(data) if isinstance(data, str | bytes) else 0
 
     Command(PY, ["-c", _TEE_TWO_LINES]).stdout_raw_tee(TypeProbe()).output()
     assert seen_types == {bytes}

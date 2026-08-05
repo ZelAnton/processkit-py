@@ -4,15 +4,6 @@ extend-exclude = [
     "docs/api-reference.md",
     "docs/llms*.txt",
     "docs/changelog.md",  # Generated from CHANGELOG.md; tool names like delocate-wheel
-    # Owned by concurrent tasks; remove these entries after those tasks land.
-    "src/running.rs",
-    "src/processkit/_processkit.pyi",
-    "tests/test_readiness.py",
-    "tests/test_streaming.py",
-    "docs/streaming.md",
-    "docs/process-groups.md",
-    "docs/troubleshooting.md",
-    "docs/cookbook.md",
 ]
 
 [default]

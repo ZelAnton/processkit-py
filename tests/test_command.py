@@ -11,6 +11,7 @@ without assuming any system binary is present.
 from __future__ import annotations
 
 import asyncio
+import glob
 import io
 import json
 import multiprocessing
@@ -501,7 +502,25 @@ def test_arg0_configured_arg0_is_last_write_wins() -> None:
     assert Command(PY, ["-c", "print(1)"]).configured_arg0 is None
 
 
+def _is_musl() -> bool:
+    """Detect musl libc via its distinctively named dynamic linker file.
+
+    ``platform.libc_ver()`` only recognizes glibc/uclibc and reports
+    ``("", "")`` on musl for python-build-standalone interpreters (the kind
+    ``uv python install`` provisions, including in this project's own
+    ``docker/Dockerfile.musl`` CI lane) -- so it never actually detects musl
+    there. Look for musl's own loader instead, the same well-established
+    technique ``packaging._musllinux`` uses for musllinux wheel tag
+    detection.
+    """
+    return bool(glob.glob("/lib/ld-musl-*") + glob.glob("/usr/lib/ld-musl-*"))
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="arg0 is a Unix argv[0] override")
+@pytest.mark.skipif(
+    _is_musl(),
+    reason="BusyBox dispatch on Alpine is orthogonal to arg0 override; test skipped on musl",
+)
 def test_arg0_overrides_argv0_observed_by_the_child() -> None:
     # `$0` in a shell script is literally the delivered argv[0] -- the
     # standard way a multicall binary/login shell (`-bash`) convention is
@@ -2350,7 +2369,12 @@ def test_stdout_tee_retries_partial_text_writer_by_character() -> None:
             return min(1, len(data))
 
     sink = PartialWriter()
-    result = Command(PY, ["-c", "print('h\u00e9llo', flush=True)"]).stdout_tee(sink).output()
+    result = (
+        Command(PY, ["-c", "print('h\u00e9llo', flush=True)"])
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout_tee(sink)
+        .output()
+    )
 
     assert sink.calls > 1
     assert sink.data == "h\u00e9llo\n"
@@ -2383,7 +2407,10 @@ def test_tee_text_writer() -> None:
     )
     partial_sink = PartialWriter()
     partial_result = (
-        Command(PY, ["-c", "print('h\u00e9llo', flush=True)"]).stdout_tee(partial_sink).output()
+        Command(PY, ["-c", "print('h\u00e9llo', flush=True)"])
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdout_tee(partial_sink)
+        .output()
     )
 
     assert none_result.is_success

@@ -15,6 +15,7 @@ import contextlib
 import gc
 import os
 import pathlib
+import subprocess
 import sys
 import time
 
@@ -217,6 +218,46 @@ def test_group_started_handle_works_as_context_manager() -> None:
             assert child is not None
         assert wait_dead(child, timeout=10.0), "group-started child survived its inner with-block"
         assert isinstance(group.members(), list)
+
+
+def test_adopt_external_contains_and_tears_down_foreign_process() -> None:
+    child = subprocess.Popen([PY, "-c", "import time; time.sleep(60)"])
+    pid = child.pid
+    try:
+        assert wait_until(lambda: is_alive(pid), timeout=10.0), "external child never became live"
+        with ProcessGroup() as group:
+            try:
+                group.adopt_external(pid)
+            except Unsupported:
+                pytest.skip("pid-only adoption is unsupported on this platform")
+            assert wait_until(lambda: pid in group.members(), timeout=10.0), (
+                f"adopted pid {pid} never appeared in group.members()"
+            )
+            # Adoption returns no child-like object. ProcessGroup has no wait,
+            # outcome, or finish operation for a pid-only member to reap.
+            assert not hasattr(group, "wait")
+            assert not hasattr(group, "outcome")
+            assert not hasattr(group, "finish")
+
+        child.wait(timeout=10.0)
+        assert child.returncode is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10.0)
+
+
+def test_adopt_external_rejects_zero_and_own_pid() -> None:
+    with ProcessGroup() as group:
+        for pid in (0, os.getpid()):
+            with pytest.raises(ProcessError, match="pid"):
+                group.adopt_external(pid)
+
+
+def test_adopt_external_rejects_a_dead_pid() -> None:
+    dead_pid = 2_000_000_000
+    with ProcessGroup() as group, pytest.raises(ProcessError, match=str(dead_pid)):
+        group.adopt_external(dead_pid)
 
 
 # --- resource limits --------------------------------------------------------

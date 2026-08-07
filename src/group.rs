@@ -512,6 +512,35 @@ impl PyProcessGroup {
         Ok(infos.into_iter().map(PyMemberInfo::from).collect())
     }
 
+    /// Bring an already-running external process under this group's containment
+    /// and teardown, naming it by its pid. The pid is an address, not a handle:
+    /// the crate captures its own process identity while this call runs, so a
+    /// later pid reuse is not signalled. The window before this call, between
+    /// reading a pid and passing it here, cannot be checked by the crate.
+    ///
+    /// This method never reaps the adopted process and returns no completion
+    /// handle or exit status. The group can only list it with `members()` /
+    /// `members_info()` and signal or tear it down. A process's future children
+    /// join the containment on the Windows Job Object and Linux cgroup backends;
+    /// the POSIX process-group fallback normally tracks only the adopted process
+    /// individually because an external process cannot usually be regrouped.
+    ///
+    /// On FreeBSD and other BSDs this raises `Unsupported`, because the crate
+    /// cannot capture the identity anchor required for safe pid-only adoption.
+    /// On macOS and the Linux process-group fallback, a denied `setpgid` is the
+    /// normal case and still succeeds with individual tracking. On Linux cgroup
+    /// v2 adoption moves the process out of its previous cgroup. On Windows an
+    /// already-job-contained process may be nested, but the kernel can reject
+    /// the assignment depending on call order and the existing jobs.
+    ///
+    /// `pid=0` and this process's own pid raise `ProcessError`; a pid that names
+    /// no process also raises `ProcessError` (the underlying error is
+    /// `NotFound`, not the missing-program `ProcessNotFound`). Permission and
+    /// other platform failures use the binding's usual typed error mapping.
+    fn adopt_external(&self, pid: u32) -> PyResult<()> {
+        self.group()?.adopt_external(pid).map_err(map_err)
+    }
+
     /// Send a signal to every process in the tree. `name` is one of `term`,
     /// `kill`, `int`, `hup`, `quit`, `usr1`, `usr2`, or a raw platform signal
     /// number (Unix only) — but a Job Object has no POSIX signals, so on

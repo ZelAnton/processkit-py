@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `ProcessGroup.adopt_external(pid)` to bring an already-running external
+  process under group signalling and teardown when only its pid is available.
+  Adoption captures process identity during the call, never reaps the process
+  or exposes its exit status, and documents the Windows, Linux cgroup,
+  POSIX-fallback, and BSD support boundaries.
 - Add `Command.arg0()`/`configured_arg0`, `Command.merge_stderr_in_pipe()`,
   `Command.stdout_raw_tee()`/`stderr_raw_tee()`, and
   `RunningProcess.stdout_bytes_seen`/`stderr_bytes_seen` — the last remaining
@@ -104,9 +109,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API and feature set while bringing upstream fixes for merged-stderr pipe
   teardown, failed PTY-launch cleanup, pipeline pipefail attribution,
   process-identity-safe metrics, and cassette version validation.
-  The upstream `ProcessGroup::adopt_external` method and
-  `ProcessGroupStats.io_read_bytes`/`io_write_bytes`/`peak_process_count` fields
-  remain intentionally unbound for follow-up binding work.
+  The upstream `ProcessGroupStats.io_read_bytes`/`io_write_bytes`/
+  `peak_process_count` fields remain intentionally unbound for follow-up
+  binding work.
 - Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
   API and cancellation defaults while bringing upstream compatibility fixes for
   ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.

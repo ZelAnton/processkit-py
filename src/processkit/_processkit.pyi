@@ -1340,6 +1340,24 @@ class ProcessGroup(_RunnerVerbs):
         crate offers no async twin). See `MemberInfo` for the per-field platform
         matrix and the ``start_time`` opacity/pid-reuse note."""
 
+    def adopt_external(self, pid: int) -> None:
+        """Adopt an already-running external process by pid for containment and
+        teardown. The pid is an address, not a handle: the crate captures the
+        process identity during this call, so a later pid reuse is not signalled;
+        a race before the call, after the caller read the pid, cannot be checked.
+
+        Adoption never reaps the process and exposes no completion handle or exit
+        status. The group can only list it with ``members()`` / ``members_info()``
+        and signal or tear it down. Windows Job Objects and Linux cgroup v2 also
+        contain future children; the POSIX process-group fallback normally tracks
+        only the adopted process individually. FreeBSD and other BSDs raise
+        ``Unsupported``. Linux cgroup-v2 adoption moves the process out of its
+        previous cgroup; Windows job nesting may be accepted or rejected by the
+        kernel depending on the existing jobs and call order. ``pid=0`` and the
+        current process pid, plus a pid naming no process, raise ``ProcessError``;
+        the latter carries the upstream ``NotFound`` IO condition rather than
+        ``ProcessNotFound``, which is reserved for missing programs."""
+
     def signal(self, name: SignalName | int) -> None:
         """Send a signal to every process in the tree: a name
         (``term``/``kill``/``int``/``hup``/``quit``/``usr1``/``usr2``) or a raw

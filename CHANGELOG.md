@@ -1228,6 +1228,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't express.
 
 ### Changed
+- Pipeline timeout results now retain best-effort partial stdout and stderr
+  captured by the last stage before the deadline.
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the
   whole success set, not an addition), and an empty sequence now raises
   `ValueError` instead of being silently ignored.

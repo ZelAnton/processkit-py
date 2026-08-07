@@ -180,11 +180,13 @@ result = (
 result.timed_out     # True if the 30s deadline fired
 ```
 
-Unlike a single command's captured timeout, a timed-out pipeline yields **no
-partial stdout** — the chain is run-to-completion or nothing. A per-stage
-`Command.timeout(...)` first reaps that stage's whole subtree; the resulting
-checked `Timeout` then tears down the remaining stage sub-groups and is
-attributed to the timed-out stage under pipefail. See
+Unlike a single command's captured timeout, a timed-out pipeline keeps the
+best-effort stdout and stderr already captured from the last stage before the
+deadline, using the same buffer policy as a normal capture. A pipeline has no
+`output_limit` cap of its own. A per-stage `Command.timeout(...)` is a separate
+mechanism: it first reaps that stage's whole subtree; the resulting checked
+`Timeout` then tears down the remaining stage sub-groups and is attributed to
+the timed-out stage under pipefail. See
 [Timeouts & cancellation](timeouts-and-cancellation.md); cancelling an awaited
 `arun()`/`aoutput()` reaps the whole chain's tree the same way, and so does
 firing a `CancellationToken` wired with `Pipeline.cancel_on(token)` — **gap-fill**

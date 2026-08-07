@@ -444,9 +444,12 @@ top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
 blob = (Command("cat", ["big.txt"]) | Command("gzip")).output_bytes().stdout
 ```
 
-A pipeline is run-to-completion (no `astart()` streaming) and has no
-`output_limit` cap of its own — bound a flooding pipeline with `timeout()`. Set
-per-stage `env`/`cwd` on each `Command` before piping.
+A pipeline is run-to-completion (no `astart()` streaming). If
+`Pipeline.timeout()` fires, its capture verbs retain the best-effort stdout and
+stderr already emitted by the last stage before the deadline. A pipeline has
+no `output_limit` cap of its own — bound a flooding pipeline with `timeout()`.
+That whole-chain timeout is distinct from a per-stage `Command.timeout()`.
+Set per-stage `env`/`cwd` on each `Command` before piping.
 
 ## Run many commands at once
 

@@ -184,6 +184,24 @@ def test_pipeline_timeout_is_captured() -> None:
     assert not result.is_success
 
 
+def test_pipeline_timeout_keeps_last_stage_partial_output() -> None:
+    # The final stage emits a recognizable prefix and keeps running long enough
+    # for the chain deadline to fire. Under load, the number of captured lines
+    # varies, so only the stable prefix is part of the assertion.
+    last_stage = (
+        "import sys, time\n"
+        "for i in range(1000):\n"
+        "    print(f'pipeline-prefix-{i}', flush=True)\n"
+        "    time.sleep(0.01)\n"
+    )
+    pipe = Command(PY, ["-c", "print('input')"]) | Command(PY, ["-c", last_stage])
+    result = pipe.timeout(2.0).output()
+
+    assert result.timed_out is True
+    assert not result.is_success
+    assert result.stdout.startswith("pipeline-prefix-0\n")
+
+
 def test_pipeline_stage_timeout_kills_its_whole_subtree(pid_file: pathlib.Path) -> None:
     # processkit 2.1.0: each pipeline stage now spawns into its OWN kill-on-drop
     # sub-group, instead of the whole chain sharing one group. A per-stage

@@ -444,9 +444,12 @@ top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
 blob = (Command("cat", ["big.txt"]) | Command("gzip")).output_bytes().stdout
 ```
 
-A pipeline is run-to-completion (no `astart()` streaming) and has no
-`output_limit` cap of its own — bound a flooding pipeline with `timeout()`. Set
-per-stage `env`/`cwd` on each `Command` before piping.
+A pipeline is run-to-completion (no `astart()` streaming). If
+`Pipeline.timeout()` fires, its capture verbs retain the best-effort stdout and
+stderr already emitted by the last stage before the deadline. A pipeline has
+no `output_limit` cap of its own — bound a flooding pipeline with `timeout()`.
+That whole-chain timeout is distinct from a per-stage `Command.timeout()`.
+Set per-stage `env`/`cwd` on each `Command` before piping.
 
 ## Run many commands at once
 
@@ -3868,11 +3871,13 @@ result = (
 result.timed_out     # True if the 30s deadline fired
 ```
 
-Unlike a single command's captured timeout, a timed-out pipeline yields **no
-partial stdout** — the chain is run-to-completion or nothing. A per-stage
-`Command.timeout(...)` first reaps that stage's whole subtree; the resulting
-checked `Timeout` then tears down the remaining stage sub-groups and is
-attributed to the timed-out stage under pipefail. See
+Unlike a single command's captured timeout, a timed-out pipeline keeps the
+best-effort stdout and stderr already captured from the last stage before the
+deadline, using the same buffer policy as a normal capture. A pipeline has no
+`output_limit` cap of its own. A per-stage `Command.timeout(...)` is a separate
+mechanism: it first reaps that stage's whole subtree; the resulting checked
+`Timeout` then tears down the remaining stage sub-groups and is attributed to
+the timed-out stage under pipefail. See
 [Timeouts & cancellation](timeouts-and-cancellation.md); cancelling an awaited
 `arun()`/`aoutput()` reaps the whole chain's tree the same way, and so does
 firing a `CancellationToken` wired with `Pipeline.cancel_on(token)` — **gap-fill**
@@ -4211,8 +4216,10 @@ reaped a tree.
 ## Bounding pipelines & tuning group shutdown
 
 - A [pipeline](pipelines.md) bounds the **whole chain** with
-  `Pipeline.timeout(seconds)`; the same captured-vs-raised rule applies to
-  whichever verb you finish it with.
+  `Pipeline.timeout(seconds)`. Its capture verbs retain best-effort stdout and
+  stderr already captured by the last stage before the deadline, while its
+  success verbs raise `Timeout` with that partial output attached. This
+  whole-chain timeout is distinct from a per-stage `Command.timeout(...)`.
 - A [ProcessGroup](process-groups.md)'s graceful teardown timing is set at
   construction with `shutdown_grace=` and `escalate_to_kill=`, independent of
   any per-run timeout. Note: cancelling an in-flight `await group.ashutdown()` (or
@@ -7434,6 +7441,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't express.
 
 ### Changed
+- Pipeline timeout results now retain best-effort partial stdout and stderr
+  captured by the last stage before the deadline.
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the
   whole success set, not an addition), and an empty sequence now raises
   `ValueError` instead of being silently ignored.

@@ -100,6 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_json()`/`arun_json()` still always populate it. Typed consumers should
   narrow the type before use; the full diagnostic remains available through
   `str(exc)` regardless of the source.
+- Bump the bundled ProcessKit-rs core to 3.3.0, preserving the existing Python
+  API and feature set while bringing upstream fixes for merged-stderr pipe
+  teardown, failed PTY-launch cleanup, pipeline pipefail attribution,
+  process-identity-safe metrics, and cassette version validation.
+  The upstream `ProcessGroup::adopt_external` method and
+  `ProcessGroupStats.io_read_bytes`/`io_write_bytes`/`peak_process_count` fields
+  remain intentionally unbound for follow-up binding work.
 - Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
   API and cancellation defaults while bringing upstream compatibility fixes for
   ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.

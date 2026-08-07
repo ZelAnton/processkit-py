@@ -110,12 +110,13 @@ to spawn the child *itself* (with the slave attached) and only then ask the crat
 to contain it. But there is no crate API to enrol an **already-spawned,
 binding-created** process into a fresh Job Object / cgroup as part of a race-free
 sequence. The nearest concept the crate documents is *adopting* a foreign
-process into a group — and the binding does not even expose that — but adoption
-is explicitly best-effort: it opens exactly the spawn/enrol race that the crate's
-own launch eliminates (in the window between creation and enrolment, the child
-can fork descendants that escape containment). Trading the project's core
-no-orphan / kill-on-exit guarantee for a PTY is not an acceptable design, so this
-path is rejected even where it is technically reachable.
+process into a group — exposed by the published binding as
+`ProcessGroup.adopt_external(pid)` — but adoption is explicitly best-effort: it
+opens exactly the spawn/enrol race that the crate's own launch eliminates (in the
+window between creation and enrolment, the child can fork descendants that escape
+containment). Trading the project's core no-orphan / kill-on-exit guarantee for a
+PTY is not an acceptable design, so this path is rejected even where it is
+technically reachable.
 
 ### Consequence
 

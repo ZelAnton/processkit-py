@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add cumulative whole-tree I/O counters (`ProcessGroupStats.io_read_bytes`
+  and `io_write_bytes`) and the optional kernel high-water mark
+  `ProcessGroupStats.peak_process_count`. Availability and units remain
+  mechanism-dependent: Windows Job Objects report transfer bytes, Linux cgroup
+  v2 may report block-layer bytes and task counts, and unsupported measurements
+  are exposed as `None` rather than a synthetic zero.
 - Add `ProcessGroup.adopt_external(pid)` to bring an already-running external
   process under group signalling and teardown when only its pid is available.
   Adoption captures process identity during the call, never reaps the process
@@ -108,10 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump the bundled ProcessKit-rs core to 3.3.0, preserving the existing Python
   API and feature set while bringing upstream fixes for merged-stderr pipe
   teardown, failed PTY-launch cleanup, pipeline pipefail attribution,
-  process-identity-safe metrics, and cassette version validation.
-  The upstream `ProcessGroupStats.io_read_bytes`/`io_write_bytes`/
-  `peak_process_count` fields remain intentionally unbound for follow-up
-  binding work.
+  process-identity-safe metrics, and cassette version validation. The upstream
+  `ProcessGroupStats` statistics additions are exposed by the binding as
+  documented under Added.
 - Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
   API and cancellation defaults while bringing upstream compatibility fixes for
   ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.

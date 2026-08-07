@@ -113,6 +113,9 @@ pub(crate) struct PyProcessGroupStats {
     active_process_count: usize,
     peak_memory_bytes: Option<u64>,
     total_cpu_time: Option<Duration>,
+    io_read_bytes: Option<u64>,
+    io_write_bytes: Option<u64>,
+    peak_process_count: Option<usize>,
 }
 
 #[pymethods]
@@ -135,12 +138,36 @@ impl PyProcessGroupStats {
         self.total_cpu_time.map(|d| d.as_secs_f64())
     }
 
+    /// Cumulative bytes read by the whole tree, if the containment mechanism
+    /// accounts for I/O. The exact traffic counted is platform-dependent.
+    #[getter]
+    fn io_read_bytes(&self) -> Option<u64> {
+        self.io_read_bytes
+    }
+
+    /// Cumulative bytes written by the whole tree, if the containment mechanism
+    /// accounts for I/O. The exact traffic counted is platform-dependent.
+    #[getter]
+    fn io_write_bytes(&self) -> Option<u64> {
+        self.io_write_bytes
+    }
+
+    /// Peak process/task count reached by the group, if the containment
+    /// mechanism keeps that high-water mark.
+    #[getter]
+    fn peak_process_count(&self) -> Option<usize> {
+        self.peak_process_count
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "ProcessGroupStats(active_process_count={}, peak_memory_bytes={:?}, total_cpu_time_seconds={:?})",
+            "ProcessGroupStats(active_process_count={}, peak_memory_bytes={:?}, total_cpu_time_seconds={:?}, io_read_bytes={:?}, io_write_bytes={:?}, peak_process_count={:?})",
             self.active_process_count,
             self.peak_memory_bytes,
             self.total_cpu_time.map(|d| d.as_secs_f64()),
+            self.io_read_bytes,
+            self.io_write_bytes,
+            self.peak_process_count,
         )
     }
 }
@@ -581,6 +608,9 @@ impl PyProcessGroup {
             active_process_count: stats.active_process_count,
             peak_memory_bytes: stats.peak_memory_bytes,
             total_cpu_time: stats.total_cpu_time,
+            io_read_bytes: stats.io_read_bytes,
+            io_write_bytes: stats.io_write_bytes,
+            peak_process_count: stats.peak_process_count,
         })
     }
 

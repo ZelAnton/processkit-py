@@ -1159,7 +1159,15 @@ class RunningProcess:
 
 @final
 class ProcessGroupStats:
-    """A snapshot of a `ProcessGroup`'s resource usage."""
+    """A snapshot of a `ProcessGroup`'s resource usage.
+
+    ``io_read_bytes`` and ``io_write_bytes`` are cumulative whole-tree counters
+    when the platform's containment mechanism accounts for them.
+    ``peak_process_count`` is a kernel high-water mark where available; on
+    Linux cgroup v2 it counts tasks, including threads. ``None`` means that the
+    mechanism does not provide that measurement, never a fabricated zero. The
+    exact I/O traffic counted is platform-dependent.
+    """
 
     @property
     def active_process_count(self) -> int: ...
@@ -1167,6 +1175,12 @@ class ProcessGroupStats:
     def peak_memory_bytes(self) -> int | None: ...
     @property
     def total_cpu_time_seconds(self) -> float | None: ...
+    @property
+    def io_read_bytes(self) -> int | None: ...
+    @property
+    def io_write_bytes(self) -> int | None: ...
+    @property
+    def peak_process_count(self) -> int | None: ...
     def __repr__(self) -> str: ...
 
 @final

@@ -40,15 +40,17 @@ host = host_containment()  # no group creation or process spawn
 print(host.mechanism, host.soft_stop_scope, host.parent_death_cleanup)
 
 with ProcessGroup() as group:
-    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group"
+    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group" | "unknown"
     print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
 ```
 
 `mechanism` reports what you actually got at runtime. On a Linux host without
 cgroup-v2 delegation it quietly reads `"process_group"` instead of
 `"cgroup_v2"` — the same fallback that decides which features below are
-available. See [Platform support](platforms.md) for the per-OS matrix; the
-short version is *Windows strongest, macOS weakest.*
+available. FreeBSD's `ProcessReaper` is currently reported as `"unknown"`
+because the binding preserves unrecognized variants of the crate's
+non-exhaustive mechanism enum. See [Platform support](platforms.md) for the
+per-OS matrix; the short version is *Windows strongest, macOS weakest.*
 
 `host_containment()` predicts the host-level mechanism and maximum graceful
 stop reach before a group exists, plus abrupt parent-death cleanup and the
@@ -459,12 +461,46 @@ with ProcessGroup() as group:
     print(snap.active_process_count)    # int
     print(snap.peak_memory_bytes)       # int | None
     print(snap.total_cpu_time_seconds)  # float | None
+    print(snap.io_read_bytes)            # int | None, cumulative
+    print(snap.io_write_bytes)           # int | None, cumulative
+    print(snap.peak_process_count)       # int | None, high-water mark
 ```
 
 `active_process_count` is always available. `peak_memory_bytes` and
 `total_cpu_time_seconds` are populated only where the kernel accounts for the
 whole tree (Windows, Linux cgroup); on the process-group backends they stay
 `None` and only the count is reported.
+
+The three additional fields retain the upstream containment mechanism's
+semantics rather than normalizing different operating systems into one
+measurement:
+
+| Field | Windows Job Object | Linux cgroup v2 | `process_group` fallback (macOS and non-FreeBSD BSDs; Linux without cgroup delegation) | FreeBSD `ProcessReaper` |
+|---|---|---|---|---|
+| `io_read_bytes` | Cumulative `IO_COUNTERS` read-transfer bytes for the whole tree; file, pipe, and device transfers count | `io.stat` block-layer read bytes, when an `io` controller is enabled; this binding does not enable that controller, so normally `None` | `None` | `None` |
+| `io_write_bytes` | Cumulative `IO_COUNTERS` write-transfer bytes for the whole tree; file, pipe, and device transfers count | `io.stat` block-layer write bytes, when an `io` controller is enabled; this binding does not enable that controller, so normally `None` | `None` | `None` |
+| `peak_process_count` | `None`; Job Objects expose neither a kernel peak nor a sampled substitute | `pids.peak` when the `pids` controller and file are available; it counts kernel **tasks**, including every thread | `None` | `None` |
+
+The I/O counters are cumulative: a member that has already exited remains in
+the total. They are not directly comparable between Windows and Linux. Windows
+counts bytes moved by read/write operations against any target, while Linux
+`io.stat` counts bytes that reached the block layer. Linux page-cache hits,
+pipes, sockets, and tmpfs traffic therefore do not have a Windows-equivalent
+meaning here; a write may also be accounted after the member that dirtied the
+page exits. An accounted zero is a real zero, while `None` means that the
+mechanism cannot provide that measurement — it is never substituted with `0`.
+
+`peak_process_count` is a kernel high-water mark, not the largest
+`active_process_count` observed by calls to `stats()`. On Linux it is a peak
+task count, so a multithreaded member contributes all of its threads. It is
+available only when the cgroup's `pids` controller is enabled (this binding
+enables it for a requested `max_processes` cap) and the kernel exposes
+`pids.peak`; otherwise it is `None`.
+
+These are group counters, not per-run telemetry. `RunningProcess.profile()`
+and `RunProfile` remain unchanged: they describe the process started by one
+run, whereas group I/O counters and process peaks cannot be divided between
+multiple runs sharing one containment object.
 
 For a single run's end-to-end resource profile, use `RunningProcess.profile()`,
 covered in [Streaming & interactive I/O](streaming.md).

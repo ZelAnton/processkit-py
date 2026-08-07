@@ -2330,6 +2330,13 @@ class ProcessGroupStats
 
 A snapshot of a `ProcessGroup`'s resource usage.
 
+``io_read_bytes`` and ``io_write_bytes`` are cumulative whole-tree counters
+when the platform's containment mechanism accounts for them.
+``peak_process_count`` is a kernel high-water mark where available; on
+Linux cgroup v2 it counts tasks, including threads. ``None`` means that the
+mechanism does not provide that measurement, never a fabricated zero. The
+exact I/O traffic counted is platform-dependent.
+
 #### `active_process_count`
 
 ```text
@@ -2346,6 +2353,24 @@ peak_memory_bytes: int | None
 
 ```text
 total_cpu_time_seconds: float | None
+```
+
+#### `io_read_bytes`
+
+```text
+io_read_bytes: int | None
+```
+
+#### `io_write_bytes`
+
+```text
+io_write_bytes: int | None
+```
+
+#### `peak_process_count`
+
+```text
+peak_process_count: int | None
 ```
 
 ### `ShutdownReport`

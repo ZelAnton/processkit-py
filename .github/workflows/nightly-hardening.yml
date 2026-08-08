@@ -227,7 +227,7 @@ jobs:
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             commit --allow-empty -m "Initialize gh-pages branch for benchmark history"
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" gh-pages:gh-pages
-          git checkout -
+          git checkout --detach "$GITHUB_SHA"
       # Appends this run's result as a new data point on `gh-pages`
       # (`dev/bench/data.js`) and compares it against the previous point,
       # leaving an informative-only commit comment on regression — see the

@@ -1497,6 +1497,8 @@ def test_running_process_live_getters() -> None:
             # No output captured yet — 0, or None if the counter isn't initialized.
             assert proc.stdout_line_count in (0, None)
             assert proc.stderr_line_count in (0, None)
+            assert proc.stdout_bytes_seen in (0, None)
+            assert proc.stderr_bytes_seen in (0, None)
             assert proc.cpu_time_seconds is None or proc.cpu_time_seconds >= 0.0
             assert proc.peak_memory_bytes is None or proc.peak_memory_bytes >= 0
 
@@ -1524,22 +1526,87 @@ def test_running_process_live_counters_track_streamed_output_and_elapsed_time() 
         "time.sleep(0.2)\n"
     )
 
-    async def scenario() -> tuple[int | None, int | None, float, float]:
+    async def scenario() -> tuple[int | None, int | None, int | None, int | None, float, float]:
         proc = await Command(PY, ["-c", code]).astart()
         elapsed_before = proc.elapsed_seconds or 0.0
         async for _line in proc.stdout_lines():
             pass  # drain until the child's stdout closes (i.e. the child exits)
         stdout_count = proc.stdout_line_count
         stderr_count = proc.stderr_line_count
+        # Raw pipe byte counters, read at the same live point as the line
+        # counts above (see the same "None once consumed" note).
+        stdout_bytes = proc.stdout_bytes_seen
+        stderr_bytes = proc.stderr_bytes_seen
         elapsed_after = proc.elapsed_seconds or 0.0
         await proc.afinish()  # reap
-        return stdout_count, stderr_count, elapsed_before, elapsed_after
+        return stdout_count, stderr_count, stdout_bytes, stderr_bytes, elapsed_before, elapsed_after
 
-    stdout_count, stderr_count, elapsed_before, elapsed_after = asyncio.run(scenario())
+    (
+        stdout_count,
+        stderr_count,
+        stdout_bytes,
+        stderr_bytes,
+        elapsed_before,
+        elapsed_after,
+    ) = asyncio.run(scenario())
     assert stdout_count == stdout_n
     assert stderr_count == stderr_n
+    # stdout_bytes_seen/stderr_bytes_seen observe the raw pipe before decoding
+    # or line-splitting, so they are platform-newline-sensitive (Windows'
+    # text-mode print() puts CRLF on the wire) -- assert the
+    # platform-appropriate lower bound (every line's text plus at least one
+    # "\n" terminator byte) rather than an exact count, which
+    # test_stdout_raw_tee_preserves_bytes_verbatim_unlike_decoded_tee (in
+    # test_command.py) already pins exactly via an explicit binary write.
+    assert stdout_bytes is not None
+    assert stdout_bytes >= sum(len(f"out{i}\n") for i in range(stdout_n))
+    assert stderr_bytes is not None
+    assert stderr_bytes >= sum(len(f"err{i}\n") for i in range(stderr_n))
     # The child slept 0.2s before exiting -- elapsed time must have grown.
     assert elapsed_after > elapsed_before
+
+
+def test_running_process_bytes_seen_counts_raw_pipe_bytes_exactly() -> None:
+    # An explicit binary write (sys.stdout.buffer / sys.stderr.buffer) bypasses
+    # Python's own text-mode newline translation, giving a platform-independent
+    # exact expected byte count -- unlike the print()-based counters test
+    # above, which can only assert a lower bound (see its comment).
+    stdout_payload = b"alpha\r\nbeta\r\n"
+    stderr_payload = b"err\r\n"
+    code = (
+        "import sys\n"
+        f"sys.stdout.buffer.write({stdout_payload!r})\n"
+        f"sys.stderr.buffer.write({stderr_payload!r})\n"
+        "sys.stdout.buffer.flush(); sys.stderr.buffer.flush()\n"
+    )
+
+    async def scenario() -> tuple[int | None, int | None]:
+        proc = await Command(PY, ["-c", code]).astart()
+        async for _line in proc.stdout_lines():
+            pass  # drain until the child's stdout closes (i.e. the child exits)
+        stdout_bytes = proc.stdout_bytes_seen
+        stderr_bytes = proc.stderr_bytes_seen
+        await proc.afinish()
+        return stdout_bytes, stderr_bytes
+
+    stdout_bytes, stderr_bytes = asyncio.run(scenario())
+    assert stdout_bytes == len(stdout_payload)
+    assert stderr_bytes == len(stderr_payload)
+
+
+def test_running_process_bytes_seen_is_none_once_consumed() -> None:
+    # Same "None once consumed" contract as stdout_line_count/stderr_line_count
+    # (see running.rs): once a consuming verb (finish()/outcome()/etc.) has
+    # spent the handle, every live getter -- including the byte counters --
+    # reports None, not a stale last-seen value.
+    async def scenario() -> tuple[int | None, int | None]:
+        proc = await Command(PY, ["-c", "print('x', flush=True)"]).astart()
+        await proc.afinish()
+        return proc.stdout_bytes_seen, proc.stderr_bytes_seen
+
+    stdout_bytes, stderr_bytes = asyncio.run(scenario())
+    assert stdout_bytes is None
+    assert stderr_bytes is None
 
 
 def test_profile_returns_runprofile() -> None:

@@ -107,6 +107,31 @@ Outside a `Pipeline`, `unchecked_in_pipe()` is a no-op — a single run's status
 is already plain data on its own `ProcessResult`, and `ensure_success()` stays
 opt-in.
 
+## Merging a stage's stderr into the pipe
+
+`Command.merge_stderr_in_pipe()` is the shell-free equivalent of
+`command 2>&1 | next` — set on a **non-final** stage, it sends that stage's
+stderr into its own stdout pipe (cloned handles to the same anonymous-pipe
+writer, so the OS preserves write order), so the downstream stage reads both
+combined over its stdin:
+
+```python
+merged = (
+    Command("tool").merge_stderr_in_pipe()  # tool's stderr joins its stdout
+    | Command("grep", ["WARN"])
+).run()
+```
+
+It is opt-in per stage and a **no-op** outside a `Pipeline` or on the **final**
+stage — a pipeline only activates it on a stage with a downstream neighbor, so
+marking the last stage (or a standalone `Command`) has no effect.
+
+**Pipefail diagnostic trade-off.** Once a stage's stderr enters the downstream
+pipe it is no longer available as that stage's own stderr capture: if pipefail
+attributes the chain's failure to this stage, `ProcessResult.stderr` is empty
+for it — the merged bytes may instead surface in the final stage's stdout,
+having passed through the rest of the pipeline.
+
 ## stdin and stdout at the ends; per-stage env/cwd
 
 The ends of the chain behave like a single `Command`:
@@ -155,11 +180,13 @@ result = (
 result.timed_out     # True if the 30s deadline fired
 ```
 
-Unlike a single command's captured timeout, a timed-out pipeline yields **no
-partial stdout** — the chain is run-to-completion or nothing. A per-stage
-`Command.timeout(...)` first reaps that stage's whole subtree; the resulting
-checked `Timeout` then tears down the remaining stage sub-groups and is
-attributed to the timed-out stage under pipefail. See
+Unlike a single command's captured timeout, a timed-out pipeline keeps the
+best-effort stdout and stderr already captured from the last stage before the
+deadline, using the same buffer policy as a normal capture. A pipeline has no
+`output_limit` cap of its own. A per-stage `Command.timeout(...)` is a separate
+mechanism: it first reaps that stage's whole subtree; the resulting checked
+`Timeout` then tears down the remaining stage sub-groups and is attributed to
+the timed-out stage under pipefail. See
 [Timeouts & cancellation](timeouts-and-cancellation.md); cancelling an awaited
 `arun()`/`aoutput()` reaps the whole chain's tree the same way, and so does
 firing a `CancellationToken` wired with `Pipeline.cancel_on(token)` — **gap-fill**

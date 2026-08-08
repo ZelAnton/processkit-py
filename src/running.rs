@@ -1287,6 +1287,26 @@ impl PyRunningProcess {
         self.lock().as_ref().map(|r| r.stderr_line_count())
     }
 
+    /// Raw bytes read from stdout's pipe so far, before decoding or line
+    /// splitting (`None` once consumed). Monotonic; includes bytes discarded
+    /// by any `OutputBufferPolicy` (including oversized lines); stable after
+    /// the process and its pump complete. `0` — not a sentinel — for a stream
+    /// that is never pumped (a file redirect, `stdout("null")`,
+    /// `stdout("inherit")`).
+    #[getter]
+    fn stdout_bytes_seen(&self) -> Option<usize> {
+        self.lock().as_ref().map(|r| r.stdout_bytes_seen())
+    }
+
+    /// Raw bytes read from stderr's pipe so far, before decoding or line
+    /// splitting (`None` once consumed). Same contract as
+    /// `stdout_bytes_seen` — monotonic, includes discarded bytes, stable
+    /// after completion, `0` (not a sentinel) for an unpumped stream.
+    #[getter]
+    fn stderr_bytes_seen(&self) -> Option<usize> {
+        self.lock().as_ref().map(|r| r.stderr_bytes_seen())
+    }
+
     /// Whether this handle owns a private tree — i.e. dropping it (or exiting its
     /// context manager) hard-kills the whole tree. `False` for a handle started
     /// inside a shared `ProcessGroup`; `None` once consumed.

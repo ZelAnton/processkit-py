@@ -324,12 +324,35 @@ async with ProcessGroup() as group:
     await group.astart(Command("dev-server"))
 ```
 
-If `subprocess`, `asyncio`, or another library currently starts the process,
-move that creation point to a `Command` passed to `group.start()` / `astart()`.
-Creating the group after the process is already running cannot bring it under
-the group's containment. See [Existing processes and
-containment](process-groups.md#existing-processes-and-containment) for the
-boundary and the host-level alternative.
+If another library already started the process, adopt it by pid instead of
+recreating the launch:
+
+```python
+import subprocess
+
+from processkit import ProcessGroup, Unsupported
+
+external = subprocess.Popen(["dev-server"])
+try:
+    with ProcessGroup() as group:
+        try:
+            group.adopt_external(external.pid)
+        except Unsupported:
+            raise RuntimeError("pid-only adoption is unsupported on this platform")
+        print(external.pid in group.members())
+finally:
+    if external.poll() is None:
+        external.kill()
+    external.wait()
+```
+
+The group now covers the adopted process for signalling and teardown, but it
+does not reap it or expose an exit status. The original parent still calls
+`wait()`. A process's future descendants are included by Windows Job Objects
+and Linux cgroup v2; the POSIX process-group fallback normally tracks only the
+adopted process. See [Existing processes and
+containment](process-groups.md#existing-processes-and-containment) for pid
+identity, platform errors, and the host-level alternative.
 
 ## Cancel a run and reap its tree (async)
 
@@ -421,9 +444,12 @@ top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
 blob = (Command("cat", ["big.txt"]) | Command("gzip")).output_bytes().stdout
 ```
 
-A pipeline is run-to-completion (no `astart()` streaming) and has no
-`output_limit` cap of its own — bound a flooding pipeline with `timeout()`. Set
-per-stage `env`/`cwd` on each `Command` before piping.
+A pipeline is run-to-completion (no `astart()` streaming). If
+`Pipeline.timeout()` fires, its capture verbs retain the best-effort stdout and
+stderr already emitted by the last stage before the deadline. A pipeline has
+no `output_limit` cap of its own — bound a flooding pipeline with `timeout()`.
+That whole-chain timeout is distinct from a per-stage `Command.timeout()`.
+Set per-stage `env`/`cwd` on each `Command` before piping.
 
 ## Run many commands at once
 
@@ -1181,6 +1207,29 @@ cmd.arguments            # ["--password", "hunter2"]
 cmd.command_line()       # "login --password hunter2" — includes the secret!
 repr(cmd)                # redacted: shows arg COUNT, never values
 ```
+
+### Overriding `argv[0]`
+
+`arg0(value)` overrides the child's `argv[0]` independently of `program` — for
+a multicall binary (BusyBox/Toybox) or a login-shell convention (`-bash`):
+
+```python
+Command("busybox").arg0("ls").args(["-l"]).run()  # busybox dispatches on argv[0]
+```
+
+Program lookup, `prefer_local`, preflight, spawn diagnostics, and containment
+all keep using `program`; only the argument vector delivered to the child
+changes. Read back what's configured with `configured_arg0` (`None` if
+unset); a repeat call is last-write-wins.
+
+`arg0` is an argv value like any other, so the redaction above covers it too:
+`repr()` renders it as `arg0: Some("<redacted>")`, never the configured string.
+`configured_arg0` and `command_line()` (`busybox [argv0=ls] -l`) stay the opt-in
+ways to read the real value.
+
+**Unix only.** On a non-Unix platform a run raises `Unsupported` rather than
+silently passing the executable name instead — `configured_arg0` stays
+observable there even though a run can never use it.
 
 ## Local program search
 
@@ -2007,15 +2056,17 @@ host = host_containment()  # no group creation or process spawn
 print(host.mechanism, host.soft_stop_scope, host.parent_death_cleanup)
 
 with ProcessGroup() as group:
-    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group"
+    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group" | "unknown"
     print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
 ```
 
 `mechanism` reports what you actually got at runtime. On a Linux host without
 cgroup-v2 delegation it quietly reads `"process_group"` instead of
 `"cgroup_v2"` — the same fallback that decides which features below are
-available. See [Platform support](platforms.md) for the per-OS matrix; the
-short version is *Windows strongest, macOS weakest.*
+available. FreeBSD's `ProcessReaper` is currently reported as `"unknown"`
+because the binding preserves unrecognized variants of the crate's
+non-exhaustive mechanism enum. See [Platform support](platforms.md) for the
+per-OS matrix; the short version is *Windows strongest, macOS weakest.*
 
 `host_containment()` predicts the host-level mechanism and maximum graceful
 stop reach before a group exists, plus abrupt parent-death cleanup and the
@@ -2085,35 +2136,80 @@ with ProcessGroup() as group:
 
 ## Existing processes and containment
 
-A `ProcessGroup` establishes containment when **processkit creates a root
-process through that group**; descendants that root later spawns are included
-automatically. The entry points are `start()`, `astart()`, `output()`,
-`output_bytes()`, `run()`, `exit_code()`, and `probe()`, plus the async
-`aoutput()`, `aoutput_bytes()`, `arun()`, `aexit_code()`, and `aprobe()` twins;
-each takes a `Command`.
+A `ProcessGroup` can establish containment in two ways: processkit can create a
+root through the group's `start()` / `astart()` / runner verbs, or an already
+running process can be enrolled with `adopt_external(pid)`. The latter is for a
+process started by `subprocess`, `asyncio.create_subprocess_exec()` /
+`asyncio.create_subprocess_shell()`, another library, an outside supervisor, or
+a pidfile.
 
-The current API cannot add an already-running process to a `ProcessGroup`,
-including one started with `subprocess`, `asyncio.create_subprocess_exec()` /
-`asyncio.create_subprocess_shell()`, or a third-party library. The PIDs returned
-by `members()` and `members_info()` are observations, not enrollment inputs. The
-supported path is to move process creation to a `Command` and run that command
-through the group's entry points above.
+```python
+import subprocess
 
-Containment and completion observation are separate concerns. processkit does
-not provide wait-for-completion or exit-status observation for processes it did
-not create because those processes are not its children and cannot be reaped by
-it. Its completion surface (`outcome()`, `finish()`, and `exit_code()`) is built
-on reaping semantics, so this is a structural limitation of the library.
-Placing a foreign process under a common teardown boundary is therefore about
-containment and teardown, not observing its completion.
+from processkit import ProcessGroup, Unsupported
+
+external = subprocess.Popen(["my-service"])
+try:
+    with ProcessGroup() as group:
+        try:
+            group.adopt_external(external.pid)
+        except Unsupported:
+            raise RuntimeError("pid-only adoption is unsupported on this platform")
+        assert external.pid in group.members()
+    # The group's teardown has killed the adopted process; its real parent
+    # still owns completion observation and must reap it.
+finally:
+    if external.poll() is None:
+        external.kill()
+    external.wait()
+```
+
+`pid` is an address, not a process handle. During the call, the crate captures
+its own identity anchor for the process currently named by that number. Later
+pid reuse is therefore rejected by the group's probes, signals, and teardown.
+The crate cannot check the earlier race between the caller reading the pid and
+passing it to `adopt_external()`, so look the number up as late as possible.
+
+Adoption is containment and teardown only. It never reaps the adopted process,
+and this API exposes no completion handle or exit status for it. Use
+`members()` / `members_info()` to list it and the group's signal or teardown
+verbs to control it. The process's actual parent (the caller, an outside
+supervisor, or `init` after re-parenting) remains responsible for `wait()` and
+the exit status. On the `process_group` fallback, an adopted process that exits
+without being reaped can remain a zombie during the configured shutdown grace;
+only its parent can clear that state.
+
+The containment boundary depends on `group.mechanism`:
+
+- On Windows Job Objects and Linux cgroup v2, descendants spawned after the
+  adoption inherit the job/cgroup. Descendants that were already spawned keep
+  their original containment.
+- On macOS and the Linux `process_group` fallback, a foreign process normally
+  cannot be regrouped with `setpgid`, so adoption succeeds with individual
+  tracking. Its future descendants are not included. This is `Ok`, not a
+  silent failure.
+- Linux cgroup-v2 membership is exclusive: adoption moves the process out of
+  its previous cgroup, so that supervisor's limits and teardown no longer
+  apply. Windows may nest a process already in another Job Object, but the
+  kernel can reject the assignment depending on the existing jobs and call
+  order; do not treat one host's result as a universal rule.
+- FreeBSD and other BSDs return `Unsupported` because the crate cannot capture
+  the identity anchor needed for safe pid-only tracking. The process is not
+  tracked by a bare number.
+
+`pid=0` and the current process's own pid are rejected as invalid input. A
+number naming no process, including an already-reaped process, is rejected as a
+not-found I/O error. Through this binding both cases surface as `ProcessError`;
+`ProcessNotFound` remains reserved for a program that could not be located.
 
 To observe a foreign process without taking ownership, use the module-level
 `process_info()` and `process_is_alive()` lookup helpers documented in
 [Commands](commands.md).
 
-If several independent launchers must live under one operational umbrella, run
-the entire supervisor inside a host-managed container, Job Object, or cgroup.
-That outer boundary belongs to the deployment environment, not to this library.
+If adoption is unsupported or several independent launchers must live under one
+operational umbrella, run the entire supervisor inside a host-managed
+container, Job Object, or cgroup. That outer boundary belongs to the deployment
+environment, not to this library.
 
 ## Tearing down
 
@@ -2381,12 +2477,46 @@ with ProcessGroup() as group:
     print(snap.active_process_count)    # int
     print(snap.peak_memory_bytes)       # int | None
     print(snap.total_cpu_time_seconds)  # float | None
+    print(snap.io_read_bytes)            # int | None, cumulative
+    print(snap.io_write_bytes)           # int | None, cumulative
+    print(snap.peak_process_count)       # int | None, high-water mark
 ```
 
 `active_process_count` is always available. `peak_memory_bytes` and
 `total_cpu_time_seconds` are populated only where the kernel accounts for the
 whole tree (Windows, Linux cgroup); on the process-group backends they stay
 `None` and only the count is reported.
+
+The three additional fields retain the upstream containment mechanism's
+semantics rather than normalizing different operating systems into one
+measurement:
+
+| Field | Windows Job Object | Linux cgroup v2 | `process_group` fallback (macOS and non-FreeBSD BSDs; Linux without cgroup delegation) | FreeBSD `ProcessReaper` |
+|---|---|---|---|---|
+| `io_read_bytes` | Cumulative `IO_COUNTERS` read-transfer bytes for the whole tree; file, pipe, and device transfers count | `io.stat` block-layer read bytes, when an `io` controller is enabled; this binding does not enable that controller, so normally `None` | `None` | `None` |
+| `io_write_bytes` | Cumulative `IO_COUNTERS` write-transfer bytes for the whole tree; file, pipe, and device transfers count | `io.stat` block-layer write bytes, when an `io` controller is enabled; this binding does not enable that controller, so normally `None` | `None` | `None` |
+| `peak_process_count` | `None`; Job Objects expose neither a kernel peak nor a sampled substitute | `pids.peak` when the `pids` controller and file are available; it counts kernel **tasks**, including every thread | `None` | `None` |
+
+The I/O counters are cumulative: a member that has already exited remains in
+the total. They are not directly comparable between Windows and Linux. Windows
+counts bytes moved by read/write operations against any target, while Linux
+`io.stat` counts bytes that reached the block layer. Linux page-cache hits,
+pipes, sockets, and tmpfs traffic therefore do not have a Windows-equivalent
+meaning here; a write may also be accounted after the member that dirtied the
+page exits. An accounted zero is a real zero, while `None` means that the
+mechanism cannot provide that measurement — it is never substituted with `0`.
+
+`peak_process_count` is a kernel high-water mark, not the largest
+`active_process_count` observed by calls to `stats()`. On Linux it is a peak
+task count, so a multithreaded member contributes all of its threads. It is
+available only when the cgroup's `pids` controller is enabled (this binding
+enables it for a requested `max_processes` cap) and the kernel exposes
+`pids.peak`; otherwise it is `None`.
+
+These are group counters, not per-run telemetry. `RunningProcess.profile()`
+and `RunProfile` remain unchanged: they describe the process started by one
+run, whereas group I/O counters and process peaks cannot be divided between
+multiple runs sharing one containment object.
 
 For a single run's end-to-end resource profile, use `RunningProcess.profile()`,
 covered in [Streaming & interactive I/O](streaming.md).
@@ -2945,11 +3075,46 @@ Things to know:
   Python writer, a `write()` (or `flush()`) exception is additionally reported
   via `sys.unraisablehook`, so it is visible even without `enable_logging()`
   (and catchable in a test via a custom hook).
+
+  An invalid integer count from `write()` — negative, zero before the buffer is
+  empty, or larger than the remaining buffer — also disables the tee and is
+  reported via `sys.unraisablehook`, making it visible on stderr even without
+  logging. This report is separate from, and visible alongside, exception-based
+  errors.
 - **No-op unless the line pump runs.** The tee fires from the line-capture pump,
   so it is inert under `stdout("inherit")` / `stdout("null")` (no pump) and under
   `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs
   — `output()` / `aoutput()`, `run()`, or `start()` + `stdout_lines()` /
   `output_events()`.
+
+## Raw byte tee
+
+`stdout_tee()` / `stderr_tee()` mirror *decoded* lines. `stdout_raw_tee(sink)`
+/ `stderr_raw_tee(sink)` are their undecoded cousins: the **raw pipe bytes**,
+before any decoding or line splitting — for a caller that needs a byte-exact
+copy of exactly what the child wrote (a checksum/digest, a binary log, a
+protocol that isn't line-oriented):
+
+```python
+from processkit import Command
+
+result = Command("some-tool").stdout_raw_tee("out.raw").output()
+# out.raw has the exact bytes the child wrote to stdout: non-UTF-8 bytes
+# untouched, CRLF and a lone "\r" un-normalized, no fabricated final newline.
+```
+
+Same two sink forms as the decoded tee — a file path or a Python writer — but
+since the whole point is byte-exact fidelity, a writer here receives each
+chunk as `bytes`, so it must be a **binary** writer (`io.BytesIO`, a `"wb"`
+file), not a text one (`sys.stderr`, `io.StringIO`, whose `write(bytes)` would
+raise `TypeError`). It is **independent** of `stdout_tee`/`stderr_tee`/
+`on_stdout_line` — all configured stdout sinks fire from the same pump — and
+requires that stream to be piped: a no-op under `stdout("inherit")` /
+`stdout("null")` / a `stdout_file()` redirect (no capture pump runs), and
+under `output_bytes()` too (its own return value already *is* the raw stdout,
+a separate raw drain with no line pump — reach for the raw tee alongside the
+line/streaming verbs instead). A write error disables it for the rest of the
+run, the same isolation as the decoded tee.
 
 ## Live per-line callbacks
 
@@ -3412,7 +3577,16 @@ proc.elapsed_seconds     # float | None — wall time
 proc.cpu_time_seconds    # float | None — user + kernel so far
 proc.peak_memory_bytes   # int | None
 proc.stdout_line_count   # int | None — progress while you stream
+proc.stdout_bytes_seen   # int | None — raw pipe bytes, before decoding/line-splitting
+proc.stderr_bytes_seen   # int | None — same, for stderr
 ```
+
+`stdout_bytes_seen` / `stderr_bytes_seen` are the byte-counter siblings of
+`stdout_line_count` / `stderr_line_count`: monotonic counters of the raw pipe
+bytes read so far (including bytes an `OutputBufferPolicy` later discards),
+stable once the process and its pump have finished. They read `0` — not a
+sentinel — for a stream that is never pumped (a file redirect,
+`stdout("null")`, `stdout("inherit")`).
 
 Or turn a whole run into a summary with `profile()`/`aprofile()`, which
 samples the child every `every_seconds` until exit (the run's normal timeout
@@ -3624,6 +3798,31 @@ Outside a `Pipeline`, `unchecked_in_pipe()` is a no-op — a single run's status
 is already plain data on its own `ProcessResult`, and `ensure_success()` stays
 opt-in.
 
+## Merging a stage's stderr into the pipe
+
+`Command.merge_stderr_in_pipe()` is the shell-free equivalent of
+`command 2>&1 | next` — set on a **non-final** stage, it sends that stage's
+stderr into its own stdout pipe (cloned handles to the same anonymous-pipe
+writer, so the OS preserves write order), so the downstream stage reads both
+combined over its stdin:
+
+```python
+merged = (
+    Command("tool").merge_stderr_in_pipe()  # tool's stderr joins its stdout
+    | Command("grep", ["WARN"])
+).run()
+```
+
+It is opt-in per stage and a **no-op** outside a `Pipeline` or on the **final**
+stage — a pipeline only activates it on a stage with a downstream neighbor, so
+marking the last stage (or a standalone `Command`) has no effect.
+
+**Pipefail diagnostic trade-off.** Once a stage's stderr enters the downstream
+pipe it is no longer available as that stage's own stderr capture: if pipefail
+attributes the chain's failure to this stage, `ProcessResult.stderr` is empty
+for it — the merged bytes may instead surface in the final stage's stdout,
+having passed through the rest of the pipeline.
+
 ## stdin and stdout at the ends; per-stage env/cwd
 
 The ends of the chain behave like a single `Command`:
@@ -3672,11 +3871,13 @@ result = (
 result.timed_out     # True if the 30s deadline fired
 ```
 
-Unlike a single command's captured timeout, a timed-out pipeline yields **no
-partial stdout** — the chain is run-to-completion or nothing. A per-stage
-`Command.timeout(...)` first reaps that stage's whole subtree; the resulting
-checked `Timeout` then tears down the remaining stage sub-groups and is
-attributed to the timed-out stage under pipefail. See
+Unlike a single command's captured timeout, a timed-out pipeline keeps the
+best-effort stdout and stderr already captured from the last stage before the
+deadline, using the same buffer policy as a normal capture. A pipeline has no
+`output_limit` cap of its own. A per-stage `Command.timeout(...)` is a separate
+mechanism: it first reaps that stage's whole subtree; the resulting checked
+`Timeout` then tears down the remaining stage sub-groups and is attributed to
+the timed-out stage under pipefail. See
 [Timeouts & cancellation](timeouts-and-cancellation.md); cancelling an awaited
 `arun()`/`aoutput()` reaps the whole chain's tree the same way, and so does
 firing a `CancellationToken` wired with `Pipeline.cancel_on(token)` — **gap-fill**
@@ -4015,8 +4216,10 @@ reaped a tree.
 ## Bounding pipelines & tuning group shutdown
 
 - A [pipeline](pipelines.md) bounds the **whole chain** with
-  `Pipeline.timeout(seconds)`; the same captured-vs-raised rule applies to
-  whichever verb you finish it with.
+  `Pipeline.timeout(seconds)`. Its capture verbs retain best-effort stdout and
+  stderr already captured by the last stage before the deadline, while its
+  success verbs raise `Timeout` with that partial output attached. This
+  whole-chain timeout is distinct from a per-stage `Command.timeout(...)`.
 - A [ProcessGroup](process-groups.md)'s graceful teardown timing is set at
   construction with `shutdown_grace=` and `escalate_to_kill=`, independent of
   any per-run timeout. Note: cancelling an in-flight `await group.ashutdown()` (or
@@ -5963,9 +6166,11 @@ the stronger backends.
 
 ## A process started by another library survives group teardown
 
-`ProcessGroup` begins containment only with a root process created through its
-own `Command` entry points; it cannot add a process that `subprocess`, `asyncio`,
-or another library already started. Move that process's creation to `Command` /
+Use `group.adopt_external(process.pid)` when the process is already running and
+you have its pid. Adoption places the process under the group's signal and
+teardown boundary, but it does not give processkit a child handle: the original
+parent must still call `wait()` for completion and exit status. If the platform
+returns `Unsupported` (FreeBSD and other BSDs), move creation to a `Command` /
 `ProcessGroup`, or put the whole supervisor under a host-managed containment
 boundary. See
 [Existing processes and
@@ -6016,6 +6221,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add cumulative whole-tree I/O counters (`ProcessGroupStats.io_read_bytes`
+  and `io_write_bytes`) and the optional kernel high-water mark
+  `ProcessGroupStats.peak_process_count`. Availability and units remain
+  mechanism-dependent: Windows Job Objects report transfer bytes, Linux cgroup
+  v2 may report block-layer bytes and task counts, and unsupported measurements
+  are exposed as `None` rather than a synthetic zero.
+- Add `ProcessGroup.adopt_external(pid)` to bring an already-running external
+  process under group signalling and teardown when only its pid is available.
+  Adoption captures process identity during the call, never reaps the process
+  or exposes its exit status, and documents the Windows, Linux cgroup,
+  POSIX-fallback, and BSD support boundaries.
+- Add `Command.arg0()`/`configured_arg0`, `Command.merge_stderr_in_pipe()`,
+  `Command.stdout_raw_tee()`/`stderr_raw_tee()`, and
+  `RunningProcess.stdout_bytes_seen`/`stderr_bytes_seen` — the last remaining
+  small binding gaps against the `processkit` core: a Unix-only `argv[0]`
+  override (raising `Unsupported` off-Unix), a per-stage `2>&1 |`-equivalent
+  pipeline marker, an undecoded byte-exact stdout/stderr tee alongside the
+  existing decoded `stdout_tee()`/`stderr_tee()`, and raw pipe byte counters
+  alongside the existing `stdout_line_count`/`stderr_line_count`.
 - Add partial-tail readiness probes on `RunningProcess` —
   `wait_for_output()`/`await_for_output()` for stdout and
   `wait_for_stderr_output()`/`await_for_stderr_output()` for stderr — which
@@ -6100,6 +6324,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_json()`/`arun_json()` still always populate it. Typed consumers should
   narrow the type before use; the full diagnostic remains available through
   `str(exc)` regardless of the source.
+- Bump the bundled ProcessKit-rs core to 3.3.0, preserving the existing Python
+  API and feature set while bringing upstream fixes for merged-stderr pipe
+  teardown, failed PTY-launch cleanup, pipeline pipefail attribution,
+  process-identity-safe metrics, and cassette version validation. The upstream
+  `ProcessGroupStats` statistics additions are exposed by the binding as
+  documented under Added.
 - Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
   API and cancellation defaults while bringing upstream compatibility fixes for
   ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.
@@ -6109,6 +6339,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Python writer objects used by decoded and raw output tees now retry partial
+  integer `write()` counts to completion without truncating mirrored output;
+  `None` and other non-integer return values remain supported and mean the full
+  buffer was accepted, while invalid integer counts are reported via
+  `sys.unraisablehook`.
 - Close the completion hub's socket at the OS level when Python-level cleanup
   raises, preventing pending anyio-on-asyncio reader tasks and socket-resource
   warnings after an awaited operation is cancelled during loop shutdown.
@@ -7206,6 +7441,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't express.
 
 ### Changed
+- Pipeline timeout results now retain best-effort partial stdout and stderr
+  captured by the last stage before the deadline.
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the
   whole success set, not an addition), and an empty sequence now raises
   `ValueError` instead of being silently ignored.
@@ -7370,6 +7607,25 @@ def arg(arg: StrPath) -> Command
 ```text
 def args(args: Args) -> Command
 ```
+
+#### `arg0`
+
+```text
+def arg0(arg0: str) -> Command
+```
+
+Override the child's ``argv[0]`` independently of the executable
+``program`` — supports multicall binaries (BusyBox/Toybox) and
+conventions like a login shell's ``-bash``. Program lookup,
+``prefer_local``, preflight, spawn diagnostics, and containment all
+keep using ``program``; only the argument vector delivered to the
+child changes.
+
+**Unix only.** Applied through the OS command's ``arg0`` spawn seam.
+On a non-Unix platform the run raises ``Unsupported`` rather than
+silently passing the executable name instead — ``configured_arg0``
+stays observable there even though a run can never use it. Repeated
+calls are last-write-wins.
 
 #### `cwd`
 
@@ -7741,6 +7997,50 @@ or ``append``) or a Python writer object with a callable ``write()`` (fed
 each decoded line as a ``str`` via the same blocking-pool async-write
 bridge, never closed for you), coexisting with capture, inert unless
 stderr is piped through the line pump.
+
+#### `stdout_raw_tee`
+
+```text
+def stdout_raw_tee(sink: StrPath | SupportsWriteBytes, *, append: bool = ...) -> Command
+```
+
+Tee the child's stdout to ``sink`` **byte for byte, before any
+decoding or line splitting** — the raw-bytes cousin of ``stdout_tee``.
+
+Same sink forms as ``stdout_tee`` — a file path (opened at build time,
+truncated by default or ``append``) or a Python writer with a callable
+``write()`` — but since the whole point is byte-exact fidelity, a
+writer here receives each chunk as ``bytes``, never decoded, so it must
+be a **binary** writer (``io.BytesIO``, a ``"wb"`` file — not
+``sys.stderr`` or an ``io.StringIO``, whose ``write(bytes)`` raises
+``TypeError``). Non-UTF-8 output, CRLF, a lone ``\r``, and a missing
+final newline all pass through untouched, and a line an
+``OutputBufferPolicy`` drops from every decoded sink still reaches this
+tee whole.
+
+Independent of the decoded path — coexists with ``stdout_tee``,
+``on_stdout_line``, and ordinary capture; all configured sinks fire
+from the same pump. Requires a piped stdout: a no-op under
+``stdout("inherit")`` / ``stdout("null")`` / a ``stdout_file()``
+redirect (no capture pump runs) and under ``output_bytes()`` (its own
+return value already *is* the raw stdout, a separate raw drain with no
+line pump) — use it alongside the line/streaming verbs instead. A
+second call replaces an earlier one; a write error disables the raw
+tee for the rest of the run, leaving the run and its captured result
+unaffected.
+
+#### `stderr_raw_tee`
+
+```text
+def stderr_raw_tee(sink: StrPath | SupportsWriteBytes, *, append: bool = ...) -> Command
+```
+
+Tee the child's stderr to ``sink`` byte for byte, before any
+decoding or line splitting. Same contract as ``stdout_raw_tee`` —
+verbatim bytes (non-UTF-8, CRLF, a missing final newline, and
+buffer-policy-dropped lines all preserved), a binary writer required
+for the Python-writer sink form, independent of
+``stderr_tee``/``on_stderr_line``, and requiring stderr to be piped.
 
 #### `stdout_file`
 
@@ -8135,6 +8435,31 @@ def astart() -> Awaitable[RunningProcess]
 def unchecked_in_pipe() -> Command
 ```
 
+#### `merge_stderr_in_pipe`
+
+```text
+def merge_stderr_in_pipe() -> Command
+```
+
+Merge this stage's stderr into its stdout pipe when it is a
+**non-final** ``Pipeline`` stage — the shell-free equivalent of
+``command 2>&1 | next``. Stdout and stderr get cloned handles to the
+same anonymous-pipe writer; the OS preserves write order, and the
+downstream stage reads the combined byte stream from its stdin.
+
+Opt-in per stage and a **no-op outside a ``Pipeline`` or on the final
+stage** — no effect on a standalone command, and a pipeline only
+activates it on a non-final stage. On an affected stage it overrides
+that stage's configured stdout/stderr destinations, since both
+streams must point at the downstream pipe.
+
+**Pipefail diagnostic trade-off.** Once stderr enters the downstream
+pipe it is no longer available as that stage's own stderr capture: if
+pipefail attributes the chain's failure to this stage,
+``ProcessResult.stderr`` is empty for it — the merged bytes may
+instead surface in the final stage's stdout after passing through the
+rest of the pipeline.
+
 #### `program`
 
 ```text
@@ -8146,6 +8471,19 @@ program: str
 ```text
 arguments: list[str]
 ```
+
+#### `configured_arg0`
+
+```text
+configured_arg0: str | None
+```
+
+The explicit Unix ``argv[0]`` override configured via ``arg0()``,
+or ``None`` if unset. Exposes the routing input to
+``ScriptedRunner.when()`` predicates and other command inspection
+without conflating it with ``program``, which remains the executable
+lookup key. Still set on a non-Unix platform before a run would
+reject it (see ``arg0()``).
 
 #### `command_line`
 
@@ -8477,6 +8815,30 @@ stdout_line_count: int | None
 ```text
 stderr_line_count: int | None
 ```
+
+#### `stdout_bytes_seen`
+
+```text
+stdout_bytes_seen: int | None
+```
+
+Raw bytes read from stdout's pipe so far, before decoding or line
+splitting (``None`` once consumed). Monotonic; includes bytes
+discarded by any ``OutputBufferPolicy`` (including oversized lines);
+stable after the process and its pump complete. ``0`` — not a
+sentinel — for a stream that is never pumped (a file redirect,
+``stdout("null")``, ``stdout("inherit")``).
+
+#### `stderr_bytes_seen`
+
+```text
+stderr_bytes_seen: int | None
+```
+
+Raw bytes read from stderr's pipe so far, before decoding or line
+splitting (``None`` once consumed). Same contract as
+``stdout_bytes_seen`` — monotonic, includes discarded bytes, stable
+after completion, ``0`` (not a sentinel) for an unpumped stream.
 
 #### `owns_group`
 
@@ -9424,6 +9786,29 @@ best-effort ``ppid``/``exe_name``/``start_time``. Synchronous only (the
 crate offers no async twin). See `MemberInfo` for the per-field platform
 matrix and the ``start_time`` opacity/pid-reuse note.
 
+#### `adopt_external`
+
+```text
+def adopt_external(pid: int) -> None
+```
+
+Adopt an already-running external process by pid for containment and
+teardown. The pid is an address, not a handle: the crate captures the
+process identity during this call, so a later pid reuse is not signalled;
+a race before the call, after the caller read the pid, cannot be checked.
+
+Adoption never reaps the process and exposes no completion handle or exit
+status. The group can only list it with ``members()`` / ``members_info()``
+and signal or tear it down. Windows Job Objects and Linux cgroup v2 also
+contain future children; the POSIX process-group fallback normally tracks
+only the adopted process individually. FreeBSD and other BSDs raise
+``Unsupported``. Linux cgroup-v2 adoption moves the process out of its
+previous cgroup; Windows job nesting may be accepted or rejected by the
+kernel depending on the existing jobs and call order. ``pid=0`` and the
+current process pid, plus a pid naming no process, raise ``ProcessError``;
+the latter carries the upstream ``NotFound`` IO condition rather than
+``ProcessNotFound``, which is reserved for missing programs.
+
 #### `signal`
 
 ```text
@@ -9514,6 +9899,13 @@ class ProcessGroupStats
 
 A snapshot of a `ProcessGroup`'s resource usage.
 
+``io_read_bytes`` and ``io_write_bytes`` are cumulative whole-tree counters
+when the platform's containment mechanism accounts for them.
+``peak_process_count`` is a kernel high-water mark where available; on
+Linux cgroup v2 it counts tasks, including threads. ``None`` means that the
+mechanism does not provide that measurement, never a fabricated zero. The
+exact I/O traffic counted is platform-dependent.
+
 #### `active_process_count`
 
 ```text
@@ -9530,6 +9922,24 @@ peak_memory_bytes: int | None
 
 ```text
 total_cpu_time_seconds: float | None
+```
+
+#### `io_read_bytes`
+
+```text
+io_read_bytes: int | None
+```
+
+#### `io_write_bytes`
+
+```text
+io_write_bytes: int | None
+```
+
+#### `peak_process_count`
+
+```text
+peak_process_count: int | None
 ```
 
 ### `ShutdownReport`

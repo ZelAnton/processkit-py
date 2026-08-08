@@ -92,6 +92,61 @@ def test_pipeline_pipefail_propagates_non_last_stage_failure() -> None:
     assert excinfo.value.code == 3
 
 
+def _stage_writing_both(marker_out: str, marker_err: str, exit_code: int) -> str:
+    return (
+        "import sys\n"
+        f"sys.stdout.write('{marker_out}\\n'); sys.stdout.flush()\n"
+        f"sys.stderr.write('{marker_err}\\n'); sys.stderr.flush()\n"
+        f"sys.exit({exit_code})\n"
+    )
+
+
+_ECHO_STDIN = "import sys; sys.stdout.write(sys.stdin.read())"
+
+
+def test_merge_stderr_in_pipe_merges_non_final_stage_stderr_into_the_pipe() -> None:
+    # The shell-free equivalent of `command 2>&1 | next`: the downstream stage
+    # reads BOTH the upstream's stdout and stderr, combined, over its own
+    # stdin -- in the order the upstream wrote them (the crate's guarantee:
+    # cloned handles to one anonymous-pipe writer, so the OS preserves order).
+    upstream = Command(PY, ["-c", _stage_writing_both("OUT", "ERR", 0)]).merge_stderr_in_pipe()
+    downstream = Command(PY, ["-c", _ECHO_STDIN])
+    result = (upstream | downstream).output()
+    assert result.is_success
+    assert result.stdout.splitlines() == ["OUT", "ERR"]
+
+
+def test_merge_stderr_in_pipe_pipefail_attribution_reports_empty_stderr() -> None:
+    # Pipefail diagnostic trade-off (docs/pipelines.md): once stderr enters
+    # the downstream pipe it is no longer available as this stage's own
+    # stderr capture, so an unclean exit attributed to THIS stage reports an
+    # EMPTY ProcessResult.stderr even though the child did write to stderr --
+    # the merged bytes surface instead in the final stage's stdout, having
+    # passed through the rest of the pipeline.
+    upstream = Command(PY, ["-c", _stage_writing_both("OUT", "ERR", 7)]).merge_stderr_in_pipe()
+    downstream = Command(PY, ["-c", _ECHO_STDIN])
+    result = (upstream | downstream).output()
+    assert result.code == 7
+    assert not result.is_success
+    assert result.stderr == ""
+    assert result.stdout.splitlines() == ["OUT", "ERR"]
+
+
+def test_merge_stderr_in_pipe_is_a_noop_on_the_final_stage() -> None:
+    # Opt-in per NON-final stage only: a pipeline activates the marker on a
+    # stage exactly when a downstream stage exists (index + 1 < len), so
+    # marking the LAST stage has no effect -- its stdout/stderr are captured
+    # exactly as without the marker.
+    upstream = Command(PY, ["-c", "print('U')"])
+    downstream = Command(
+        PY, ["-c", _stage_writing_both("D-OUT", "D-ERR", 0)]
+    ).merge_stderr_in_pipe()
+    result = (upstream | downstream).output()
+    assert result.is_success
+    assert result.stdout.splitlines() == ["D-OUT"]
+    assert result.stderr.splitlines() == ["D-ERR"]
+
+
 def test_pipeline_probe_sync() -> None:
     # `probe` routes to the pipeline's exit code: 0 -> True, non-zero -> False.
     ok = Command(PY, ["-c", "print('hi')"]) | Command(PY, ["-c", _UPPER])
@@ -127,6 +182,24 @@ def test_pipeline_timeout_is_captured() -> None:
     result = pipe.timeout(0.3).output()
     assert result.timed_out
     assert not result.is_success
+
+
+def test_pipeline_timeout_keeps_last_stage_partial_output() -> None:
+    # The final stage emits a recognizable prefix and keeps running long enough
+    # for the chain deadline to fire. Under load, the number of captured lines
+    # varies, so only the stable prefix is part of the assertion.
+    last_stage = (
+        "import sys, time\n"
+        "for i in range(1000):\n"
+        "    print(f'pipeline-prefix-{i}', flush=True)\n"
+        "    time.sleep(0.01)\n"
+    )
+    pipe = Command(PY, ["-c", "print('input')"]) | Command(PY, ["-c", last_stage])
+    result = pipe.timeout(2.0).output()
+
+    assert result.timed_out is True
+    assert not result.is_success
+    assert result.stdout.startswith("pipeline-prefix-0\n")
 
 
 def test_pipeline_stage_timeout_kills_its_whole_subtree(pid_file: pathlib.Path) -> None:

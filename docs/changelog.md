@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add cumulative whole-tree I/O counters (`ProcessGroupStats.io_read_bytes`
+  and `io_write_bytes`) and the optional kernel high-water mark
+  `ProcessGroupStats.peak_process_count`. Availability and units remain
+  mechanism-dependent: Windows Job Objects report transfer bytes, Linux cgroup
+  v2 may report block-layer bytes and task counts, and unsupported measurements
+  are exposed as `None` rather than a synthetic zero.
+- Add `ProcessGroup.adopt_external(pid)` to bring an already-running external
+  process under group signalling and teardown when only its pid is available.
+  Adoption captures process identity during the call, never reaps the process
+  or exposes its exit status, and documents the Windows, Linux cgroup,
+  POSIX-fallback, and BSD support boundaries.
+- Add `Command.arg0()`/`configured_arg0`, `Command.merge_stderr_in_pipe()`,
+  `Command.stdout_raw_tee()`/`stderr_raw_tee()`, and
+  `RunningProcess.stdout_bytes_seen`/`stderr_bytes_seen` — the last remaining
+  small binding gaps against the `processkit` core: a Unix-only `argv[0]`
+  override (raising `Unsupported` off-Unix), a per-stage `2>&1 |`-equivalent
+  pipeline marker, an undecoded byte-exact stdout/stderr tee alongside the
+  existing decoded `stdout_tee()`/`stderr_tee()`, and raw pipe byte counters
+  alongside the existing `stdout_line_count`/`stderr_line_count`.
 - Add partial-tail readiness probes on `RunningProcess` —
   `wait_for_output()`/`await_for_output()` for stdout and
   `wait_for_stderr_output()`/`await_for_stderr_output()` for stderr — which
@@ -95,6 +114,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_json()`/`arun_json()` still always populate it. Typed consumers should
   narrow the type before use; the full diagnostic remains available through
   `str(exc)` regardless of the source.
+- Bump the bundled ProcessKit-rs core to 3.3.0, preserving the existing Python
+  API and feature set while bringing upstream fixes for merged-stderr pipe
+  teardown, failed PTY-launch cleanup, pipeline pipefail attribution,
+  process-identity-safe metrics, and cassette version validation. The upstream
+  `ProcessGroupStats` statistics additions are exposed by the binding as
+  documented under Added.
 - Bump the bundled ProcessKit-rs core to 3.2.0, preserving the existing Python
   API and cancellation defaults while bringing upstream compatibility fixes for
   ConPTY, PTY EOF, readiness, pipelines, environment resolution, and supervision.
@@ -104,6 +129,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Python writer objects used by decoded and raw output tees now retry partial
+  integer `write()` counts to completion without truncating mirrored output;
+  `None` and other non-integer return values remain supported and mean the full
+  buffer was accepted, while invalid integer counts are reported via
+  `sys.unraisablehook`.
 - Close the completion hub's socket at the OS level when Python-level cleanup
   raises, preventing pending anyio-on-asyncio reader tasks and socket-resource
   warnings after an awaited operation is cancelled during loop shutdown.
@@ -1201,6 +1231,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't express.
 
 ### Changed
+- Pipeline timeout results now retain best-effort partial stdout and stderr
+  captured by the last stage before the deadline.
 - Renamed `Command.ok_codes()` → **`success_codes()`** (clearer that it is the
   whole success set, not an addition), and an empty sequence now raises
   `ValueError` instead of being silently ignored.

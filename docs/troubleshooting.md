@@ -32,9 +32,11 @@ the stronger backends.
 
 ## A process started by another library survives group teardown
 
-`ProcessGroup` begins containment only with a root process created through its
-own `Command` entry points; it cannot add a process that `subprocess`, `asyncio`,
-or another library already started. Move that process's creation to `Command` /
+Use `group.adopt_external(process.pid)` when the process is already running and
+you have its pid. Adoption places the process under the group's signal and
+teardown boundary, but it does not give processkit a child handle: the original
+parent must still call `wait()` for completion and exit status. If the platform
+returns `Unsupported` (FreeBSD and other BSDs), move creation to a `Command` /
 `ProcessGroup`, or put the whole supervisor under a host-managed containment
 boundary. See
 [Existing processes and

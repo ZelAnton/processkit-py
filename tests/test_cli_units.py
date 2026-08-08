@@ -102,8 +102,8 @@ def test_positive_int_rejects_non_positive_values(value: str) -> None:
         parser._positive_int(value)
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "nan"])
-def test_positive_float_rejects_non_positive_values(value: str) -> None:
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "+inf", "-inf"])
+def test_positive_float_rejects_non_positive_or_non_finite_values(value: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         parser._positive_float(value)
 

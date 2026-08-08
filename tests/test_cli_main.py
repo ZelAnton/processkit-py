@@ -524,7 +524,27 @@ def test_idle_timeout_rejects_nonpositive_value_as_usage_error() -> None:
     # argparse usage errors (exit 2), never a spawned child.
     result = _run_cli("run", "--idle-timeout", "0", "--", PY, "-c", "print(1)")
     assert result.returncode == 2
-    assert "positive number" in result.stderr
+    assert "positive, finite number" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "option", ["--timeout", "--timeout-grace", "--idle-timeout", "--cpu-quota"]
+)
+def test_run_rejects_infinite_float_options_as_usage_errors(option: str) -> None:
+    result = _run_cli(
+        "run",
+        option,
+        "inf",
+        "--",
+        PY,
+        "-c",
+        "print('child started')",
+    )
+    assert result.returncode == 2
+    assert "positive, finite number" in result.stderr
+    assert "usage: python -m processkit run" in result.stderr
+    assert "child started" not in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
 
 
 def test_timeout_grace_without_timeout_is_a_usage_error() -> None:
@@ -1596,6 +1616,36 @@ def test_supervise_timeout_is_per_incarnation_and_uses_timeout_exit_code() -> No
     )
     assert result.returncode == 124
     assert "timed out after 0.2s" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--backoff-initial",
+        "--backoff-factor",
+        "--max-backoff",
+        "--idle-timeout",
+        "--timeout",
+        "--cpu-quota",
+        "--health-interval",
+        "--health-timeout",
+    ],
+)
+def test_supervise_rejects_infinite_float_options_as_usage_errors(option: str) -> None:
+    result = _run_cli(
+        "supervise",
+        option,
+        "inf",
+        "--",
+        PY,
+        "-c",
+        "print('child started')",
+    )
+    assert result.returncode == 2
+    assert "positive, finite number" in result.stderr
+    assert "usage: python -m processkit supervise" in result.stderr
+    assert "child started" not in result.stdout
     assert "Traceback (most recent call last)" not in result.stderr
 
 

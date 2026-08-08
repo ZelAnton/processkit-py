@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from processkit import Command, ProcessGroup
 
-from ._liveness import read_pid_when_ready, wait_dead
+from ._liveness import process_start_key, read_pid_when_ready, wait_dead
 from .conftest import PY, spawn_grandchild_command
 
 
@@ -44,15 +44,18 @@ def test_many_groups_leave_no_orphans(tmp_path: pathlib.Path) -> None:
     # 15 — this is a repetition/leak check, not a load test, and the suite
     # pays this cost on every run. PROCESSKIT_STRESS_SCALE raises this back up
     # (and beyond) for the scheduled hardening run.
-    grandchildren: list[int] = []
+    grandchildren: list[tuple[int, object | None]] = []
     for i in range(5 * _SCALE):
         pid_file = tmp_path / f"gc{i}.pid"
         with ProcessGroup() as group:
             group.start(spawn_grandchild_command(pid_file))
-            grandchildren.append(read_pid_when_ready(pid_file, timeout=10.0))
+            pid = read_pid_when_ready(pid_file, timeout=10.0)
+            grandchildren.append((pid, process_start_key(pid)))
 
-    for pid in grandchildren:
-        assert wait_dead(pid, timeout=10.0), f"grandchild {pid} survived its group's teardown"
+    for pid, start_key in grandchildren:
+        assert wait_dead(pid, timeout=10.0, expected_start_key=start_key), (
+            f"grandchild {pid} survived its group's teardown"
+        )
 
 
 def test_interpreter_exit_reaps_tree(tmp_path: pathlib.Path) -> None:

@@ -146,7 +146,12 @@ def wait_until(predicate: Callable[[], bool], timeout: float) -> bool:
     return predicate()
 
 
-def wait_dead(pid: int, timeout: float) -> bool:
+def process_start_key(pid: int) -> object | None:
+    """Return the current process instance key used by ``wait_dead``."""
+    return _process_start_key(pid)
+
+
+def wait_dead(pid: int, timeout: float, *, expected_start_key: object | None = None) -> bool:
     """Wait until the process with this PID is gone.
 
     A raw ``is_alive(pid)`` check alone can't tell "the process we've been
@@ -157,27 +162,21 @@ def wait_dead(pid: int, timeout: float) -> bool:
     typically well past `timeout`: a spurious timeout/flake, not a false
     "dead" report (the failure mode leans safe, just noisy).
 
-    To close that gap, this polls a per-instance start-time key
-    (`_process_start_key`) alongside the raw liveness check: the key is
-    captured on the first poll that observes the PID alive, and every later
-    live poll compares its freshly read key against that snapshot. A mismatch
-    means the PID's current occupant is not the process this call started
-    watching, i.e. the original is provably gone -- reported as dead right
-    away instead of spinning to the full timeout. When the start-time key is
-    unavailable (`None` on either read, e.g. the platform helper failed), the
-    comparison degrades to always-equal, i.e. the original raw-PID-only
-    behavior -- no regression, just no added correlation for that poll. The
-    baseline key is only captured once a poll observes a real (non-`None`)
-    key, so a transient `None` on the first live poll doesn't get "frozen" as
-    the permanent baseline -- correlation kicks in as soon as a real key
-    becomes available, rather than being disabled for the rest of the wait.
+    To close that gap, this polls a per-instance start-time key alongside the
+    raw liveness check. Pass a key captured with `process_start_key` when the
+    original process was known to be alive, or omit it to capture the first
+    live process observed here. Every later live poll compares its fresh key
+    against that snapshot. A mismatch means the original process is provably
+    gone, so the new occupant is reported as dead immediately. When the key is
+    unavailable (`None` on either read), the comparison falls back to raw PID
+    liveness for that poll. A transient `None` is never frozen as the baseline.
     """
-    captured_key: list[object] = []
+    captured_key: list[object] = [] if expected_start_key is None else [expected_start_key]
 
     def _gone() -> bool:
         if not is_alive(pid):
             return True
-        key = _process_start_key(pid)
+        key = process_start_key(pid)
         if not captured_key:
             if key is not None:
                 captured_key.append(key)

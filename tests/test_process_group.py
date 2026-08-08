@@ -15,6 +15,7 @@ import contextlib
 import gc
 import os
 import pathlib
+import subprocess
 import sys
 import time
 
@@ -40,7 +41,10 @@ from .conftest import PY, spawn_grandchild_command
 
 def test_group_reports_a_mechanism() -> None:
     with ProcessGroup() as group:
-        assert group.mechanism in {"job_object", "cgroup_v2", "process_group"}
+        # FreeBSD's ProcessReaper is preserved as "unknown" because the Rust
+        # mechanism enum is non-exhaustive and the binding must not guess at a
+        # future variant's public name.
+        assert group.mechanism in {"job_object", "cgroup_v2", "process_group", "unknown"}
 
 
 def test_group_teardown_kills_grandchild(pid_file: pathlib.Path) -> None:
@@ -217,6 +221,46 @@ def test_group_started_handle_works_as_context_manager() -> None:
             assert child is not None
         assert wait_dead(child, timeout=10.0), "group-started child survived its inner with-block"
         assert isinstance(group.members(), list)
+
+
+def test_adopt_external_contains_and_tears_down_foreign_process() -> None:
+    child = subprocess.Popen([PY, "-c", "import time; time.sleep(60)"])
+    pid = child.pid
+    try:
+        assert wait_until(lambda: is_alive(pid), timeout=10.0), "external child never became live"
+        with ProcessGroup() as group:
+            try:
+                group.adopt_external(pid)
+            except Unsupported:
+                pytest.skip("pid-only adoption is unsupported on this platform")
+            assert wait_until(lambda: pid in group.members(), timeout=10.0), (
+                f"adopted pid {pid} never appeared in group.members()"
+            )
+            # Adoption returns no child-like object. ProcessGroup has no wait,
+            # outcome, or finish operation for a pid-only member to reap.
+            assert not hasattr(group, "wait")
+            assert not hasattr(group, "outcome")
+            assert not hasattr(group, "finish")
+
+        child.wait(timeout=10.0)
+        assert child.returncode is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10.0)
+
+
+def test_adopt_external_rejects_zero_and_own_pid() -> None:
+    with ProcessGroup() as group:
+        for pid in (0, os.getpid()):
+            with pytest.raises(ProcessError, match="pid"):
+                group.adopt_external(pid)
+
+
+def test_adopt_external_rejects_a_dead_pid() -> None:
+    dead_pid = 2_000_000_000
+    with ProcessGroup() as group, pytest.raises(ProcessError, match=str(dead_pid)):
+        group.adopt_external(dead_pid)
 
 
 # --- resource limits --------------------------------------------------------
@@ -606,6 +650,59 @@ def test_group_stats() -> None:
         assert stats.active_process_count >= 1
         assert stats.peak_memory_bytes is None or stats.peak_memory_bytes >= 0
         assert stats.total_cpu_time_seconds is None or stats.total_cpu_time_seconds >= 0.0
+        assert stats.io_read_bytes is None or stats.io_read_bytes >= 0
+        assert stats.io_write_bytes is None or stats.io_write_bytes >= 0
+        assert (
+            stats.peak_process_count is None
+            or stats.peak_process_count >= stats.active_process_count
+        )
+
+        representation = repr(stats)
+        assert "io_read_bytes=" in representation
+        assert "io_write_bytes=" in representation
+        assert "peak_process_count=" in representation
+
+        if group.mechanism == "job_object":
+            # Windows Job Objects expose cumulative transfer counters but do not
+            # keep a kernel high-water mark for concurrent processes.
+            assert stats.io_read_bytes is not None
+            assert stats.io_write_bytes is not None
+            assert stats.peak_process_count is None
+        elif group.mechanism == "process_group":
+            # POSIX process groups are signalling containers, not accounting
+            # objects; all three new measurements are genuinely unavailable.
+            assert stats.io_read_bytes is None
+            assert stats.io_write_bytes is None
+            assert stats.peak_process_count is None
+        elif group.mechanism == "unknown" and sys.platform.startswith("freebsd"):
+            # FreeBSD's ProcessReaper is currently mapped to the binding's
+            # conservative unknown value; it only contains the tree and does
+            # not provide any of these three accounting measurements.
+            assert stats.io_read_bytes is None
+            assert stats.io_write_bytes is None
+            assert stats.peak_process_count is None
+
+
+def test_group_stats_peak_process_count_is_optional_with_process_limit() -> None:
+    # Requesting a process cap enables the Linux pids controller. The metric is
+    # still optional because older kernels/delegations may lack pids.peak, and
+    # other mechanisms have different accounting capabilities.
+    try:
+        group = ProcessGroup(max_processes=4)
+    except (Unsupported, ResourceLimit):
+        pytest.skip("process limits unavailable on this host")
+
+    mechanism = group.mechanism
+    try:
+        with group:
+            group.start(Command(PY, ["-c", "import time; time.sleep(2)"]))
+            stats = group.stats()
+    except (Unsupported, ResourceLimit):
+        pytest.skip("process limits or stats unavailable on this platform")
+
+    assert stats.peak_process_count is None or stats.peak_process_count >= 1
+    if mechanism == "job_object":
+        assert stats.peak_process_count is None
 
 
 def test_group_members_info_snapshots_a_live_child() -> None:

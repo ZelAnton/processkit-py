@@ -48,11 +48,16 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # wrapper over `ErrorReason`; the merged output stream became a process
 # lifecycle stream: `output_events()`/`OutputEvent`/`OutputEvents` →
 # `events()`/`ProcessEvent`/`ProcessEvents`); see CHANGELOG.md for the
-# per-version detail. Each upstream release's new public surface keeps being
-# adopted here as it lands, so treat a bump as a deliberate review step — diff
-# the crate's shipped `public-api.txt` between the old and new versions in the
-# registry cache before believing the release notes (CONTRIBUTING.md,
-# "Upgrading the `processkit` core") — rather than a transitive pickup.
+# per-version detail. Each upstream release's new public surface is reviewed
+# here as it lands and adopted only when it is in this binding's scope, so treat
+# a bump as a deliberate review step — diff the crate's shipped `public-api.txt`
+# between the old and new versions in the registry cache before believing the
+# release notes (CONTRIBUTING.md, "Upgrading the `processkit` core") — rather
+# than a transitive pickup.
+#
+# 3.3.0 is a deliberate compatibility bump after reviewing its additive
+# `ProcessGroup` adoption/statistics surface and `PipelineSession` auto-trait
+# changes; none of that new crate API is exposed by this binding.
 #
 # Features are listed EXPLICITLY with `default-features = false`, so a change to
 # the crate's default set can never silently alter our public surface:

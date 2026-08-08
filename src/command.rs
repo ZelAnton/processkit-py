@@ -45,6 +45,11 @@ const PTY_CONFLICT_STDIN: u8 = 1;
 const PTY_CONFLICT_STDOUT: u8 = 2;
 const PTY_CONFLICT_STDERR: u8 = 4;
 
+/// Stand-in printed in place of a configured `arg0` by `Command.__repr__` (see
+/// there for why). `configured_arg0` and `command_line()` stay the explicit,
+/// opt-in ways to read the real value.
+const REDACTED_ARG0: &str = "<redacted>";
+
 /// A pid-only handle to a deliberately uncontained child.
 #[pyclass(name = "DetachedChild", frozen, module = "processkit")]
 pub(crate) struct PyDetachedChild {
@@ -173,6 +178,21 @@ impl PyCommand {
 
     fn args(&self, args: Vec<PathBuf>) -> Self {
         self.rewrap(self.inner.clone().args(args))
+    }
+
+    /// Override the child's `argv[0]` independently of the executable
+    /// `program()` — supports multicall binaries (BusyBox/Toybox) and
+    /// conventions like a login shell's `-bash`. Program lookup, `prefer_local`,
+    /// preflight, spawn diagnostics, and containment all keep using `program()`;
+    /// only the argument vector delivered to the child changes.
+    ///
+    /// **Unix only.** Applied through the OS command's `arg0` spawn seam. On a
+    /// non-Unix platform the run raises `Unsupported` rather than silently
+    /// passing the executable name instead — `configured_arg0` stays
+    /// observable there even though a run can never use it. Repeated calls are
+    /// last-write-wins.
+    fn arg0(&self, arg0: &str) -> Self {
+        self.rewrap(self.inner.clone().arg0(arg0))
     }
 
     fn cwd(&self, path: PathBuf) -> Self {
@@ -723,6 +743,68 @@ impl PyCommand {
         Ok(self.rewrap(inner))
     }
 
+    /// Tee the child's stdout to `sink` **byte for byte, before any decoding
+    /// or line splitting** — the raw-bytes cousin of `stdout_tee`. Same sink
+    /// forms as `stdout_tee` — a file path (opened at build time, truncated
+    /// by default or ``append``) or a Python writer object with a callable
+    /// `write()` — but since the whole point is byte-exact fidelity, a
+    /// writer here receives each chunk as `bytes`, never decoded, so it must
+    /// be a **binary** writer (`io.BytesIO`, a `"wb"` file, not `sys.stderr`
+    /// or an `io.StringIO`): non-UTF-8 output, CRLF, a lone `\r`, and a
+    /// missing final newline all pass through untouched, and a line an
+    /// `OutputBufferPolicy` drops from every decoded sink still reaches this
+    /// tee whole.
+    ///
+    /// **Independent of the decoded path.** Coexists with `stdout_tee`,
+    /// `on_stdout_line`, and ordinary capture — all configured sinks fire
+    /// independently from the same pump. **Requires a piped stdout**: a
+    /// no-op under ``stdout("inherit")`` / ``stdout("null")`` / a
+    /// `stdout_file()` redirect (no capture pump runs) and under
+    /// `output_bytes()` (its own return value already *is* the raw stdout, a
+    /// separate raw drain with no line pump) — reach for this alongside the
+    /// line/streaming verbs (`output()`, `run()`, or `start()` +
+    /// `stdout_lines()` / `output_events()`) instead. A second call replaces
+    /// an earlier one; a write error disables the raw tee for the rest of the
+    /// run (surfaced the same way as `stdout_tee`'s write errors), leaving
+    /// the run and its captured result unaffected.
+    #[pyo3(signature = (sink, *, append = false))]
+    fn stdout_raw_tee(&self, sink: &Bound<'_, PyAny>, append: bool) -> PyResult<Self> {
+        let inner = if is_python_writer(sink)? {
+            reject_append_for_writer(append)?;
+            self.inner
+                .clone()
+                .stdout_raw_tee(PyWriterSink::new_raw(sink))
+        } else {
+            let path: PathBuf = sink.extract()?;
+            self.inner
+                .clone()
+                .stdout_raw_tee(open_tee_sink(&path, append)?)
+        };
+        Ok(self.rewrap(inner))
+    }
+
+    /// Tee the child's stderr to `sink` byte for byte, before any decoding or
+    /// line splitting. Same contract as `stdout_raw_tee` — verbatim bytes
+    /// (non-UTF-8, CRLF, a missing final newline, and buffer-policy-dropped
+    /// lines all preserved), a binary writer required for the Python-writer
+    /// sink form, independent of `stderr_tee`/`on_stderr_line`, and requiring
+    /// stderr to be piped.
+    #[pyo3(signature = (sink, *, append = false))]
+    fn stderr_raw_tee(&self, sink: &Bound<'_, PyAny>, append: bool) -> PyResult<Self> {
+        let inner = if is_python_writer(sink)? {
+            reject_append_for_writer(append)?;
+            self.inner
+                .clone()
+                .stderr_raw_tee(PyWriterSink::new_raw(sink))
+        } else {
+            let path: PathBuf = sink.extract()?;
+            self.inner
+                .clone()
+                .stderr_raw_tee(open_tee_sink(&path, append)?)
+        };
+        Ok(self.rewrap(inner))
+    }
+
     /// Redirect the child's stdout **straight to a file**, opened at spawn time —
     /// the child writes to the file's own descriptor, with no parent-side pump,
     /// tee, or capture buffer in between. This is the direct-redirect cousin of
@@ -1259,6 +1341,29 @@ impl PyCommand {
         self.rewrap(self.inner.clone().unchecked_in_pipe())
     }
 
+    /// Merge this stage's stderr into its stdout pipe when it is a
+    /// **non-final** `Pipeline` stage — the shell-free equivalent of
+    /// `command 2>&1 | next`. Stdout and stderr get cloned handles to the same
+    /// anonymous-pipe writer; the OS preserves write order (no userspace
+    /// interleaving of two reader tasks), and the downstream stage reads the
+    /// combined byte stream from its stdin.
+    ///
+    /// This is opt-in per stage and a **no-op outside a `Pipeline` or on the
+    /// final stage** — it has no effect on a standalone command, and a
+    /// pipeline only activates it on a non-final stage. On an affected stage
+    /// it overrides that stage's configured stdout/stderr destinations,
+    /// since both streams must point at the downstream pipe.
+    ///
+    /// **Pipefail diagnostic trade-off.** Once stderr enters the downstream
+    /// pipe it is no longer available as that stage's own stderr capture: if
+    /// pipefail attributes the chain's failure to this stage,
+    /// `ProcessResult.stderr` is empty for it — the merged bytes may instead
+    /// surface in the final stage's stdout after passing through the rest of
+    /// the pipeline.
+    fn merge_stderr_in_pipe(&self) -> Self {
+        self.rewrap(self.inner.clone().merge_stderr_in_pipe())
+    }
+
     /// The program to launch.
     #[getter]
     fn program(&self) -> String {
@@ -1274,6 +1379,18 @@ impl PyCommand {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// The explicit Unix `argv[0]` override configured via `arg0()`, or `None`
+    /// if unset. Exposes the routing input to `ScriptedRunner.when()`
+    /// predicates and other command inspection without conflating it with
+    /// `program`, which remains the executable lookup key. Still `Some` on a
+    /// non-Unix platform before a run would reject it (see `arg0()`).
+    #[getter]
+    fn configured_arg0(&self) -> Option<String> {
+        self.inner
+            .configured_arg0()
+            .map(|arg0| arg0.to_string_lossy().into_owned())
     }
 
     /// Render this command as a single shell-quoted line for **display** — logs,
@@ -1306,7 +1423,21 @@ impl PyCommand {
         // tracebacks), so it must not leak secrets passed as arguments. The full
         // command line stays behind the crate's explicit `command_line()` escape
         // hatch, not the default repr.
-        format!("{:?}", self.inner)
+        //
+        // One gap to close by hand: the crate's `Debug` renders the `arg0`
+        // override *verbatim* (`.field("arg0", &self.arg0)`) while collapsing the
+        // rest of argv to a count — but `arg0` IS an argv value, so printing it
+        // would make the rule above (and the same promise in `docs/commands.md`)
+        // false for exactly the callers who use `arg0()`. Redact it by rendering a
+        // throwaway clone that carries the placeholder instead of by rewriting the
+        // formatted text: the crate keeps doing the formatting (nothing here is
+        // coupled to its field order or `Debug` layout), and the substitution
+        // touches only that clone — the command this wrapper actually spawns keeps
+        // the configured `arg0` unchanged.
+        match self.inner.configured_arg0() {
+            None => format!("{:?}", self.inner),
+            Some(_) => format!("{:?}", self.inner.clone().arg0(REDACTED_ARG0)),
+        }
     }
 }
 
@@ -1477,5 +1608,56 @@ mod tests {
         for (scope, expected) in cases {
             assert_eq!(parent_death_cleanup_str(scope), expected, "{scope:?}");
         }
+    }
+
+    fn command_for_repr(inner: PkCommand) -> PyCommand {
+        PyCommand {
+            inner,
+            idle_timeout: None,
+            pty_requested: false,
+            pty_conflicts: 0,
+        }
+    }
+
+    // `Command.__repr__` leans on the crate's redacted `Debug` for everything but
+    // `arg0`, which the crate prints verbatim while collapsing the rest of argv to
+    // a count. Pin the hand-redaction here — against the crate's real `Debug`
+    // output — so an upstream change (a redacted `arg0`, a renamed field, a
+    // dropped `configured_arg0`) shows up as a Rust test failure rather than as a
+    // silently reinstated argv leak.
+    #[test]
+    fn repr_redacts_a_configured_arg0() {
+        let secret = "SUPER-SECRET-ARGV0";
+        let cmd = command_for_repr(
+            PkCommand::new("login")
+                .args(["--password", "hunter2-SECRET"])
+                .arg0(secret),
+        );
+        let text = cmd.__repr__();
+
+        assert!(
+            !text.contains(secret),
+            "arg0 value leaked into repr: {text}"
+        );
+        assert!(
+            text.contains(REDACTED_ARG0),
+            "expected the arg0 placeholder in repr: {text}"
+        );
+        // The rest of the crate's redacted rendering is still what's shown.
+        assert!(text.contains("program: \"login\""), "{text}");
+        assert!(!text.contains("hunter2-SECRET"), "{text}");
+        assert!(text.contains("args: 2"), "{text}");
+        // Redaction is repr-only: the command still spawns with the real `arg0`.
+        assert_eq!(cmd.configured_arg0().as_deref(), Some(secret));
+    }
+
+    #[test]
+    fn repr_leaves_an_unset_arg0_alone() {
+        let cmd = command_for_repr(PkCommand::new("login"));
+        let text = cmd.__repr__();
+
+        assert!(text.contains("arg0: None"), "{text}");
+        assert!(!text.contains(REDACTED_ARG0), "{text}");
+        assert_eq!(cmd.configured_arg0(), None);
     }
 }

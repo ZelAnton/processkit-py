@@ -1538,8 +1538,10 @@ def test_spawn_detached_child_survives_launcher_and_handle_drop(
         timeout=10,
     )
     assert int(launcher.stdout.strip()) > 0
-    assert wait_until(marker.is_file, 5), "detached child did not outlive its launcher"
-    assert marker.read_text() == "alive"
+    assert wait_until(
+        lambda: marker.is_file() and marker.read_text() == "alive",
+        5,
+    ), "detached child did not outlive its launcher and complete its marker"
 
 
 @pytest.mark.parametrize(

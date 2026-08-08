@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786178231309,
+  "lastUpdate": 1786179940060,
   "repoUrl": "https://github.com/ZelAnton/processkit-py",
   "entries": {
     "processkit benchmarks": [
@@ -127,6 +127,133 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0007591328889209631",
             "extra": "mean: 123.22540562499995 msec\nrounds: 8"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Anton Zhelezniakou",
+            "username": "ZelAnton",
+            "email": "github@zelanton.net"
+          },
+          "committer": {
+            "name": "Anton Zhelezniakou",
+            "username": "ZelAnton",
+            "email": "github@zelanton.net"
+          },
+          "id": "8c00eeb330617711cfc87d446a23228444437121",
+          "message": "Make Nightly orphan stress PID-reuse safe",
+          "timestamp": "2026-08-08T08:47:02Z",
+          "url": "https://github.com/ZelAnton/processkit-py/commit/8c00eeb330617711cfc87d446a23228444437121"
+        },
+        "date": 1786179939017,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_aoutput_as_completed.py::test_aoutput_as_completed_throughput",
+            "value": 11.581748781118742,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002580194345320039",
+            "extra": "mean: 86.34274658333634 msec\nrounds: 12"
+          },
+          {
+            "name": "benchmarks/test_lifecycle_events.py::test_lifecycle_events_throughput",
+            "value": 19.11216128319377,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005293779547854988",
+            "extra": "mean: 52.32270621739402 msec\nrounds: 23"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[1]",
+            "value": 67.98024529380588,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019662215504214454",
+            "extra": "mean: 14.710155805970832 msec\nrounds: 67"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[10]",
+            "value": 17.93326357765737,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008021504715128131",
+            "extra": "mean: 55.76229868421029 msec\nrounds: 19"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[50]",
+            "value": 3.4250889476590265,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003009099555967562",
+            "extra": "mean: 291.9632206000017 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[1]",
+            "value": 65.89666220177553,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000363036541535239",
+            "extra": "mean: 15.175275447760933 msec\nrounds: 67"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[10]",
+            "value": 17.44265668898707,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015535915922293784",
+            "extra": "mean: 57.330716176474375 msec\nrounds: 17"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[50]",
+            "value": 3.4073857293670122,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023569165593907582",
+            "extra": "mean: 293.4801279999988 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_process_group.py::test_process_group_start_exit",
+            "value": 65.51186522545964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00047063249355631573",
+            "extra": "mean: 15.264410447763797 msec\nrounds: 67"
+          },
+          {
+            "name": "benchmarks/test_pty.py::test_pty_output_relay",
+            "value": 44.72519631285731,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000612220270406253",
+            "extra": "mean: 22.358761558136 msec\nrounds: 43"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_processkit",
+            "value": 63.03692706043613,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00045147068469813536",
+            "extra": "mean: 15.86371745312487 msec\nrounds: 64"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_subprocess",
+            "value": 65.91788312162215,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006737221983738449",
+            "extra": "mean: 15.170390076922594 msec\nrounds: 65"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_asyncio_subprocess",
+            "value": 64.6275113536856,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004972604325338901",
+            "extra": "mean: 15.47328651612966 msec\nrounds: 62"
+          },
+          {
+            "name": "benchmarks/test_streaming_throughput.py::test_stdout_lines_throughput",
+            "value": 2.4344451205947824,
+            "unit": "iter/sec",
+            "range": "stddev: 0.018585632288115782",
+            "extra": "mean: 410.771223200004 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_supervisor.py::test_live_supervisor_session_restarts",
+            "value": 8.049222498097654,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014159156642035273",
+            "extra": "mean: 124.23560166666272 msec\nrounds: 9"
           }
         ]
       }

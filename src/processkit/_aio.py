@@ -665,6 +665,7 @@ def _format_host_header(host: str, port: int) -> str:
     (``Host: 127.0.0.1:8080`` / ``Host: example.com:8080``). A caller who
     already passed a bracketed literal (``"[::1]"``) is not double-wrapped.
     """
+    _check_http_host(host)
     if host.startswith("[") and host.endswith("]"):
         literal = host[1:-1].replace("%25", "%")
         return f"[{literal.replace('%', '%25')}]:{port}"
@@ -692,6 +693,15 @@ def _http_connection_host(host: str) -> str:
     if bracketed or ":" in host:
         return host.replace("%25", "%")
     return host
+
+
+def _check_http_host(host: str) -> None:
+    """Guard `wait_for_http`'s ``Host`` header against invalid field content."""
+    for ch in host:
+        if unicodedata.category(ch) == "Cc" or ch.isspace():
+            raise ValueError(
+                f"host must not contain whitespace or control characters (found {ch!r} in {host!r})"
+            )
 
 
 # Every Latin-1 control character: C0 (0x00-0x1F), DEL (0x7F), and C1
@@ -797,8 +807,8 @@ async def wait_for_http(
     if expected_status is None:
         expected_status = range(200, 300)  # default: any 2xx
     status_ok = _status_predicate(expected_status)
-    connection_host = _http_connection_host(host)
     request = _build_http_request(host, port, path)
+    connection_host = _http_connection_host(host)
 
     def timeout_error() -> WaitTimeout:
         return WaitTimeout(

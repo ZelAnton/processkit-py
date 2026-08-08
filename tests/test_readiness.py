@@ -1837,6 +1837,28 @@ def test_wait_for_http_path_validation_is_fail_fast() -> None:
     asyncio.run(scenario())
 
 
+def test_wait_for_http_host_validation_is_fail_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def unexpected_open_connection(
+        _host: str, _port: int, **_kwargs: object
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        nonlocal attempts
+        attempts += 1
+        raise AssertionError("invalid host must be rejected before connecting")
+
+    monkeypatch.setattr(asyncio, "open_connection", unexpected_open_connection)
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="whitespace or control characters"):
+            await wait_for_http("127.0.0.1\r\nX-Injected: yes", 8080, timeout=30.0)
+
+    asyncio.run(scenario())
+    assert attempts == 0
+
+
 def test_wait_for_http_rejects_non_latin1_path() -> None:
     async def scenario() -> None:
         with pytest.raises(ValueError, match="latin-1"):

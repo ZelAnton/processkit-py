@@ -2,8 +2,8 @@
 in `_aio.py`), its ``Host``-header formatting (`_format_host_header`), and its
 ``path`` validation (`_check_http_path`). A container is normalized to a
 membership test; a callable is used as the predicate as-is; an IPv6 literal
-host is bracketed per RFC 9112/3986; a ``path`` with whitespace/control
-characters or a non-latin-1 character is rejected.
+host is bracketed per RFC 9112/3986; a ``host``/``path`` with
+whitespace/control characters or a non-latin-1 character is rejected.
 
 No sockets here — the deadline/same-tick-race/cancellation machinery is covered
 by `tests/test_readiness.py`; this pins only the pure-function contracts (the
@@ -59,6 +59,12 @@ def test_format_host_header_brackets_ipv6_literals(address: object, port: int) -
     assert _format_host_header(host, port) == f"[{host}]:{port}"
 
 
+@given(address=st.ip_addresses(v=6), port=st.integers(min_value=0, max_value=65535))
+def test_format_host_header_preserves_bracketed_ipv6_literals(address: object, port: int) -> None:
+    host = f"[{address}]"
+    assert _format_host_header(host, port) == f"{host}:{port}"
+
+
 @given(address=st.ip_addresses(v=4), port=st.integers(min_value=0, max_value=65535))
 def test_format_host_header_leaves_ipv4_literals_unbracketed(address: object, port: int) -> None:
     host = str(address)
@@ -99,6 +105,20 @@ def test_check_http_path_accepts_printable_ascii(path: str) -> None:
     # Never raises for a path built purely from printable, non-control ASCII
     # (the class of values `wait_for_http`'s existing tests already rely on).
     _check_http_path(path)
+
+
+@given(bad_char=st.characters(whitelist_categories=("Cc", "Zs", "Zl", "Zp")))
+def test_host_header_and_request_reject_control_and_whitespace(bad_char: str) -> None:
+    host = f"example{bad_char}.test"
+    with pytest.raises(ValueError, match="whitespace or control characters"):
+        _format_host_header(host, 8080)
+    with pytest.raises(ValueError, match="whitespace or control characters"):
+        _build_http_request(host, 8080, "/health")
+
+
+def test_build_http_request_rejects_host_header_injection() -> None:
+    with pytest.raises(ValueError, match="whitespace or control characters"):
+        _build_http_request("127.0.0.1\r\nX-Injected: yes", 8080, "/health")
 
 
 @given(

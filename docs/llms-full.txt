@@ -6345,6 +6345,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Reject CR/LF, control, and whitespace characters in a `wait_for_http` host
+  before HTTP serialization, preventing header injection.
 - Keep Nightly hardening actionable: its mutation sandbox now includes the
   changelog required by release-note drift tests, first-run benchmark history
   can initialize its branch without runner-global git identity, the detached

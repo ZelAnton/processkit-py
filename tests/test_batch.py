@@ -526,17 +526,28 @@ def test_aoutput_all_bounds_live_children_to_concurrency(
 
 def test_aoutput_as_completed_yields_in_completion_order(tmp_path: pathlib.Path) -> None:
     # The whole point of the streaming variant vs collect-all `aoutput_all`: the
-    # first command sleeps far longer than the second, so it *finishes* last, and
-    # a completion-order iterator must yield the fast slot (index 1) BEFORE the
-    # slow one (index 0) -- not in input order. The index in each pair is what
-    # re-associates a result with the command that produced it. Same inverted
-    # completion order as `test_aoutput_all_returns_results_in_order`, but here
-    # the ordering asserted is the emission order, not a returned list.
+    # slow command stays behind a gate until the iterator emits its first item.
+    # The only possible first completion is therefore the fast slot (index 1),
+    # not input-order slot 0. The index in each pair re-associates a result with
+    # the command that produced it.
     async def scenario() -> list[tuple[int, ProcessResult | ProcessError]]:
-        slow, fast = _forced_inverted_completion_pair(tmp_path / "fast-finished")
+        release_slow = tmp_path / "release-slow"
+        slow_code = (
+            "import pathlib, sys, time\n"
+            "release = pathlib.Path(sys.argv[1])\n"
+            "deadline = time.monotonic() + 10\n"
+            "while not release.exists():\n"
+            "    if time.monotonic() >= deadline: sys.exit(99)\n"
+            "    time.sleep(0.01)\n"
+            "print(1)\n"
+        )
+        slow = Command(PY, ["-c", slow_code, str(release_slow)])
+        fast = Command(PY, ["-c", "print(2)"])
         collected: list[tuple[int, ProcessResult | ProcessError]] = []
         async for pair in aoutput_as_completed([slow, fast], concurrency=2):
             collected.append(pair)
+            if len(collected) == 1:
+                release_slow.write_text("go")
         return collected
 
     collected = asyncio.run(scenario())

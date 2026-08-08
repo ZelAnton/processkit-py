@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+
+## [1.5.0] - 2026-08-08
+
+### Added
 - Add cumulative whole-tree I/O counters (`ProcessGroupStats.io_read_bytes`
   and `io_write_bytes`) and the optional kernel high-water mark
   `ProcessGroupStats.peak_process_count`. Availability and units remain
@@ -1355,7 +1366,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `enable_logging()` enables the crate's `tracing` feature; the bridge pulls
   `tracing` / `tracing-subscriber` (registry only) into the compiled wheel.
 
-[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/ZelAnton/processkit-py/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/ZelAnton/processkit-py/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/ZelAnton/processkit-py/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/ZelAnton/processkit-py/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/ZelAnton/processkit-py/compare/v1.3.0...v1.4.0

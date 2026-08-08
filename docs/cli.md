@@ -68,8 +68,8 @@ python -m processkit run --max-memory 536870912 --max-processes 64 -- ./build.sh
 | `--timeout SECONDS` | `Command.timeout(seconds)` | Kills the whole tree once the deadline passes. |
 | `--timeout-grace SECONDS` | `Command.timeout_grace(seconds)` | Signal first, hard-kill after `SECONDS`. Requires `--timeout`; a usage error otherwise. |
 | `--idle-timeout SECONDS` | `Command.idle_timeout(seconds)` | Kill the child if it emits no output line for `SECONDS`. Exit `123` (distinct from `--timeout`'s `124`). Pipes and re-emits stdout/stderr line-by-line; incompatible with `--profile` and `--stdout-file`. See [below](#--idle-timeout-a-silence-watchdog). |
-| `--max-memory BYTES` | `ProcessGroup(max_memory=...)` | Whole-tree memory cap. |
-| `--max-processes N` | `ProcessGroup(max_processes=...)` | Fork-bomb ceiling for the tree. |
+| `--max-memory BYTES` | `ProcessGroup(max_memory=...)` | Whole-tree memory cap; accepts `1..=2^64-1` bytes. |
+| `--max-processes N` | `ProcessGroup(max_processes=...)` | Fork-bomb ceiling for the tree; accepts `1..=2^32-1`. |
 | `--cpu-quota FLOAT` | `ProcessGroup(cpu_quota=...)` | Fraction of a **single** core (`0.5` = half, `2.0` = two cores). |
 | `--env-clear` | `Command.env_clear()` | Start the child with an empty environment. |
 | `--inherit-env NAME` | `Command.inherit_env([...])` | Allow-list a parent variable through (implies `--env-clear`). Repeatable. |
@@ -100,6 +100,12 @@ entry in the same layer wins; explicit flags therefore override every file.
 Files are UTF-8 (an optional BOM is accepted); values are literal and may contain
 additional `=` characters. Missing/unreadable files and non-comment lines
 without `=` are usage errors with the file and line number, never tracebacks.
+
+The resource and restart limits are parsed against the widths of their binding
+types before a `ProcessGroup` or `Supervisor` is constructed: `--max-memory`
+accepts `1..=2^64-1` (`u64`), while `--max-processes` and `--max-restarts`
+accept `1..=2^32-1` (`u32`). Values above those bounds are argparse usage
+errors; the other positive-integer flags keep their existing contracts.
 
 ### `--sanitize-vt`: clean terminal output
 
@@ -290,14 +296,14 @@ just line-buffered rather than a byte-for-byte fd passthrough.
 | Flag | Description |
 |---|---|
 | `--restart {always,on_crash,never}` | Restart policy passed to `Supervisor`. |
-| `--max-restarts N` | Stop after `N` restarts. `N` must be positive. |
+| `--max-restarts N` | Stop after `N` restarts; accepts `1..=2^32-1` (`u32`). |
 | `--backoff-initial SECONDS` | Initial delay before a restart. Must be positive. |
 | `--backoff-factor FLOAT` | Multiplier for successive restart delays. Must be at least `1`. |
 | `--max-backoff SECONDS` | Upper bound for restart delay. Must be positive. |
 | `--no-jitter` | Disable restart-delay jitter; jitter is enabled by default. |
 | `--timeout SECONDS` | Apply `Command.timeout(seconds)` independently to every incarnation. A final timed-out incarnation exits `124`. |
-| `--max-memory BYTES` | Cap every incarnation's whole process tree memory. |
-| `--max-processes N` | Cap every incarnation's process-tree size. |
+| `--max-memory BYTES` | Cap every incarnation's whole process tree memory; accepts `1..=2^64-1` bytes (`u64`). |
+| `--max-processes N` | Cap every incarnation's process-tree size; accepts `1..=2^32-1` (`u32`). |
 | `--cpu-quota FLOAT` | Cap every incarnation's CPU as a fraction of one core. |
 | `--cpu-affinity CPU[,CPU...]` | Pin every incarnation to logical CPUs on Linux/Windows. |
 | `--create-no-window` | Apply `Command.create_no_window()` to every incarnation. |

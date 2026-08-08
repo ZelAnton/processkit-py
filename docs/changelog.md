@@ -131,6 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Reject CR/LF, control, and whitespace characters in a `wait_for_http` host
   before HTTP serialization, preventing header injection.
+- Reject CLI resource and restart limit values above their binding widths with
+  an argparse usage error before constructing a `ProcessGroup` or `Supervisor`.
 - CLI duration, CPU, backoff, and health-check numeric options now reject
   non-finite values before constructing a command or supervisor.
 - Keep Nightly hardening actionable: its mutation sandbox now includes the

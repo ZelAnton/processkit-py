@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 #: Sentinel `const=` for ``--profile``'s optional `FILE` argument (`nargs="?"`):
 #: distinguishes "flag absent" (`args.profile is None`, the default) from
@@ -19,6 +19,8 @@ from collections.abc import Sequence
 #: a caller wants "collect a profile" and "where to put it" to vary
 #: independently of each other.
 PROFILE_STDERR_MARKER = object()
+_U32_MAX = (1 << 32) - 1
+_U64_MAX = (1 << 64) - 1
 
 
 def _positive_int(value: str) -> int:
@@ -26,6 +28,22 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
     return parsed
+
+
+def _bounded_positive_int(maximum: int) -> Callable[[str], int]:
+    def parse(value: str) -> int:
+        parsed = _positive_int(value)
+        if parsed > maximum:
+            raise argparse.ArgumentTypeError(
+                f"must be a positive integer in the range 1..={maximum}, got {value!r}"
+            )
+        return parsed
+
+    return parse
+
+
+_U32_POSITIVE_INT = _bounded_positive_int(_U32_MAX)
+_U64_POSITIVE_INT = _bounded_positive_int(_U64_MAX)
 
 
 def _positive_float(value: str) -> float:
@@ -130,7 +148,7 @@ def _build_parser() -> tuple[
     run_parser.add_argument(
         "--max-memory",
         dest="max_memory",
-        type=_positive_int,
+        type=_U64_POSITIVE_INT,
         default=None,
         metavar="BYTES",
         help="Cap the whole child tree's memory, in bytes (needs a real container).",
@@ -138,7 +156,7 @@ def _build_parser() -> tuple[
     run_parser.add_argument(
         "--max-processes",
         dest="max_processes",
-        type=_positive_int,
+        type=_U32_POSITIVE_INT,
         default=None,
         metavar="N",
         help="Cap the number of processes in the tree (needs a real container).",
@@ -323,7 +341,7 @@ def _build_parser() -> tuple[
     supervise_parser.add_argument(
         "--max-restarts",
         dest="max_restarts",
-        type=_positive_int,
+        type=_U32_POSITIVE_INT,
         default=None,
         metavar="N",
         help="Stop supervising after N restarts (Supervisor(max_restarts=...)).",
@@ -384,7 +402,7 @@ def _build_parser() -> tuple[
     supervise_parser.add_argument(
         "--max-memory",
         dest="max_memory",
-        type=_positive_int,
+        type=_U64_POSITIVE_INT,
         default=None,
         metavar="BYTES",
         help="Cap each incarnation's whole process tree memory, in bytes.",
@@ -392,7 +410,7 @@ def _build_parser() -> tuple[
     supervise_parser.add_argument(
         "--max-processes",
         dest="max_processes",
-        type=_positive_int,
+        type=_U32_POSITIVE_INT,
         default=None,
         metavar="N",
         help="Cap each incarnation's process-tree size.",

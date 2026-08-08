@@ -102,6 +102,81 @@ def test_positive_int_rejects_non_positive_values(value: str) -> None:
         parser._positive_int(value)
 
 
+@pytest.mark.parametrize(
+    ("subcommand", "option", "destination", "maximum"),
+    [
+        ("run", "--max-memory", "max_memory", (1 << 64) - 1),
+        ("run", "--max-processes", "max_processes", (1 << 32) - 1),
+        ("supervise", "--max-memory", "max_memory", (1 << 64) - 1),
+        ("supervise", "--max-processes", "max_processes", (1 << 32) - 1),
+        ("supervise", "--max-restarts", "max_restarts", (1 << 32) - 1),
+    ],
+)
+def test_bounded_resource_integer_parsers_accept_binding_upper_bound(
+    subcommand: str, option: str, destination: str, maximum: int
+) -> None:
+    top, _, _, _ = parser._build_parser()
+    args = top.parse_args([subcommand, option, str(maximum)])
+    assert getattr(args, destination) == maximum
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "option", "destination"),
+    [
+        ("run", "--max-memory", "max_memory"),
+        ("run", "--max-processes", "max_processes"),
+        ("supervise", "--max-memory", "max_memory"),
+        ("supervise", "--max-processes", "max_processes"),
+        ("supervise", "--max-restarts", "max_restarts"),
+    ],
+)
+def test_bounded_resource_integer_parsers_accept_binding_lower_bound(
+    subcommand: str, option: str, destination: str
+) -> None:
+    top, _, _, _ = parser._build_parser()
+    args = top.parse_args([subcommand, option, "1"])
+    assert getattr(args, destination) == 1
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "option", "value"),
+    [
+        ("run", "--max-memory", 1 << 64),
+        ("run", "--max-processes", 1 << 32),
+        ("supervise", "--max-memory", 1 << 64),
+        ("supervise", "--max-processes", 1 << 32),
+        ("supervise", "--max-restarts", 1 << 32),
+    ],
+)
+def test_bounded_resource_integer_parsers_reject_first_value_above_binding_bound(
+    subcommand: str, option: str, value: int
+) -> None:
+    top, _, _, _ = parser._build_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        top.parse_args([subcommand, option, str(value)])
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "option"),
+    [
+        ("run", "--max-memory"),
+        ("run", "--max-processes"),
+        ("supervise", "--max-memory"),
+        ("supervise", "--max-processes"),
+        ("supervise", "--max-restarts"),
+    ],
+)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_bounded_resource_integer_parsers_preserve_non_positive_rejection(
+    subcommand: str, option: str, value: str
+) -> None:
+    top, _, _, _ = parser._build_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        top.parse_args([subcommand, option, value])
+    assert exc_info.value.code == 2
+
+
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "+inf", "-inf"])
 def test_positive_float_rejects_non_positive_or_non_finite_values(value: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):

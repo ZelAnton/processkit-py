@@ -528,6 +528,33 @@ def test_idle_timeout_rejects_nonpositive_value_as_usage_error() -> None:
 
 
 @pytest.mark.parametrize(
+    ("subcommand", "option", "overflow"),
+    [
+        ("run", "--max-memory", 1 << 64),
+        ("run", "--max-processes", 1 << 32),
+        ("supervise", "--max-memory", 1 << 64),
+        ("supervise", "--max-processes", 1 << 32),
+        ("supervise", "--max-restarts", 1 << 64),
+    ],
+)
+def test_resource_limit_overflow_is_argparse_usage_error_before_child_launch(
+    subcommand: str, option: str, overflow: int
+) -> None:
+    args = [subcommand]
+    if subcommand == "supervise":
+        args.extend(["--restart", "never"])
+    args.extend([option, str(overflow), "--", PY, "-c", "print('child started')"])
+
+    result = _run_cli(*args)
+
+    assert result.returncode == 2
+    assert "range 1..=" in result.stderr
+    assert f"usage: python -m processkit {subcommand}" in result.stderr
+    assert "child started" not in result.stdout
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
+@pytest.mark.parametrize(
     "option", ["--timeout", "--timeout-grace", "--idle-timeout", "--cpu-quota"]
 )
 def test_run_rejects_infinite_float_options_as_usage_errors(option: str) -> None:

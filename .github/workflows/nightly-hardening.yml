@@ -223,7 +223,9 @@ jobs:
           echo "gh-pages missing, creating an empty orphan branch"
           git checkout --orphan gh-pages
           git rm -rf . > /dev/null
-          git commit --allow-empty -m "Initialize gh-pages branch for benchmark history"
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --allow-empty -m "Initialize gh-pages branch for benchmark history"
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" gh-pages:gh-pages
           git checkout -
       # Appends this run's result as a new data point on `gh-pages`

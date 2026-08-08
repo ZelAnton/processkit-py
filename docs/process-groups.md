@@ -40,7 +40,7 @@ host = host_containment()  # no group creation or process spawn
 print(host.mechanism, host.soft_stop_scope, host.parent_death_cleanup)
 
 with ProcessGroup() as group:
-    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group" | "unknown"
+    print(group.mechanism)  # "job_object" | "cgroup_v2" | "process_group" | "unknown"
     print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
 ```
 
@@ -99,7 +99,7 @@ the **group's** teardown that reaps the whole tree.
 with ProcessGroup() as group:
     proc = group.start(Command("worker"))
     assert proc.owns_group is False
-    with proc:                # this block kills only `proc`...
+    with proc:  # this block kills only `proc`...
         ...
     # ...but other group members keep running until the group exits
 ```
@@ -114,7 +114,7 @@ same verb surface `Runner`/`ScriptedRunner`/… expose:
 
 ```python
 with ProcessGroup() as group:
-    result = group.output(Command("check-something"))   # a non-zero exit is data
+    result = group.output(Command("check-something"))  # a non-zero exit is data
     version = group.run(Command("tool", ["--version"]))  # requires a zero exit
 ```
 
@@ -212,7 +212,7 @@ group = ProcessGroup(shutdown_grace=5.0, escalate_to_kill=True)
 with group:
     group.start(Command("my-service"))
     ...
-    group.shutdown()    # SIGTERM, give it 5s to flush, then SIGKILL stragglers
+    group.shutdown()  # SIGTERM, give it 5s to flush, then SIGKILL stragglers
 ```
 
 ```python
@@ -283,8 +283,8 @@ cannot opt itself out. If a child appears to have escaped, see
 ```python
 with ProcessGroup() as group:
     group.start(Command("my-server"))
-    group.signal("hup")     # "reload your configuration"
-    group.signal("usr1")    # whatever the tool defines
+    group.signal("hup")  # "reload your configuration"
+    group.signal("usr1")  # whatever the tool defines
 ```
 
 `signal("kill")` and `kill_all()` take the same *atomic* whole-tree kill
@@ -302,7 +302,7 @@ from processkit import Unsupported
 try:
     group.signal("hup")
 except Unsupported:
-    ...   # no SIGHUP on this platform — reload some other way
+    ...  # no SIGHUP on this platform — reload some other way
 ```
 
 ## Suspending and resuming
@@ -313,7 +313,7 @@ pause background work), then thaw it:
 ```python
 with ProcessGroup() as group:
     group.start(Command("cpu-hog"))
-    group.suspend()     # the whole tree stops consuming CPU
+    group.suspend()  # the whole tree stops consuming CPU
     # ... inspect, snapshot, wait for the user ...
     group.resume()
 ```
@@ -338,7 +338,7 @@ supported platforms). Two gotchas bite in practice:
 with ProcessGroup() as group:
     group.start(Command("worker-a"))
     group.start(Command("worker-b"))
-    print(group.members())   # e.g. [4123, 4124]
+    print(group.members())  # e.g. [4123, 4124]
 ```
 
 What "members" means depends on the mechanism. On Windows and the Linux cgroup
@@ -383,9 +383,9 @@ the same kernel object that contains the tree:
 from processkit import Command, ProcessGroup
 
 with ProcessGroup(
-    max_memory=512 * 1024 * 1024,   # bytes, whole tree
-    max_processes=64,               # fork-bomb ceiling
-    cpu_quota=1.0,                  # one core (0.5 = half, 2.0 = two)
+    max_memory=512 * 1024 * 1024,  # bytes, whole tree
+    max_processes=64,  # fork-bomb ceiling
+    cpu_quota=1.0,  # one core (0.5 = half, 2.0 = two)
 ) as group:
     group.start(Command("untrusted-tool"))
 ```
@@ -437,7 +437,7 @@ from processkit import ResourceLimit
 try:
     group = ProcessGroup(max_memory=256 * 1024 * 1024)
 except ResourceLimit:
-    ...   # no Job Object / cgroup-v2 root here — limits unavailable
+    ...  # no Job Object / cgroup-v2 root here — limits unavailable
 ```
 
 On Linux this requires the process to run at the real cgroup-v2 root. The
@@ -458,12 +458,12 @@ limits with a locked-down `Command` (`env_clear().inherit_env(["PATH"])`,
 with ProcessGroup() as group:
     group.start(Command("worker"))
     snap = group.stats()
-    print(snap.active_process_count)    # int
-    print(snap.peak_memory_bytes)       # int | None
+    print(snap.active_process_count)  # int
+    print(snap.peak_memory_bytes)  # int | None
     print(snap.total_cpu_time_seconds)  # float | None
-    print(snap.io_read_bytes)            # int | None, cumulative
-    print(snap.io_write_bytes)           # int | None, cumulative
-    print(snap.peak_process_count)       # int | None, high-water mark
+    print(snap.io_read_bytes)  # int | None, cumulative
+    print(snap.io_write_bytes)  # int | None, cumulative
+    print(snap.peak_process_count)  # int | None, high-water mark
 ```
 
 `active_process_count` is always available. `peak_memory_bytes` and

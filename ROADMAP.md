@@ -49,17 +49,19 @@ guarantee, and resource limits on untrusted child trees.
 import asyncio
 from processkit import Command, ProcessGroup, wait_for_port
 
-async def main():
-	# Run-and-capture; a non-zero exit is data, not an exception.
-	result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
-	print(result.stdout.strip(), result.code)
 
-	# Kill-on-exit container for a whole tree.
-	async with ProcessGroup() as group:
-		await group.astart(Command("my-server"))
-		await wait_for_port("127.0.0.1", 8080, timeout=10)
-		# ... use the server ...
-	# group exit reaps the whole tree, grandchildren included
+async def main():
+    # Run-and-capture; a non-zero exit is data, not an exception.
+    result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
+    print(result.stdout.strip(), result.code)
+
+    # Kill-on-exit container for a whole tree.
+    async with ProcessGroup() as group:
+        await group.astart(Command("my-server"))
+        await wait_for_port("127.0.0.1", 8080, timeout=10)
+        # ... use the server ...
+    # group exit reaps the whole tree, grandchildren included
+
 
 asyncio.run(main())
 ```

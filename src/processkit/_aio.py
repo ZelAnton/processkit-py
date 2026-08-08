@@ -309,7 +309,7 @@ def _validate_probe_retry(*, timeout: float, interval: float) -> None:
 
 async def _retry_probe(
     attempt: Callable[[], Awaitable[_ProbeResult]],
-    evaluate: Callable[[_ProbeResult], BaseException | None | Awaitable[BaseException | None]],
+    evaluate: Callable[[_ProbeResult], BaseException | Awaitable[BaseException | None] | None],
     cleanup_result: Callable[[_ProbeResult], None],
     timeout_error: Callable[[], WaitTimeout],
     *,

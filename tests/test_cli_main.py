@@ -1074,7 +1074,14 @@ def test_without_profile_flag_behavior_is_unchanged() -> None:
 
 
 def test_profile_flag_emits_json_profile_to_stderr() -> None:
-    result = _run_cli("run", "--profile", "--", PY, "-c", "print('child output')")
+    result = _run_cli(
+        "run",
+        "--profile",
+        "--",
+        PY,
+        "-c",
+        "import time; print('child output'); time.sleep(0.25)",
+    )
     assert result.returncode == 0
     assert result.stdout.strip() == "child output"
     assert "Traceback (most recent call last)" not in result.stderr

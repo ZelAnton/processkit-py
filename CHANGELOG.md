@@ -126,6 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sharded nightly cargo-mutants signal for the Rust binding layer.
 
 ### Fixed
+- Keep Nightly hardening actionable: its mutation sandbox now includes the
+  changelog required by release-note drift tests, first-run benchmark history
+  can initialize its branch without runner-global git identity, the detached
+  helper example waits for its process to release Windows resources, and the
+  PTY alias/status tests no longer race short-lived incarnations. Resource-capped
+  supervision documentation now also reflects the observable contract:
+  `status.pid` is unavailable, while `status.started_at` identifies the current
+  capture-only incarnation.
 - Python writer objects used by decoded and raw output tees now retry partial
   integer `write()` counts to completion without truncating mirrored output;
   `None` and other non-integer return values remain supported and mean the full

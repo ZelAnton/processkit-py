@@ -48,8 +48,10 @@ Write production code against the seam; hand it the real runner there:
 ```python
 from processkit import Command, ProcessRunner, Runner
 
+
 def current_branch(runner: ProcessRunner) -> str:
     return runner.run(Command("git", ["branch", "--show-current"]))
+
 
 # Production: the real runner, which actually spawns git.
 branch = current_branch(Runner())
@@ -98,12 +100,14 @@ process. A companion fixture configures cassette redaction:
 from processkit import Command
 from processkit.testing import Reply
 
+
 def latest_commit(runner):
     return runner.run(Command("git", ["rev-parse", "HEAD"]))
 
+
 def test_latest_commit(scripted_runner):
     scripted_runner.on(["git", "rev-parse"], Reply.ok("deadbeef"))
-    assert latest_commit(scripted_runner) == "deadbeef"     # no git spawned
+    assert latest_commit(scripted_runner) == "deadbeef"  # no git spawned
 ```
 
 ### The cassette fixture: record ↔ replay
@@ -139,6 +143,7 @@ processkit_cassette_dir = tests/cassettes
 import sys
 from processkit import Command
 
+
 def test_offline(record_replay_runner):
     # `pytest --processkit-record` once: spawns for real and writes the cassette.
     # Every run after: served from tests/cassettes/…json, no process spawned.
@@ -163,10 +168,11 @@ forgotten double can't quietly reach the OS:
 import pytest
 from processkit import Command
 
+
 @pytest.mark.no_real_spawn
 def test_stays_hermetic(scripted_runner):
     scripted_runner.fallback(Reply.ok("ok"))
-    assert my_code(scripted_runner) == "ok"   # injected double: fine
+    assert my_code(scripted_runner) == "ok"  # injected double: fine
     # Command("git", ["status"]).run()        # would fail the test, loudly
 ```
 
@@ -191,15 +197,17 @@ command you teach it. Match rules with `.on(prefix, reply)`; add an optional
 from processkit import Command
 from processkit.testing import Reply, ScriptedRunner
 
+
 def current_branch(runner):
     return runner.run(Command("git", ["branch", "--show-current"]))
+
 
 def test_detects_the_branch():
     runner = ScriptedRunner()
     # Match by program + argument PREFIX (element-wise; the program is the first
     # element). Rules are tried in registration order; first match wins.
     runner.on(["git", "branch", "--show-current"], Reply.ok("main\n"))
-    runner.fallback(Reply.ok(""))            # optional catch-all
+    runner.fallback(Reply.ok(""))  # optional catch-all
     assert current_branch(runner) == "main"
 ```
 
@@ -264,6 +272,7 @@ import asyncio
 from processkit import Command
 from processkit.testing import Reply, ScriptedRunner
 
+
 async def becomes_ready(runner):
     proc = runner.start(Command("server", ["serve"]))
     async for line in proc.stdout_lines():
@@ -271,10 +280,11 @@ async def becomes_ready(runner):
             break
     return (await proc.afinish()).exited_zero
 
+
 def test_server_becomes_ready():
     runner = ScriptedRunner()
     runner.on(["server", "serve"], Reply.lines(["booting", "listening on 8080"]))
-    assert asyncio.run(becomes_ready(runner))   # satisfied by the canned banner
+    assert asyncio.run(becomes_ready(runner))  # satisfied by the canned banner
 ```
 
 `Reply.lines([...])` scripts the stdout lines and the scripted run "exits" after
@@ -298,9 +308,9 @@ from processkit.testing import RecordReplayRunner
 CMD = Command("python", ["-c", "import random; print(random.random())"])
 
 # Record once against the real tool (an opt-in test run, say):
-rec = RecordReplayRunner.record("fixtures/random.json")   # records via the real Runner
-recorded = rec.run(CMD)                                    # spawns python once, captures it
-rec.save()                                                 # write the cassette to disk
+rec = RecordReplayRunner.record("fixtures/random.json")  # records via the real Runner
+recorded = rec.run(CMD)  # spawns python once, captures it
+rec.save()  # write the cassette to disk
 
 # Replay everywhere else — NEVER spawns:
 rep = RecordReplayRunner.replay("fixtures/random.json")
@@ -337,12 +347,14 @@ the opt-in `scrub=` hook for arguments, cwd, and captured output:
 import os
 from pathlib import Path
 
+
 def scrub_cassette(field: str, text: str) -> str:
     if field in {"argument", "stdout", "stderr"}:
         return text.replace(os.environ["TOOL_TOKEN"], "<token>")
     if field == "cwd":
         return text.replace(str(Path.home()), "<home>")
     return text
+
 
 rec = RecordReplayRunner.record("fixtures/tool.json", scrub=scrub_cassette)
 # ... run commands, then rec.save()
@@ -362,6 +374,7 @@ plugin applies it in both modes:
 
 ```python
 import pytest
+
 
 @pytest.fixture
 def processkit_cassette_scrubber():
@@ -397,7 +410,7 @@ def test_deploy_pushes_tags() -> None:
     runner = RecordingRunner.replying(Reply.ok(""))
     deploy(runner)
 
-    inv = runner.only_call()            # the one call (raises unless exactly one)
+    inv = runner.only_call()  # the one call (raises unless exactly one)
     assert inv.program == "git"
     assert inv.args == ["push", "--tags"]
     assert inv.has_flag("--tags")
@@ -442,13 +455,15 @@ seam.
 from processkit import Command
 from processkit.testing import DryRunRunner
 
+
 def prune(runner) -> None:
     runner.run(Command("rm", ["-rf", "build"]))
     runner.run(Command("rm", ["-rf", "dist"]))
 
+
 def test_prune_targets_the_right_dirs() -> None:
     runner = DryRunRunner()
-    prune(runner)                                    # nothing spawned
+    prune(runner)  # nothing spawned
     assert runner.commands() == ["rm -rf build", "rm -rf dist"]
 ```
 
@@ -466,8 +481,8 @@ def test_prune_targets_the_right_dirs() -> None:
 
 ```python
 runner = DryRunRunner()
-runner.on_invocation(print)          # echo each command as it's "run"
-deploy_plan(runner)                  # prints: kubectl apply -f manifest.yaml, …
+runner.on_invocation(print)  # echo each command as it's "run"
+deploy_plan(runner)  # prints: kubectl apply -f manifest.yaml, …
 ```
 
 Reach for `DryRunRunner` when the rendered *command line* is what you want to
@@ -492,9 +507,9 @@ not provide `start`/`astart`:
 from processkit import CliClient
 
 git = CliClient("git", default_timeout=30.0)
-head = git.run(["rev-parse", "HEAD"])        # or: await git.arun([...])
+head = git.run(["rev-parse", "HEAD"])  # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
-git.run(["fetch", "--quiet"])                # raises on failure; ignore the stdout
+git.run(["fetch", "--quiet"])  # raises on failure; ignore the stdout
 ```
 
 `CliClient` accepts an optional `runner=` too, driving every verb through the
@@ -509,7 +524,7 @@ from processkit.testing import Reply, ScriptedRunner
 scripted = ScriptedRunner()
 scripted.on(["git", "rev-parse", "HEAD"], Reply.ok("deadbeef\n"))
 git = CliClient("git", runner=scripted)
-assert git.run(["rev-parse", "HEAD"]) == "deadbeef"   # no real git spawned
+assert git.run(["rev-parse", "HEAD"]) == "deadbeef"  # no real git spawned
 ```
 
 `run_json` / `arun_json` run like `run` (requiring a zero exit) but parse the

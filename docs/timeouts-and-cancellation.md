@@ -39,13 +39,13 @@ if result.timed_out:
     print("killed at the deadline; partial output:", result.stdout)
 
 # Success verbs: the deadline is an ERROR.
-Command("slow-tool").timeout(5.0).run()   # raises Timeout on expiry
+Command("slow-tool").timeout(5.0).run()  # raises Timeout on expiry
 ```
 
 Async is identical with the `a`-prefixed verbs:
 
 ```python
-result = await Command("slow-tool").timeout(5.0).aoutput()   # result.timed_out
+result = await Command("slow-tool").timeout(5.0).aoutput()  # result.timed_out
 ```
 
 | Verb | Deadline expiry becomes |
@@ -96,7 +96,7 @@ proc = Command("./flaky-build").idle_timeout(30.0).start()
 try:
     async with proc:
         async for event in proc.output_events():
-            print(event.text)          # live progress, line by line
+            print(event.text)  # live progress, line by line
 except IdleTimeout as e:
     print(f"no output for {e.idle_timeout_seconds}s — killed the hung build")
 ```
@@ -165,7 +165,7 @@ and tears down the run's process tree on the way out:
 
 ```python
 try:
-    Command("long-batch-job").run()     # blocks here…
+    Command("long-batch-job").run()  # blocks here…
 except KeyboardInterrupt:
     # Ctrl+C: the child tree is already reaped; the exception is re-raised at once.
     print("interrupted by the user")
@@ -195,13 +195,13 @@ from processkit import Command
 # Direct cancel: stop a run from elsewhere.
 task = asyncio.ensure_future(Command("long-export").aoutput())
 # ... later — a shutdown handler, a sibling failure, a UI action ...
-task.cancel()                  # the tree is reaped; awaiting `task` raises CancelledError
+task.cancel()  # the tree is reaped; awaiting `task` raises CancelledError
 
 # Caller-side deadline via asyncio: the run is cancelled, then re-raised to you.
 try:
     await asyncio.wait_for(Command("long-export").arun(), timeout=10)
-except TimeoutError:           # asyncio re-raises the cancellation as TimeoutError
-    ...                        # the run's process tree was already torn down
+except TimeoutError:  # asyncio re-raises the cancellation as TimeoutError
+    ...  # the run's process tree was already torn down
 ```
 
 `asyncio.wait_for` (and `asyncio.timeout`, 3.11+) cancel the inner run exactly
@@ -229,7 +229,7 @@ cmd = Command("long-export").cancel_on(token)
 token.cancel()
 
 try:
-    await cmd.arun()   # (or cmd.run() from sync code)
+    await cmd.arun()  # (or cmd.run() from sync code)
 except Cancelled:
     ...  # the whole tree was already torn down
 ```
@@ -284,7 +284,7 @@ running; only your wait gave up:
 ```python
 from processkit import wait_for_port
 
-await wait_for_port("127.0.0.1", 8080, timeout=10)   # TimeoutError if not listening in 10s
+await wait_for_port("127.0.0.1", 8080, timeout=10)  # TimeoutError if not listening in 10s
 ```
 
 Because `Timeout` is itself a `TimeoutError`, a single `except TimeoutError`

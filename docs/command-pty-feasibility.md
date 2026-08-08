@@ -197,12 +197,7 @@ conventions (`src/command.rs`). The historical sketch below is followed by the
 final differences.
 
 ```python
-proc = await (
-    Command("claude", ["--interactive"])
-    .pty(cols=120, rows=40)
-    .keep_stdin_open()
-    .astart()
-)
+proc = await Command("claude", ["--interactive"]).pty(cols=120, rows=40).keep_stdin_open().astart()
 
 # One MERGED terminal stream: the existing stdout iterator carries stdout and
 # stderr together.

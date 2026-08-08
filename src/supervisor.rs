@@ -437,8 +437,9 @@ impl PySupervisionOutcome {
 /// condition is met. Configure with keyword arguments, then `run()` / `arun()`.
 /// A supervisor with resource limits uses a capture-only runner for each
 /// incarnation: `start()` / `astart()` still return a controllable session, but
-/// its status has no live pid/started-at value and stop uses session cancellation
-/// rather than a graceful signal to a live child handle.
+/// its status has no live pid, and stop uses session cancellation rather than a
+/// graceful signal to a live child handle. The incarnation's start time remains
+/// available.
 // `frozen` so `run()`/`arun()` take `&self`: they release the GIL for the entire
 // supervision loop (`block_on`/the awaited future), so an exclusive `&mut self`
 // PyO3 borrow held across that window made any concurrent `&self` call from

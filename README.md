@@ -149,6 +149,7 @@ The asyncio surface mirrors it with the `a` prefix and adds streaming:
 import asyncio
 from processkit import Command, ProcessGroup
 
+
 async def main():
     result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
 
@@ -159,6 +160,7 @@ async def main():
 
     async with ProcessGroup() as group:
         await group.astart(Command("dev-server"))
+
 
 asyncio.run(main())
 ```
@@ -236,13 +238,13 @@ from processkit import Command, ProcessGroup
 with ProcessGroup() as group:
     group.start(Command("dev-server"))
     group.start(Command("worker"))
-    print(group.mechanism)        # "job_object" | "cgroup_v2" | "process_group"
+    print(group.mechanism)  # "job_object" | "cgroup_v2" | "process_group"
     print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
-    print(group.members())        # live member pids
+    print(group.members())  # live member pids
     print(process_info(group.members()[0]))
 # the whole tree, grandchildren included, is gone here
 
-print(host_containment())         # host-wide containment capabilities
+print(host_containment())  # host-wide containment capabilities
 ```
 
 The `with` / `async with` exit (and ordinary GC) reaps the tree on every
@@ -261,8 +263,9 @@ from processkit import Command, ProcessGroup
 
 tool = (
     Command("untrusted-tool")
-    .env_clear().inherit_env(["PATH"])     # locked-down environment
-    .cpu_affinity([0, 1])                   # pin the child to selected CPUs
+    .env_clear()
+    .inherit_env(["PATH"])  # locked-down environment
+    .cpu_affinity([0, 1])  # pin the child to selected CPUs
     .output_limit(max_bytes=8 * 1024 * 1024)
 )
 with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
@@ -282,9 +285,9 @@ platforms.
 ```python
 with ProcessGroup() as group:
     group.start(Command("my-server"))
-    group.signal("hup")        # term | kill | int | hup | quit | usr1 | usr2
-    group.suspend()            # freeze the whole tree…
-    group.resume()             # …and let it run again
+    group.signal("hup")  # term | kill | int | hup | quit | usr1 | usr2
+    group.suspend()  # freeze the whole tree…
+    group.resume()  # …and let it run again
 ```
 
 Signals are POSIX-real; on Windows only `kill` is deliverable (it maps to the
@@ -300,7 +303,7 @@ hundreds of commands can't exhaust file descriptors or the process table:
 from processkit import Command, ProcessResult, output_all
 
 cmds = [Command("convert", [f"{i}.png", f"{i}.jpg"]) for i in range(200)]
-results = output_all(cmds, concurrency=8)            # never >8 alive at once
+results = output_all(cmds, concurrency=8)  # never >8 alive at once
 failed = sum(not (isinstance(r, ProcessResult) and r.is_success) for r in results)
 ```
 
@@ -322,11 +325,13 @@ from processkit import Command, Supervisor
 
 outcome = Supervisor(
     Command("my-server", ["--port", "8080"]),
-    restart="on_crash",           # always | on_crash | never
+    restart="on_crash",  # always | on_crash | never
     max_restarts=5,
-    backoff_initial=0.2, backoff_factor=2.0, max_backoff=30.0,
-    stop_when=lambda r: r.code == 0,   # a clean exit ends supervision
-).run()                                # or: await ....arun()
+    backoff_initial=0.2,
+    backoff_factor=2.0,
+    max_backoff=30.0,
+    stop_when=lambda r: r.code == 0,  # a clean exit ends supervision
+).run()  # or: await ....arun()
 print(outcome.restarts, outcome.stopped)
 ```
 
@@ -357,9 +362,9 @@ from processkit import Command, wait_until, wait_for_port, wait_for_line
 
 proc = await Command("my-server").astart()
 lines = proc.stderr_lines()  # use stdout_lines() when the banner is on stdout
-await wait_for_line(lines, "listening on", timeout=10)                  # a log line
-await wait_for_port("127.0.0.1", 8080, timeout=10)                      # a TCP port
-await wait_until(lambda: health_check(), timeout=10, interval=0.1)      # any condition
+await wait_for_line(lines, "listening on", timeout=10)  # a log line
+await wait_for_port("127.0.0.1", 8080, timeout=10)  # a TCP port
+await wait_until(lambda: health_check(), timeout=10, interval=0.1)  # any condition
 ```
 
 A probe that doesn't pass in time raises `WaitTimeout` (`ProcessError`,
@@ -374,9 +379,7 @@ kill-on-exit sub-group; chain-wide teardown still reaches every stage:
 
 ```python
 authors = (
-    Command("git", ["log", "--format=%an"])
-    | Command("sort")
-    | Command("uniq", ["-c"])
+    Command("git", ["log", "--format=%an"]) | Command("sort") | Command("uniq", ["-c"])
 ).run()
 ```
 
@@ -387,10 +390,12 @@ stderr, and reported program come from the first stage that didn't exit cleanly.
 ### Environment and privileges
 
 ```python
-Command("worker").inherit_env(["PATH", "HOME", "LANG"]).run()        # allow-list on a cleared env
-Command("worker").gid(1000).groups([1000]).uid(1000).setsid().run()  # POSIX: drop privileges, new session
-Command("helper").create_no_window().run()                           # Windows: no console window
-Command("daemonish").kill_on_parent_death().start()                  # die with a hard-killed parent
+Command("worker").inherit_env(["PATH", "HOME", "LANG"]).run()  # allow-list on a cleared env
+Command("worker").gid(1000).groups([1000]).uid(
+    1000
+).setsid().run()  # POSIX: drop privileges, new session
+Command("helper").create_no_window().run()  # Windows: no console window
+Command("daemonish").kill_on_parent_death().start()  # die with a hard-killed parent
 ```
 
 `uid`/`gid`/`groups`/`setsid` are POSIX-only — on Windows the run raises
@@ -410,7 +415,7 @@ tree). Cancelling an awaited **async** run — directly, or via `asyncio.wait_fo
 import asyncio
 
 task = asyncio.ensure_future(Command("long-job").aoutput())
-task.cancel()        # the process tree is reaped; CancelledError propagates
+task.cancel()  # the process tree is reaped; CancelledError propagates
 ```
 
 Unlike a timeout — whose expiry is *captured* in the result as `timed_out` —
@@ -427,7 +432,7 @@ children, `astart()` returns a live `RunningProcess`:
 proc = await Command("bc").keep_stdin_open().astart()
 stdin = proc.take_stdin()
 await stdin.write_line("2 + 2")
-print(await anext(proc.stdout_lines()))   # 4
+print(await anext(proc.stdout_lines()))  # 4
 await stdin.close()
 ```
 
@@ -443,7 +448,7 @@ pass only their args:
 from processkit import CliClient, Command
 
 git = CliClient("git", default_timeout=30.0)
-head = git.run(["rev-parse", "HEAD"])     # or: await git.arun([...])
+head = git.run(["rev-parse", "HEAD"])  # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 metadata = Command("tool", ["metadata", "--json"]).run_json()
 ```
@@ -482,7 +487,7 @@ import logging
 from processkit import Command, enable_logging
 
 logging.basicConfig(level=logging.DEBUG)
-enable_logging()                          # idempotent; off by default
+enable_logging()  # idempotent; off by default
 
 Command("git", ["rev-parse", "HEAD"]).run()
 # DEBUG:processkit:child spawned program=git pid=Some(12345) mechanism=…

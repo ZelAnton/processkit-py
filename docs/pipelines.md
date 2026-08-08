@@ -15,9 +15,7 @@ from processkit import Command
 
 # git log --format=%an | sort | uniq -c
 authors = (
-    Command("git", ["log", "--format=%an"])
-    | Command("sort")
-    | Command("uniq", ["-c"])
+    Command("git", ["log", "--format=%an"]) | Command("sort") | Command("uniq", ["-c"])
 ).run()
 print(authors)
 ```
@@ -73,14 +71,14 @@ The outcome is **pipefail**, like `set -o pipefail` in a shell:
 ```python
 result = (
     Command("cat", ["data.txt"])
-    | Command("grep", ["ERROR"])      # suppose grep exits 2 (bad pattern)
+    | Command("grep", ["ERROR"])  # suppose grep exits 2 (bad pattern)
     | Command("wc", ["-l"])
 ).output()
 
-result.stdout        # whatever wc managed to print (the last stage)
-result.code          # 2 — grep, the first unclean stage
-result.program       # "grep"
-result.is_success    # False
+result.stdout  # whatever wc managed to print (the last stage)
+result.code  # 2 — grep, the first unclean stage
+result.program  # "grep"
+result.is_success  # False
 ```
 
 `run()` requires **every** stage to succeed and returns the trimmed final
@@ -98,7 +96,7 @@ report, and never shields a *checked* stage's own failure):
 
 ```python
 top = (
-    Command("producer").unchecked_in_pipe()   # SIGPIPE from `head` closing early is expected
+    Command("producer").unchecked_in_pipe()  # SIGPIPE from `head` closing early is expected
     | Command("head", ["-1"])
 ).run()
 ```
@@ -145,11 +143,9 @@ The ends of the chain behave like a single `Command`:
 ```python
 # Feed the chain from a string; inner stages read the pipe.
 unique = (
-    Command("sort").stdin_text("b\na\nb\nc\n")
-    | Command("uniq")
-    | Command("wc", ["-l"])
+    Command("sort").stdin_text("b\na\nb\nc\n") | Command("uniq") | Command("wc", ["-l"])
 ).run()
-print(unique)        # "3"
+print(unique)  # "3"
 ```
 
 Per-stage `env` and `cwd` are plain `Command` builders — set them on each stage
@@ -172,12 +168,9 @@ with every stage joined by `" | "`, because no individual stage caused this
 chain-level deadline. Durations are floats of seconds:
 
 ```python
-result = (
-    Command("producer")
-    | Command("consumer")
-).timeout(30.0).output()
+result = (Command("producer") | Command("consumer")).timeout(30.0).output()
 
-result.timed_out     # True if the 30s deadline fired
+result.timed_out  # True if the 30s deadline fired
 ```
 
 Unlike a single command's captured timeout, a timed-out pipeline keeps the

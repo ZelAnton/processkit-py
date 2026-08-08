@@ -1458,9 +1458,9 @@ class SupervisionStatus:
     """A consistent point-in-time snapshot of a live supervision session.
 
     ``pid`` and ``started_at`` are ``None`` between incarnations, during a
-    backoff or storm pause, after completion, and for a capture-only runner.
-    Resource-capped supervisors use that capture-only path, so their live
-    sessions report no pid or start time while an incarnation runs.
+    backoff or storm pause, and after completion. A capture-only runner cannot
+    expose a pid, but still reports the current incarnation's start time.
+    Resource-capped supervisors use that capture-only path.
     """
 
     @property
@@ -1475,7 +1475,7 @@ class SupervisionStatus:
         run capture-only and therefore always report ``None`` here."""
     @property
     def started_at(self) -> float | None:
-        """Unix timestamp for the current incarnation, or ``None``."""
+        """Unix timestamp for the current incarnation, or ``None`` between runs."""
     def __repr__(self) -> str: ...
 
 @final

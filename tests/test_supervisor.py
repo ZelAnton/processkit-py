@@ -188,13 +188,16 @@ def test_resource_limited_supervision_session_is_capture_only() -> None:
         max_processes=8,
     ).start()
     deadline = time.monotonic() + 10.0
-    while not session.status.is_active:
+    while True:
+        status = session.status
+        if status.started_at is not None:
+            break
         if time.monotonic() >= deadline:
-            pytest.fail("capture-only supervision session never became active")
+            pytest.fail("capture-only supervision session never published its incarnation")
         time.sleep(0.01)
 
-    assert session.status.pid is None
-    assert session.status.started_at is None
+    assert status.is_active
+    assert status.pid is None
     assert session.wait().final_result.is_success
 
 

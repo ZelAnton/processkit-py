@@ -1057,7 +1057,10 @@ def test_pty_conflict_can_be_cleared_by_restoring_a_pipe(tmp_path: pathlib.Path)
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 @pytest.mark.parametrize("pty_first", [False, True])
 def test_pty_accepts_every_piped_stdio_spelling(mode: str, stream: str, pty_first: bool) -> None:
-    cmd = Command(PY, ["-c", "print('pty-alias-ok')"])
+    cmd = Command(
+        PY,
+        ["-c", "import time; print('pty-alias-ok', flush=True); time.sleep(0.05)"],
+    )
     if pty_first:
         cmd = cmd.pty()
     cmd = getattr(cmd, stream)(mode)

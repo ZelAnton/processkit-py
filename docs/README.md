@@ -137,6 +137,7 @@ print("HEAD =", head.stdout.strip(), head.code)
 # Success-checking: a non-zero exit / timeout / signal-kill becomes a typed exception.
 version = Command("python", ["--version"]).run()
 
+
 async def main():
     # Asyncio: the same verbs with an `a` prefix; cancelling reaps the whole tree.
     result = await Command("git", ["status", "--short"]).aoutput()
@@ -154,6 +155,7 @@ async def main():
     async with ProcessGroup() as group:
         await group.astart(Command("dev-server"))
     # async-with exit reaps the whole tree
+
 
 asyncio.run(main())
 ```

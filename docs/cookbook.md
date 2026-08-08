@@ -37,9 +37,9 @@ A non-zero exit is *data*, not an exception:
 from processkit import Command
 
 result = Command("git", ["rev-parse", "HEAD"]).output()
-print(result.stdout.strip())   # the commit hash
-print(result.code)             # 0
-print(result.is_success)       # True
+print(result.stdout.strip())  # the commit hash
+print(result.code)  # 0
+print(result.is_success)  # True
 ```
 
 Async:
@@ -54,14 +54,14 @@ result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
 signal-kill:
 
 ```python
-commit = Command("git", ["rev-parse", "HEAD"]).run()      # or: await ....arun()
+commit = Command("git", ["rev-parse", "HEAD"]).run()  # or: await ....arun()
 ```
 
 ## Check whether a command succeeds
 
 ```python
-clean = Command("git", ["diff", "--quiet"]).probe()   # True if exit 0, False if 1
-code = Command("mytool").exit_code()                   # the raw exit code
+clean = Command("git", ["diff", "--quiet"]).probe()  # True if exit 0, False if 1
+code = Command("mytool").exit_code()  # the raw exit code
 ```
 
 ## Accept non-zero exit codes
@@ -72,7 +72,7 @@ code you accept:
 
 ```python
 differs = not Command("diff", ["a", "b"]).success_codes([0, 1]).probe()  # 0 same, 1 differs
-Command("grep", ["needle", "file"]).success_codes([0, 1]).run()          # 1 (no match) is OK
+Command("grep", ["needle", "file"]).success_codes([0, 1]).run()  # 1 (no match) is OK
 ```
 
 `success_codes` affects `run()` and `result.is_success`; `exit_code()` (raw) and
@@ -81,8 +81,8 @@ Command("grep", ["needle", "file"]).success_codes([0, 1]).run()          # 1 (no
 ## Set a timeout
 
 ```python
-result = Command("slow-tool").timeout(5.0).output()    # result.timed_out == True on expiry
-Command("slow-tool").timeout(5.0).run()                # raises Timeout on expiry
+result = Command("slow-tool").timeout(5.0).output()  # result.timed_out == True on expiry
+Command("slow-tool").timeout(5.0).run()  # raises Timeout on expiry
 
 # Graceful: signal, wait, then hard-kill.
 Command("server").timeout(30.0).timeout_signal("term").timeout_grace(5.0).run()
@@ -91,7 +91,7 @@ Command("server").timeout(30.0).timeout_signal("term").timeout_grace(5.0).run()
 ## Pass input on stdin
 
 ```python
-out = Command("tr", ["a-z", "A-Z"]).stdin_text("hello\n").run()   # "HELLO"
+out = Command("tr", ["a-z", "A-Z"]).stdin_text("hello\n").run()  # "HELLO"
 Command("sha256sum").stdin_bytes(b"\x00\x01\x02").run()
 ```
 
@@ -141,8 +141,8 @@ Command("untrusted-tool").env_clear().env("PATH", "/usr/bin").run()
 decoded text):
 
 ```python
-result = Command("convert", ["in.png", "out:-"]).output_bytes()   # or: await ....aoutput_bytes()
-png = result.stdout            # bytes
+result = Command("convert", ["in.png", "out:-"]).output_bytes()  # or: await ....aoutput_bytes()
+png = result.stdout  # bytes
 print(result.code, result.is_success)
 ```
 
@@ -184,14 +184,14 @@ a drop-mode cap still bounds the retained decoded content. See
 proc = await Command("my-build", ["--watch"]).astart()
 async for line in proc.stdout_lines():
     print(line)
-finished = await proc.afinish()   # outcome + captured stderr
+finished = await proc.afinish()  # outcome + captured stderr
 ```
 
 Interleaved stdout + stderr:
 
 ```python
 async for event in proc.output_events():
-    print(event.stream, event.text)   # "stdout" / "stderr"
+    print(event.stream, event.text)  # "stdout" / "stderr"
 ```
 
 ## Clean ANSI/VT escapes from PTY output
@@ -223,7 +223,7 @@ from processkit import Command
 
 result = Command("cargo", ["build"]).stdout_tee("build.log").output()
 # build.log has the live, line-by-line stream; result.stdout has the whole thing.
-print(result.stdout)                 # capture is untouched — the tee is a copy
+print(result.stdout)  # capture is untouched — the tee is a copy
 ```
 
 The file is opened **when you call the builder** (a bad path raises `OSError`
@@ -282,7 +282,7 @@ async with await Command("flaky-server").astart() as proc:
 
 # Sync handles work too — start() is the synchronous twin of astart():
 with Command("worker").start() as proc:
-    ...                              # do other work
+    ...  # do other work
 # proc torn down here
 ```
 
@@ -296,7 +296,7 @@ no-op.
 proc = await Command("python", ["-i"]).keep_stdin_open().astart()
 stdin = proc.take_stdin()
 await stdin.write_line("print(1 + 1)")
-await stdin.close()                  # EOF
+await stdin.close()  # EOF
 async for line in proc.stdout_lines():
     print(line)
 await proc.aoutcome()
@@ -361,7 +361,7 @@ Cancelling the awaiting task — directly, or via `asyncio.wait_for` /
 
 ```python
 task = asyncio.ensure_future(Command("long-job").aoutput())
-task.cancel()                        # the process tree is reaped; CancelledError propagates
+task.cancel()  # the process tree is reaped; CancelledError propagates
 ```
 
 ## Wait for a server to be ready
@@ -381,7 +381,7 @@ from processkit import (
 
 async with ProcessGroup() as group:
     proc = await group.astart(Command("my-server"))
-    await wait_for_port("127.0.0.1", 8080, timeout=10)        # poll the port
+    await wait_for_port("127.0.0.1", 8080, timeout=10)  # poll the port
     # or probe an HTTP health endpoint (ready only on a 2xx, not merely an open
     # port — a warming-up server accepts the port while still replying 503):
     # await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)
@@ -460,10 +460,9 @@ that fails to *spawn* (or hits an I/O error) appears as a `ProcessError` in its
 slot (a non-zero exit is still data on a `ProcessResult`):
 
 ```python
-from processkit import Command, ProcessResult, output_all   # or: await aoutput_all(...)
+from processkit import Command, ProcessResult, output_all  # or: await aoutput_all(...)
 
-results = output_all([Command("git", ["-C", d, "rev-parse", "HEAD"]) for d in repos],
-                     concurrency=8)
+results = output_all([Command("git", ["-C", d, "rev-parse", "HEAD"]) for d in repos], concurrency=8)
 heads = [r.stdout.strip() for r in results if isinstance(r, ProcessResult) and r.is_success]
 ```
 
@@ -515,7 +514,7 @@ their args:
 from processkit import CliClient
 
 git = CliClient("git", default_timeout=30.0)
-head = git.run(["rev-parse", "HEAD"])            # or: await git.arun([...])
+head = git.run(["rev-parse", "HEAD"])  # or: await git.arun([...])
 clean = git.probe(["diff", "--quiet"])
 ```
 
@@ -539,7 +538,7 @@ except InvalidJson as exc:
     # type before slicing it.
     stdout = exc.stdout or ""
     raise SystemExit(f"{exc.program} did not return JSON: {stdout[:80]!r}")
-print(pr["title"], pr["state"])                  # or: await gh.arun_json([...])
+print(pr["title"], pr["state"])  # or: await gh.arun_json([...])
 ```
 
 A non-zero exit still raises `NonZeroExit` (exactly as `run` does); only a
@@ -610,11 +609,7 @@ keeping process-tree teardown:
 ```python
 from processkit import Command
 
-command = (
-    Command("interactive-tool")
-    .pty(cols=120, rows=40)
-    .keep_stdin_open()
-)
+command = Command("interactive-tool").pty(cols=120, rows=40).keep_stdin_open()
 with command.start() as proc:
     stdin = proc.take_stdin()
     proc.resize_pty(160, 50)
@@ -632,12 +627,12 @@ from processkit import Command, Supervisor
 
 outcome = Supervisor(
     Command("flaky-worker"),
-    restart="on_crash",        # "always" | "never" | "on_crash"
+    restart="on_crash",  # "always" | "never" | "on_crash"
     max_restarts=10,
     backoff_initial=0.5,
     backoff_factor=2.0,
     max_backoff=30.0,
-).run()                        # or: await ....arun()
+).run()  # or: await ....arun()
 print(outcome.restarts, outcome.stopped)
 ```
 
@@ -664,8 +659,9 @@ from processkit import Command, ProcessGroup
 # its lifetime to ours. All cross-platform.
 tool = (
     Command("untrusted-tool")
-    .env_clear().inherit_env(["PATH"])
-    .kill_on_parent_death()          # die with us even without explicit teardown
+    .env_clear()
+    .inherit_env(["PATH"])
+    .kill_on_parent_death()  # die with us even without explicit teardown
     .output_limit(max_bytes=8 * 1024 * 1024)
 )
 with ProcessGroup(max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0) as group:
@@ -681,8 +677,7 @@ before uid):
 
 ```python
 nobody = (
-    Command("untrusted-tool")
-    .gid(65534).groups([65534]).uid(65534)   # run as nobody:nogroup
+    Command("untrusted-tool").gid(65534).groups([65534]).uid(65534)  # run as nobody:nogroup
 )
 ```
 
@@ -718,10 +713,10 @@ the loop yourself once you have what you need.
 ```python
 with ProcessGroup() as group:
     group.start(Command("worker"))
-    group.suspend()            # pause the whole tree
+    group.suspend()  # pause the whole tree
     group.resume()
-    group.signal("term")       # term | kill | int | hup | quit | usr1 | usr2
-    group.kill_all()           # immediate hard kill
+    group.signal("term")  # term | kill | int | hup | quit | usr1 | usr2
+    group.kill_all()  # immediate hard kill
 ```
 
 ## Handle errors
@@ -732,7 +727,7 @@ from processkit import NonZeroExit, Timeout, ProcessNotFound
 try:
     Command("git", ["push"]).run()
 except NonZeroExit as e:
-    print(e.code, e.stderr)    # structured fields, not just a message
+    print(e.code, e.stderr)  # structured fields, not just a message
 except Timeout as e:
     print(e.timeout_seconds)
 except ProcessNotFound as e:
@@ -758,8 +753,10 @@ doubles live in the `processkit.testing` submodule; `Runner` is top-level:
 from processkit import Command, Runner
 from processkit.testing import Reply, ScriptedRunner
 
+
 def latest_commit(runner):
     return runner.run(Command("git", ["rev-parse", "HEAD"]))
+
 
 # production
 latest_commit(Runner())
@@ -787,11 +784,11 @@ To capture *real* tool output once and replay it deterministically offline, use
 ```python
 from processkit.testing import RecordReplayRunner
 
-rec = RecordReplayRunner.record("cassette.json")   # records via the real runner
-recorded = latest_commit(rec)                       # spawns git once, captures it
+rec = RecordReplayRunner.record("cassette.json")  # records via the real runner
+recorded = latest_commit(rec)  # spawns git once, captures it
 rec.save()
 
-rep = RecordReplayRunner.replay("cassette.json")   # offline; no process spawned
+rep = RecordReplayRunner.replay("cassette.json")  # offline; no process spawned
 assert latest_commit(rep) == recorded
 ```
 
@@ -802,13 +799,15 @@ To assert on *what* your code ran (not just its output), inject a
 from processkit import Command
 from processkit.testing import RecordingRunner, Reply
 
+
 def deploy(runner):
     runner.run(Command("git", ["push", "--tags"]))
+
 
 spy = RecordingRunner.replying(Reply.ok(""))
 deploy(spy)
 
-inv = spy.only_call()                 # the one call (raises unless exactly one)
+inv = spy.only_call()  # the one call (raises unless exactly one)
 assert inv.program == "git"
 assert inv.args == ["push", "--tags"]
 ```
@@ -822,12 +821,14 @@ line, and returns a synthetic success:
 from processkit import Command
 from processkit.testing import DryRunRunner
 
+
 def prune(runner):
     runner.run(Command("rm", ["-rf", "build"]))
 
+
 dry = DryRunRunner()
 prune(dry)
-assert dry.only_command() == "rm -rf build"   # nothing spawned
+assert dry.only_command() == "rm -rf build"  # nothing spawned
 # dry.on_invocation(print) would echo each line live instead.
 ```
 
@@ -841,12 +842,15 @@ injecting one is a single parameter:
 from processkit import Command
 from processkit.testing import Reply
 
+
 def latest_commit(runner):
     return runner.run(Command("git", ["rev-parse", "HEAD"]))
 
-def test_latest_commit(scripted_runner):        # fixture: a fresh ScriptedRunner
+
+def test_latest_commit(scripted_runner):  # fixture: a fresh ScriptedRunner
     scripted_runner.on(["git", "rev-parse"], Reply.ok("deadbeef"))
     assert latest_commit(scripted_runner) == "deadbeef"
+
 
 def test_deploy_pushes_tags(recording_runner):  # fixture: a RecordingRunner spy
     recording_runner.run(Command("git", ["push", "--tags"]))
@@ -870,8 +874,8 @@ import logging
 from processkit import Command, enable_logging
 
 logging.basicConfig(level=logging.DEBUG)
-enable_logging()        # idempotent; returns False if another library already
-                        # owns the process-global tracing subscriber
+enable_logging()  # idempotent; returns False if another library already
+# owns the process-global tracing subscriber
 
 Command("git", ["rev-parse", "HEAD"]).run()
 # DEBUG:processkit:child spawned program=git pid=Some(12345) mechanism=…

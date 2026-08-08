@@ -41,8 +41,8 @@ handle came from `start()` or `astart()`.)
 ```python
 from processkit import Command
 
-head = Command("git", ["rev-parse", "HEAD"]).run()          # sync
-head = await Command("git", ["rev-parse", "HEAD"]).arun()    # asyncio
+head = Command("git", ["rev-parse", "HEAD"]).run()  # sync
+head = await Command("git", ["rev-parse", "HEAD"]).arun()  # asyncio
 ```
 
 The rest of this guide shows the sync form and only repeats the async form where
@@ -72,7 +72,7 @@ twins: `aoutput`, `aoutput_bytes`, `arun`, `arun_json`, `aexit_code`, `aprobe`,
 
 ```python
 result = Command("git", ["merge", "feature"]).output()
-print(result.code, result.is_success, result.stdout)   # nothing raised
+print(result.code, result.is_success, result.stdout)  # nothing raised
 ```
 
 `run_json()` is the checked JSON twin of `run()`: it requires a zero exit and
@@ -100,9 +100,9 @@ from pathlib import Path
 
 out = (
     Command("git")
-    .arg("log")                       # one at a time...
+    .arg("log")  # one at a time...
     .args(["--oneline", "-n", "10"])  # ...or in bulk
-    .cwd(Path("/srv/repo"))           # run there
+    .cwd(Path("/srv/repo"))  # run there
     .run()
 )
 ```
@@ -122,10 +122,10 @@ only into a sink you control.
 
 ```python
 cmd = Command("login", ["--password", "hunter2"])
-cmd.program              # "login"
-cmd.arguments            # ["--password", "hunter2"]
-cmd.command_line()       # "login --password hunter2" — includes the secret!
-repr(cmd)                # redacted: shows arg COUNT, never values
+cmd.program  # "login"
+cmd.arguments  # ["--password", "hunter2"]
+cmd.command_line()  # "login --password hunter2" — includes the secret!
+repr(cmd)  # redacted: shows arg COUNT, never values
 ```
 
 ### Overriding `argv[0]`
@@ -214,13 +214,7 @@ with tempfile.TemporaryDirectory() as tmp:
     #   1. ./node_modules/.bin
     #   2. ./target/debug
     #   3. the parent process PATH
-    out = (
-        Command(name)
-        .cwd(project)
-        .prefer_local(first.parent)
-        .prefer_local(second.parent)
-        .run()
-    )
+    out = Command(name).cwd(project).prefer_local(first.parent).prefer_local(second.parent).run()
     assert out == "node tool"
 
     # The child still receives the inherited PATH unless you change it with
@@ -233,9 +227,7 @@ with tempfile.TemporaryDirectory() as tmp:
     os.chdir(project)
     try:
         assert (
-            Command(f"target{os.sep}debug{os.sep}{second.name}")
-            .prefer_local(first.parent)
-            .run()
+            Command(f"target{os.sep}debug{os.sep}{second.name}").prefer_local(first.parent).run()
             == "debug tool"
         )
     finally:
@@ -277,7 +269,7 @@ shorthand for `Command(program).resolve_program()`:
 ```python
 import processkit
 
-interpreter = processkit.which("python3")   # absolute path, or raises ProcessNotFound
+interpreter = processkit.which("python3")  # absolute path, or raises ProcessNotFound
 print(interpreter)
 ```
 
@@ -289,7 +281,7 @@ from processkit import CliClient, ProcessNotFound
 
 client = CliClient("git")
 try:
-    client.resolve_program()   # is git installed, per this client's config?
+    client.resolve_program()  # is git installed, per this client's config?
 except ProcessNotFound:
     raise SystemExit("git is required but was not found")
 ```
@@ -322,7 +314,7 @@ never hang waiting for input. Feed a one-shot payload with `stdin_text` (a `str`
 or `stdin_bytes` (raw `bytes`):
 
 ```python
-loud = Command("tr", ["a-z", "A-Z"]).stdin_text("hello\n").run()   # "HELLO"
+loud = Command("tr", ["a-z", "A-Z"]).stdin_text("hello\n").run()  # "HELLO"
 Command("sha256sum").stdin_bytes(b"\x00\x01\x02").run()
 ```
 
@@ -447,8 +439,8 @@ strict ISO-8859-1 only in the `0x80`–`0x9F` range. The Windows ANSI code page
 `"windows-1251"`). An unmappable label raises `ValueError` naming the WHATWG form.
 
 ```python
-out = Command("legacy-tool").encoding("shift_jis").output()        # both streams
-out = Command("tool").stdout_encoding("iso-8859-1").output()       # ...or each its own
+out = Command("legacy-tool").encoding("shift_jis").output()  # both streams
+out = Command("tool").stdout_encoding("iso-8859-1").output()  # ...or each its own
 # .stderr_encoding(...) sets stderr independently
 ```
 
@@ -469,9 +461,7 @@ tail = Command("chatty-tool").output_limit(max_bytes=1024 * 1024).output()
 
 # For an untrusted child, treat hitting the cap as a failure.
 try:
-    Command("untrusted-tool").output_limit(
-        max_bytes=8 * 1024 * 1024, on_overflow="error"
-    ).run()
+    Command("untrusted-tool").output_limit(max_bytes=8 * 1024 * 1024, on_overflow="error").run()
 except OutputTooLarge as e:
     print(e.total_bytes, e.max_bytes)
 ```
@@ -522,8 +512,8 @@ every mode, exactly as it did before 3.0.0.
 ## Timeouts
 
 ```python
-result = Command("slow-tool").timeout(5.0).output()   # result.timed_out is True on expiry
-Command("slow-tool").timeout(5.0).run()               # raises Timeout on expiry
+result = Command("slow-tool").timeout(5.0).output()  # result.timed_out is True on expiry
+Command("slow-tool").timeout(5.0).run()  # raises Timeout on expiry
 
 # Graceful shutdown: send a signal, wait, then hard-kill.
 Command("server").timeout(30.0).timeout_signal("term").timeout_grace(5.0).run()
@@ -583,12 +573,12 @@ un-watched; redirect only stderr if you still want stdout watched.
 
 ```python
 Command("flaky-fetch").retry(
-    "transient_or_timeout",       # or "transient" — see below
-    max_retries=3,                # up to 4 total attempts (default)
-    initial_backoff=0.1,          # seconds before the first retry (default)
-    multiplier=2.0,                # exponential growth per retry (default)
-    max_backoff=30.0,             # cap on a single delay (default)
-    jitter=True,                  # spread the wait over [0, delay] (default)
+    "transient_or_timeout",  # or "transient" — see below
+    max_retries=3,  # up to 4 total attempts (default)
+    initial_backoff=0.1,  # seconds before the first retry (default)
+    multiplier=2.0,  # exponential growth per retry (default)
+    max_backoff=30.0,  # cap on a single delay (default)
+    jitter=True,  # spread the wait over [0, delay] (default)
 ).run()
 ```
 
@@ -617,8 +607,10 @@ Spawn-time controls for sandboxing and service launch:
 # POSIX: drop privileges (groups and gid before uid) and detach.
 (
     Command("worker")
-    .gid(1000).groups([1000]).uid(1000)   # a correct drop sets all three
-    .setsid()                             # new session: survives the controlling terminal
+    .gid(1000)
+    .groups([1000])
+    .uid(1000)  # a correct drop sets all three
+    .setsid()  # new session: survives the controlling terminal
     .run()
 )
 
@@ -671,13 +663,7 @@ its own code:
 ```python
 # Cap the child's open-file-descriptor count and CPU time, and disable core
 # dumps for a process that may handle secrets.
-(
-    Command("worker")
-    .rlimit("no_file", 256, 256)
-    .rlimit("cpu", 30, 30)
-    .rlimit("core", 0, 0)
-    .run()
-)
+(Command("worker").rlimit("no_file", 256, 256).rlimit("cpu", 30, 30).rlimit("core", 0, 0).run())
 ```
 
 `resource` is one of the `RlimitResourceName` presets: `"cpu"` (seconds),
@@ -777,11 +763,7 @@ semantics:
 ```python
 from processkit import Command
 
-command = (
-    Command("interactive-tool")
-    .pty(cols=120, rows=40)
-    .keep_stdin_open()
-)
+command = Command("interactive-tool").pty(cols=120, rows=40).keep_stdin_open()
 with command.start() as proc:
     proc.resize_pty(160, 50)
 ```
@@ -808,16 +790,16 @@ The capturing verbs hand back a `ProcessResult`:
 ```python
 r = Command("git", ["merge", "feature"]).output()
 
-r.stdout            # str (decoded)
-r.stderr            # str
-r.code              # int | None — None means killed (timeout / signal), no code
-r.signal            # int | None — the signal number on Unix, else None
-r.is_success        # code is in success_codes (default {0})
-r.timed_out         # the run's own deadline expired
-r.program           # the program name, for diagnostics
+r.stdout  # str (decoded)
+r.stderr  # str
+r.code  # int | None — None means killed (timeout / signal), no code
+r.signal  # int | None — the signal number on Unix, else None
+r.is_success  # code is in success_codes (default {0})
+r.timed_out  # the run's own deadline expired
+r.program  # the program name, for diagnostics
 r.duration_seconds  # wall-clock duration
-r.truncated         # an output_limit cap dropped output
-r.combined          # stdout + stderr concatenated (property)
+r.truncated  # an output_limit cap dropped output
+r.combined  # stdout + stderr concatenated (property)
 ```
 
 `output_bytes()` returns a `BytesResult` with the same fields (minus `combined`,
@@ -829,7 +811,7 @@ it to a head/tail. A `max_lines` cap never truncates raw stdout (bytes have no l
 count); only a `max_bytes` cap does.
 
 ```python
-png = Command("convert", ["in.png", "png:-"]).output_bytes().stdout   # bytes
+png = Command("convert", ["in.png", "png:-"]).output_bytes().stdout  # bytes
 ```
 
 By default the success set is `{0}`. `success_codes([...])` **replaces** it — list
@@ -840,7 +822,7 @@ raises `ValueError` (it would accept nothing).
 ```python
 # diff exits 1 when files differ; treat that as success, not a failure.
 differs = not Command("diff", ["a.txt", "b.txt"]).success_codes([0, 1]).probe()
-Command("grep", ["needle", "log"]).success_codes([0, 1]).run()   # 1 (no match) is OK
+Command("grep", ["needle", "log"]).success_codes([0, 1]).run()  # 1 (no match) is OK
 ```
 
 ## Errors
@@ -875,7 +857,7 @@ from processkit import Command, NonZeroExit, Timeout, ProcessNotFound
 try:
     Command("git", ["push"]).run()
 except NonZeroExit as e:
-    print(e.code, e.stderr)        # structured, not a parsed message
+    print(e.code, e.stderr)  # structured, not a parsed message
 except Timeout as e:
     print(e.timeout_seconds)
 except ProcessNotFound as e:

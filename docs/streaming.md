@@ -33,13 +33,13 @@ from processkit import Command, Runner
 proc = await Command("dev-server").astart()
 
 # Sync setup, same live handle (the consuming verbs below have a sync twin too):
-proc = Command("dev-server").start()        # or: Runner().start(Command("dev-server"))
+proc = Command("dev-server").start()  # or: Runner().start(Command("dev-server"))
 # …or hand the tree to a group that owns its fate instead of the handle:
 #   proc = group.start(Command("dev-server"))   # see Process groups
 
-proc.pid              # int | None — None once the handle is consumed
+proc.pid  # int | None — None once the handle is consumed
 proc.elapsed_seconds  # float | None — wall time since spawn
-proc.owns_group       # True for a standalone start()/astart() handle; False under a group
+proc.owns_group  # True for a standalone start()/astart() handle; False under a group
 ```
 
 Whichever way you start it, **consume the handle exactly one way** — each of
@@ -197,7 +197,7 @@ result = Command("cargo", ["build", "--release"]).stdout_tee("build.log").output
 # The file received the live stream, line by line, as it was produced …
 assert open("build.log").read().startswith("   Compiling")
 # … and capture is untouched — the tee does not steal output from the result.
-print(result.stdout)          # the full captured stdout, same as without the tee
+print(result.stdout)  # the full captured stdout, same as without the tee
 ```
 
 Each decoded line is written to the sink as it lands, followed by a `\n` (a CRLF
@@ -318,12 +318,14 @@ while `.output()` / `.run()` is still blocking:
 ```python
 from processkit import Command
 
+
 def log_line(line: str) -> None:
     print("build:", line)
 
+
 result = Command("cargo", ["build", "--release"]).on_stdout_line(log_line).output()
 # "build: ..." printed live, one call per line, while output() was still blocking.
-print(result.stdout)   # capture is untouched — the callback observes, it doesn't consume.
+print(result.stdout)  # capture is untouched — the callback observes, it doesn't consume.
 ```
 
 They work identically on the async verbs and on a streamed run (`start()`/
@@ -362,7 +364,7 @@ proc = await Command("vite", ["build", "--watch"]).astart()
 
 async for ev in proc.output_events():
     tag = "ERR" if ev.is_stderr else "out"
-    print(f"[{tag}] {ev.text}")     # ev.stream is "stdout" / "stderr"
+    print(f"[{tag}] {ev.text}")  # ev.stream is "stdout" / "stderr"
 ```
 
 Each `OutputEvent` has `stream: Literal["stdout", "stderr"]`, `is_stderr: bool`,
@@ -385,7 +387,7 @@ Things to know:
   ```python
   async for ev in proc.output_events():
       ...
-  finished = await proc.afinish()   # or: await proc.aoutcome()
+  finished = await proc.afinish()  # or: await proc.aoutcome()
   ```
 
   `finish()`/`afinish()` reports the outcome (its `stderr` is empty — you already
@@ -455,16 +457,16 @@ open with `keep_stdin_open()` on the `Command`, then take the writer with
 ```python
 # bc evaluates each stdin line and prints the result.
 proc = await Command("bc").keep_stdin_open().astart()
-stdin = proc.take_stdin()          # ProcessStdin (raises if stdin wasn't kept open)
+stdin = proc.take_stdin()  # ProcessStdin (raises if stdin wasn't kept open)
 answers = proc.stdout_lines()
 
-await stdin.write_line("2 + 2")    # writes "2 + 2\n", flushed
-print("=", await anext(answers))   # 4
+await stdin.write_line("2 + 2")  # writes "2 + 2\n", flushed
+print("=", await anext(answers))  # 4
 
 await stdin.write_line("6 * 7")
-print("=", await anext(answers))   # 42
+print("=", await anext(answers))  # 42
 
-await stdin.close()                # send EOF — bc exits (idempotent)
+await stdin.close()  # send EOF — bc exits (idempotent)
 finished = await proc.afinish()
 assert finished.exited_zero
 ```
@@ -495,12 +497,7 @@ a terminal:
 ```python
 from processkit import Command
 
-proc = await (
-    Command("interactive-tool")
-    .pty(cols=120, rows=40)
-    .keep_stdin_open()
-    .astart()
-)
+proc = await Command("interactive-tool").pty(cols=120, rows=40).keep_stdin_open().astart()
 stdin = proc.take_stdin()
 lines = proc.stdout_lines()  # merged terminal output: stdout plus stderr
 
@@ -580,14 +577,17 @@ import asyncio
 proc = await Command("filter-tool").keep_stdin_open().astart()
 stdin = proc.take_stdin()
 
+
 async def feed():
     for chunk in big_payload:
         await stdin.write(chunk)
     await stdin.close()
 
+
 async def drain():
     async for line in proc.stdout_lines():
         handle(line)
+
 
 await asyncio.gather(feed(), drain())
 await proc.aoutcome()
@@ -617,7 +617,7 @@ from processkit import (
 )
 
 proc = await Command("my-server").astart()
-lines = proc.stdout_lines()        # bind once — you reuse this same iterator
+lines = proc.stdout_lines()  # bind once — you reuse this same iterator
 
 # 1. A line on stdout (returns the matching line) — a plain string is a
 #    substring-match shorthand for a str-yielding iterator:
@@ -763,13 +763,13 @@ A running child reports its own resource usage live; the getters are properties
 
 ```python
 proc = await Command("crunch").astart()
-proc.pid                 # int | None
-proc.elapsed_seconds     # float | None — wall time
-proc.cpu_time_seconds    # float | None — user + kernel so far
-proc.peak_memory_bytes   # int | None
-proc.stdout_line_count   # int | None — progress while you stream
-proc.stdout_bytes_seen   # int | None — raw pipe bytes, before decoding/line-splitting
-proc.stderr_bytes_seen   # int | None — same, for stderr
+proc.pid  # int | None
+proc.elapsed_seconds  # float | None — wall time
+proc.cpu_time_seconds  # float | None — user + kernel so far
+proc.peak_memory_bytes  # int | None
+proc.stdout_line_count  # int | None — progress while you stream
+proc.stdout_bytes_seen  # int | None — raw pipe bytes, before decoding/line-splitting
+proc.stderr_bytes_seen  # int | None — same, for stderr
 ```
 
 `stdout_bytes_seen` / `stderr_bytes_seen` are the byte-counter siblings of

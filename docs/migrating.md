@@ -42,7 +42,7 @@ result = Command("git", ["rev-parse", "HEAD"]).output()
 print(result.stdout.strip(), result.code, result.is_success)
 
 # subprocess: subprocess.run([...], check=True, capture_output=True, text=True).stdout
-commit = Command("git", ["rev-parse", "HEAD"]).run()   # trimmed stdout, raises on failure
+commit = Command("git", ["rev-parse", "HEAD"]).run()  # trimmed stdout, raises on failure
 ```
 
 Note the two differences from `run()` in `subprocess`: `.output().stdout` is the
@@ -69,8 +69,8 @@ inspectable data (`.timed_out`, `.signal`) rather than an exception.
 
 ```python
 # subprocess: subprocess.run(["slow"], timeout=5) -> raises TimeoutExpired
-Command("slow").timeout(5.0).run()                       # raises Timeout on expiry
-result = Command("slow").timeout(5.0).output()           # result.timed_out is True instead
+Command("slow").timeout(5.0).run()  # raises Timeout on expiry
+result = Command("slow").timeout(5.0).output()  # result.timed_out is True instead
 
 # subprocess: subprocess.run(["tr","a-z","A-Z"], input="hello\n", text=True)
 Command("tr", ["a-z", "A-Z"]).stdin_text("hello\n").run()

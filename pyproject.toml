@@ -448,9 +448,11 @@ only_mutate = [
 #     reads `docs/api-reference.md`.
 #   - `examples/`: `tests/test_examples.py` runs every `examples/*.py` script in
 #     a child interpreter.
+#   - `CHANGELOG.md`: `tests/test_changelog_page.py` verifies the committed
+#     release-notes page against the root changelog.
 #   - `cliff.toml`: `tests/test_release_scripts.py` parses its `commit_parsers`
 #     table.
-also_copy = ["conftest.py", "README.md", "docs", "examples", "cliff.toml"]
+also_copy = ["conftest.py", "README.md", "CHANGELOG.md", "docs", "examples", "cliff.toml"]
 # The repo-wide pytest-xdist default (see the comment on `addopts` in
 # `[tool.pytest.ini_options]` above) breaks mutmut's in-process stats
 # collection: mutmut's `StatsCollector` pytest plugin records which test hit

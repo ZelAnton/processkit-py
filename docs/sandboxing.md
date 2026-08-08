@@ -105,21 +105,24 @@ from processkit import Command, ProcessGroup, ResourceLimit, Unsupported
 
 tool = (
     Command("untrusted-tool")
-    .env_clear().inherit_env(["PATH"])                              # 1
-    .output_limit(max_bytes=8 * 1024 * 1024, on_overflow="error")    # 2
-    .timeout(30.0)                                                   # 4
+    .env_clear()
+    .inherit_env(["PATH"])  # 1
+    .output_limit(max_bytes=8 * 1024 * 1024, on_overflow="error")  # 2
+    .timeout(30.0)  # 4
     .kill_on_parent_death()
 )
 
 try:
-    with ProcessGroup(                                              # 3
-        max_memory=512 * 1024 * 1024, max_processes=64, cpu_quota=1.0,
+    with ProcessGroup(  # 3
+        max_memory=512 * 1024 * 1024,
+        max_processes=64,
+        cpu_quota=1.0,
     ) as group:
         group.start(tool)
         ...
     # 5. the `with` block's exit reaps the whole tree here — no orphans, ever.
 except (ResourceLimit, Unsupported) as exc:
-    ...   # no Job Object / cgroup-v2 root here (container, non-root cgroup, macOS)
+    ...  # no Job Object / cgroup-v2 root here (container, non-root cgroup, macOS)
 ```
 
 ### 1. Locked-down environment

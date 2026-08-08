@@ -42,7 +42,13 @@ def main() -> None:
         if contents != "done":
             raise RuntimeError("detached helper did not finish")
         print(contents)
-        print(f"alive after marker: {process_is_alive(child.pid, saved_start)}")
+
+        deadline = time.monotonic() + 5
+        while process_is_alive(child.pid, saved_start) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if process_is_alive(child.pid, saved_start):
+            raise RuntimeError("detached helper did not exit")
+        print("alive after marker: False")
 
 
 if __name__ == "__main__":

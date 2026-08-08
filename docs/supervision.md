@@ -29,12 +29,12 @@ from processkit import Command, Supervisor
 
 outcome = Supervisor(
     Command("my-server", ["--port", "8080"]).env("LOG", "info"),
-    restart="on_crash",        # the default
-    max_restarts=5,            # default: unlimited
-    backoff_initial=0.2,       # seconds; base delay (default 0.2)
-    backoff_factor=2.0,        # multiplier (default 2.0)
-    max_backoff=30.0,          # seconds; cap (default 30.0)
-).run()                        # or: await ....arun()
+    restart="on_crash",  # the default
+    max_restarts=5,  # default: unlimited
+    backoff_initial=0.2,  # seconds; base delay (default 0.2)
+    backoff_factor=2.0,  # multiplier (default 2.0)
+    max_backoff=30.0,  # seconds; cap (default 30.0)
+).run()  # or: await ....arun()
 
 print(outcome.restarts, outcome.stopped)
 ```
@@ -94,7 +94,7 @@ Four gates are checked, in order, after every completed run:
    outcome = Supervisor(
        Command("flaky-worker"),
        restart="always",
-       stop_when=lambda r: r.code == 0,   # stop on the first clean exit
+       stop_when=lambda r: r.code == 0,  # stop on the first clean exit
    ).run()
    ```
 
@@ -133,14 +133,14 @@ Two honest caveats about `stop_when=`:
 `run()` (and `arun()`) resolve to a `SupervisionOutcome`:
 
 ```python
-outcome.final_result   # ProcessResult of the LAST run
-outcome.restarts       # restarts performed (run #1 is not a restart)
-outcome.stopped        # "policy_satisfied" | "predicate" | "restarts_exhausted"
-                        # | "gave_up" | "unhealthy" | "unknown" (forward-compat
-                        # fallback, not emitted by the pinned crate version)
-outcome.storm_pauses   # how many failure-storm pauses were taken (see below)
-outcome.liveness_kills # how many wedged incarnations a health check force-killed
-                        # (see "Liveness health checks"; 0 unless one is enabled)
+outcome.final_result  # ProcessResult of the LAST run
+outcome.restarts  # restarts performed (run #1 is not a restart)
+outcome.stopped  # "policy_satisfied" | "predicate" | "restarts_exhausted"
+# | "gave_up" | "unhealthy" | "unknown" (forward-compat
+# fallback, not emitted by the pinned crate version)
+outcome.storm_pauses  # how many failure-storm pauses were taken (see below)
+outcome.liveness_kills  # how many wedged incarnations a health check force-killed
+# (see "Liveness health checks"; 0 unless one is enabled)
 ```
 
 A returned outcome means supervision *concluded*, not that the child succeeded —
@@ -173,10 +173,11 @@ test-double boundary.
 
 Resource-capped supervision is capture-only. `run()`/`arun()` retain their full
 result and restart semantics, but a `start()`/`astart()` session cannot expose a
-live child handle: `status.pid` and `status.started_at` stay `None`, and `stop()`
-uses the session cancellation path rather than signalling the current child
-gracefully. The private limited group is still dropped and the whole incarnation
-tree is contained; only live pid introspection and graceful child signalling are
+live child handle: `status.pid` stays `None`, while `status.started_at` still
+reports when the current incarnation began. `stop()` uses the session
+cancellation path rather than signalling the current child gracefully. The
+private limited group is still dropped and the whole incarnation tree is
+contained; only live pid introspection and graceful child signalling are
 unavailable.
 
 ## The failure-storm guard
@@ -190,9 +191,9 @@ it by setting `storm_pause`:
 outcome = Supervisor(
     Command("flaky-worker"),
     restart="on_crash",
-    storm_pause=30.0,          # ENABLES the guard: pause 30s when a storm is detected
-    failure_threshold=5.0,     # decaying failure score that trips the pause (optional)
-    failure_decay=60.0,        # the score halves every 60s (optional)
+    storm_pause=30.0,  # ENABLES the guard: pause 30s when a storm is detected
+    failure_threshold=5.0,  # decaying failure score that trips the pause (optional)
+    failure_decay=60.0,  # the score halves every 60s (optional)
 ).run()
 
 if outcome.storm_pauses:
@@ -235,13 +236,13 @@ def is_healthy() -> bool:
 
 outcome = Supervisor(
     Command("my-server", ["--port", "8080"]),
-    health_check=is_healthy,       # sync () -> bool; True == healthy
-    health_check_interval=5.0,     # seconds between probes — REQUIRED with health_check
-    health_check_failures=3,       # consecutive failures before a force-restart (default 3)
+    health_check=is_healthy,  # sync () -> bool; True == healthy
+    health_check_interval=5.0,  # seconds between probes — REQUIRED with health_check
+    health_check_failures=3,  # consecutive failures before a force-restart (default 3)
     max_restarts=10,
 ).run()
 
-print(outcome.liveness_kills)      # wedged incarnations that were force-killed
+print(outcome.liveness_kills)  # wedged incarnations that were force-killed
 ```
 
 `health_check=` is a **synchronous** callable `() -> bool` — *not* a coroutine —
@@ -287,9 +288,9 @@ with Supervisor(Command("my-server"), restart="always").start() as session:
 ```
 
 `status` is an atomic snapshot. `pid` and `started_at` are `None` between
-incarnations, during backoff, after completion, and for capture-only test
-doubles. They also stay `None` for a resource-capped supervisor, whose
-incarnations use the capture-only path described above. `wait()` consumes the session and waits for its natural outcome;
+incarnations, during backoff, and after completion. Capture-only runners,
+including resource-capped supervisors, report the current incarnation's
+`started_at` while keeping `pid` as `None`. `wait()` consumes the session and waits for its natural outcome;
 `stop(grace_seconds)` requests graceful termination and reports
 `outcome.stopped == "stopped"`. Terminal verbs are one-shot.
 
@@ -336,7 +337,9 @@ it returns — and, for an unbounded `restart="always"`, give it a
 outcome = await Supervisor(Command("flaky-worker"), restart="always", max_restarts=5).arun()
 
 # Backgrounded — keep the task and await it, so supervision actually runs:
-task = asyncio.ensure_future(Supervisor(Command("flaky-worker"), restart="always", max_restarts=5).arun())
+task = asyncio.ensure_future(
+    Supervisor(Command("flaky-worker"), restart="always", max_restarts=5).arun()
+)
 outcome = await task
 ```
 

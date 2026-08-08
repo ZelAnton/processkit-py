@@ -40,9 +40,11 @@ The default. Nothing to configure:
 import asyncio
 from processkit import Command
 
+
 async def main():
     result = await Command("git", ["rev-parse", "HEAD"]).aoutput()
     print(result.stdout.strip())
+
 
 asyncio.run(main())
 ```
@@ -57,11 +59,13 @@ import asyncio
 import uvloop
 from processkit import Command
 
+
 async def main():
     await Command("./build.sh").arun()
 
-uvloop.install()      # or asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-asyncio.run(main())   # 3.12+: asyncio.run(main(), loop_factory=uvloop.new_event_loop)
+
+uvloop.install()  # or asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+asyncio.run(main())  # 3.12+: asyncio.run(main(), loop_factory=uvloop.new_event_loop)
 ```
 
 ## anyio
@@ -76,11 +80,13 @@ down:
 import anyio
 from processkit import Command
 
+
 async def main():
     result = await Command("git", ["status", "--short"]).aoutput()
     print(result.stdout)
 
-anyio.run(main)   # default backend="asyncio" — supported
+
+anyio.run(main)  # default backend="asyncio" — supported
 ```
 
 On the **trio backend** (`anyio.run(main, backend="trio")`) there is no asyncio

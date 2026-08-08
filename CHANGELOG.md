@@ -128,6 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Reject CR/LF, control, and whitespace characters in a `wait_for_http` host
   before HTTP serialization, preventing header injection.
+- CLI duration, CPU, backoff, and health-check numeric options now reject
+  non-finite values before constructing a command or supervisor.
 - Keep Nightly hardening actionable: its mutation sandbox now includes the
   changelog required by release-note drift tests, first-run benchmark history
   can initialize its branch without runner-global git identity, the detached

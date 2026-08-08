@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections.abc import Sequence
 
 #: Sentinel `const=` for ``--profile``'s optional `FILE` argument (`nargs="?"`):
@@ -29,8 +30,8 @@ def _positive_int(value: str) -> int:
 
 def _positive_float(value: str) -> float:
     parsed = float(value)
-    if not (parsed > 0):  # rejects <= 0 and NaN alike
-        raise argparse.ArgumentTypeError(f"must be a positive number, got {value!r}")
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive, finite number, got {value!r}")
     return parsed
 
 

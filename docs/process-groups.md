@@ -40,15 +40,17 @@ host = host_containment()  # no group creation or process spawn
 print(host.mechanism, host.soft_stop_scope, host.parent_death_cleanup)
 
 with ProcessGroup() as group:
-    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group"
+    print(group.mechanism)   # "job_object" | "cgroup_v2" | "process_group" | "unknown"
     print(group.soft_stop_scope)  # "whole_tree" | "opt_in_members" | "none"
 ```
 
 `mechanism` reports what you actually got at runtime. On a Linux host without
 cgroup-v2 delegation it quietly reads `"process_group"` instead of
 `"cgroup_v2"` — the same fallback that decides which features below are
-available. See [Platform support](platforms.md) for the per-OS matrix; the
-short version is *Windows strongest, macOS weakest.*
+available. FreeBSD's `ProcessReaper` is currently reported as `"unknown"`
+because the binding preserves unrecognized variants of the crate's
+non-exhaustive mechanism enum. See [Platform support](platforms.md) for the
+per-OS matrix; the short version is *Windows strongest, macOS weakest.*
 
 `host_containment()` predicts the host-level mechanism and maximum graceful
 stop reach before a group exists, plus abrupt parent-death cleanup and the
@@ -118,35 +120,80 @@ with ProcessGroup() as group:
 
 ## Existing processes and containment
 
-A `ProcessGroup` establishes containment when **processkit creates a root
-process through that group**; descendants that root later spawns are included
-automatically. The entry points are `start()`, `astart()`, `output()`,
-`output_bytes()`, `run()`, `exit_code()`, and `probe()`, plus the async
-`aoutput()`, `aoutput_bytes()`, `arun()`, `aexit_code()`, and `aprobe()` twins;
-each takes a `Command`.
+A `ProcessGroup` can establish containment in two ways: processkit can create a
+root through the group's `start()` / `astart()` / runner verbs, or an already
+running process can be enrolled with `adopt_external(pid)`. The latter is for a
+process started by `subprocess`, `asyncio.create_subprocess_exec()` /
+`asyncio.create_subprocess_shell()`, another library, an outside supervisor, or
+a pidfile.
 
-The current API cannot add an already-running process to a `ProcessGroup`,
-including one started with `subprocess`, `asyncio.create_subprocess_exec()` /
-`asyncio.create_subprocess_shell()`, or a third-party library. The PIDs returned
-by `members()` and `members_info()` are observations, not enrollment inputs. The
-supported path is to move process creation to a `Command` and run that command
-through the group's entry points above.
+```python
+import subprocess
 
-Containment and completion observation are separate concerns. processkit does
-not provide wait-for-completion or exit-status observation for processes it did
-not create because those processes are not its children and cannot be reaped by
-it. Its completion surface (`outcome()`, `finish()`, and `exit_code()`) is built
-on reaping semantics, so this is a structural limitation of the library.
-Placing a foreign process under a common teardown boundary is therefore about
-containment and teardown, not observing its completion.
+from processkit import ProcessGroup, Unsupported
+
+external = subprocess.Popen(["my-service"])
+try:
+    with ProcessGroup() as group:
+        try:
+            group.adopt_external(external.pid)
+        except Unsupported:
+            raise RuntimeError("pid-only adoption is unsupported on this platform")
+        assert external.pid in group.members()
+    # The group's teardown has killed the adopted process; its real parent
+    # still owns completion observation and must reap it.
+finally:
+    if external.poll() is None:
+        external.kill()
+    external.wait()
+```
+
+`pid` is an address, not a process handle. During the call, the crate captures
+its own identity anchor for the process currently named by that number. Later
+pid reuse is therefore rejected by the group's probes, signals, and teardown.
+The crate cannot check the earlier race between the caller reading the pid and
+passing it to `adopt_external()`, so look the number up as late as possible.
+
+Adoption is containment and teardown only. It never reaps the adopted process,
+and this API exposes no completion handle or exit status for it. Use
+`members()` / `members_info()` to list it and the group's signal or teardown
+verbs to control it. The process's actual parent (the caller, an outside
+supervisor, or `init` after re-parenting) remains responsible for `wait()` and
+the exit status. On the `process_group` fallback, an adopted process that exits
+without being reaped can remain a zombie during the configured shutdown grace;
+only its parent can clear that state.
+
+The containment boundary depends on `group.mechanism`:
+
+- On Windows Job Objects and Linux cgroup v2, descendants spawned after the
+  adoption inherit the job/cgroup. Descendants that were already spawned keep
+  their original containment.
+- On macOS and the Linux `process_group` fallback, a foreign process normally
+  cannot be regrouped with `setpgid`, so adoption succeeds with individual
+  tracking. Its future descendants are not included. This is `Ok`, not a
+  silent failure.
+- Linux cgroup-v2 membership is exclusive: adoption moves the process out of
+  its previous cgroup, so that supervisor's limits and teardown no longer
+  apply. Windows may nest a process already in another Job Object, but the
+  kernel can reject the assignment depending on the existing jobs and call
+  order; do not treat one host's result as a universal rule.
+- FreeBSD and other BSDs return `Unsupported` because the crate cannot capture
+  the identity anchor needed for safe pid-only tracking. The process is not
+  tracked by a bare number.
+
+`pid=0` and the current process's own pid are rejected as invalid input. A
+number naming no process, including an already-reaped process, is rejected as a
+not-found I/O error. Through this binding both cases surface as `ProcessError`;
+`ProcessNotFound` remains reserved for a program that could not be located.
 
 To observe a foreign process without taking ownership, use the module-level
 `process_info()` and `process_is_alive()` lookup helpers documented in
 [Commands](commands.md).
 
-If several independent launchers must live under one operational umbrella, run
-the entire supervisor inside a host-managed container, Job Object, or cgroup.
-That outer boundary belongs to the deployment environment, not to this library.
+If adoption is unsupported or several independent launchers must live under one
+operational umbrella, run the entire supervisor inside a host-managed
+container, Job Object, or cgroup. That outer boundary belongs to the deployment
+environment, not to this library.
 
 ## Tearing down
 
@@ -414,12 +461,46 @@ with ProcessGroup() as group:
     print(snap.active_process_count)    # int
     print(snap.peak_memory_bytes)       # int | None
     print(snap.total_cpu_time_seconds)  # float | None
+    print(snap.io_read_bytes)            # int | None, cumulative
+    print(snap.io_write_bytes)           # int | None, cumulative
+    print(snap.peak_process_count)       # int | None, high-water mark
 ```
 
 `active_process_count` is always available. `peak_memory_bytes` and
 `total_cpu_time_seconds` are populated only where the kernel accounts for the
 whole tree (Windows, Linux cgroup); on the process-group backends they stay
 `None` and only the count is reported.
+
+The three additional fields retain the upstream containment mechanism's
+semantics rather than normalizing different operating systems into one
+measurement:
+
+| Field | Windows Job Object | Linux cgroup v2 | `process_group` fallback (macOS and non-FreeBSD BSDs; Linux without cgroup delegation) | FreeBSD `ProcessReaper` |
+|---|---|---|---|---|
+| `io_read_bytes` | Cumulative `IO_COUNTERS` read-transfer bytes for the whole tree; file, pipe, and device transfers count | `io.stat` block-layer read bytes, when an `io` controller is enabled; this binding does not enable that controller, so normally `None` | `None` | `None` |
+| `io_write_bytes` | Cumulative `IO_COUNTERS` write-transfer bytes for the whole tree; file, pipe, and device transfers count | `io.stat` block-layer write bytes, when an `io` controller is enabled; this binding does not enable that controller, so normally `None` | `None` | `None` |
+| `peak_process_count` | `None`; Job Objects expose neither a kernel peak nor a sampled substitute | `pids.peak` when the `pids` controller and file are available; it counts kernel **tasks**, including every thread | `None` | `None` |
+
+The I/O counters are cumulative: a member that has already exited remains in
+the total. They are not directly comparable between Windows and Linux. Windows
+counts bytes moved by read/write operations against any target, while Linux
+`io.stat` counts bytes that reached the block layer. Linux page-cache hits,
+pipes, sockets, and tmpfs traffic therefore do not have a Windows-equivalent
+meaning here; a write may also be accounted after the member that dirtied the
+page exits. An accounted zero is a real zero, while `None` means that the
+mechanism cannot provide that measurement — it is never substituted with `0`.
+
+`peak_process_count` is a kernel high-water mark, not the largest
+`active_process_count` observed by calls to `stats()`. On Linux it is a peak
+task count, so a multithreaded member contributes all of its threads. It is
+available only when the cgroup's `pids` controller is enabled (this binding
+enables it for a requested `max_processes` cap) and the kernel exposes
+`pids.peak`; otherwise it is `None`.
+
+These are group counters, not per-run telemetry. `RunningProcess.profile()`
+and `RunProfile` remain unchanged: they describe the process started by one
+run, whereas group I/O counters and process peaks cannot be divided between
+multiple runs sharing one containment object.
 
 For a single run's end-to-end resource profile, use `RunningProcess.profile()`,
 covered in [Streaming & interactive I/O](streaming.md).

@@ -296,8 +296,10 @@ reaped a tree.
 ## Bounding pipelines & tuning group shutdown
 
 - A [pipeline](pipelines.md) bounds the **whole chain** with
-  `Pipeline.timeout(seconds)`; the same captured-vs-raised rule applies to
-  whichever verb you finish it with.
+  `Pipeline.timeout(seconds)`. Its capture verbs retain best-effort stdout and
+  stderr already captured by the last stage before the deadline, while its
+  success verbs raise `Timeout` with that partial output attached. This
+  whole-chain timeout is distinct from a per-stage `Command.timeout(...)`.
 - A [ProcessGroup](process-groups.md)'s graceful teardown timing is set at
   construction with `shutdown_grace=` and `escalate_to_kill=`, independent of
   any per-run timeout. Note: cancelling an in-flight `await group.ashutdown()` (or

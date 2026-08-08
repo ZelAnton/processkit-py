@@ -31,6 +31,7 @@ from ._types import (
     SignalName,
     StrPath,
     SupportsWrite,
+    SupportsWriteBytes,
 )
 
 @final
@@ -154,6 +155,20 @@ class Command:
     def __init__(self, program: StrPath, args: Args | None = ...) -> None: ...
     def arg(self, arg: StrPath) -> Command: ...
     def args(self, args: Args) -> Command: ...
+    def arg0(self, arg0: str) -> Command:
+        """Override the child's ``argv[0]`` independently of the executable
+        ``program`` — supports multicall binaries (BusyBox/Toybox) and
+        conventions like a login shell's ``-bash``. Program lookup,
+        ``prefer_local``, preflight, spawn diagnostics, and containment all
+        keep using ``program``; only the argument vector delivered to the
+        child changes.
+
+        **Unix only.** Applied through the OS command's ``arg0`` spawn seam.
+        On a non-Unix platform the run raises ``Unsupported`` rather than
+        silently passing the executable name instead — ``configured_arg0``
+        stays observable there even though a run can never use it. Repeated
+        calls are last-write-wins."""
+
     def cwd(self, path: StrPath) -> Command: ...
     def prefer_local(self, dir: StrPath) -> Command:
         """Search this directory before ``PATH`` when resolving a bare-name
@@ -343,6 +358,40 @@ class Command:
         each decoded line as a ``str`` via the same blocking-pool async-write
         bridge, never closed for you), coexisting with capture, inert unless
         stderr is piped through the line pump."""
+
+    def stdout_raw_tee(self, sink: StrPath | SupportsWriteBytes, *, append: bool = ...) -> Command:
+        """Tee the child's stdout to ``sink`` **byte for byte, before any
+        decoding or line splitting** — the raw-bytes cousin of ``stdout_tee``.
+
+        Same sink forms as ``stdout_tee`` — a file path (opened at build time,
+        truncated by default or ``append``) or a Python writer with a callable
+        ``write()`` — but since the whole point is byte-exact fidelity, a
+        writer here receives each chunk as ``bytes``, never decoded, so it must
+        be a **binary** writer (``io.BytesIO``, a ``"wb"`` file — not
+        ``sys.stderr`` or an ``io.StringIO``, whose ``write(bytes)`` raises
+        ``TypeError``). Non-UTF-8 output, CRLF, a lone ``\\r``, and a missing
+        final newline all pass through untouched, and a line an
+        ``OutputBufferPolicy`` drops from every decoded sink still reaches this
+        tee whole.
+
+        Independent of the decoded path — coexists with ``stdout_tee``,
+        ``on_stdout_line``, and ordinary capture; all configured sinks fire
+        from the same pump. Requires a piped stdout: a no-op under
+        ``stdout("inherit")`` / ``stdout("null")`` / a ``stdout_file()``
+        redirect (no capture pump runs) and under ``output_bytes()`` (its own
+        return value already *is* the raw stdout, a separate raw drain with no
+        line pump) — use it alongside the line/streaming verbs instead. A
+        second call replaces an earlier one; a write error disables the raw
+        tee for the rest of the run, leaving the run and its captured result
+        unaffected."""
+
+    def stderr_raw_tee(self, sink: StrPath | SupportsWriteBytes, *, append: bool = ...) -> Command:
+        """Tee the child's stderr to ``sink`` byte for byte, before any
+        decoding or line splitting. Same contract as ``stdout_raw_tee`` —
+        verbatim bytes (non-UTF-8, CRLF, a missing final newline, and
+        buffer-policy-dropped lines all preserved), a binary writer required
+        for the Python-writer sink form, independent of
+        ``stderr_tee``/``on_stderr_line``, and requiring stderr to be piped."""
 
     def stdout_file(self, path: StrPath, *, append: bool = ...) -> Command:
         """Redirect the child's stdout **straight to a file**, opened at spawn
@@ -562,10 +611,39 @@ class Command:
     def start(self) -> RunningProcess: ...
     def astart(self) -> Awaitable[RunningProcess]: ...
     def unchecked_in_pipe(self) -> Command: ...
+    def merge_stderr_in_pipe(self) -> Command:
+        """Merge this stage's stderr into its stdout pipe when it is a
+        **non-final** ``Pipeline`` stage — the shell-free equivalent of
+        ``command 2>&1 | next``. Stdout and stderr get cloned handles to the
+        same anonymous-pipe writer; the OS preserves write order, and the
+        downstream stage reads the combined byte stream from its stdin.
+
+        Opt-in per stage and a **no-op outside a ``Pipeline`` or on the final
+        stage** — no effect on a standalone command, and a pipeline only
+        activates it on a non-final stage. On an affected stage it overrides
+        that stage's configured stdout/stderr destinations, since both
+        streams must point at the downstream pipe.
+
+        **Pipefail diagnostic trade-off.** Once stderr enters the downstream
+        pipe it is no longer available as that stage's own stderr capture: if
+        pipefail attributes the chain's failure to this stage,
+        ``ProcessResult.stderr`` is empty for it — the merged bytes may
+        instead surface in the final stage's stdout after passing through the
+        rest of the pipeline."""
+
     @property
     def program(self) -> str: ...
     @property
     def arguments(self) -> list[str]: ...
+    @property
+    def configured_arg0(self) -> str | None:
+        """The explicit Unix ``argv[0]`` override configured via ``arg0()``,
+        or ``None`` if unset. Exposes the routing input to
+        ``ScriptedRunner.when()`` predicates and other command inspection
+        without conflating it with ``program``, which remains the executable
+        lookup key. Still set on a non-Unix platform before a run would
+        reject it (see ``arg0()``)."""
+
     def command_line(self) -> str: ...
     def pipe(self, other: Command) -> Pipeline: ...
     def __or__(self, other: Command, /) -> Pipeline: ...
@@ -846,6 +924,22 @@ class RunningProcess:
     @property
     def stderr_line_count(self) -> int | None: ...
     @property
+    def stdout_bytes_seen(self) -> int | None:
+        """Raw bytes read from stdout's pipe so far, before decoding or line
+        splitting (``None`` once consumed). Monotonic; includes bytes
+        discarded by any ``OutputBufferPolicy`` (including oversized lines);
+        stable after the process and its pump complete. ``0`` — not a
+        sentinel — for a stream that is never pumped (a file redirect,
+        ``stdout("null")``, ``stdout("inherit")``)."""
+
+    @property
+    def stderr_bytes_seen(self) -> int | None:
+        """Raw bytes read from stderr's pipe so far, before decoding or line
+        splitting (``None`` once consumed). Same contract as
+        ``stdout_bytes_seen`` — monotonic, includes discarded bytes, stable
+        after completion, ``0`` (not a sentinel) for an unpumped stream."""
+
+    @property
     def owns_group(self) -> bool | None: ...
     def __enter__(self) -> RunningProcess: ...
     def __exit__(
@@ -1065,7 +1159,15 @@ class RunningProcess:
 
 @final
 class ProcessGroupStats:
-    """A snapshot of a `ProcessGroup`'s resource usage."""
+    """A snapshot of a `ProcessGroup`'s resource usage.
+
+    ``io_read_bytes`` and ``io_write_bytes`` are cumulative whole-tree counters
+    when the platform's containment mechanism accounts for them.
+    ``peak_process_count`` is a kernel high-water mark where available; on
+    Linux cgroup v2 it counts tasks, including threads. ``None`` means that the
+    mechanism does not provide that measurement, never a fabricated zero. The
+    exact I/O traffic counted is platform-dependent.
+    """
 
     @property
     def active_process_count(self) -> int: ...
@@ -1073,6 +1175,12 @@ class ProcessGroupStats:
     def peak_memory_bytes(self) -> int | None: ...
     @property
     def total_cpu_time_seconds(self) -> float | None: ...
+    @property
+    def io_read_bytes(self) -> int | None: ...
+    @property
+    def io_write_bytes(self) -> int | None: ...
+    @property
+    def peak_process_count(self) -> int | None: ...
     def __repr__(self) -> str: ...
 
 @final
@@ -1245,6 +1353,24 @@ class ProcessGroup(_RunnerVerbs):
         best-effort ``ppid``/``exe_name``/``start_time``. Synchronous only (the
         crate offers no async twin). See `MemberInfo` for the per-field platform
         matrix and the ``start_time`` opacity/pid-reuse note."""
+
+    def adopt_external(self, pid: int) -> None:
+        """Adopt an already-running external process by pid for containment and
+        teardown. The pid is an address, not a handle: the crate captures the
+        process identity during this call, so a later pid reuse is not signalled;
+        a race before the call, after the caller read the pid, cannot be checked.
+
+        Adoption never reaps the process and exposes no completion handle or exit
+        status. The group can only list it with ``members()`` / ``members_info()``
+        and signal or tear it down. Windows Job Objects and Linux cgroup v2 also
+        contain future children; the POSIX process-group fallback normally tracks
+        only the adopted process individually. FreeBSD and other BSDs raise
+        ``Unsupported``. Linux cgroup-v2 adoption moves the process out of its
+        previous cgroup; Windows job nesting may be accepted or rejected by the
+        kernel depending on the existing jobs and call order. ``pid=0`` and the
+        current process pid, plus a pid naming no process, raise ``ProcessError``;
+        the latter carries the upstream ``NotFound`` IO condition rather than
+        ``ProcessNotFound``, which is reserved for missing programs."""
 
     def signal(self, name: SignalName | int) -> None:
         """Send a signal to every process in the tree: a name

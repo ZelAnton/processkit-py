@@ -324,12 +324,35 @@ async with ProcessGroup() as group:
     await group.astart(Command("dev-server"))
 ```
 
-If `subprocess`, `asyncio`, or another library currently starts the process,
-move that creation point to a `Command` passed to `group.start()` / `astart()`.
-Creating the group after the process is already running cannot bring it under
-the group's containment. See [Existing processes and
-containment](process-groups.md#existing-processes-and-containment) for the
-boundary and the host-level alternative.
+If another library already started the process, adopt it by pid instead of
+recreating the launch:
+
+```python
+import subprocess
+
+from processkit import ProcessGroup, Unsupported
+
+external = subprocess.Popen(["dev-server"])
+try:
+    with ProcessGroup() as group:
+        try:
+            group.adopt_external(external.pid)
+        except Unsupported:
+            raise RuntimeError("pid-only adoption is unsupported on this platform")
+        print(external.pid in group.members())
+finally:
+    if external.poll() is None:
+        external.kill()
+    external.wait()
+```
+
+The group now covers the adopted process for signalling and teardown, but it
+does not reap it or expose an exit status. The original parent still calls
+`wait()`. A process's future descendants are included by Windows Job Objects
+and Linux cgroup v2; the POSIX process-group fallback normally tracks only the
+adopted process. See [Existing processes and
+containment](process-groups.md#existing-processes-and-containment) for pid
+identity, platform errors, and the host-level alternative.
 
 ## Cancel a run and reap its tree (async)
 
@@ -421,9 +444,12 @@ top = (Command("ps", ["aux"]) | Command("grep", ["python"])).run()
 blob = (Command("cat", ["big.txt"]) | Command("gzip")).output_bytes().stdout
 ```
 
-A pipeline is run-to-completion (no `astart()` streaming) and has no
-`output_limit` cap of its own — bound a flooding pipeline with `timeout()`. Set
-per-stage `env`/`cwd` on each `Command` before piping.
+A pipeline is run-to-completion (no `astart()` streaming). If
+`Pipeline.timeout()` fires, its capture verbs retain the best-effort stdout and
+stderr already emitted by the last stage before the deadline. A pipeline has
+no `output_limit` cap of its own — bound a flooding pipeline with `timeout()`.
+That whole-chain timeout is distinct from a per-stage `Command.timeout()`.
+Set per-stage `env`/`cwd` on each `Command` before piping.
 
 ## Run many commands at once
 

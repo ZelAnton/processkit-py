@@ -266,11 +266,46 @@ Things to know:
   Python writer, a `write()` (or `flush()`) exception is additionally reported
   via `sys.unraisablehook`, so it is visible even without `enable_logging()`
   (and catchable in a test via a custom hook).
+
+  An invalid integer count from `write()` — negative, zero before the buffer is
+  empty, or larger than the remaining buffer — also disables the tee and is
+  reported via `sys.unraisablehook`, making it visible on stderr even without
+  logging. This report is separate from, and visible alongside, exception-based
+  errors.
 - **No-op unless the line pump runs.** The tee fires from the line-capture pump,
   so it is inert under `stdout("inherit")` / `stdout("null")` (no pump) and under
   `output_bytes()` (raw capture, no line pump). Reach for it with the line verbs
   — `output()` / `aoutput()`, `run()`, or `start()` + `stdout_lines()` /
   `output_events()`.
+
+## Raw byte tee
+
+`stdout_tee()` / `stderr_tee()` mirror *decoded* lines. `stdout_raw_tee(sink)`
+/ `stderr_raw_tee(sink)` are their undecoded cousins: the **raw pipe bytes**,
+before any decoding or line splitting — for a caller that needs a byte-exact
+copy of exactly what the child wrote (a checksum/digest, a binary log, a
+protocol that isn't line-oriented):
+
+```python
+from processkit import Command
+
+result = Command("some-tool").stdout_raw_tee("out.raw").output()
+# out.raw has the exact bytes the child wrote to stdout: non-UTF-8 bytes
+# untouched, CRLF and a lone "\r" un-normalized, no fabricated final newline.
+```
+
+Same two sink forms as the decoded tee — a file path or a Python writer — but
+since the whole point is byte-exact fidelity, a writer here receives each
+chunk as `bytes`, so it must be a **binary** writer (`io.BytesIO`, a `"wb"`
+file), not a text one (`sys.stderr`, `io.StringIO`, whose `write(bytes)` would
+raise `TypeError`). It is **independent** of `stdout_tee`/`stderr_tee`/
+`on_stdout_line` — all configured stdout sinks fire from the same pump — and
+requires that stream to be piped: a no-op under `stdout("inherit")` /
+`stdout("null")` / a `stdout_file()` redirect (no capture pump runs), and
+under `output_bytes()` too (its own return value already *is* the raw stdout,
+a separate raw drain with no line pump — reach for the raw tee alongside the
+line/streaming verbs instead). A write error disables it for the rest of the
+run, the same isolation as the decoded tee.
 
 ## Live per-line callbacks
 
@@ -733,7 +768,16 @@ proc.elapsed_seconds     # float | None — wall time
 proc.cpu_time_seconds    # float | None — user + kernel so far
 proc.peak_memory_bytes   # int | None
 proc.stdout_line_count   # int | None — progress while you stream
+proc.stdout_bytes_seen   # int | None — raw pipe bytes, before decoding/line-splitting
+proc.stderr_bytes_seen   # int | None — same, for stderr
 ```
+
+`stdout_bytes_seen` / `stderr_bytes_seen` are the byte-counter siblings of
+`stdout_line_count` / `stderr_line_count`: monotonic counters of the raw pipe
+bytes read so far (including bytes an `OutputBufferPolicy` later discards),
+stable once the process and its pump have finished. They read `0` — not a
+sentinel — for a stream that is never pumped (a file redirect,
+`stdout("null")`, `stdout("inherit")`).
 
 Or turn a whole run into a summary with `profile()`/`aprofile()`, which
 samples the child every `every_seconds` until exit (the run's normal timeout

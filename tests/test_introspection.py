@@ -61,7 +61,7 @@ def test_host_containment_matches_a_real_group() -> None:
     assert report.mechanism in {"job_object", "cgroup_v2", "process_group"}
     assert report.soft_stop_scope in {"whole_tree", "opt_in_members", "none"}
     assert report.parent_death_cleanup in {"whole_tree", "direct_child_only", "none"}
-    assert report.crate_version == "3.3.1"
+    assert report.crate_version == "3.3.3"
     assert "HostContainment(" in repr(report)
 
     with ProcessGroup() as group:

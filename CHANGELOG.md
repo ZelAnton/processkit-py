@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Update the bundled ProcessKit-rs core to 3.3.1 so restricted or legacy Linux
+- Update the bundled ProcessKit-rs core to 3.3.3 so restricted or legacy Linux
   cgroup teardown reports a refused thaw instead of returning success while
   leaving the process group frozen.
 

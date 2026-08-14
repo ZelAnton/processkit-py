@@ -58,6 +58,8 @@ pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 # 3.3.0 is a deliberate compatibility bump after reviewing its additive
 # `ProcessGroup` adoption/statistics surface and `PipelineSession` auto-trait
 # changes; none of that new crate API is exposed by this binding.
+# 3.3.1 keeps that public API unchanged and fixes restricted/legacy Linux
+# cgroup teardown reporting when the kernel refuses to thaw the group.
 #
 # Features are listed EXPLICITLY with `default-features = false`, so a change to
 # the crate's default set can never silently alter our public surface:

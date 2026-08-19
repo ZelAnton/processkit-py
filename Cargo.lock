@@ -171,9 +171,9 @@ dependencies = [
 
 [[package]]
 name = "processkit"
-version = "3.3.1"
+version = "3.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d419db997ddd55cb2864e8dc31844a3804bbef52cd19d9ec515fd56a64fb2e"
+checksum = "0334182adfdfb52fd26302125ef9238e350f04e78cedb7a23bca61de772e4d74"
 dependencies = [
  "async-trait",
  "encoding_rs",

@@ -358,15 +358,18 @@ captured/streamed text for logging or parsing. In async code
 started. Three async probes replace the arbitrary sleep:
 
 ```python
-from processkit import Command, wait_until, wait_for_port, wait_for_line
+from processkit import Command, wait_for_http, wait_until, wait_for_port, wait_for_line
 
 proc = await Command("my-server").astart()
 lines = proc.stderr_lines()  # use stdout_lines() when the banner is on stdout
 await wait_for_line(lines, "listening on", timeout=10)  # a log line
 await wait_for_port("127.0.0.1", 8080, timeout=10)  # a TCP port
+await wait_for_http("127.0.0.1", 8080, "/health", timeout=10)  # a valid 2xx response
 await wait_until(lambda: health_check(), timeout=10, interval=0.1)  # any condition
 ```
 
+A malformed HTTP status token is never readiness: `wait_for_http` requires
+exactly three ASCII digits before applying its default or custom accepted set.
 A probe that doesn't pass in time raises `WaitTimeout` (`ProcessError`,
 `TimeoutError`) and **does not kill the child** — you decide what happens next.
 *Deeper: [Streaming → readiness probes](https://github.com/ZelAnton/processkit-py/blob/main/docs/streaming.md).*

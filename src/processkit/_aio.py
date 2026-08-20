@@ -626,10 +626,12 @@ def _parse_status_code(status_line: bytes) -> int:
     parts = status_line.split(None, 2)
     if len(parts) < 2 or not parts[0].upper().startswith(b"HTTP/"):
         raise _HttpProbeError(f"malformed or empty HTTP status line: {status_line!r}")
-    try:
-        return int(parts[1])
-    except ValueError:
-        raise _HttpProbeError(f"non-numeric HTTP status code in: {status_line!r}") from None
+    status_code = parts[1]
+    if len(status_code) != 3 or not status_code.isdigit():
+        raise _HttpProbeError(
+            f"malformed HTTP status code; expected exactly three ASCII digits in: {status_line!r}"
+        )
+    return int(status_code)
 
 
 async def _probe_http(host: str, port: int, request: bytes) -> int:
@@ -772,9 +774,11 @@ async def wait_for_http(
     ``expected_status`` decides what "accepted" means: either a container tested
     with ``in`` or a predicate ``Callable[[int], bool]`` for arbitrary logic
     (e.g. ``lambda c: c == 204``). The default (``None``) accepts any 2xx code —
-    equivalent to passing ``range(200, 300)``. The whole request/response is
-    bounded by the deadline, so a server that accepts the connection but never
-    answers can't outlive ``timeout``.
+    equivalent to passing ``range(200, 300)``. A response status token must be
+    exactly three ASCII digits; malformed tokens remain failed attempts even if
+    ``expected_status`` would accept their integer value. The whole
+    request/response is bounded by the deadline, so a server that accepts the
+    connection but never answers can't outlive ``timeout``.
 
     On failure the deadline raises `WaitTimeout` (also a `TimeoutError`),
     carrying ``host`` / ``port`` / ``path`` and chained (as ``__cause__``) from

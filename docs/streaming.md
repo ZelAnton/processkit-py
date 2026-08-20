@@ -662,6 +662,10 @@ Semantics, deliberately uniform:
   `wait_for_unix_socket`, `wait_for_named_pipe`, `wait_for_path`, and
   `wait_until`. `wait_for_named_pipe` raises `Unsupported` outside Windows;
   `wait_for_unix_socket` raises it when the Unix connector is unavailable.
+- `wait_for_http` requires the response status token to contain exactly three
+  ASCII digits before applying the default or custom accepted-status predicate.
+  A malformed status line remains a failed attempt even when, for example,
+  `expected_status={2000}` would accept a loosely parsed integer.
 - A probe that can't pass within its deadline raises **`WaitTimeout`**
   (`ProcessError`, `TimeoutError`) — so `except TimeoutError` catches both run
   and readiness timeouts, and `.timeout_seconds` reads the configured deadline
@@ -670,7 +674,7 @@ Semantics, deliberately uniform:
   `wait_for_unix_socket` set `.path`. `wait_for_port` / `wait_for_http` /
   `wait_for_named_pipe` / `wait_for_unix_socket` also chain the last failed
   attempt (a connection error, or — for `wait_for_http` — the last unexpected
-  status) as `__cause__`.
+  status or malformed status line) as `__cause__`.
 - `wait_for_line` additionally raises `ProcessError` if the stdout stream ends
   *before* a match — no waiting out a 10s deadline on a dead server. It
   consumes items up to (and including) a match; iteration may continue

@@ -45,7 +45,7 @@ from processkit import (
     wait_for_unix_socket,
     wait_until,
 )
-from processkit._aio import _format_host_header, _http_connection_host
+from processkit._aio import _format_host_header, _http_connection_host, _parse_status_code
 
 from ._liveness import is_alive
 from ._programs import free_port, refused_port
@@ -1411,6 +1411,17 @@ async def _serve_http(
     return await asyncio.start_server(handle, "127.0.0.1", port)
 
 
+@pytest.mark.parametrize("status", [100, 200, 204, 503, 999])
+def test_parse_http_status_code_accepts_three_ascii_digits(status: int) -> None:
+    assert _parse_status_code(f"HTTP/1.1 {status} Ready\r\n".encode()) == status
+
+
+@pytest.mark.parametrize("status_token", [b"20", b"2000", b"two"])
+def test_parse_http_status_code_rejects_malformed_tokens(status_token: bytes) -> None:
+    with pytest.raises(ProcessError, match="exactly three ASCII digits"):
+        _parse_status_code(b"HTTP/1.1 " + status_token + b" Weird\r\n")
+
+
 def test_wait_for_http_ready() -> None:
     async def scenario() -> None:
         port = free_port()
@@ -1615,6 +1626,52 @@ def test_wait_for_http_malformed_response_is_not_ready(
             with pytest.raises(WaitTimeout) as excinfo:
                 await wait_for_http("127.0.0.1", port, timeout=0.4, interval=0.05)
             assert isinstance(excinfo.value.__cause__, ProcessError)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("status_token", "expected_status"),
+    [(b"2000", {2000}), (b"20", {20}), (b"two", set())],
+)
+def test_wait_for_http_malformed_status_code_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    status_token: bytes,
+    expected_status: set[int],
+) -> None:
+    async def passthrough_wait_for(fut: asyncio.Future[int], timeout: float) -> int:
+        del timeout
+        return await fut
+
+    async def scenario() -> None:
+        port = free_port()
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            with contextlib.suppress(Exception):
+                await reader.readline()
+                writer.write(
+                    b"HTTP/1.1 "
+                    + status_token
+                    + b" Weird\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                await writer.drain()
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", port)
+        async with server:
+            monkeypatch.setattr(asyncio, "wait_for", passthrough_wait_for)
+            with pytest.raises(WaitTimeout) as excinfo:
+                await wait_for_http(
+                    "127.0.0.1",
+                    port,
+                    timeout=0.2,
+                    interval=0.05,
+                    expected_status=expected_status,
+                )
+            cause = excinfo.value.__cause__
+            assert isinstance(cause, ProcessError)
+            assert getattr(cause, "status", None) is None
+            assert "exactly three ASCII digits" in str(cause)
 
     asyncio.run(scenario())
 

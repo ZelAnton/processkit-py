@@ -3460,6 +3460,10 @@ Semantics, deliberately uniform:
   `wait_for_unix_socket`, `wait_for_named_pipe`, `wait_for_path`, and
   `wait_until`. `wait_for_named_pipe` raises `Unsupported` outside Windows;
   `wait_for_unix_socket` raises it when the Unix connector is unavailable.
+- `wait_for_http` requires the response status token to contain exactly three
+  ASCII digits before applying the default or custom accepted-status predicate.
+  A malformed status line remains a failed attempt even when, for example,
+  `expected_status={2000}` would accept a loosely parsed integer.
 - A probe that can't pass within its deadline raises **`WaitTimeout`**
   (`ProcessError`, `TimeoutError`) — so `except TimeoutError` catches both run
   and readiness timeouts, and `.timeout_seconds` reads the configured deadline
@@ -3468,7 +3472,7 @@ Semantics, deliberately uniform:
   `wait_for_unix_socket` set `.path`. `wait_for_port` / `wait_for_http` /
   `wait_for_named_pipe` / `wait_for_unix_socket` also chain the last failed
   attempt (a connection error, or — for `wait_for_http` — the last unexpected
-  status) as `__cause__`.
+  status or malformed status line) as `__cause__`.
 - `wait_for_line` additionally raises `ProcessError` if the stdout stream ends
   *before* a match — no waiting out a 10s deadline on a dead server. It
   consumes items up to (and including) a match; iteration may continue
@@ -6240,6 +6244,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject HTTP responses whose status token is not exactly three ASCII digits
+  in `wait_for_http`, even when a custom `expected_status` would accept a
+  loosely parsed short or long integer.
 - Update the bundled ProcessKit-rs core to 3.3.3 so restricted or legacy Linux
   cgroup teardown reports a refused thaw instead of returning success while
   leaving the process group frozen.
@@ -10735,9 +10742,11 @@ response's status code is accepted.
 ``expected_status`` decides what "accepted" means: either a container tested
 with ``in`` or a predicate ``Callable[[int], bool]`` for arbitrary logic
 (e.g. ``lambda c: c == 204``). The default (``None``) accepts any 2xx code —
-equivalent to passing ``range(200, 300)``. The whole request/response is
-bounded by the deadline, so a server that accepts the connection but never
-answers can't outlive ``timeout``.
+equivalent to passing ``range(200, 300)``. A response status token must be
+exactly three ASCII digits; malformed tokens remain failed attempts even if
+``expected_status`` would accept their integer value. The whole
+request/response is bounded by the deadline, so a server that accepts the
+connection but never answers can't outlive ``timeout``.
 
 On failure the deadline raises `WaitTimeout` (also a `TimeoutError`),
 carrying ``host`` / ``port`` / ``path`` and chained (as ``__cause__``) from

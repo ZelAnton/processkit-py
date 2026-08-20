@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject HTTP responses whose status token is not exactly three ASCII digits
+  in `wait_for_http`, even when a custom `expected_status` would accept a
+  loosely parsed short or long integer.
 - Update the bundled ProcessKit-rs core to 3.3.3 so restricted or legacy Linux
   cgroup teardown reports a refused thaw instead of returning success while
   leaving the process group frozen.

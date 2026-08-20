@@ -3125,9 +3125,11 @@ response's status code is accepted.
 ``expected_status`` decides what "accepted" means: either a container tested
 with ``in`` or a predicate ``Callable[[int], bool]`` for arbitrary logic
 (e.g. ``lambda c: c == 204``). The default (``None``) accepts any 2xx code —
-equivalent to passing ``range(200, 300)``. The whole request/response is
-bounded by the deadline, so a server that accepts the connection but never
-answers can't outlive ``timeout``.
+equivalent to passing ``range(200, 300)``. A response status token must be
+exactly three ASCII digits; malformed tokens remain failed attempts even if
+``expected_status`` would accept their integer value. The whole
+request/response is bounded by the deadline, so a server that accepts the
+connection but never answers can't outlive ``timeout``.
 
 On failure the deadline raises `WaitTimeout` (also a `TimeoutError`),
 carrying ``host`` / ``port`` / ``path`` and chained (as ``__cause__``) from

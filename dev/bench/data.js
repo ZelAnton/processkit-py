@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787198309972,
+  "lastUpdate": 1787285184059,
   "repoUrl": "https://github.com/ZelAnton/processkit-py",
   "entries": {
     "processkit benchmarks": [
@@ -1905,6 +1905,133 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000761754874706948",
             "extra": "mean: 112.08369555556095 msec\nrounds: 9"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Test",
+            "username": "TESTPERSONAL",
+            "email": "test@test.com"
+          },
+          "committer": {
+            "name": "Test",
+            "username": "TESTPERSONAL",
+            "email": "test@test.com"
+          },
+          "id": "6039e76e2a543334827bf51ea32ecd3db1298e97",
+          "message": "Reject malformed HTTP status codes in wait_for_http",
+          "timestamp": "2026-08-20T17:50:47Z",
+          "url": "https://github.com/ZelAnton/processkit-py/commit/6039e76e2a543334827bf51ea32ecd3db1298e97"
+        },
+        "date": 1787285183344,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_aoutput_as_completed.py::test_aoutput_as_completed_throughput",
+            "value": 11.650601547014276,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028447282770225715",
+            "extra": "mean: 85.83247791666793 msec\nrounds: 12"
+          },
+          {
+            "name": "benchmarks/test_lifecycle_events.py::test_lifecycle_events_throughput",
+            "value": 19.155255570537857,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005887652109587229",
+            "extra": "mean: 52.20499388888714 msec\nrounds: 18"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[1]",
+            "value": 69.31592526151188,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016857397808424938",
+            "extra": "mean: 14.426699149253894 msec\nrounds: 67"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[10]",
+            "value": 17.9598088384031,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011677378481321585",
+            "extra": "mean: 55.67987994737005 msec\nrounds: 19"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[50]",
+            "value": 3.412043860123294,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001725117133535039",
+            "extra": "mean: 293.079468199997 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[1]",
+            "value": 67.59181433183278,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024886283704655124",
+            "extra": "mean: 14.794690893939265 msec\nrounds: 66"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[10]",
+            "value": 17.89228765892352,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011416951892133642",
+            "extra": "mean: 55.8900023888932 msec\nrounds: 18"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[50]",
+            "value": 3.3952397284485722,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003281405103987999",
+            "extra": "mean: 294.53001260000633 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_process_group.py::test_process_group_start_exit",
+            "value": 68.9201753849358,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019177614394829513",
+            "extra": "mean: 14.509539397059841 msec\nrounds: 68"
+          },
+          {
+            "name": "benchmarks/test_pty.py::test_pty_output_relay",
+            "value": 48.48449014677372,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00042763370030201626",
+            "extra": "mean: 20.625152434784184 msec\nrounds: 46"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_processkit",
+            "value": 68.42874819417631,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00026480452879846134",
+            "extra": "mean: 14.61374095522481 msec\nrounds: 67"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_subprocess",
+            "value": 69.7162034116116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020317864928097337",
+            "extra": "mean: 14.343867724636373 msec\nrounds: 69"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_asyncio_subprocess",
+            "value": 68.74180390039238,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017961588645259863",
+            "extra": "mean: 14.547188803031862 msec\nrounds: 66"
+          },
+          {
+            "name": "benchmarks/test_streaming_throughput.py::test_stdout_lines_throughput",
+            "value": 2.4302949486149745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.025791978812662843",
+            "extra": "mean: 411.4726899999937 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_supervisor.py::test_live_supervisor_session_restarts",
+            "value": 8.771024066723323,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012077588111898377",
+            "extra": "mean: 114.01177244444385 msec\nrounds: 9"
           }
         ]
       }

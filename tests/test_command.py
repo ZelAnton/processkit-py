@@ -1026,6 +1026,17 @@ def test_pty_size_requires_a_positive_pair() -> None:
         Command(PY).pty(cols=0, rows=24)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="ConPTY uses signed COORD dimensions")
+def test_pty_rejects_windows_coord_overflow_before_launch(tmp_path: pathlib.Path) -> None:
+    marker = tmp_path / "started.txt"
+    code = f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"
+
+    with pytest.raises(ProcessError, match="ConPTY window size cannot exceed"):
+        Command(PY, ["-c", code]).pty(cols=32768, rows=24).output()
+
+    assert not marker.exists()
+
+
 def test_pty_rejects_conflicting_stdio_builders(tmp_path: pathlib.Path) -> None:
     target = tmp_path / "redirect.txt"
     with pytest.raises(ValueError, match=r"pty\(\) cannot be combined"):

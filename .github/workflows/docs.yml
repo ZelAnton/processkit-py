@@ -32,6 +32,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  MDBOOK_VERSION: '0.4.40'
+  MDBOOK_ARCHIVE: mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz
+  MDBOOK_SHA256: 9ef07fd288ba58ff3b99d1c94e6d414d431c9a61fdb20348e5beb74b823d546b
+
 jobs:
   build:
     # Build gate: runs on every PR, push, and manual dispatch. A SUMMARY.md entry
@@ -44,8 +49,12 @@ jobs:
           persist-credentials: false
       - name: Install mdBook
         run: |
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz \
-            | tar -xz -C /usr/local/bin
+          set -euo pipefail
+          curl -sSL --fail -o "$MDBOOK_ARCHIVE" \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${MDBOOK_ARCHIVE}"
+          echo "${MDBOOK_SHA256}  ${MDBOOK_ARCHIVE}" | sha256sum --check --status
+          tar xzf "$MDBOOK_ARCHIVE" mdbook
+          install -m 0755 mdbook /usr/local/bin/mdbook
       - name: Build the book
         run: mdbook build
       - name: Check generated release notes
@@ -71,8 +80,12 @@ jobs:
           persist-credentials: false
       - name: Install mdBook
         run: |
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz \
-            | tar -xz -C /usr/local/bin
+          set -euo pipefail
+          curl -sSL --fail -o "$MDBOOK_ARCHIVE" \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/${MDBOOK_ARCHIVE}"
+          echo "${MDBOOK_SHA256}  ${MDBOOK_ARCHIVE}" | sha256sum --check --status
+          tar xzf "$MDBOOK_ARCHIVE" mdbook
+          install -m 0755 mdbook /usr/local/bin/mdbook
       - name: Build the book
         run: mdbook build
       - name: Check generated release notes

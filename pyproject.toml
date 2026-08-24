@@ -533,13 +533,59 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
 
 [tool.cibuildwheel.linux]
 # The manylinux/musllinux build containers ship no Rust toolchain — install a
-# current stable (>= the crate's MSRV) before building. On Windows/macOS the
-# runner's own toolchain (dtolnay/rust-toolchain) is used instead.
+# current stable (>= the crate's MSRV) before building. Pin rustup-init itself
+# because this hook runs before the wheel build and therefore controls the
+# toolchain that produces the artifact. On Windows/macOS the runner's own
+# toolchain (dtolnay/rust-toolchain) is used instead.
 # The `--component` flags match rust-toolchain.toml so the fresh toolchain
 # already satisfies it: otherwise rustup tries to add those components
 # mid-build (when maturin first runs cargo), which has intermittently raced into a
 # `bin/cargo-fmt` install conflict in the musl container. Installing them once, up
 # front on a clean toolchain, closes that window (the build itself never runs
 # fmt/clippy).
-before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --component rustfmt --component clippy"
+# The URLs are rustup-init 1.29.0 archive artifacts. Their per-target SHA-256
+# values are the matching official `rustup-init.sha256` entries.
+before-all = '''
+set -eu
+
+if ls /lib/ld-musl-*.so.1 >/dev/null 2>&1; then
+  rustup_init_libc='musl'
+else
+  rustup_init_libc='gnu'
+fi
+
+case "$(uname -m):${rustup_init_libc}" in
+  x86_64:gnu)
+    rustup_init_target='x86_64-unknown-linux-gnu'
+    rustup_init_sha256='4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10'
+    ;;
+  x86_64:musl)
+    rustup_init_target='x86_64-unknown-linux-musl'
+    rustup_init_sha256='9cd3fda5fd293890e36ab271af6a786ee22084b5f6c2b83fd8323cec6f0992c1'
+    ;;
+  aarch64:gnu)
+    rustup_init_target='aarch64-unknown-linux-gnu'
+    rustup_init_sha256='9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792'
+    ;;
+  aarch64:musl)
+    rustup_init_target='aarch64-unknown-linux-musl'
+    rustup_init_sha256='88761caacddb92cd79b0b1f939f3990ba1997d701a38b3e8dd6746a562f2a759'
+    ;;
+  *)
+    echo "Unsupported Linux architecture/libc for pinned rustup-init" >&2
+    exit 1
+    ;;
+esac
+
+rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/${rustup_init_target}/rustup-init"
+rustup_init_dir="$(mktemp -d)"
+rustup_init="${rustup_init_dir}/rustup-init"
+trap 'rm -f "$rustup_init"; rmdir "$rustup_init_dir"' EXIT
+curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+  --output "$rustup_init" "$rustup_init_url"
+printf '%s  %s\n' "$rustup_init_sha256" "$rustup_init" | sha256sum -c -
+chmod 0755 "$rustup_init"
+"$rustup_init" -y --profile minimal --default-toolchain stable \
+  --component rustfmt --component clippy
+'''
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }

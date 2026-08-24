@@ -15,8 +15,26 @@
 
 FROM rust:1-bookworm
 
-# uv provisions the pinned Python, the virtualenv, dependencies, and the build.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# Download the pinned uv release archive and verify it before extracting or
+# executing the binary. TARGETARCH keeps the harness usable on amd64 and arm64.
+ARG UV_VERSION=0.12.5
+ARG TARGETARCH
+RUN set -eux; \
+    case "$TARGETARCH" in \
+        amd64) uv_target="x86_64-unknown-linux-gnu"; uv_sha256="68a509da24b06b4223a1c0175fb5eb5bc79342b76cbeff0cfe51ac3f5b17b6b2" ;; \
+        arm64) uv_target="aarch64-unknown-linux-gnu"; uv_sha256="9bf43b4d1a07665bf64d4c4e710930b382321a785e0eb10aac07f46471f86a31" ;; \
+        *) echo "Unsupported Docker target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    archive="uv-${uv_target}.tar.gz"; \
+    archive_path="/tmp/${archive}"; \
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${archive}" \
+        -o "$archive_path"; \
+    printf '%s  %s\n' "$uv_sha256" "$archive_path" | sha256sum -c -; \
+    tar -xzf "$archive_path" -C /tmp; \
+    install -m 0755 "/tmp/uv-${uv_target}/uv" /usr/local/bin/uv; \
+    install -m 0755 "/tmp/uv-${uv_target}/uvx" /usr/local/bin/uvx; \
+    rm -rf "/tmp/uv-${uv_target}" "$archive_path"
 ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app

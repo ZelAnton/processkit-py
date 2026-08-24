@@ -1149,6 +1149,10 @@ def test_resize_pty_accepts_live_terminal_and_rejects_plain_run() -> None:
         pty_proc.resize_pty(120, 40)
         with pytest.raises(ValueError, match="positive"):
             pty_proc.resize_pty(0, 40)
+        if sys.platform == "win32":
+            with pytest.raises(ProcessError, match="ConPTY window size cannot exceed"):
+                pty_proc.resize_pty(32768, 40)
+            pty_proc.resize_pty(120, 40)
     finally:
         pty_proc.kill()
         pty_proc.outcome()

@@ -18,14 +18,24 @@ echo "==> Checking environment for processkit-py development"
 # Required: uv (build/test/lint/format driver). It bootstraps the pinned Python
 # itself, so no separate `python` is needed on PATH.
 if command -v uv >/dev/null 2>&1; then
-  echo "    $(uv --version)"
+  if uv_version="$(uv --version)"; then
+    echo "    $uv_version"
+  else
+    uv_status=$?
+    problems+=("uv ('uv --version' failed with exit code $uv_status)")
+  fi
 else
   problems+=("uv ('uv' is not on PATH)")
 fi
 
 # Required: Rust toolchain (cargo/rustc) for compiling the PyO3 extension via maturin.
 if command -v cargo >/dev/null 2>&1; then
-  echo "    $(cargo --version)"
+  if cargo_version="$(cargo --version)"; then
+    echo "    $cargo_version"
+  else
+    cargo_status=$?
+    problems+=("Rust toolchain ('cargo --version' failed with exit code $cargo_status)")
+  fi
 else
   problems+=("Rust toolchain ('cargo' is not on PATH)")
 fi

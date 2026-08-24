@@ -26,14 +26,34 @@ Write-Host "==> Checking environment for processkit-py development" -ForegroundC
 # Required: uv (build/test/lint/format driver). It bootstraps the pinned Python
 # itself, so no separate `python` is needed on PATH.
 if (Get-Command uv -ErrorAction SilentlyContinue) {
-    Write-Host "    $(uv --version)" -ForegroundColor DarkGray
+    try {
+        $uvVersion = & uv --version
+        $uvExitCode = $LASTEXITCODE
+        if ($uvExitCode -eq 0) {
+            Write-Host "    $uvVersion" -ForegroundColor DarkGray
+        } else {
+            $problems += "uv ('uv --version' failed with exit code $uvExitCode)"
+        }
+    } catch {
+        $problems += "uv ('uv --version' failed: $($_.Exception.Message))"
+    }
 } else {
     $problems += "uv ('uv' is not on PATH)"
 }
 
 # Required: Rust toolchain (cargo/rustc) for compiling the PyO3 extension via maturin.
 if (Get-Command cargo -ErrorAction SilentlyContinue) {
-    Write-Host "    $(cargo --version)" -ForegroundColor DarkGray
+    try {
+        $cargoVersion = & cargo --version
+        $cargoExitCode = $LASTEXITCODE
+        if ($cargoExitCode -eq 0) {
+            Write-Host "    $cargoVersion" -ForegroundColor DarkGray
+        } else {
+            $problems += "Rust toolchain ('cargo --version' failed with exit code $cargoExitCode)"
+        }
+    } catch {
+        $problems += "Rust toolchain ('cargo --version' failed: $($_.Exception.Message))"
+    }
 } else {
     $problems += "Rust toolchain ('cargo' is not on PATH)"
 }

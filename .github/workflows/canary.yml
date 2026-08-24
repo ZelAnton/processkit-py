@@ -3,8 +3,8 @@ name: Canary (processkit crate)
 # Weekly, informational-only signal for API drift: builds and tests the binding
 # against the NEWEST published version of the `processkit` crate on crates.io,
 # in case it has drifted outside the compatible-version requirement pinned in
-# Cargo.toml (see that file's `processkit = { version = "2.1", ... }` comment
-# for why the requirement is a range rather than an exact pin). The version
+# Cargo.toml (see that file's `processkit` dependency comment for why the
+# requirement is a range rather than an exact pin). The version
 # bump below is applied only to this runner's ephemeral checkout -- nothing is
 # ever committed or pushed back to the repo, so the real requirement bump stays
 # a deliberate, reviewed change. This is deliberately a separate workflow from

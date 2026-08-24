@@ -68,7 +68,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0 # full history + tags, for version math and git-cliff
           persist-credentials: false
 
@@ -219,14 +219,15 @@ jobs:
   # ---------------------------------------------------------------------------
   # Build the release artifacts (wheels matrix + sdist) via the shared reusable
   # workflow. `overlay-release-meta` overlays the version-bumped manifests from
-  # `prepare` so the artifacts carry the release version; `ref: main` matches the
-  # branch `prepare` bumped. Uploads `wheels-<os>` + `sdist`, consumed by publish.
+  # `prepare` so the artifacts carry the release version; the dispatch SHA pins
+  # every build to the same source revision. Uploads `wheels-<os>` + `sdist`,
+  # consumed by publish.
   # ---------------------------------------------------------------------------
   build_dists:
     needs: prepare
     uses: ./.github/workflows/_build-dists.yml
     with:
-      ref: main
+      ref: ${{ github.sha }}
       overlay-release-meta: true
 
   # ---------------------------------------------------------------------------
@@ -277,7 +278,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
@@ -337,23 +338,281 @@ jobs:
       - name: Check distribution metadata
         run: uvx 'twine>=6,<7' check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
 
+      # A retry may find only part of this version on PyPI. Before allowing
+      # `skip-existing`, prove that every existing file belongs to this exact
+      # artifact set and dispatch SHA. Missing or ambiguous provenance stops
+      # before the pivot; a 404 is the clean-publish path.
+      - name: Verify partial PyPI retry identity
+        id: pypi-retry
+        env:
+          EXPECTED_PROJECT: processkit-py
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_WORKFLOW: release.yml
+          PYPI_BASE_URL: https://pypi.org
+        run: |
+          python3 - <<'PY'
+          import base64
+          import binascii
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+          PUBLISH_PREDICATE = "https://docs.pypi.org/attestations/publish/v1"
+          SOURCE_CLAIM_OIDS = {
+              bytes.fromhex("2b0601040183bf30010c"): "repository",
+              bytes.fromhex("2b0601040183bf30010d"): "sha",
+              bytes.fromhex("2b0601040183bf30010e"): "ref",
+              bytes.fromhex("2b0601040183bf300112"): "workflow",
+          }
+
+          project = os.environ["EXPECTED_PROJECT"]
+          repository = os.environ["EXPECTED_REPOSITORY"]
+          source_sha = os.environ["EXPECTED_SOURCE_SHA"]
+          version = os.environ["EXPECTED_VERSION"]
+          workflow = os.environ["EXPECTED_WORKFLOW"]
+          base_url = os.environ["PYPI_BASE_URL"].rstrip("/")
+
+          def fail(message):
+              raise SystemExit(f"::error::{message}")
+
+          if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+              fail(f"Expected source SHA is invalid: {source_sha!r}")
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          artifact_paths = sorted(
+              (*Path("artifacts").glob("*.whl"), *Path("artifacts").glob("*.tar.gz")),
+              key=lambda path: path.name,
+          )
+          if not artifact_paths:
+              fail("No local distributions found for the PyPI retry check")
+          expected = {path.name: sha256(path) for path in artifact_paths}
+          if len(expected) != len(artifact_paths):
+              fail("Duplicate local distribution filenames make the artifact set ambiguous")
+
+          def get_json(url, *, missing_ok=False):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/json",
+                      "User-Agent": "processkit-py-release-retry-check/1",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      body = response.read(MAX_RESPONSE_BYTES + 1)
+              except urllib.error.HTTPError as error:
+                  if missing_ok and error.code == 404:
+                      return None
+                  fail(f"PyPI returned HTTP {error.code} for retry identity data")
+              except (OSError, urllib.error.URLError) as error:
+                  fail(f"Could not read PyPI retry identity data: {error}")
+              if len(body) > MAX_RESPONSE_BYTES:
+                  fail("PyPI retry identity response exceeded the size limit")
+              try:
+                  return json.loads(body)
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  fail(f"PyPI retry identity response was not valid JSON: {error}")
+
+          def read_der_tlv(data, offset):
+              if offset + 2 > len(data):
+                  fail("Existing PyPI provenance certificate is truncated")
+              tag = data[offset]
+              first_length = data[offset + 1]
+              offset += 2
+              if first_length & 0x80:
+                  length_bytes = first_length & 0x7F
+                  if length_bytes == 0 or length_bytes > 4 or offset + length_bytes > len(data):
+                      fail("Existing PyPI provenance certificate has invalid DER length")
+                  if data[offset] == 0:
+                      fail("Existing PyPI provenance certificate has non-canonical DER length")
+                  length = int.from_bytes(data[offset : offset + length_bytes], "big")
+                  offset += length_bytes
+                  if length < 0x80:
+                      fail("Existing PyPI provenance certificate has non-canonical DER length")
+              else:
+                  length = first_length
+              end = offset + length
+              if end > len(data):
+                  fail("Existing PyPI provenance certificate is truncated")
+              return tag, data[offset:end], end
+
+          def unwrap_der(data, expected_tag):
+              tag, value, end = read_der_tlv(data, 0)
+              if tag != expected_tag or end != len(data):
+                  fail("Existing PyPI provenance certificate has an unexpected DER structure")
+              return value
+
+          def certificate_source_claims(encoded_certificate):
+              try:
+                  certificate = base64.b64decode(encoded_certificate, validate=True)
+              except (TypeError, ValueError, binascii.Error):
+                  fail("Existing PyPI provenance certificate is not valid base64")
+              certificate_body = unwrap_der(certificate, 0x30)
+              tag, tbs_certificate, _ = read_der_tlv(certificate_body, 0)
+              if tag != 0x30:
+                  fail("Existing PyPI provenance certificate has no TBSCertificate")
+              extension_blocks = []
+              offset = 0
+              while offset < len(tbs_certificate):
+                  tag, value, offset = read_der_tlv(tbs_certificate, offset)
+                  if tag == 0xA3:
+                      extension_blocks.append(value)
+              if len(extension_blocks) != 1:
+                  fail("Existing PyPI provenance certificate has ambiguous extensions")
+              extensions = unwrap_der(extension_blocks[0], 0x30)
+              claims = {}
+              offset = 0
+              while offset < len(extensions):
+                  tag, extension, offset = read_der_tlv(extensions, offset)
+                  if tag != 0x30:
+                      fail("Existing PyPI provenance certificate has an invalid extension")
+                  ext_offset = 0
+                  tag, oid, ext_offset = read_der_tlv(extension, ext_offset)
+                  if tag != 0x06:
+                      fail("Existing PyPI provenance certificate extension has no OID")
+                  tag, value, next_offset = read_der_tlv(extension, ext_offset)
+                  if tag == 0x01:
+                      tag, value, next_offset = read_der_tlv(extension, next_offset)
+                  if tag != 0x04 or next_offset != len(extension):
+                      fail("Existing PyPI provenance certificate extension has no value")
+                  claim_name = SOURCE_CLAIM_OIDS.get(oid)
+                  if claim_name is None:
+                      continue
+                  if claim_name in claims:
+                      fail(f"Existing PyPI provenance has duplicate {claim_name} claims")
+                  claim = unwrap_der(value, 0x0C)
+                  try:
+                      claims[claim_name] = claim.decode("utf-8")
+                  except UnicodeDecodeError:
+                      fail(f"Existing PyPI provenance {claim_name} claim is not UTF-8")
+              return claims
+
+          def verify_provenance(filename, digest):
+              quoted = "/".join(
+                  urllib.parse.quote(part, safe="")
+                  for part in (project, version, filename)
+              )
+              provenance = get_json(f"{base_url}/integrity/{quoted}/provenance")
+              if not isinstance(provenance, dict) or provenance.get("version") != 1:
+                  fail(f"Existing PyPI file {filename} has missing or unsupported provenance")
+              bundles = provenance.get("attestation_bundles")
+              if not isinstance(bundles, list) or len(bundles) != 1:
+                  fail(f"Existing PyPI file {filename} has ambiguous provenance bundles")
+              bundle = bundles[0]
+              publisher = bundle.get("publisher") if isinstance(bundle, dict) else None
+              expected_publisher = {
+                  "environment": None,
+                  "kind": "GitHub",
+                  "repository": repository,
+                  "workflow": workflow,
+              }
+              if publisher != expected_publisher:
+                  fail(f"Existing PyPI file {filename} has unexpected publisher identity")
+              attestations = bundle.get("attestations")
+              if not isinstance(attestations, list) or len(attestations) != 1:
+                  fail(f"Existing PyPI file {filename} has ambiguous attestations")
+              attestation = attestations[0]
+              if not isinstance(attestation, dict) or attestation.get("version") != 1:
+                  fail(f"Existing PyPI file {filename} has unsupported attestation data")
+              envelope = attestation.get("envelope")
+              statement_text = envelope.get("statement") if isinstance(envelope, dict) else None
+              try:
+                  statement = json.loads(base64.b64decode(statement_text, validate=True))
+              except (TypeError, ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+                  fail(f"Existing PyPI file {filename} has an invalid attestation statement")
+              expected_subject = [{"name": filename, "digest": {"sha256": digest}}]
+              if (
+                  not isinstance(statement, dict)
+                  or statement.get("_type") != "https://in-toto.io/Statement/v1"
+                  or statement.get("subject") != expected_subject
+                  or statement.get("predicateType") != PUBLISH_PREDICATE
+                  or statement.get("predicate") is not None
+              ):
+                  fail(f"Existing PyPI file {filename} attestation does not match its digest")
+              material = attestation.get("verification_material")
+              certificate = material.get("certificate") if isinstance(material, dict) else None
+              claims = certificate_source_claims(certificate)
+              expected_claims = {
+                  "repository": f"https://github.com/{repository}",
+                  "sha": source_sha,
+                  "ref": "refs/heads/main",
+                  "workflow": (
+                      f"https://github.com/{repository}/.github/workflows/"
+                      f"{workflow}@refs/heads/main"
+                  ),
+              }
+              if claims != expected_claims:
+                  fail(f"Existing PyPI file {filename} provenance does not match source SHA")
+
+          release_path = "/".join(
+              urllib.parse.quote(part, safe="") for part in (project, version)
+          )
+          release = get_json(f"{base_url}/pypi/{release_path}/json", missing_ok=True)
+          if release is None:
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                  output.write("skip_existing=false\n")
+              print(f"PyPI has no {project} {version}; clean publish will upload all files.")
+              raise SystemExit(0)
+          if not isinstance(release, dict) or release.get("info", {}).get("version") != version:
+              fail("PyPI returned ambiguous release metadata for the target version")
+          urls = release.get("urls")
+          if not isinstance(urls, list) or not urls:
+              fail("PyPI target version exists without an unambiguous file set")
+          seen = set()
+          for remote_file in urls:
+              filename = remote_file.get("filename") if isinstance(remote_file, dict) else None
+              digest = remote_file.get("digests", {}).get("sha256") if isinstance(remote_file, dict) else None
+              if not isinstance(filename, str) or filename in seen:
+                  fail("PyPI target version contains missing or duplicate filenames")
+              seen.add(filename)
+              if filename not in expected:
+                  fail(f"Existing PyPI file {filename} is not in the expected artifact set")
+              if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  fail(f"Existing PyPI file {filename} has no valid SHA-256 digest")
+              if digest != expected[filename]:
+                  fail(f"Existing PyPI file {filename} does not match the local SHA-256 digest")
+              if remote_file.get("yanked") is not False:
+                  fail(f"Existing PyPI file {filename} is yanked or has ambiguous state")
+              verify_provenance(filename, digest)
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write("skip_existing=true\n")
+          print(
+              f"Verified {len(seen)} existing PyPI file(s) against "
+              f"{len(expected)} expected artifact(s) from source {source_sha}."
+          )
+          PY
+
       # === PIVOT: the single irreversible step ===
       # PyPI Trusted Publishing (OIDC) by default: with NO PYPI_API_TOKEN secret set,
       # the action mints a short-lived credential per run (needs the `id-token: write`
       # permission above + a trusted publisher configured on pypi.org for this
       # repo + this workflow filename — https://docs.pypi.org/trusted-publishers/).
       # If PYPI_API_TOKEN *is* set, the action uses that token instead (a clean
-      # fallback for a first release before the publisher is configured). `skip-existing`
-      # makes a re-run idempotent — an already-published file counts as success — so
-      # after a transient upload failure it is safe to re-run the whole workflow:
-      # nothing has been pushed to the remote yet. The action verifies metadata and,
-      # under OIDC, attaches PEP 740 attestations automatically. (No auto-retry on a
-      # transient network error; re-run the workflow — `skip-existing` covers it.)
+      # fallback for a first release before the publisher is configured). The guard
+      # above enables `skip-existing` only after matching every existing file's digest,
+      # publisher, and source SHA. The action verifies metadata and, under OIDC,
+      # attaches PEP 740 attestations automatically. (No auto-retry on a transient
+      # network error; re-run the workflow to use the guarded partial-retry path.)
       - name: Publish to PyPI (irreversible pivot)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: artifacts
-          skip-existing: true
+          skip-existing: ${{ steps.pypi-retry.outputs.skip_existing == 'true' }}
           password: ${{ secrets.PYPI_API_TOKEN }}
 
       # Reversible VCS write, AFTER the pivot. --atomic guarantees the branch and tag

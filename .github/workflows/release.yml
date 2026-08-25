@@ -338,11 +338,11 @@ jobs:
       - name: Check distribution metadata
         run: uvx 'twine>=6,<7' check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
 
-      # A retry may find only part of this version on PyPI. Before allowing
-      # `skip-existing`, prove that every existing file belongs to this exact
-      # artifact set and dispatch SHA. Missing or ambiguous provenance stops
-      # before the pivot; a 404 is the clean-publish path.
-      - name: Verify partial PyPI retry identity
+      # A retry may find only part of this version on PyPI. Verify one snapshot,
+      # then copy only the absent expected distributions into a dedicated upload
+      # directory. The publish step does not tolerate duplicates, so a filename
+      # created after this snapshot fails before any VCS write.
+      - name: Prepare verified PyPI upload set
         id: pypi-retry
         env:
           EXPECTED_PROJECT: processkit-py
@@ -350,21 +350,26 @@ jobs:
           EXPECTED_SOURCE_SHA: ${{ github.sha }}
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
           EXPECTED_WORKFLOW: release.yml
+          PYPI_CHECK_PHASE: preflight
           PYPI_BASE_URL: https://pypi.org
         run: |
-          python3 - <<'PY'
+          cat > "$RUNNER_TEMP/processkit-py-verify-release.py" <<'PY'
           import base64
           import binascii
           import hashlib
           import json
           import os
           import re
+          import shutil
+          import time
           import urllib.error
           import urllib.parse
           import urllib.request
           from pathlib import Path
 
           MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+          POST_UPLOAD_ATTEMPTS = 6
+          POST_UPLOAD_BACKOFF_SECONDS = 10
           PUBLISH_PREDICATE = "https://docs.pypi.org/attestations/publish/v1"
           SOURCE_CLAIM_OIDS = {
               bytes.fromhex("2b0601040183bf30010c"): "repository",
@@ -378,7 +383,11 @@ jobs:
           source_sha = os.environ["EXPECTED_SOURCE_SHA"]
           version = os.environ["EXPECTED_VERSION"]
           workflow = os.environ["EXPECTED_WORKFLOW"]
+          phase = os.environ["PYPI_CHECK_PHASE"]
           base_url = os.environ["PYPI_BASE_URL"].rstrip("/")
+
+          class PendingPyPISnapshot(Exception):
+              pass
 
           def fail(message):
               raise SystemExit(f"::error::{message}")
@@ -403,7 +412,7 @@ jobs:
           if len(expected) != len(artifact_paths):
               fail("Duplicate local distribution filenames make the artifact set ambiguous")
 
-          def get_json(url, *, missing_ok=False):
+          def get_json(url, *, missing_ok=False, retryable=False):
               request = urllib.request.Request(
                   url,
                   headers={
@@ -417,14 +426,30 @@ jobs:
               except urllib.error.HTTPError as error:
                   if missing_ok and error.code == 404:
                       return None
+                  if retryable and (error.code == 429 or 500 <= error.code < 600):
+                      raise PendingPyPISnapshot(
+                          f"PyPI returned transient HTTP {error.code}"
+                      ) from error
                   fail(f"PyPI returned HTTP {error.code} for retry identity data")
               except (OSError, urllib.error.URLError) as error:
+                  if retryable:
+                      raise PendingPyPISnapshot(
+                          f"Could not read PyPI retry identity data: {error}"
+                      ) from error
                   fail(f"Could not read PyPI retry identity data: {error}")
               if len(body) > MAX_RESPONSE_BYTES:
+                  if retryable:
+                      raise PendingPyPISnapshot(
+                          "PyPI retry identity response exceeded the size limit"
+                      )
                   fail("PyPI retry identity response exceeded the size limit")
               try:
                   return json.loads(body)
               except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  if retryable:
+                      raise PendingPyPISnapshot(
+                          f"PyPI retry identity response was not valid JSON: {error}"
+                      ) from error
                   fail(f"PyPI retry identity response was not valid JSON: {error}")
 
           def read_der_tlv(data, offset):
@@ -501,15 +526,27 @@ jobs:
                       fail(f"Existing PyPI provenance {claim_name} claim is not UTF-8")
               return claims
 
-          def verify_provenance(filename, digest):
+          def verify_provenance(filename, digest, *, retryable=False):
               quoted = "/".join(
                   urllib.parse.quote(part, safe="")
                   for part in (project, version, filename)
               )
-              provenance = get_json(f"{base_url}/integrity/{quoted}/provenance")
+              provenance = get_json(
+                  f"{base_url}/integrity/{quoted}/provenance",
+                  missing_ok=retryable,
+                  retryable=retryable,
+              )
+              if provenance is None:
+                  raise PendingPyPISnapshot(
+                      f"PyPI provenance for {filename} is not visible yet"
+                  )
               if not isinstance(provenance, dict) or provenance.get("version") != 1:
                   fail(f"Existing PyPI file {filename} has missing or unsupported provenance")
               bundles = provenance.get("attestation_bundles")
+              if retryable and bundles == []:
+                  raise PendingPyPISnapshot(
+                      f"PyPI provenance for {filename} has no attestation bundle yet"
+                  )
               if not isinstance(bundles, list) or len(bundles) != 1:
                   fail(f"Existing PyPI file {filename} has ambiguous provenance bundles")
               bundle = bundles[0]
@@ -523,6 +560,10 @@ jobs:
               if publisher != expected_publisher:
                   fail(f"Existing PyPI file {filename} has unexpected publisher identity")
               attestations = bundle.get("attestations")
+              if retryable and attestations == []:
+                  raise PendingPyPISnapshot(
+                      f"PyPI provenance for {filename} has no attestation yet"
+                  )
               if not isinstance(attestations, list) or len(attestations) != 1:
                   fail(f"Existing PyPI file {filename} has ambiguous attestations")
               attestation = attestations[0]
@@ -561,41 +602,125 @@ jobs:
           release_path = "/".join(
               urllib.parse.quote(part, safe="") for part in (project, version)
           )
-          release = get_json(f"{base_url}/pypi/{release_path}/json", missing_ok=True)
-          if release is None:
-              with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-                  output.write("skip_existing=false\n")
-              print(f"PyPI has no {project} {version}; clean publish will upload all files.")
-              raise SystemExit(0)
-          if not isinstance(release, dict) or release.get("info", {}).get("version") != version:
-              fail("PyPI returned ambiguous release metadata for the target version")
-          urls = release.get("urls")
-          if not isinstance(urls, list) or not urls:
-              fail("PyPI target version exists without an unambiguous file set")
-          seen = set()
-          for remote_file in urls:
-              filename = remote_file.get("filename") if isinstance(remote_file, dict) else None
-              digest = remote_file.get("digests", {}).get("sha256") if isinstance(remote_file, dict) else None
-              if not isinstance(filename, str) or filename in seen:
-                  fail("PyPI target version contains missing or duplicate filenames")
-              seen.add(filename)
-              if filename not in expected:
-                  fail(f"Existing PyPI file {filename} is not in the expected artifact set")
-              if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                  fail(f"Existing PyPI file {filename} has no valid SHA-256 digest")
-              if digest != expected[filename]:
-                  fail(f"Existing PyPI file {filename} does not match the local SHA-256 digest")
-              if remote_file.get("yanked") is not False:
-                  fail(f"Existing PyPI file {filename} is yanked or has ambiguous state")
-              verify_provenance(filename, digest)
+          release_url = f"{base_url}/pypi/{release_path}/json"
 
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-              output.write("skip_existing=true\n")
-          print(
-              f"Verified {len(seen)} existing PyPI file(s) against "
-              f"{len(expected)} expected artifact(s) from source {source_sha}."
-          )
+          def verify_release(release, *, require_complete, retryable):
+              if not isinstance(release, dict) or release.get("info", {}).get("version") != version:
+                  fail("PyPI returned ambiguous release metadata for the target version")
+              urls = release.get("urls")
+              if not isinstance(urls, list) or not urls:
+                  if retryable:
+                      raise PendingPyPISnapshot(
+                          "PyPI target version has no visible file set yet"
+                      )
+                  fail("PyPI target version exists without an unambiguous file set")
+              seen = set()
+              for remote_file in urls:
+                  filename = remote_file.get("filename") if isinstance(remote_file, dict) else None
+                  digest = remote_file.get("digests", {}).get("sha256") if isinstance(remote_file, dict) else None
+                  if not isinstance(filename, str) or filename in seen:
+                      fail("PyPI target version contains missing or duplicate filenames")
+                  seen.add(filename)
+                  if filename not in expected:
+                      fail(f"Existing PyPI file {filename} is not in the expected artifact set")
+                  if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                      fail(f"Existing PyPI file {filename} has no valid SHA-256 digest")
+                  if digest != expected[filename]:
+                      fail(f"Existing PyPI file {filename} does not match the local SHA-256 digest")
+                  if remote_file.get("yanked") is not False:
+                      fail(f"Existing PyPI file {filename} is yanked or has ambiguous state")
+                  verify_provenance(filename, digest, retryable=retryable)
+              if require_complete:
+                  missing = sorted(set(expected) - seen)
+                  if missing:
+                      raise PendingPyPISnapshot(
+                          f"PyPI is still missing {len(missing)} expected file(s)"
+                      )
+              return seen
+
+          def prepare_upload_set():
+              release = get_json(release_url, missing_ok=True)
+              if release is None:
+                  seen = set()
+                  print(
+                      f"PyPI has no {project} {version}; clean publish will upload all files."
+                  )
+              else:
+                  seen = verify_release(
+                      release,
+                      require_complete=False,
+                      retryable=False,
+                  )
+              missing = sorted(set(expected) - seen)
+              upload_dir = Path("pypi-upload")
+              if upload_dir.exists():
+                  if upload_dir.is_symlink() or not upload_dir.is_dir():
+                      fail("PyPI upload path exists and is not a regular directory")
+                  shutil.rmtree(upload_dir)
+              upload_dir.mkdir()
+              paths_by_name = {path.name: path for path in artifact_paths}
+              for filename in missing:
+                  target = upload_dir / filename
+                  shutil.copyfile(paths_by_name[filename], target)
+                  if sha256(target) != expected[filename]:
+                      fail(f"Prepared PyPI upload file {filename} changed during copy")
+              upload_entries = list(upload_dir.iterdir())
+              if (
+                  {path.name for path in upload_entries} != set(missing)
+                  or any(not path.is_file() or path.is_symlink() for path in upload_entries)
+              ):
+                  fail("Prepared PyPI upload directory has an unexpected file set")
+              has_uploads = "true" if missing else "false"
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                  output.write(f"has_uploads={has_uploads}\n")
+              print(
+                  f"Verified {len(seen)} existing PyPI file(s); prepared "
+                  f"{len(missing)} absent file(s) from source {source_sha}."
+              )
+
+          def verify_complete_release():
+              for attempt in range(1, POST_UPLOAD_ATTEMPTS + 1):
+                  try:
+                      release = get_json(
+                          release_url,
+                          missing_ok=True,
+                          retryable=True,
+                      )
+                      if release is None:
+                          raise PendingPyPISnapshot(
+                              f"PyPI has not exposed {project} {version} yet"
+                          )
+                      seen = verify_release(
+                          release,
+                          require_complete=True,
+                          retryable=True,
+                      )
+                  except PendingPyPISnapshot as error:
+                      if attempt == POST_UPLOAD_ATTEMPTS:
+                          fail(
+                              "PyPI did not expose the complete verified release after "
+                              f"{POST_UPLOAD_ATTEMPTS} attempts: {error}"
+                          )
+                      print(
+                          f"::warning::PyPI verification attempt {attempt}/"
+                          f"{POST_UPLOAD_ATTEMPTS} is not complete: {error}"
+                      )
+                      time.sleep(POST_UPLOAD_BACKOFF_SECONDS)
+                      continue
+                  print(
+                      f"Verified all {len(seen)} PyPI file(s) against source "
+                      f"{source_sha} after upload."
+                  )
+                  return
+
+          if phase == "preflight":
+              prepare_upload_set()
+          elif phase == "postflight":
+              verify_complete_release()
+          else:
+              fail(f"Unsupported PyPI verification phase: {phase!r}")
           PY
+          python3 "$RUNNER_TEMP/processkit-py-verify-release.py"
 
       # === PIVOT: the single irreversible step ===
       # PyPI Trusted Publishing (OIDC) by default: with NO PYPI_API_TOKEN secret set,
@@ -603,17 +728,31 @@ jobs:
       # permission above + a trusted publisher configured on pypi.org for this
       # repo + this workflow filename — https://docs.pypi.org/trusted-publishers/).
       # If PYPI_API_TOKEN *is* set, the action uses that token instead (a clean
-      # fallback for a first release before the publisher is configured). The guard
-      # above enables `skip-existing` only after matching every existing file's digest,
-      # publisher, and source SHA. The action verifies metadata and, under OIDC,
-      # attaches PEP 740 attestations automatically. (No auto-retry on a transient
-      # network error; re-run the workflow to use the guarded partial-retry path.)
+      # fallback for a first release before the publisher is configured). The action
+      # receives only files absent from the verified snapshot and never skips a
+      # duplicate, closing the preflight/upload race. Under OIDC it attaches PEP 740
+      # attestations automatically.
       - name: Publish to PyPI (irreversible pivot)
+        if: steps.pypi-retry.outputs.has_uploads == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          packages-dir: artifacts
-          skip-existing: ${{ steps.pypi-retry.outputs.skip_existing == 'true' }}
+          packages-dir: pypi-upload
+          skip-existing: false
           password: ${{ secrets.PYPI_API_TOKEN }}
+
+      # PyPI's JSON/provenance views may lag a successful upload. Before allowing
+      # the atomic VCS push, boundedly re-fetch until the complete expected set is
+      # visible with matching filenames, digests, publisher, and dispatch SHA.
+      - name: Verify complete PyPI release after upload
+        env:
+          EXPECTED_PROJECT: processkit-py
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_WORKFLOW: release.yml
+          PYPI_CHECK_PHASE: postflight
+          PYPI_BASE_URL: https://pypi.org
+        run: python3 "$RUNNER_TEMP/processkit-py-verify-release.py"
 
       # Reversible VCS write, AFTER the pivot. --atomic guarantees the branch and tag
       # move together (or neither does), so we never advance main while losing the tag.

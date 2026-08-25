@@ -825,27 +825,33 @@ def test_aoutput_as_completed_preserves_second_cancel_during_real_tree_cleanup(
         assert len(process_tasks) == 1
         assert not process_tasks[0].done()
 
-        # The first cancel interrupts the consumer while its only slot is still
-        # running and drives the iterator's `finally` into `_reap_slots`.
-        assert consumer.cancel()
-        await asyncio.wait_for(cleanup_started.wait(), timeout=5.0)
-        assert not consumer.done()
+        try:
+            # The distinct messages make the cancellation that finally escapes
+            # observable: accepting the first exception would leave this test
+            # green against the old `_reap_slots` implementation.
+            assert consumer.cancel("initial consumer cancellation")
+            await asyncio.wait_for(cleanup_started.wait(), timeout=5.0)
+            assert not consumer.done()
 
-        # The second cancel lands only after the slot has acknowledged the
-        # first one, so `_reap_slots` must preserve it while re-cancelling the
-        # event-gated slot rather than returning normally.
-        assert consumer.cancel()
-        await asyncio.wait_for(cleanup_recancelled.wait(), timeout=5.0)
-        assert not consumer.done()
+            # The second cancel lands only after the slot has acknowledged the
+            # first one, so `_reap_slots` must preserve it while re-cancelling the
+            # event-gated slot rather than returning normally.
+            assert consumer.cancel("fresh consumer cancellation")
+            await asyncio.wait_for(cleanup_recancelled.wait(), timeout=5.0)
+            assert not consumer.done()
 
-        # The real command task is already tearing down in parallel. Prove the
-        # actual descendant is gone before allowing the synthetic cleanup gate
-        # to settle; this binds no-survivor evidence to the repeated-cancel path.
-        assert await asyncio.to_thread(wait_dead, grandchild_pid, 10.0)
-        cleanup_release.set()
+            # The real command task is already tearing down in parallel. Prove
+            # the actual descendant is gone while this repeated-cancel path is
+            # still held inside cleanup.
+            assert await asyncio.to_thread(wait_dead, grandchild_pid, 10.0)
+        finally:
+            # Release the slot even when an assertion above fails so an asyncio
+            # shutdown cannot hang behind the test-only cleanup gate.
+            cleanup_release.set()
 
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError) as cancelled:
             await consumer
+        assert cancelled.value.args == ("fresh consumer cancellation",)
 
         assert cleanup_finished.is_set()
         assert slot_tasks[0].done()

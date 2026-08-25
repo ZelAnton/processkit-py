@@ -6250,6 +6250,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep `processkit supervise` setup best-effort when looking up or invoking
+  `reconfigure` on a non-standard output stream fails; supervision continues
+  without line buffering instead of aborting.
 - Preserve a fresh `CancelledError` delivered while async completion-order
   iterators drain cancelled slots: both text and bytes iterators still settle
   every slot before re-raising it.

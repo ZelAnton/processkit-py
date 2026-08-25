@@ -35,6 +35,7 @@ from processkit import (
     Unsupported,
     wait_for_line,
 )
+from processkit.testing import Reply, ScriptedRunner
 
 from ._liveness import (
     is_alive,
@@ -621,11 +622,36 @@ def test_lifecycle_event_pickle_round_trip_preserves_every_variant_field() -> No
         assert restored.outcome == original.outcome
 
 
+def test_lifecycle_event_pickle_round_trip_preserves_scripted_start_without_pid() -> None:
+    runner = ScriptedRunner()
+    runner.fallback(Reply.ok("scripted"))
+
+    async def scenario() -> LifecycleEvent:
+        proc = runner.start(Command("tool"))
+        events = [event async for event in proc.lifecycle_events()]
+        await proc.aoutcome()
+        return events[0]
+
+    original = asyncio.run(asyncio.wait_for(scenario(), timeout=_EVENTS_DEADLINE_SECONDS))
+    assert original.kind == "started"
+    assert original.pid is None
+
+    restored = pickle.loads(pickle.dumps(original))
+    assert isinstance(restored, LifecycleEvent)
+    assert restored == original
+    assert hash(restored) == hash(original)
+    assert restored.kind == "started"
+    assert restored.pid is None
+    assert restored.stream is None
+    assert restored.text is None
+    assert restored.outcome is None
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         ("future", None, None, False, None, None, False),
-        ("started", None, None, False, None, None, False),
+        ("started", None, "line", False, None, None, False),
         ("stdout", None, None, False, None, None, False),
         ("exited", None, None, False, None, None, False),
         ("unknown", None, "unexpected", False, None, None, False),

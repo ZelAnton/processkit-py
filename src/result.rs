@@ -909,7 +909,7 @@ impl PyLifecycleEvent {
         }
 
         let kind = match kind.as_str() {
-            "started" if pid.is_some() && text.is_none() && !has_outcome => "started",
+            "started" if text.is_none() && !has_outcome => "started",
             "stdout" if pid.is_none() && text.is_some() && !has_outcome => "stdout",
             "stderr" if pid.is_none() && text.is_some() && !has_outcome => "stderr",
             "exited" if pid.is_none() && text.is_none() && has_outcome => "exited",

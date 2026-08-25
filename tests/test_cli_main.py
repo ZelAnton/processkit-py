@@ -346,6 +346,32 @@ def test_intermediate_output_oserror_exits_119_without_a_traceback() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_output_error_survives_stderr_write_lookup_base_exception() -> None:
+    """A hostile stderr proxy cannot replace the original output verdict."""
+    probe = (
+        "import processkit._cli as cli\n"
+        "from processkit._cli.output import OutputWriteError\n"
+        "class _FailedStderrLookup:\n"
+        "    @property\n"
+        "    def write(self): raise SystemExit(77)\n"
+        "    def flush(self): pass\n"
+        "def _fail(*args, **kwargs):\n"
+        "    raise OutputWriteError('could not write stdout')\n"
+        "cli.main = _fail\n"
+        "cli.sys.stderr = _FailedStderrLookup()\n"
+        "cli.main_and_exit([])\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 119
+    assert result.stderr == ""
+
+
 def test_failed_final_flush_is_reported_instead_of_a_clean_exit_code() -> None:
     """A final flush that *lost* output must not exit as if the run were fine.
 

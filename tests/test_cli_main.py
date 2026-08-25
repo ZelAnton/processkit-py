@@ -346,14 +346,14 @@ def test_intermediate_output_oserror_exits_119_without_a_traceback() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
-def test_output_error_survives_stderr_write_lookup_failure() -> None:
+def test_output_error_survives_stderr_write_lookup_base_exception() -> None:
     """A hostile stderr proxy cannot replace the original output verdict."""
     probe = (
         "import processkit._cli as cli\n"
         "from processkit._cli.output import OutputWriteError\n"
         "class _FailedStderrLookup:\n"
         "    @property\n"
-        "    def write(self): raise RuntimeError('write lookup exploded')\n"
+        "    def write(self): raise SystemExit(77)\n"
         "    def flush(self): pass\n"
         "def _fail(*args, **kwargs):\n"
         "    raise OutputWriteError('could not write stdout')\n"

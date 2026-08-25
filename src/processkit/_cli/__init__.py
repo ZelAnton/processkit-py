@@ -245,11 +245,11 @@ def _write_stderr(text: str) -> None:
     Failures are swallowed on purpose: an undeliverable diagnostic must not
     replace the exit status it was trying to report.
     """
-    stream = sys.stderr
-    write = getattr(stream, "write", None)
-    if write is None:
-        return
     with contextlib.suppress(Exception):
+        stream = sys.stderr
+        write = getattr(stream, "write", None)
+        if write is None:
+            return
         write(text)
         stream.flush()
 

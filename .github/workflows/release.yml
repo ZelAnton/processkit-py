@@ -722,6 +722,22 @@ jobs:
           PY
           python3 "$RUNNER_TEMP/processkit-py-verify-release.py"
 
+      # Fetch the branch tip directly instead of trusting the checkout's stale
+      # remote-tracking ref. A concurrent main update invalidates this run before
+      # it can cross the irreversible PyPI pivot.
+      - name: Guard — main has not moved since dispatch
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main
+          CURRENT_MAIN_SHA=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+          if [[ "$CURRENT_MAIN_SHA" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "::error::origin/main moved from dispatch SHA $EXPECTED_SOURCE_SHA to $CURRENT_MAIN_SHA while release artifacts were building. This run stopped before its PyPI publish and before pushing the release commit/tag. Dispatch a new release run from the current main."
+            exit 1
+          fi
+          echo "Fresh origin/main matches dispatch SHA $EXPECTED_SOURCE_SHA."
+
       # === PIVOT: the single irreversible step ===
       # PyPI Trusted Publishing (OIDC) by default: with NO PYPI_API_TOKEN secret set,
       # the action mints a short-lived credential per run (needs the `id-token: write`

@@ -365,8 +365,16 @@ fn call_py_flush(writer: &Arc<Py<PyAny>>) -> Result<(), String> {
                     Err(message)
                 }
             },
-            // No callable `flush` — nothing to do, not an error.
-            _ => Ok(()),
+            // A present but non-callable `flush` is the same as no optional
+            // method. Only AttributeError means the attribute is absent;
+            // every other lookup failure is a real writer error.
+            Ok(_) => Ok(()),
+            Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(py) => Ok(()),
+            Err(err) => {
+                let message = err.to_string();
+                err.write_unraisable(py, Some(bound));
+                Err(message)
+            }
         }
     })
     .unwrap_or_else(|| Err("tee flush skipped: Python interpreter is finalizing".to_string()))

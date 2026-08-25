@@ -2501,6 +2501,51 @@ def test_tee_writer_raising_write_is_isolated_and_disables_the_tee() -> None:
     assert calls == ["alpha"]
 
 
+@pytest.mark.parametrize("async_path", [False, True])
+def test_tee_writer_flush_lookup_error_is_reported_via_unraisablehook(
+    async_path: bool,
+) -> None:
+    captured: list[BaseException] = []
+
+    def hook(unraisable: object) -> None:
+        exc = getattr(unraisable, "exc_value", None)
+        if isinstance(exc, BaseException):
+            captured.append(exc)
+
+    class FlushLookupError:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, data: str) -> None:
+            self.chunks.append(data)
+
+        @property
+        def flush(self) -> object:
+            raise RuntimeError("flush lookup exploded")
+
+    sink = FlushLookupError()
+
+    async def async_scenario() -> ProcessResult:
+        return await Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(sink).aoutput()
+
+    old_hook = sys.unraisablehook
+    sys.unraisablehook = hook
+    try:
+        if async_path:
+            result = asyncio.run(async_scenario())
+        else:
+            result = Command(PY, ["-c", _TEE_TWO_LINES]).stdout_tee(sink).output()
+    finally:
+        sys.unraisablehook = old_hook
+
+    assert result.is_success
+    assert result.stdout.splitlines() == ["alpha", "beta"]
+    assert "".join(sink.chunks) == "alpha\nbeta\n"
+    assert len(captured) == 1
+    assert isinstance(captured[0], RuntimeError)
+    assert str(captured[0]) == "flush lookup exploded"
+
+
 @pytest.mark.parametrize("count", [-1, 0, 10_000])
 def test_tee_writer_invalid_integer_count_is_reported_via_unraisablehook(count: int) -> None:
     captured: list[BaseException] = []

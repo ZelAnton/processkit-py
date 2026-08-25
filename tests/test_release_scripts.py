@@ -234,6 +234,65 @@ def test_extract_release_notes_keeps_only_headers_with_bullets() -> None:
     assert "### Changed" not in result
 
 
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        (
+            "### Fixed\n- a wrapped fix\n  with its continuation\n",
+            "### Fixed\n- a wrapped fix\n  with its continuation\n",
+        ),
+        (
+            "### Fixed\n- first fix\n  first continuation\n- second fix\n  second continuation\n",
+            "### Fixed\n- first fix\n  first continuation\n- second fix\n  second continuation\n",
+        ),
+        (
+            "### Added\n- an addition\n  addition continuation\n\n"
+            "### Changed\n  prose outside a bullet\n\n"
+            "### Fixed\n- a fix\n  fix continuation\n",
+            "### Added\n- an addition\n  addition continuation\n\n"
+            "### Fixed\n- a fix\n  fix continuation\n",
+        ),
+    ],
+)
+def test_extract_release_notes_preserves_bullet_continuations(section: str, expected: str) -> None:
+    text = f"## [Unreleased]\n\n{section}\n## [1.0.0] - 2026-01-01\n"
+    assert extract_release_notes(text) == expected
+
+
+def test_extract_release_notes_preserves_current_wrapped_fixed_entries() -> None:
+    fixed_bullets = (
+        "- Reject HTTP responses whose status token is not exactly three ASCII digits\n"
+        "  in `wait_for_http`, even when a custom `expected_status` would accept a\n"
+        "  loosely parsed short or long integer.\n"
+        "- Update the bundled ProcessKit-rs core to 3.3.4 so an unconfirmed timeout,\n"
+        "  cancellation, or pipeline teardown surfaces as `ProcessError` instead of a\n"
+        "  misleading terminal outcome; Windows ConPTY rejects unrepresentable sizes\n"
+        "  and rolls back failed startup, and Windows process-group enumeration errors\n"
+        "  no longer look like clean completion. This retains the restricted/legacy\n"
+        "  Linux cgroup thaw fix included since core 3.3.1.\n"
+    )
+    text = (
+        "## [Unreleased]\n\n### Added\n-\n\n### Changed\n-\n\n"
+        f"### Fixed\n\n{fixed_bullets}\n## [1.0.0] - 2026-01-01\n"
+    )
+
+    assert extract_release_notes(text) == f"### Fixed\n{fixed_bullets}"
+
+
+def test_extract_release_notes_stops_continuation_at_non_continuation_content() -> None:
+    text = (
+        "## [Unreleased]\n\n"
+        "### Fixed\n"
+        "- a real fix\n"
+        "  its continuation\n"
+        "prose that ends the bullet block\n"
+        "  indented prose outside the bullet\n\n"
+        "## [1.0.0] - 2026-01-01\n"
+    )
+
+    assert extract_release_notes(text) == "### Fixed\n- a real fix\n  its continuation\n"
+
+
 def test_extract_release_notes_raises_when_empty() -> None:
     text = "## [Unreleased]\n\n### Added\n-\n\n## [1.0.0] - 2026-01-01\n"
     with pytest.raises(ValueError, match="empty"):

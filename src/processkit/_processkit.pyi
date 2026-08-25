@@ -800,7 +800,11 @@ class OutputEvent:
 
 @final
 class LifecycleEvent:
-    """One ordered event from a process's full lifecycle stream."""
+    """One ordered event from a process's full lifecycle stream.
+
+    Value semantics: `==`/`hash()` compare `kind`/`pid`/`text`/`outcome`;
+    picklable.
+    """
 
     @property
     def kind(self) -> Literal["started", "stdout", "stderr", "exited", "unknown"]: ...
@@ -813,6 +817,20 @@ class LifecycleEvent:
     @property
     def outcome(self) -> Outcome | None: ...
     def __repr__(self) -> str: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+    # `__reduce__`'s validated factory; private, not for direct use — declared
+    # only so stubtest sees the real member.
+    @staticmethod
+    def _unpickle(
+        kind: Literal["started", "stdout", "stderr", "exited", "unknown"],
+        pid: int | None,
+        text: str | None,
+        has_outcome: bool,
+        code: int | None,
+        signal: int | None,
+        timed_out: bool,
+    ) -> LifecycleEvent: ...
 
 @final
 class StderrLines:

@@ -6,13 +6,12 @@
 //! Every type here gets `__eq__` — for `ProcessResult`/`BytesResult`/`Outcome`/
 //! `RunProfile` delegating to the crate's own `PartialEq` over an `inner` crate
 //! value, for `Finished` comparing its (crate-typed) `outcome`/`stderr` fields,
-//! and for `OutputEvent` (added T-151) comparing the two exact fields it stores
-//! directly on the binding (`is_stderr`/`text`), since it wraps no crate
-//! `inner` — so equality tracks the value's fields, not Python's default
-//! `object` identity-`__eq__`. Each pairs that with a `__hash__` consistent
-//! with it — all of their fields are exact (integers, `Duration`, `bool`,
-//! text/bytes; no floats are *stored*, only derived as `f64` getters), so
-//! hashing is semantically sound.
+//! and for `OutputEvent`/`LifecycleEvent` comparing the exact fields each stores
+//! directly on the binding, since neither wraps a crate `inner` — so equality
+//! tracks the value's fields, not Python's default object identity-`__eq__`.
+//! Each pairs that with a `__hash__` consistent with it — all of their fields
+//! are exact (integers, `Duration`, `bool`, text/bytes; no floats are *stored*,
+//! only derived as `f64` getters), so hashing is semantically sound.
 //!
 //! Pickle is a harder call, and the answer differs per type. All of
 //! `processkit::ProcessResult`/`Outcome`/`Finished`/`RunProfile`/
@@ -30,13 +29,13 @@
 //! a `Finished` adds only its `stderr` (carried through verbatim) — so a
 //! reconstructed value compares `==` its original. They support pickle.
 //!
-//! `OutputEvent` (added T-151) round-trips **exactly** too, and more simply
-//! than any of the above: it wraps no crate value, storing its own
-//! `(is_stderr, text)` pair directly, so unpickling is a plain field copy with
-//! no `ScriptedRunner` detour. `text` is already a decoded `String` (never the
-//! raw, possibly-non-UTF-8 bytes that stop `BytesResult`) and there is no live
-//! OS telemetry to synthesize (as there is for `RunProfile`), so nothing can
-//! fail to reconstruct. It supports pickle.
+//! `OutputEvent` and `LifecycleEvent` round-trip **exactly** too. Both store
+//! their Python-visible fields directly. `LifecycleEvent` additionally flattens
+//! its optional terminal `Outcome` through the same exact
+//! `(code, signal, timed_out)` representation used by `Outcome` itself, then
+//! validates the variant shape before reconstruction. Their decoded text is
+//! never the raw, possibly-non-UTF-8 bytes that stop `BytesResult`, and neither
+//! contains live OS telemetry to synthesize. Both support pickle.
 //!
 //! It does **not** round-trip `ProcessResult` (nor, therefore,
 //! `SupervisionOutcome` in `supervisor.rs`, whose identity includes a
@@ -81,7 +80,7 @@ use processkit::ProcessEvent as PkProcessEvent;
 use processkit::ProcessResult as PkProcessResult;
 use processkit::ProcessRunner as _;
 use processkit::RunProfile as PkRunProfile;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
@@ -820,6 +819,124 @@ impl PyLifecycleEvent {
             self.text,
             self.outcome,
         )
+    }
+
+    /// Value equality over every field exposed by this variant-bearing value.
+    fn __eq__(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.pid == other.pid
+            && self.text == other.text
+            && self.outcome == other.outcome
+    }
+
+    /// Consistent with `__eq__`, including whether a terminal outcome exists.
+    fn __hash__(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.kind.hash(&mut hasher);
+        self.pid.hash(&mut hasher);
+        self.text.hash(&mut hasher);
+        self.outcome.is_some().hash(&mut hasher);
+        if let Some(outcome) = self.outcome {
+            outcome.code().hash(&mut hasher);
+            outcome.signal().hash(&mut hasher);
+            outcome.timed_out().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    /// Pickle every variant through its exact visible fields. The outcome is
+    /// flattened because the crate exposes no public `Outcome` constructor.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(
+        Py<PyAny>,
+        (
+            String,
+            Option<u32>,
+            Option<String>,
+            bool,
+            Option<i32>,
+            Option<i32>,
+            bool,
+        ),
+    )> {
+        let factory = py.get_type::<Self>().getattr("_unpickle")?.unbind();
+        let (has_outcome, code, signal, timed_out) = match self.outcome {
+            Some(outcome) => (true, outcome.code(), outcome.signal(), outcome.timed_out()),
+            None => (false, None, None, false),
+        };
+        Ok((
+            factory,
+            (
+                self.kind.to_owned(),
+                self.pid,
+                self.text.clone(),
+                has_outcome,
+                code,
+                signal,
+                timed_out,
+            ),
+        ))
+    }
+
+    /// Validate the discriminant/field relationship before reconstructing an
+    /// event, so malformed pickle data cannot create an impossible variant.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _unpickle(
+        kind: String,
+        pid: Option<u32>,
+        text: Option<String>,
+        has_outcome: bool,
+        code: Option<i32>,
+        signal: Option<i32>,
+        timed_out: bool,
+    ) -> PyResult<Self> {
+        if !has_outcome && (code.is_some() || signal.is_some() || timed_out) {
+            return Err(PyValueError::new_err(
+                "LifecycleEvent pickle has outcome fields without an outcome",
+            ));
+        }
+        if has_outcome
+            && ((timed_out && (code.is_some() || signal.is_some()))
+                || (code.is_some() && signal.is_some()))
+        {
+            return Err(PyValueError::new_err(
+                "LifecycleEvent pickle has an invalid outcome",
+            ));
+        }
+
+        let kind = match kind.as_str() {
+            "started" if pid.is_some() && text.is_none() && !has_outcome => "started",
+            "stdout" if pid.is_none() && text.is_some() && !has_outcome => "stdout",
+            "stderr" if pid.is_none() && text.is_some() && !has_outcome => "stderr",
+            "exited" if pid.is_none() && text.is_none() && has_outcome => "exited",
+            "unknown" if pid.is_none() && text.is_none() && !has_outcome => "unknown",
+            "started" | "stdout" | "stderr" | "exited" | "unknown" => {
+                return Err(PyValueError::new_err(
+                    "LifecycleEvent pickle fields do not match its kind",
+                ));
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "LifecycleEvent pickle has an unknown kind",
+                ));
+            }
+        };
+
+        let outcome = if has_outcome {
+            Some(scripted_outcome(code, signal, timed_out)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            kind,
+            pid,
+            text,
+            outcome,
+        })
     }
 }
 

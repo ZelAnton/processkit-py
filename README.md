@@ -165,6 +165,9 @@ async def main():
 asyncio.run(main())
 ```
 
+Each `LifecycleEvent` compares and hashes by its `kind`, `pid`, `text`, and
+`outcome`, and pickle round-trips preserve those fields for every event kind.
+
 No Python to write? `python -m processkit run -- <cmd> [args...]` gives a
 shell script or CI step the same kill-on-exit containment and resource
 limits from the command line, no code required. Once installed, the same

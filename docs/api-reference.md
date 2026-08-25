@@ -2088,6 +2088,9 @@ class LifecycleEvent
 
 One ordered event from a process's full lifecycle stream.
 
+Value semantics: `==`/`hash()` compare `kind`/`pid`/`text`/`outcome`;
+picklable.
+
 #### `kind`
 
 ```text

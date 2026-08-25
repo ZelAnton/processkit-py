@@ -11,6 +11,7 @@ import gc
 import io
 import json
 import pathlib
+import pickle
 import socket
 import sys
 import time
@@ -550,6 +551,94 @@ def test_lifecycle_events_cover_start_output_and_exit_in_order() -> None:
         assert event.text is not None
         output.add((event.stream, event.text.rstrip()))
     assert {("stdout", "out1"), ("stdout", "out2"), ("stderr", "err1")} <= output
+
+
+def _lifecycle_events(code: str) -> list[LifecycleEvent]:
+    async def scenario() -> list[LifecycleEvent]:
+        proc = await Command(PY, ["-c", code]).astart()
+        events = [event async for event in proc.lifecycle_events()]
+        await proc.aoutcome()
+        return events
+
+    return asyncio.run(scenario())
+
+
+def test_lifecycle_event_eq_and_hash_compare_by_value() -> None:
+    events = _lifecycle_events(_BOTH_STREAMS)
+    for original in events:
+        restored = pickle.loads(pickle.dumps(original))
+        assert restored is not original
+        assert restored == original
+        assert hash(restored) == hash(original)
+
+    event = events[1]
+    assert event != 5
+    assert (event == "not an event") is False
+
+
+def test_lifecycle_event_not_equal_when_a_significant_field_differs() -> None:
+    events = _lifecycle_events("print('same')")
+    started = events[0]
+    output = events[1]
+    exited = events[-1]
+    assert started.pid is not None
+    assert output.text is not None
+
+    other_pid = LifecycleEvent._unpickle("started", started.pid ^ 1, None, False, None, None, False)
+    other_text = LifecycleEvent._unpickle(
+        output.kind, None, f"{output.text}different", False, None, None, False
+    )
+    other_kind = LifecycleEvent._unpickle(
+        "stderr" if output.kind == "stdout" else "stdout",
+        None,
+        output.text,
+        False,
+        None,
+        None,
+        False,
+    )
+    other_outcome = LifecycleEvent._unpickle("exited", None, None, True, 3, None, False)
+
+    assert started != other_pid
+    assert output != other_text
+    assert output != other_kind
+    assert exited != other_outcome
+
+
+def test_lifecycle_event_pickle_round_trip_preserves_every_variant_field() -> None:
+    events = _lifecycle_events(_BOTH_STREAMS)
+    events.append(LifecycleEvent._unpickle("unknown", None, None, False, None, None, False))
+
+    for original in events:
+        restored = pickle.loads(pickle.dumps(original))
+        assert isinstance(restored, LifecycleEvent)
+        assert restored == original
+        assert hash(restored) == hash(original)
+        assert restored.kind == original.kind
+        assert restored.pid == original.pid
+        assert restored.stream == original.stream
+        assert restored.text == original.text
+        assert restored.outcome == original.outcome
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ("future", None, None, False, None, None, False),
+        ("started", None, None, False, None, None, False),
+        ("stdout", None, None, False, None, None, False),
+        ("exited", None, None, False, None, None, False),
+        ("unknown", None, "unexpected", False, None, None, False),
+        ("stdout", None, "line", False, 0, None, False),
+        ("exited", None, None, True, 0, None, True),
+        ("exited", None, None, True, 0, 9, False),
+    ],
+)
+def test_lifecycle_event_unpickle_rejects_impossible_states(
+    payload: tuple[str, int | None, str | None, bool, int | None, int | None, bool],
+) -> None:
+    with pytest.raises(ValueError, match="LifecycleEvent pickle"):
+        LifecycleEvent._unpickle(*payload)  # type: ignore[arg-type]
 
 
 def test_lifecycle_and_output_event_iterators_share_one_shot_stream() -> None:

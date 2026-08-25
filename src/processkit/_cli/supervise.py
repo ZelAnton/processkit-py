@@ -64,11 +64,10 @@ def _line_buffer_for_tee(stream: object) -> None:
     line-buffering rather than failing setup — the tee itself still delivers
     output, just with the pipe's normal block buffering.
     """
-    reconfigure = getattr(stream, "reconfigure", None)
-    if reconfigure is None:
-        return
     with contextlib.suppress(Exception):
-        reconfigure(line_buffering=True, write_through=True)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(line_buffering=True, write_through=True)
 
 
 def _parse_health_port(parser: argparse.ArgumentParser, endpoint: str) -> tuple[str, int]:

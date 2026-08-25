@@ -88,9 +88,10 @@ def insert_unreleased_body(text: str, generated: str) -> str:
 
 def extract_release_notes(text: str) -> str:
     """Assemble `release-notes.md`'s content from the `[Unreleased]`
-    section: keep a `### Header` only if it has at least one real bullet (an
-    untouched placeholder header is dropped). Raises `ValueError` if the
-    result would be empty — nothing release-worthy to publish."""
+    section: keep a `### Header` only if it has at least one real bullet,
+    including that bullet's indented continuation lines (an untouched
+    placeholder header is dropped). Raises `ValueError` if the result would
+    be empty — nothing release-worthy to publish."""
     m = UNRELEASED_RE.search(text)
     body = (m.group(1) if m else "").strip()
 
@@ -99,7 +100,16 @@ def extract_release_notes(text: str) -> str:
     for i in range(1, len(parts), 2):
         header = parts[i]
         section = parts[i + 1] if i + 1 < len(parts) else ""
-        bullets = [ln for ln in section.splitlines() if re.match(r"^-\s+\S", ln)]
+        bullets: list[str] = []
+        in_bullet = False
+        for line in section.splitlines():
+            if re.match(r"^-\s+\S", line):
+                bullets.append(line)
+                in_bullet = True
+            elif in_bullet and re.match(r"^[ \t]+\S", line):
+                bullets.append(line)
+            else:
+                in_bullet = False
         if bullets:
             if out:
                 out.append("")

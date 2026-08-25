@@ -12,7 +12,7 @@ import pathlib
 import sys
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import cast
 
 import pytest
@@ -689,13 +689,12 @@ def test_aoutput_as_completed_cancel_mid_flight_kills_the_tree(pid_file: pathlib
 
 
 @pytest.mark.parametrize("binary", [False, True], ids=["text", "bytes"])
-def test_aoutput_as_completed_preserves_fresh_cancel_while_draining_slots(
+def test_aoutput_as_completed_early_close_drains_slots(
     monkeypatch: pytest.MonkeyPatch, *, binary: bool
 ) -> None:
-    async def scenario(cancel_during_cleanup: bool) -> None:
+    async def scenario() -> None:
         slots_started = asyncio.Event()
         cleanup_started = asyncio.Event()
-        cleanup_recancelled = asyncio.Event()
         cleanup_release = asyncio.Event()
         cleanup_finished = asyncio.Event()
         slot_tasks: list[asyncio.Task[object]] = []
@@ -717,7 +716,10 @@ def test_aoutput_as_completed_preserves_fresh_cancel_while_draining_slots(
                     try:
                         await cleanup_release.wait()
                     except asyncio.CancelledError:
-                        cleanup_recancelled.set()
+                        # A fresh cancellation is not part of this baseline
+                        # path; keep the synthetic slot drainable if one is
+                        # introduced by a test-runner shutdown.
+                        continue
                 cleanup_finished.set()
                 raise
             raise AssertionError("slot blocker returned without cancellation")
@@ -744,21 +746,115 @@ def test_aoutput_as_completed_preserves_fresh_cancel_while_draining_slots(
 
         consumer = asyncio.create_task(consume_one())
         await cleanup_started.wait()
-        if cancel_during_cleanup:
-            assert consumer.cancel()
-            await asyncio.wait_for(cleanup_recancelled.wait(), timeout=5.0)
         cleanup_release.set()
-
-        if cancel_during_cleanup:
-            with pytest.raises(asyncio.CancelledError):
-                await consumer
-        else:
-            await consumer
+        await consumer
 
         assert cleanup_finished.is_set()
         assert len(slot_tasks) == 2
         assert all(task.done() for task in slot_tasks)
         assert slot_tasks[1].cancelled()
 
-    asyncio.run(scenario(cancel_during_cleanup=False))
-    asyncio.run(scenario(cancel_during_cleanup=True))
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("binary", [False, True], ids=["text", "bytes"])
+def test_aoutput_as_completed_preserves_second_cancel_during_real_tree_cleanup(
+    monkeypatch: pytest.MonkeyPatch, pid_file: pathlib.Path, *, binary: bool
+) -> None:
+    async def scenario() -> int:
+        cleanup_started = asyncio.Event()
+        cleanup_recancelled = asyncio.Event()
+        cleanup_release = asyncio.Event()
+        cleanup_finished = asyncio.Event()
+        slot_tasks: list[asyncio.Task[object]] = []
+        process_tasks: list[asyncio.Future[object]] = []
+
+        original_slot: Callable[[Command], Awaitable[object]]
+        if binary:
+            original_slot = cast(Callable[[Command], Awaitable[object]], aio._aoutput_bytes_slot)
+        else:
+            original_slot = cast(Callable[[Command], Awaitable[object]], aio._aoutput_slot)
+
+        async def delayed_cleanup_slot(command: Command) -> object:
+            slot_task = asyncio.current_task()
+            assert slot_task is not None
+            slot_tasks.append(slot_task)
+            process_task = asyncio.ensure_future(original_slot(command))
+            process_tasks.append(process_task)
+            try:
+                return await asyncio.shield(process_task)
+            except asyncio.CancelledError:
+                # Shielding lets this wrapper observe `_reap_slots`' first
+                # cancellation before it is propagated to the real command.
+                # The command teardown then runs concurrently while the event
+                # gate keeps this slot pending for the consumer's second cancel.
+                assert process_task.cancel()
+                cleanup_started.set()
+                try:
+                    while not cleanup_release.is_set():
+                        try:
+                            await cleanup_release.wait()
+                        except asyncio.CancelledError:
+                            cleanup_recancelled.set()
+                    # The real command task was deliberately cancelled so its
+                    # process container tears down the whole subtree.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await process_task
+                finally:
+                    cleanup_finished.set()
+                raise
+
+        commands = [spawn_grandchild_command(pid_file)]
+        iterator: AsyncIterator[tuple[int, object]]
+        if binary:
+            monkeypatch.setattr(aio, "_aoutput_bytes_slot", delayed_cleanup_slot)
+            iterator = aoutput_as_completed_bytes(commands, concurrency=1)
+        else:
+            monkeypatch.setattr(aio, "_aoutput_slot", delayed_cleanup_slot)
+            iterator = aoutput_as_completed(commands, concurrency=1)
+
+        async def consume() -> None:
+            async for _ in iterator:
+                raise AssertionError("unfinished command unexpectedly produced a result")
+
+        consumer = asyncio.create_task(consume())
+        grandchild_pid = await asyncio.to_thread(read_pid_when_ready, pid_file, 10.0)
+        assert is_alive(grandchild_pid)
+        assert len(slot_tasks) == 1
+        assert not slot_tasks[0].done()
+        assert len(process_tasks) == 1
+        assert not process_tasks[0].done()
+
+        # The first cancel interrupts the consumer while its only slot is still
+        # running and drives the iterator's `finally` into `_reap_slots`.
+        assert consumer.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=5.0)
+        assert not consumer.done()
+
+        # The second cancel lands only after the slot has acknowledged the
+        # first one, so `_reap_slots` must preserve it while re-cancelling the
+        # event-gated slot rather than returning normally.
+        assert consumer.cancel()
+        await asyncio.wait_for(cleanup_recancelled.wait(), timeout=5.0)
+        assert not consumer.done()
+
+        # The real command task is already tearing down in parallel. Prove the
+        # actual descendant is gone before allowing the synthetic cleanup gate
+        # to settle; this binds no-survivor evidence to the repeated-cancel path.
+        assert await asyncio.to_thread(wait_dead, grandchild_pid, 10.0)
+        cleanup_release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+
+        assert cleanup_finished.is_set()
+        assert slot_tasks[0].done()
+        assert slot_tasks[0].cancelled()
+        assert process_tasks[0].done()
+        assert process_tasks[0].cancelled()
+        return grandchild_pid
+
+    grandchild_pid = asyncio.run(scenario())
+    assert wait_dead(grandchild_pid, timeout=10.0), (
+        f"grandchild {grandchild_pid} survived repeated consumer cancellation"
+    )

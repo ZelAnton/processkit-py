@@ -1018,22 +1018,27 @@ async def _reap_slots(tasks: set[asyncio.Task[Any]]) -> None:
     Robust against a *fresh* cancellation landing while we drain: `asyncio.wait`
     waits for every task to settle and never re-raises a child's own exception
     into this frame, so the only thing that can interrupt the drain is a new
-    cancellation of *this* await — which we absorb by re-cancelling and looping,
-    never returning while a slot (and thus a subtree) is still live. Mirrors
+    cancellation of *this* await — which we preserve while re-cancelling and
+    looping, never returning while a slot (and thus a subtree) is still live.
+    Once every slot has settled, the fresh cancellation is restored. Mirrors
     `_quiesce`'s discipline for the single-task case.
     """
     if not tasks:
         return
     for task in tasks:
         task.cancel()
+    pending_cancel: asyncio.CancelledError | None = None
     while True:
         try:
             await asyncio.wait(tasks)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            pending_cancel = exc
             for task in tasks:
                 task.cancel()
             continue
         break
+    if pending_cancel is not None:
+        raise pending_cancel
 
 
 async def _stream_as_completed(

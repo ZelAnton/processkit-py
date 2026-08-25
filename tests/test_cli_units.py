@@ -12,7 +12,7 @@ from typing import Self, cast
 import pytest
 
 from processkit import Command, ResourceLimit, Unsupported
-from processkit._cli import common, doctor, exit_codes, output, parser
+from processkit._cli import common, doctor, exit_codes, output, parser, supervise
 
 
 class _RecordingCommand:
@@ -65,6 +65,29 @@ class _FlushFailingStream:
         raise self.error
 
 
+class _LookupFailingReconfigureStream:
+    @property
+    def reconfigure(self) -> object:
+        raise RuntimeError("reconfigure lookup exploded")
+
+
+class _RecordingReconfigureStream:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, bool]] = []
+
+    def reconfigure(self, **kwargs: bool) -> None:
+        self.calls.append(kwargs)
+
+
+class _NonCallableReconfigureStream:
+    reconfigure = object()
+
+
+class _CallFailingReconfigureStream:
+    def reconfigure(self, **_kwargs: bool) -> None:
+        raise RuntimeError("reconfigure call exploded")
+
+
 def _epipe_oserror() -> OSError:
     """A plain `OSError` carrying `EPIPE`, which its constructor cannot express.
 
@@ -78,6 +101,27 @@ def _epipe_oserror() -> OSError:
     error = OSError("pipe closed")
     error.errno = errno.EPIPE
     return error
+
+
+def test_line_buffer_for_tee_treats_reconfigure_lookup_failure_as_best_effort() -> None:
+    supervise._line_buffer_for_tee(_LookupFailingReconfigureStream())
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [object(), _NonCallableReconfigureStream(), _CallFailingReconfigureStream()],
+)
+def test_line_buffer_for_tee_treats_other_unusable_reconfigure_as_best_effort(
+    stream: object,
+) -> None:
+    supervise._line_buffer_for_tee(stream)
+
+
+def test_line_buffer_for_tee_reconfigures_a_usable_stream() -> None:
+    stream = _RecordingReconfigureStream()
+
+    supervise._line_buffer_for_tee(stream)
+    assert stream.calls == [{"line_buffering": True, "write_through": True}]
 
 
 def test_split_child_argv_preserves_the_child_tail() -> None:

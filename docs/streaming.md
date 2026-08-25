@@ -443,6 +443,9 @@ finished = await proc.afinish()
 
 The sequence begins with `started`, contains zero or more `stdout`/`stderr`
 events, and ends with `exited`. Fields that do not apply to a kind are `None`.
+`LifecycleEvent` is an immutable value object: equality and `hash()` use its
+`kind`, `pid`, `text`, and `outcome`, and pickle round-trips preserve those
+fields for every event kind.
 The iterator and `output_events()` are two views over the same one-shot stream,
 so choose exactly one. Draining either iterator drives the run to completion;
 the following `finish()`/`afinish()` or `outcome()`/`aoutcome()` reports the

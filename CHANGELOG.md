@@ -8,13 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
--
+
+- Give `LifecycleEvent` immutable value semantics based on `kind`, `pid`,
+  `text`, and `outcome`, including matching hashes and pickle round-trips for
+  every lifecycle variant.
 
 ### Changed
 -
 
 ### Fixed
 
+- Keep `processkit supervise` setup best-effort when looking up or invoking
+  `reconfigure` on a non-standard output stream fails; supervision continues
+  without line buffering instead of aborting.
+- Preserve a fresh `CancelledError` delivered while async completion-order
+  iterators drain cancelled slots: both text and bytes iterators still settle
+  every slot before re-raising it.
+- Report non-`AttributeError` failures while looking up optional `flush` on
+  Python tee writers through `sys.unraisablehook`; capture and mirroring
+  continue, while missing or non-callable `flush` remains optional.
+- Keep CLI output-loss termination at exit code 119 when even looking up
+  `sys.stderr.write` fails; emergency diagnostics remain best-effort.
 - Reject HTTP responses whose status token is not exactly three ASCII digits
   in `wait_for_http`, even when a custom `expected_status` would accept a
   loosely parsed short or long integer.

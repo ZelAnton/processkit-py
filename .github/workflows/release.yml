@@ -267,6 +267,10 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
+      - name: Load exact release toolchain snapshot
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
+
       # Overlay the version-bumped manifests + promoted changelog + release notes
       # (the same files the wheels were built from) onto the checkout, so the
       # release commit records exactly what was published.
@@ -314,14 +318,14 @@ jobs:
           git tag "${{ needs.prepare.outputs.tag }}"
 
       # uv is not preinstalled on the GitHub runner image; install it so the
-      # `uvx twine check` below resolves. (The publish action does its own
+      # exact snapshot `uvx twine check` below runs. (The publish action does its own
       # metadata check, but this strict pre-pivot gate catches a render/metadata
       # break BEFORE the irreversible step — free here, un-yankable once on PyPI.)
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
       - name: Check distribution metadata
-        run: uvx 'twine>=6,<7' check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
+        run: uvx "twine==${TWINE_VERSION}" check --strict ./artifacts/*.whl ./artifacts/*.tar.gz
 
       # A retry may find only part of this version on PyPI. Verify one snapshot,
       # then copy only the absent expected distributions into a dedicated upload

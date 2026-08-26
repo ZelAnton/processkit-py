@@ -39,6 +39,12 @@ jobs:
     permissions:
       id-token: write # TestPyPI Trusted Publishing (OIDC); also enables the token fallback
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Load exact release toolchain snapshot
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -49,9 +55,8 @@ jobs:
           pattern: "{wheels-*,sdist}"
           merge-multiple: true
       - name: Check metadata
-        # Same pin as release.yml's pre-pivot check, so the dry-run mirrors the
-        # real release's twine behavior.
-        run: uvx 'twine>=6,<7' check --strict ./dist/*
+        # Same snapshot as release.yml's pre-pivot check, so the dry-run mirrors it.
+        run: uvx "twine==${TWINE_VERSION}" check --strict ./dist/*
       # OIDC by default (no TESTPYPI_API_TOKEN set); the token is used if present.
       - name: Upload to TestPyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

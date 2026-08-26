@@ -33,6 +33,7 @@ from scripts.release.pull_cibuildwheel_images import (
 )
 
 CLIFF_TOML = pathlib.Path(__file__).resolve().parents[1] / "cliff.toml"
+GIT = shutil.which("git")
 GIT_CLIFF = shutil.which("git-cliff")
 RELEASE_WORKFLOW = (
     pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
@@ -44,8 +45,9 @@ _PARSER_ENTRY_RE = re.compile(
 
 
 def _run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
+    assert GIT is not None
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [GIT, "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,
@@ -508,7 +510,10 @@ def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.P
     assert "café".encode() in written
 
 
-@pytest.mark.skipif(GIT_CLIFF is None, reason="git-cliff is not installed")
+@pytest.mark.skipif(
+    GIT is None or GIT_CLIFF is None,
+    reason="git and git-cliff are required",
+)
 def test_first_release_real_git_cliff_includes_release_worthy_root_commit(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -560,6 +565,7 @@ def test_release_workflow_passes_first_release_mode_without_synthetic_tag() -> N
     assert 'git tag "$PREV_TAG"' not in workflow
 
 
+@pytest.mark.skipif(GIT is None, reason="git is not installed")
 def test_subsequent_release_range_excludes_previously_tagged_root(
     tmp_path: pathlib.Path,
 ) -> None:

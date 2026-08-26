@@ -289,10 +289,10 @@ def _flush_std_streams() -> str | None:
     """
     problem: str | None = None
     for name, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
-        flush = getattr(stream, "flush", None)
-        if flush is None:
-            continue
         try:
+            flush = getattr(stream, "flush", None)
+            if flush is None:
+                continue
             flush()
         except BrokenPipeError:
             # Do not let interpreter finalization retry the same dead pipe and

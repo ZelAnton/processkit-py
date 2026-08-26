@@ -413,6 +413,30 @@ def test_failed_final_flush_is_reported_instead_of_a_clean_exit_code() -> None:
     assert "Traceback (most recent call last)" not in result.stderr
 
 
+def test_failed_final_flush_lookup_is_reported_instead_of_hidden() -> None:
+    """Looking up ``flush`` is part of the same normalized exit contract."""
+    probe = (
+        "import processkit._cli as cli\n"
+        "class _FailedFlushLookup:\n"
+        "    @property\n"
+        "    def flush(self): raise RuntimeError('flush lookup failed')\n"
+        "cli.main = lambda argv: 0\n"
+        "cli.sys.stdout = _FailedFlushLookup()\n"
+        "cli.main_and_exit([])\n"
+    )
+    result = subprocess.run(
+        [PY, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+        check=False,
+    )
+    assert result.returncode == 119
+    assert "processkit: could not flush stdout" in result.stderr
+    assert "RuntimeError('flush lookup failed')" in result.stderr
+    assert "Traceback (most recent call last)" not in result.stderr
+
+
 def test_broken_stdout_pipe_still_reports_the_child_code() -> None:
     """The other half of the flush contract: a receiver that already walked
     away is *not* an error.

@@ -115,6 +115,11 @@ def _release_toolchain_text(relative: str) -> str:
             "uvx 'maturin>=1,<2'",
         ),
         (
+            ".github/workflows/ci.yml",
+            'uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}"',
+            "uvx 'cibuildwheel>=4,<5'",
+        ),
+        (
             ".github/workflows/_build-dists.yml",
             "toolchain: ${{ env.RUST_TOOLCHAIN }}",
             "toolchain: stable",
@@ -166,6 +171,116 @@ def test_release_artifact_toolchain_rejects_load_after_consumer() -> None:
     errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
 
     assert any("snapshot load must precede consumer" in error for error in errors)
+
+
+def test_ci_musllinux_toolchain_load_must_be_executable_and_precede_build() -> None:
+    relative = ".github/workflows/ci.yml"
+    original = _release_toolchain_text(relative)
+    load_step = (
+        "      - name: Load exact release toolchain snapshot\n"
+        "        shell: bash\n"
+        '        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"\n'
+    )
+    consumer = (
+        '        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" '
+        "--platform linux --output-dir wheelhouse\n"
+    )
+    assert original.count(load_step) == 1
+    assert original.count(consumer) == 1
+
+    without_load = original.replace(load_step, "", 1)
+    mutated = without_load.replace(consumer, consumer + load_step, 1)
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert any("snapshot load must precede consumer" in error for error in errors)
+
+
+def test_ci_musllinux_consumer_must_be_an_executable_command() -> None:
+    relative = ".github/workflows/ci.yml"
+    original = _release_toolchain_text(relative)
+    active = (
+        '        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" '
+        "--platform linux --output-dir wheelhouse"
+    )
+    assert original.count(active) == 1
+    mutated = original.replace(active, f"        run: echo '{active.strip()}'", 1)
+
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert any("expected one executable consumer step" in error for error in errors)
+
+
+def test_ci_musllinux_requires_rust_toolchain_environment_pass() -> None:
+    relative = "pyproject.toml"
+    original = _release_toolchain_text(relative)
+    binding = 'environment-pass = ["RUST_TOOLCHAIN"]'
+    assert original.count(binding) == 1
+    mutated = original.replace(binding, "environment-pass = []", 1)
+
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert any("cibuildwheel snapshot consumer" in error for error in errors)
+
+
+def test_ci_windows_arm64_consumer_requires_bash() -> None:
+    relative = ".github/workflows/ci.yml"
+    original = _release_toolchain_text(relative)
+    step_prefix = (
+        "      - name: Build and test the native Windows ARM64 free-threaded wheel\n"
+        "        if: matrix.os == 'windows-11-arm' && matrix.python == '3.14t'\n"
+        "        shell: bash\n"
+    )
+    assert original.count(step_prefix) == 1
+    mutated = original.replace(step_prefix, step_prefix.replace("        shell: bash\n", ""), 1)
+
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert "CI Windows ARM64 wheel job: consumer step must use shell: bash" in errors
+
+
+def test_ci_conditional_loader_and_consumer_must_be_reachable() -> None:
+    relative = ".github/workflows/ci.yml"
+    original = _release_toolchain_text(relative)
+    windows_condition = "matrix.os == 'windows-11-arm' && matrix.python == '3.14t'"
+    selector_condition = "matrix.os == 'ubuntu-latest'"
+    windows_loader = (
+        "      - name: Load exact release toolchain snapshot\n"
+        f"        if: {windows_condition}\n"
+        "        shell: bash\n"
+        '        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"\n'
+    )
+    windows_consumer = (
+        "      - name: Build and test the native Windows ARM64 free-threaded wheel\n"
+        f"        if: {windows_condition}\n"
+        "        shell: bash\n"
+    )
+    selector_loader = (
+        "      - name: Load exact release toolchain snapshot\n"
+        f"        if: {selector_condition}\n"
+        "        shell: bash\n"
+        '        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"\n'
+    )
+    selector_consumer = (
+        f"      - if: {selector_condition}\n        name: Verify cibuildwheel build selector\n"
+    )
+    cases = (
+        (windows_loader, windows_condition, "false", "snapshot-load"),
+        (windows_consumer, windows_condition, "false", "consumer"),
+        (selector_loader, selector_condition, "false", "snapshot-load"),
+        (selector_consumer, selector_condition, "false", "consumer"),
+        (windows_loader, windows_condition, "matrix.os == 'windows-latest'", "snapshot-load"),
+        (windows_consumer, windows_condition, "matrix.os == 'windows-latest'", "consumer"),
+        (selector_loader, selector_condition, "matrix.os == 'windows-latest'", "snapshot-load"),
+        (selector_consumer, selector_condition, "matrix.os == 'windows-latest'", "consumer"),
+    )
+
+    for step, condition, replacement, expected_error in cases:
+        assert original.count(step) == 1
+        mutated_step = step.replace(f"if: {condition}", f"if: {replacement}", 1)
+        mutated = original.replace(step, mutated_step, 1)
+        errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+        assert any(expected_error in error for error in errors)
 
 
 @pytest.mark.parametrize(

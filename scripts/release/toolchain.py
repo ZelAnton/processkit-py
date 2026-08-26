@@ -200,6 +200,39 @@ def _workflow_step_executable_commands(step: str) -> list[str]:
     return executable
 
 
+def _workflow_step_field(step: str, field: str) -> str | None:
+    for line in step.splitlines():
+        stripped = line.lstrip()
+        indentation = len(line) - len(stripped)
+        active = _without_unquoted_comment(stripped)
+        if indentation == 6 and active.startswith("- "):
+            active = active[2:].strip()
+        elif indentation != 8:
+            continue
+        key, separator, value = active.partition(":")
+        if separator == ":" and key == field:
+            return value.strip() or None
+    return None
+
+
+def _normalize_workflow_condition(condition: str | None) -> str | None:
+    if condition is None:
+        return None
+    normalized = condition.strip()
+    if normalized.startswith("${{") and normalized.endswith("}}"):
+        normalized = normalized[3:-2].strip()
+    return " ".join(normalized.split())
+
+
+def _workflow_step_matches_condition(step: str, required_condition: str | None) -> bool:
+    actual = _normalize_workflow_condition(_workflow_step_field(step, "if"))
+    if actual is not None and actual.casefold() == "false":
+        return False
+    if required_condition is None:
+        return True
+    return actual == _normalize_workflow_condition(required_condition)
+
+
 def _check_load_before_consumers(
     errors: list[str],
     *,
@@ -208,6 +241,8 @@ def _check_load_before_consumers(
     job_name: str,
     load_command: str,
     consumer_commands: Sequence[str],
+    required_condition: str | None = None,
+    required_shell: str | None = None,
 ) -> None:
     try:
         steps = _workflow_job_steps(workflow, job_name)
@@ -216,21 +251,34 @@ def _check_load_before_consumers(
         return
 
     executable_steps = [_workflow_step_executable_commands(step) for step in steps]
+    matching_steps = [_workflow_step_matches_condition(step, required_condition) for step in steps]
     load_steps = [
-        index for index, commands in enumerate(executable_steps) if load_command in commands
+        index
+        for index, commands in enumerate(executable_steps)
+        if matching_steps[index] and load_command in commands
     ]
     if len(load_steps) != 1:
         errors.append(f"{label}: expected one executable snapshot-load step")
         return
     load_index = load_steps[0]
+    if required_shell is not None:
+        actual_shell = _workflow_step_field(steps[load_index], "shell")
+        if actual_shell != required_shell:
+            errors.append(f"{label}: snapshot-load step must use shell: {required_shell}")
     for command in consumer_commands:
         consumer_steps = [
-            index for index, commands in enumerate(executable_steps) if command in commands
+            index
+            for index, commands in enumerate(executable_steps)
+            if matching_steps[index] and command in commands
         ]
         if len(consumer_steps) != 1:
             errors.append(f"{label}: expected one executable consumer step: {command}")
         elif consumer_steps[0] <= load_index:
             errors.append(f"{label}: snapshot load must precede consumer: {command}")
+        elif required_shell is not None:
+            actual_shell = _workflow_step_field(steps[consumer_steps[0]], "shell")
+            if actual_shell != required_shell:
+                errors.append(f"{label}: consumer step must use shell: {required_shell}")
 
 
 def release_toolchain_errors(
@@ -251,6 +299,7 @@ def release_toolchain_errors(
         return [str(error)]
 
     build_workflow = read(".github/workflows/_build-dists.yml")
+    ci_workflow = read(".github/workflows/ci.yml")
     release_workflow = read(".github/workflows/release.yml")
     test_release_workflow = read(".github/workflows/test-release.yml")
     pyproject = read("pyproject.toml")
@@ -281,6 +330,16 @@ def release_toolchain_errors(
             build_workflow,
             "toolchain: ${{ env.RUST_TOOLCHAIN }}",
             1,
+        ),
+        "CI workflow snapshot loads": (
+            ci_workflow,
+            "python scripts/release/toolchain.py export-github-env",
+            3,
+        ),
+        "CI cibuildwheel consumers": (
+            ci_workflow,
+            'uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}"',
+            3,
         ),
         "release workflow snapshot load": (
             release_workflow,
@@ -328,6 +387,15 @@ def release_toolchain_errors(
             ('uvx "maturin==${MATURIN_VERSION}" sdist --out dist',),
         ),
         (
+            "CI musllinux wheel job",
+            ci_workflow,
+            "build-musllinux",
+            (
+                'uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" '
+                "--platform linux --output-dir wheelhouse",
+            ),
+        ),
+        (
             "PyPI publish job",
             release_workflow,
             "publish",
@@ -353,6 +421,29 @@ def release_toolchain_errors(
             consumer_commands=consumers,
         )
 
+    _check_load_before_consumers(
+        errors,
+        label="CI Windows ARM64 wheel job",
+        workflow=ci_workflow,
+        job_name="test",
+        load_command=load_command,
+        consumer_commands=('uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse',),
+        required_condition=("matrix.os == 'windows-11-arm' && matrix.python == '3.14t'"),
+        required_shell="bash",
+    )
+    _check_load_before_consumers(
+        errors,
+        label="CI wheel-selector job",
+        workflow=ci_workflow,
+        job_name="build",
+        load_command=load_command,
+        consumer_commands=(
+            'ids=$(uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" '
+            "--print-build-identifiers --platform linux)",
+        ),
+        required_condition="matrix.os == 'ubuntu-latest'",
+    )
+
     try:
         testpypi_permissions = _workflow_job_permissions(test_release_workflow, "publish_testpypi")
     except ValueError as error:
@@ -362,7 +453,9 @@ def release_toolchain_errors(
         if testpypi_permissions != expected_permissions:
             errors.append("TestPyPI publish job must grant only contents: read and id-token: write")
 
-    workflow_text = "\n".join((build_workflow, release_workflow, test_release_workflow))
+    workflow_text = "\n".join(
+        (build_workflow, ci_workflow, release_workflow, test_release_workflow)
+    )
     if _FLOATING_PACKAGE_RE.search(workflow_text) is not None:
         errors.append("release workflows contain a floating package-tool version")
     if re.search(r"toolchain:\s*stable\b", build_workflow) is not None:

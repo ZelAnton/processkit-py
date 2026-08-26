@@ -215,6 +215,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Load exact release toolchain snapshot
+        if: matrix.os == 'windows-11-arm' && matrix.python == '3.14t'
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           toolchain: stable
@@ -240,6 +244,7 @@ jobs:
         run: uv run ${{ matrix.python && format('--python {0} ', matrix.python) }}pytest
       - name: Build and test the native Windows ARM64 free-threaded wheel
         if: matrix.os == 'windows-11-arm' && matrix.python == '3.14t'
+        shell: bash
         env:
           CIBW_ARCHS_WINDOWS: ARM64
           CIBW_BUILD: cp314t-win_arm64
@@ -258,7 +263,7 @@ jobs:
         # this tests the actual wheel instead of an x86_64 build under emulation.
         # The ignored documentation guards require an editable source package
         # and remain enforced by every ordinary test leg.
-        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
+        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python == ''
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml --cov-report=html
@@ -479,6 +484,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Load exact release toolchain snapshot
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
         with:
           toolchain: stable
@@ -505,7 +514,7 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         name: Verify cibuildwheel build selector
         run: |
-          ids=$(uvx 'cibuildwheel>=4,<5' --print-build-identifiers --platform linux)
+          ids=$(uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --print-build-identifiers --platform linux)
           echo "$ids"
           for fam in cp310-manylinux cp310-musllinux cp314t-manylinux cp314t-musllinux; do
             echo "$ids" | grep -q "^$fam" || { echo "::error::$fam wheel not in cibuildwheel selector"; exit 1; }
@@ -526,6 +535,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Load exact release toolchain snapshot
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -535,7 +547,7 @@ jobs:
         # would also pull cp311–cp314 (redundant abi3-reuse smoke runs).
         env:
           CIBW_BUILD: "cp310-musllinux_x86_64 cp314t-musllinux_x86_64"
-        run: uvx 'cibuildwheel>=4,<5' --platform linux --output-dir wheelhouse
+        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --platform linux --output-dir wheelhouse
 
   rust-audit:
     name: cargo-deny

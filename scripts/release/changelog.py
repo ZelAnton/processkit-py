@@ -77,16 +77,16 @@ def unreleased_has_bullets(text: str) -> bool:
     return any(re.match(r"^-\s+\S", ln) for ln in m.group(1).splitlines())
 
 
-def git_cliff_revision(*, prev_tag: str, first_release: bool) -> str:
-    """Select the git-cliff revision for this release.
+def git_cliff_range(*, prev_tag: str, first_release: bool) -> str | None:
+    """Select the explicit git-cliff range for this release.
 
     A two-dot range excludes its left endpoint, so a synthetic tag at the root
-    cannot represent a first release. Passing ``HEAD`` asks git-cliff to walk
-    the complete reachable history, including the root commit. Later releases
-    remain bounded by their real previous tag.
+    cannot represent a first release. Omitting git-cliff's positional ``RANGE``
+    uses its supported full-history mode, including the root commit. Later
+    releases remain bounded by their real previous tag.
     """
     if first_release:
-        return "HEAD"
+        return None
     return f"{prev_tag}..HEAD"
 
 
@@ -195,7 +195,7 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
         return
 
     first_release = args.first_release == "true"
-    revision = git_cliff_revision(
+    commit_range = git_cliff_range(
         prev_tag=args.prev_tag,
         first_release=first_release,
     )
@@ -204,15 +204,17 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
     else:
         print(f"[Unreleased] is empty; generating from git log since {args.prev_tag}...")
     try:
+        command = [
+            "git-cliff",
+            "--config",
+            args.cliff_config,
+            "--strip",
+            "all",
+        ]
+        if commit_range is not None:
+            command.append(commit_range)
         result = subprocess.run(
-            [
-                "git-cliff",
-                "--config",
-                args.cliff_config,
-                "--strip",
-                "all",
-                revision,
-            ],
+            command,
             check=True,
             capture_output=True,
             text=True,

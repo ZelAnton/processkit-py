@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
+import shutil
 import subprocess
 from unittest import mock
 
@@ -21,7 +22,7 @@ from scripts.release.changelog import (
     _cmd_promote,
     dedupe_generated_changes,
     extract_release_notes,
-    git_cliff_revision,
+    git_cliff_range,
     insert_unreleased_body,
     promote_unreleased,
     unreleased_has_bullets,
@@ -32,6 +33,7 @@ from scripts.release.pull_cibuildwheel_images import (
 )
 
 CLIFF_TOML = pathlib.Path(__file__).resolve().parents[1] / "cliff.toml"
+GIT_CLIFF = shutil.which("git-cliff")
 RELEASE_WORKFLOW = (
     pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 )
@@ -506,20 +508,48 @@ def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.P
     assert "café".encode() in written
 
 
-def test_first_release_revision_includes_release_worthy_root_commit(
-    tmp_path: pathlib.Path,
+@pytest.mark.skipif(GIT_CLIFF is None, reason="git-cliff is not installed")
+def test_first_release_real_git_cliff_includes_release_worthy_root_commit(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _run_git(repo, "init")
     root_sha = _commit(repo, "Fix initial release notes")
+    _run_git(repo, "tag", "v0.0.0", root_sha)
+    changelog = repo / "CHANGELOG.md"
+    changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n")
+    assert GIT_CLIFF is not None
 
-    revision = git_cliff_revision(prev_tag="v0.0.0", first_release=True)
-    commits = _run_git(repo, "rev-list", revision).stdout.splitlines()
-    subjects = _run_git(repo, "log", "--format=%s", revision).stdout.splitlines()
+    legacy = subprocess.run(
+        [
+            GIT_CLIFF,
+            "--config",
+            str(CLIFF_TOML),
+            "--strip",
+            "all",
+            "v0.0.0..HEAD",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert legacy.stdout.strip() == ""
 
-    assert commits == [root_sha]
-    assert subjects == ["Fix initial release notes"]
+    monkeypatch.chdir(repo)
+    _cmd_autofill(
+        argparse.Namespace(
+            changelog=str(changelog),
+            cliff_config=str(CLIFF_TOML),
+            prev_tag="v0.0.0",
+            first_release="true",
+        )
+    )
+
+    written = changelog.read_text(encoding="utf-8")
+    assert written.count("### Fixed") == 1
+    assert written.count("Fix initial release notes") == 1
 
 
 def test_release_workflow_passes_first_release_mode_without_synthetic_tag() -> None:
@@ -530,7 +560,7 @@ def test_release_workflow_passes_first_release_mode_without_synthetic_tag() -> N
     assert 'git tag "$PREV_TAG"' not in workflow
 
 
-def test_subsequent_release_revision_excludes_previously_tagged_root(
+def test_subsequent_release_range_excludes_previously_tagged_root(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -540,9 +570,10 @@ def test_subsequent_release_revision_excludes_previously_tagged_root(
     _run_git(repo, "tag", "v1.0.0", root_sha)
     next_sha = _commit(repo, "Fix next release behavior")
 
-    revision = git_cliff_revision(prev_tag="v1.0.0", first_release=False)
-    commits = _run_git(repo, "rev-list", revision).stdout.splitlines()
-    subjects = _run_git(repo, "log", "--format=%s", revision).stdout.splitlines()
+    commit_range = git_cliff_range(prev_tag="v1.0.0", first_release=False)
+    assert commit_range is not None
+    commits = _run_git(repo, "rev-list", commit_range).stdout.splitlines()
+    subjects = _run_git(repo, "log", "--format=%s", commit_range).stdout.splitlines()
 
     assert commits == [next_sha]
     assert subjects == ["Fix next release behavior"]
@@ -569,7 +600,7 @@ def test_cmd_autofill_first_release_uses_full_history_once(
         _cmd_autofill(args)
 
     command = run.call_args.args[0]
-    assert command[-1] == "HEAD"
+    assert command == ["git-cliff", "--config", "cliff.toml", "--strip", "all"]
     written = changelog.read_text(encoding="utf-8")
     assert written.count("### Fixed") == 1
     assert written.count("Include the root commit in first-release notes") == 1

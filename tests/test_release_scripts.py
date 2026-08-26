@@ -1,7 +1,7 @@
 """Unit tests for `scripts/release/*.py` — the pure functions extracted from
 `release.yml`'s inline heredocs (CHANGELOG.md manipulation, Cargo.lock version
-sync). These never touch git, git-cliff, or the network; the CLI wrappers
-that do are exercised only by an actual release run.
+sync). A minimal local Git history verifies release-range selection; git-cliff
+and the network remain isolated behind mocks or the actual release workflow.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from scripts.release.changelog import (
     _cmd_promote,
     dedupe_generated_changes,
     extract_release_notes,
+    git_cliff_revision,
     insert_unreleased_body,
     promote_unreleased,
     unreleased_has_bullets,
@@ -31,10 +32,39 @@ from scripts.release.pull_cibuildwheel_images import (
 )
 
 CLIFF_TOML = pathlib.Path(__file__).resolve().parents[1] / "cliff.toml"
+RELEASE_WORKFLOW = (
+    pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
+)
 
 _PARSER_ENTRY_RE = re.compile(
     r'\{\s*message\s*=\s*"((?:[^"\\]|\\.)*)"\s*,\s*(skip\s*=\s*true|group\s*=\s*"[^"]*")\s*\}'
 )
+
+
+def _run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _commit(repo: pathlib.Path, subject: str) -> str:
+    tracked = repo / "tracked.txt"
+    tracked.write_text(subject, encoding="utf-8")
+    _run_git(repo, "add", tracked.name)
+    _run_git(
+        repo,
+        "-c",
+        "user.name=Release Test",
+        "-c",
+        "user.email=release-test@example.invalid",
+        "commit",
+        "-m",
+        subject,
+    )
+    return _run_git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
 # --- cibuildwheel image pre-pull --------------------------------------------
@@ -476,6 +506,99 @@ def test_cmd_promote_reads_non_ascii_utf8_and_writes_lf_only(tmp_path: pathlib.P
     assert "café".encode() in written
 
 
+def test_first_release_revision_includes_release_worthy_root_commit(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(repo, "init")
+    root_sha = _commit(repo, "Fix initial release notes")
+
+    revision = git_cliff_revision(prev_tag="v0.0.0", first_release=True)
+    commits = _run_git(repo, "rev-list", revision).stdout.splitlines()
+    subjects = _run_git(repo, "log", "--format=%s", revision).stdout.splitlines()
+
+    assert commits == [root_sha]
+    assert subjects == ["Fix initial release notes"]
+
+
+def test_release_workflow_passes_first_release_mode_without_synthetic_tag() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert '--first-release "${{ steps.version.outputs.first_release }}"' in workflow
+    assert "Ensure previous tag exists (local only)" not in workflow
+    assert 'git tag "$PREV_TAG"' not in workflow
+
+
+def test_subsequent_release_revision_excludes_previously_tagged_root(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run_git(repo, "init")
+    root_sha = _commit(repo, "Fix already released behavior")
+    _run_git(repo, "tag", "v1.0.0", root_sha)
+    next_sha = _commit(repo, "Fix next release behavior")
+
+    revision = git_cliff_revision(prev_tag="v1.0.0", first_release=False)
+    commits = _run_git(repo, "rev-list", revision).stdout.splitlines()
+    subjects = _run_git(repo, "log", "--format=%s", revision).stdout.splitlines()
+
+    assert commits == [next_sha]
+    assert subjects == ["Fix next release behavior"]
+
+
+def test_cmd_autofill_first_release_uses_full_history_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n")
+    args = argparse.Namespace(
+        changelog=str(changelog),
+        cliff_config="cliff.toml",
+        prev_tag="v0.0.0",
+        first_release="true",
+    )
+    completed = subprocess.CompletedProcess(
+        args=["git-cliff"],
+        returncode=0,
+        stdout="### Fixed\n- Include the root commit in first-release notes\n",
+    )
+
+    with mock.patch("scripts.release.changelog.subprocess.run", return_value=completed) as run:
+        _cmd_autofill(args)
+
+    command = run.call_args.args[0]
+    assert command[-1] == "HEAD"
+    written = changelog.read_text(encoding="utf-8")
+    assert written.count("### Fixed") == 1
+    assert written.count("Include the root commit in first-release notes") == 1
+
+
+def test_cmd_autofill_empty_first_release_reports_full_history(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n")
+    args = argparse.Namespace(
+        changelog=str(changelog),
+        cliff_config="cliff.toml",
+        prev_tag="v0.0.0",
+        first_release="true",
+    )
+    completed = subprocess.CompletedProcess(args=["git-cliff"], returncode=0, stdout="")
+
+    with (
+        mock.patch("scripts.release.changelog.subprocess.run", return_value=completed),
+        pytest.raises(SystemExit),
+    ):
+        _cmd_autofill(args)
+
+    captured = capsys.readouterr()
+    assert "No release-worthy commits found in repository history" in captured.err
+    assert "between v0.0.0 and HEAD" not in captured.err
+
+
 def test_cmd_autofill_dedupes_git_cliffs_generated_body(tmp_path: pathlib.Path) -> None:
     changelog = tmp_path / "CHANGELOG.md"
     changelog.write_bytes(b"## [Unreleased]\n\n### Added\n-\n\n## [1.0.0] - 2026-01-01\n")
@@ -483,6 +606,7 @@ def test_cmd_autofill_dedupes_git_cliffs_generated_body(tmp_path: pathlib.Path) 
         changelog=str(changelog),
         cliff_config="cliff.toml",
         prev_tag="v0.9.0",
+        first_release="false",
     )
     generated_stdout = (
         "### Changed\n"
@@ -513,6 +637,7 @@ def test_cmd_autofill_surfaces_git_cliff_stderr_on_failure(
         changelog=str(changelog),
         cliff_config="cliffconfig.toml",
         prev_tag="v0.9.0",
+        first_release="false",
     )
     err = subprocess.CalledProcessError(
         returncode=2,
@@ -541,6 +666,7 @@ def test_cmd_autofill_reports_empty_stderr_explicitly(
         changelog=str(changelog),
         cliff_config="cliffconfig.toml",
         prev_tag="v0.9.0",
+        first_release="false",
     )
     err = subprocess.CalledProcessError(returncode=1, cmd=["git-cliff"], output="", stderr="")
 

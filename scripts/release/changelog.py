@@ -77,6 +77,19 @@ def unreleased_has_bullets(text: str) -> bool:
     return any(re.match(r"^-\s+\S", ln) for ln in m.group(1).splitlines())
 
 
+def git_cliff_revision(*, prev_tag: str, first_release: bool) -> str:
+    """Select the git-cliff revision for this release.
+
+    A two-dot range excludes its left endpoint, so a synthetic tag at the root
+    cannot represent a first release. Passing ``HEAD`` asks git-cliff to walk
+    the complete reachable history, including the root commit. Later releases
+    remain bounded by their real previous tag.
+    """
+    if first_release:
+        return "HEAD"
+    return f"{prev_tag}..HEAD"
+
+
 def insert_unreleased_body(text: str, generated: str) -> str:
     """Replace the (empty) `[Unreleased]` section's body with `generated`
     (git-cliff's output). Raises `ValueError` if the header is missing."""
@@ -154,9 +167,9 @@ def promote_unreleased(
     if n != 1:
         raise ValueError("Could not find '## [Unreleased]' header in CHANGELOG.md")
 
-    # On the first release the previous tag (v0.0.0) is synthetic — created
-    # locally to bound git-cliff and never pushed — so a compare link against
-    # it would 404. Point the first version at its own tag instead.
+    # On the first release the previous tag value (v0.0.0) is synthetic and no
+    # such tag is created or pushed, so a compare link against it would 404.
+    # Point the first version at its own tag instead.
     if first_release:
         versioned_link = f"[{version}]: {repo}/releases/tag/{tag}"
     else:
@@ -181,7 +194,15 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
         print("[Unreleased] already has manual entries; skipping auto-fill.")
         return
 
-    print(f"[Unreleased] is empty; generating from git log since {args.prev_tag}...")
+    first_release = args.first_release == "true"
+    revision = git_cliff_revision(
+        prev_tag=args.prev_tag,
+        first_release=first_release,
+    )
+    if first_release:
+        print("[Unreleased] is empty; generating from full git history (including root).")
+    else:
+        print(f"[Unreleased] is empty; generating from git log since {args.prev_tag}...")
     try:
         result = subprocess.run(
             [
@@ -190,7 +211,7 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
                 args.cliff_config,
                 "--strip",
                 "all",
-                f"{args.prev_tag}..HEAD",
+                revision,
             ],
             check=True,
             capture_output=True,
@@ -209,8 +230,9 @@ def _cmd_autofill(args: argparse.Namespace) -> None:
         return  # unreachable (_fail raises); satisfies type-checkers
     generated = dedupe_generated_changes(result.stdout.strip())
     if not generated:
+        history = "in repository history" if first_release else f"between {args.prev_tag} and HEAD"
         _fail(
-            f"No release-worthy commits found between {args.prev_tag} and HEAD. "
+            f"No release-worthy commits found {history}. "
             "Either add a manual entry to [Unreleased] in CHANGELOG.md, or commit "
             "changes with a recognised prefix (Add/Fix/Refactor/Update/Remove/...)."
         )
@@ -263,6 +285,7 @@ def main(argv: list[str] | None = None) -> None:
 
     autofill = subparsers.add_parser("autofill", help="Fill [Unreleased] from git-cliff if empty")
     autofill.add_argument("--prev-tag", required=True)
+    autofill.add_argument("--first-release", required=True, choices=["true", "false"])
     autofill.add_argument("--cliff-config", default="cliff.toml")
     autofill.set_defaults(func=_cmd_autofill)
 

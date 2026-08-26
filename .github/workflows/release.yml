@@ -121,23 +121,6 @@ jobs:
             exit 1
           fi
 
-      # git-cliff (next step) needs the previous tag locally to bound its commit range.
-      # When it is missing (synthetic v0.0.0 of a first release) create it locally and
-      # DO NOT push it — pushing would be a remote write before the pivot and would
-      # break first-release re-run safety.
-      - name: Ensure previous tag exists (local only)
-        env:
-          PREV_TAG: v${{ steps.version.outputs.current }}
-        run: |
-          set -euo pipefail
-          if git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
-            echo "Previous tag $PREV_TAG already exists."
-            exit 0
-          fi
-          ROOT=$(git rev-list --max-parents=0 HEAD | tail -n1)
-          echo "Previous tag $PREV_TAG does not exist; creating it locally at root commit $ROOT (not pushed)."
-          git tag "$PREV_TAG" "$ROOT"
-
       - name: Install git-cliff
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2
         with:
@@ -146,7 +129,9 @@ jobs:
       - name: Auto-fill [Unreleased] from git log if empty
         run: |
           set -euo pipefail
-          python3 scripts/release/changelog.py autofill --prev-tag "v${{ steps.version.outputs.current }}"
+          python3 scripts/release/changelog.py autofill \
+            --prev-tag "v${{ steps.version.outputs.current }}" \
+            --first-release "${{ steps.version.outputs.first_release }}"
 
       - name: Extract release notes from CHANGELOG.md
         run: |

@@ -37,6 +37,7 @@ jobs:
     needs: [build_dists]
     runs-on: ubuntu-latest
     permissions:
+      contents: read # actions/checkout for the repository-owned toolchain snapshot
       id-token: write # TestPyPI Trusted Publishing (OIDC); also enables the token fallback
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

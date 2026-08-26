@@ -235,6 +235,20 @@ def test_release_artifact_toolchain_rejects_consumer_command_as_prose(
     assert any("expected one executable consumer step" in error for error in errors)
 
 
+def test_release_artifact_toolchain_requires_testpypi_checkout_permissions() -> None:
+    relative = ".github/workflows/test-release.yml"
+    original = _release_toolchain_text(relative)
+    permission = (
+        "      contents: read # actions/checkout for the repository-owned toolchain snapshot\n"
+    )
+    assert original.count(permission) == 1
+    mutated = original.replace(permission, "", 1)
+
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert "TestPyPI publish job must grant only contents: read and id-token: write" in errors
+
+
 def test_install_maturin_uses_exact_snapshot_version_without_network() -> None:
     snapshot = load_snapshot(PROJECT_ROOT / SNAPSHOT_RELATIVE_PATH)
     expected = [

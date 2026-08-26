@@ -75,6 +75,46 @@ def _workflow_job_steps(workflow: str, job_name: str) -> list[str]:
     ]
 
 
+def _workflow_job_permissions(workflow: str, job_name: str) -> dict[str, str] | None:
+    lines = workflow.splitlines()
+    marker = f"  {job_name}:"
+    try:
+        start = next(index for index, line in enumerate(lines) if line.rstrip() == marker)
+    except StopIteration as error:
+        raise ValueError(f"workflow job is missing: {job_name}") from error
+
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line.startswith("  ") and not line.startswith("    ") and line.strip():
+            end = index
+            break
+    job_lines = lines[start + 1 : end]
+    try:
+        permissions_start = next(
+            index for index, line in enumerate(job_lines) if line.rstrip() == "    permissions:"
+        )
+    except StopIteration:
+        return None
+
+    permissions: dict[str, str] = {}
+    for line in job_lines[permissions_start + 1 :]:
+        stripped = line.lstrip()
+        indentation = len(line) - len(stripped)
+        active = _without_unquoted_comment(stripped)
+        if active and indentation <= 4:
+            break
+        if not active:
+            continue
+        if indentation != 6:
+            raise ValueError(f"invalid job permission in {job_name}: {active}")
+        key, separator, value = active.partition(":")
+        if separator != ":" or not key or not value.strip() or key in permissions:
+            raise ValueError(f"invalid job permission in {job_name}: {active}")
+        permissions[key] = value.strip()
+    return permissions
+
+
 def _without_unquoted_comment(value: str) -> str:
     quote = ""
     escaped = False
@@ -312,6 +352,15 @@ def release_toolchain_errors(
             load_command=load_command,
             consumer_commands=consumers,
         )
+
+    try:
+        testpypi_permissions = _workflow_job_permissions(test_release_workflow, "publish_testpypi")
+    except ValueError as error:
+        errors.append(str(error))
+    else:
+        expected_permissions = {"contents": "read", "id-token": "write"}
+        if testpypi_permissions != expected_permissions:
+            errors.append("TestPyPI publish job must grant only contents: read and id-token: write")
 
     workflow_text = "\n".join((build_workflow, release_workflow, test_release_workflow))
     if _FLOATING_PACKAGE_RE.search(workflow_text) is not None:

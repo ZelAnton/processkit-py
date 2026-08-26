@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every lifecycle variant.
 
 ### Changed
--
+
+- Build and validate every release artifact with one repository-owned snapshot
+  of exact `cibuildwheel`, `maturin`, `twine`, and Rust versions across host and
+  Linux-container jobs.
 
 ### Fixed
 

@@ -31,13 +31,19 @@ from scripts.release.pull_cibuildwheel_images import (
     _parse_pinned_images,
     _pull_with_retry,
 )
+from scripts.release.toolchain import (
+    SNAPSHOT_RELATIVE_PATH,
+    load_snapshot,
+    maturin_install_command,
+    release_toolchain_errors,
+)
+from scripts.release.toolchain import main as toolchain_main
 
-CLIFF_TOML = pathlib.Path(__file__).resolve().parents[1] / "cliff.toml"
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+CLIFF_TOML = PROJECT_ROOT / "cliff.toml"
 GIT = shutil.which("git")
 GIT_CLIFF = shutil.which("git-cliff")
-RELEASE_WORKFLOW = (
-    pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
-)
+RELEASE_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
 
 _PARSER_ENTRY_RE = re.compile(
     r'\{\s*message\s*=\s*"((?:[^"\\]|\\.)*)"\s*,\s*(skip\s*=\s*true|group\s*=\s*"[^"]*")\s*\}'
@@ -69,6 +75,207 @@ def _commit(repo: pathlib.Path, subject: str) -> str:
         subject,
     )
     return _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+# --- exact release toolchain snapshot --------------------------------------
+
+
+def test_release_artifact_toolchain_uses_one_exact_snapshot() -> None:
+    snapshot = load_snapshot(PROJECT_ROOT / SNAPSHOT_RELATIVE_PATH)
+
+    assert set(snapshot) == {
+        "CIBUILDWHEEL_VERSION",
+        "MATURIN_VERSION",
+        "TWINE_VERSION",
+        "RUST_TOOLCHAIN",
+    }
+    assert release_toolchain_errors(PROJECT_ROOT) == []
+
+
+def _release_toolchain_text(relative: str) -> str:
+    return (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("relative", "old", "new"),
+    [
+        (
+            "scripts/release/toolchain.env",
+            "CIBUILDWHEEL_VERSION=4.2.0",
+            "CIBUILDWHEEL_VERSION=>=4,<5",
+        ),
+        (
+            ".github/workflows/_build-dists.yml",
+            'uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}"',
+            "uvx 'cibuildwheel>=4,<5'",
+        ),
+        (
+            ".github/workflows/_build-dists.yml",
+            'uvx "maturin==${MATURIN_VERSION}"',
+            "uvx 'maturin>=1,<2'",
+        ),
+        (
+            ".github/workflows/_build-dists.yml",
+            "toolchain: ${{ env.RUST_TOOLCHAIN }}",
+            "toolchain: stable",
+        ),
+        (
+            "pyproject.toml",
+            '--default-toolchain "$RUST_TOOLCHAIN"',
+            "--default-toolchain stable",
+        ),
+        (
+            ".github/workflows/release.yml",
+            'uvx "twine==${TWINE_VERSION}"',
+            "uvx 'twine>=6,<7'",
+        ),
+        (
+            ".github/workflows/test-release.yml",
+            'uvx "twine==${TWINE_VERSION}"',
+            "uvx 'twine>=6,<7'",
+        ),
+        (
+            "rust-toolchain.toml",
+            'channel = "1.98.0"',
+            'channel = "stable"',
+        ),
+    ],
+)
+def test_release_artifact_toolchain_rejects_drift(relative: str, old: str, new: str) -> None:
+    original = _release_toolchain_text(relative)
+    assert original.count(old) >= 1
+    mutated = original.replace(old, new, 1)
+
+    assert release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+
+def test_release_artifact_toolchain_rejects_load_after_consumer() -> None:
+    relative = ".github/workflows/_build-dists.yml"
+    original = _release_toolchain_text(relative)
+    load_step = (
+        "      - name: Load exact release toolchain snapshot\n"
+        "        shell: bash\n"
+        '        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"\n'
+    )
+    consumer = '        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse\n'
+    assert original.count(load_step) == 2
+    assert original.count(consumer) == 1
+
+    without_first_load = original.replace(load_step, "", 1)
+    mutated = without_first_load.replace(consumer, consumer + load_step, 1)
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert any("snapshot load must precede consumer" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("active", "commented", "expected_error"),
+    [
+        (
+            '        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"',
+            '        # run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"',
+            "executable snapshot-load step",
+        ),
+        (
+            '        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse',
+            '        # run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse',
+            "executable consumer step",
+        ),
+        (
+            '          uvx --from "cibuildwheel==${CIBUILDWHEEL_VERSION}" python',
+            '          # uvx --from "cibuildwheel==${CIBUILDWHEEL_VERSION}" python',
+            "executable consumer step",
+        ),
+        (
+            '        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"',
+            '        run: # python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"',
+            "executable snapshot-load step",
+        ),
+        (
+            '        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse',
+            '        run: echo skipped # uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" '
+            "--output-dir wheelhouse",
+            "executable consumer step",
+        ),
+    ],
+)
+def test_release_artifact_toolchain_ignores_commented_fields_and_run_prose(
+    active: str, commented: str, expected_error: str
+) -> None:
+    relative = ".github/workflows/_build-dists.yml"
+    original = _release_toolchain_text(relative)
+    assert active in original
+    mutated = original.replace(active, commented, 1)
+
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert any(expected_error in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "        run: echo 'uvx \"cibuildwheel==${CIBUILDWHEEL_VERSION}\" --output-dir wheelhouse'",
+        "        run: |-\n"
+        "          printf '%s\\n' 'uvx \"cibuildwheel==${CIBUILDWHEEL_VERSION}\" "
+        "--output-dir wheelhouse'",
+    ],
+)
+def test_release_artifact_toolchain_rejects_consumer_command_as_prose(
+    replacement: str,
+) -> None:
+    relative = ".github/workflows/_build-dists.yml"
+    original = _release_toolchain_text(relative)
+    active = '        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse'
+    assert original.count(active) == 1
+    mutated = original.replace(active, replacement, 1)
+
+    errors = release_toolchain_errors(PROJECT_ROOT, {relative: mutated})
+
+    assert any("expected one executable consumer step" in error for error in errors)
+
+
+def test_install_maturin_uses_exact_snapshot_version_without_network() -> None:
+    snapshot = load_snapshot(PROJECT_ROOT / SNAPSHOT_RELATIVE_PATH)
+    expected = [
+        mock.ANY,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        f"maturin=={snapshot['MATURIN_VERSION']}",
+    ]
+
+    with mock.patch("scripts.release.toolchain.subprocess.run") as run:
+        assert toolchain_main(["install-maturin"]) == 0
+
+    run.assert_called_once_with(expected, check=True)
+    probe = {**snapshot, "MATURIN_VERSION": "0.0.1"}
+    assert maturin_install_command(probe)[-1] == "maturin==0.0.1"
+
+
+@pytest.mark.parametrize("requirement", ["maturin>=1,<2", "maturin==0.0.0"])
+def test_release_artifact_toolchain_rejects_invalid_maturin_install(
+    requirement: str,
+) -> None:
+    snapshot = load_snapshot(PROJECT_ROOT / SNAPSHOT_RELATIVE_PATH)
+    command = maturin_install_command(snapshot)
+    command[-1] = requirement
+
+    with mock.patch("scripts.release.toolchain.maturin_install_command", return_value=command):
+        errors = release_toolchain_errors(PROJECT_ROOT)
+
+    assert any("maturin install" in error for error in errors)
+
+
+def test_release_artifact_toolchain_rejects_hardcoded_maturin_install() -> None:
+    snapshot = load_snapshot(PROJECT_ROOT / SNAPSHOT_RELATIVE_PATH)
+    command = maturin_install_command(snapshot)
+
+    with mock.patch("scripts.release.toolchain.maturin_install_command", return_value=command):
+        errors = release_toolchain_errors(PROJECT_ROOT)
+
+    assert "maturin install does not follow the snapshot version" in errors
 
 
 # --- cibuildwheel image pre-pull --------------------------------------------

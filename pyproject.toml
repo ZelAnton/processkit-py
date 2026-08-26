@@ -484,6 +484,10 @@ pytest_add_cli_args = [
 ]
 
 [tool.cibuildwheel]
+# Release wheels install the exact maturin from scripts/release/toolchain.env
+# into each fresh build environment, then disable a second PEP 517 resolution.
+build-frontend = { name = "build", args = ["--no-isolation"] }
+before-build = "python {package}/scripts/release/toolchain.py install-maturin"
 # Two wheel families per OS/arch:
 #   * cp310-*   → one abi3 wheel that runs on every GIL CPython 3.10+ (incl. 3.14),
 #                 so the GIL matrix stays a single wheel instead of one per version.
@@ -533,10 +537,10 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
 
 [tool.cibuildwheel.linux]
 # The manylinux/musllinux build containers ship no Rust toolchain — install a
-# current stable (>= the crate's MSRV) before building. Pin rustup-init itself
+# exact release snapshot toolchain before building. Pin rustup-init itself
 # because this hook runs before the wheel build and therefore controls the
-# toolchain that produces the artifact. On Windows/macOS the runner's own
-# toolchain (dtolnay/rust-toolchain) is used instead.
+# toolchain that produces the artifact. On Windows/macOS the same snapshot is
+# passed to dtolnay/rust-toolchain.
 # The `--component` flags match rust-toolchain.toml so the fresh toolchain
 # already satisfies it: otherwise rustup tries to add those components
 # mid-build (when maturin first runs cargo), which has intermittently raced into a
@@ -585,7 +589,8 @@ curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
   --output "$rustup_init" "$rustup_init_url"
 printf '%s  %s\n' "$rustup_init_sha256" "$rustup_init" | sha256sum -c -
 chmod 0755 "$rustup_init"
-"$rustup_init" -y --profile minimal --default-toolchain stable \
+"$rustup_init" -y --profile minimal --default-toolchain "$RUST_TOOLCHAIN" \
   --component rustfmt --component clippy
 '''
+environment-pass = ["RUST_TOOLCHAIN"]
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }

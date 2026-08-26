@@ -48,7 +48,7 @@ jobs:
   # installs interpreters from the `python`/`pythonarm64` NuGet packages, and
   # `pythonarm64` has shipped 3.10 (down to 3.10.11) since 2023. Verified directly:
   # `CIBW_ARCHS_WINDOWS=ARM64 cibuildwheel --platform windows
-  # --print-build-identifiers` on the pinned `cibuildwheel>=4,<5` resolves
+  # --print-build-identifiers` on the repository snapshot resolves
   # `cp310-win_arm64`, and PyPI already carries a published
   # `processkit_py-*-cp310-abi3-win_arm64.whl` for this project's current release —
   # this build has never actually been silently skipped. The step below still
@@ -67,11 +67,15 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      # Every artifact-building tool version comes from one reviewed file.
+      - name: Load exact release toolchain snapshot
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       # Host toolchain for the Windows/macOS builds; the Linux manylinux container
-      # installs its own Rust via the cibuildwheel `before-all` hook (pyproject.toml).
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+      # installs the same exact Rust via the `before-all` hook (pyproject.toml).
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # exact snapshot
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
       # Add the Intel macOS cross-compile target — only meaningful on the
       # macos-14 (arm64) runner; a no-op elsewhere (`rustup target add` on a
       # target already implied by the host triple is harmless, but skip it
@@ -95,11 +99,13 @@ jobs:
       # platform and deliberately uses `--pull=never` for the actual build.
       - if: runner.os == 'Linux'
         name: Pre-pull Linux build images with retry
+        shell: bash
         run: >-
-          uvx --from 'cibuildwheel>=4,<5' python
+          uvx --from "cibuildwheel==${CIBUILDWHEEL_VERSION}" python
           scripts/release/pull_cibuildwheel_images.py
       - name: Build wheels
-        run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
+        shell: bash
+        run: uvx "cibuildwheel==${CIBUILDWHEEL_VERSION}" --output-dir wheelhouse
       # `if-no-files-found: error` below only fails when wheelhouse/ is entirely
       # empty; it happily passes if the arm64 job produced only the cp314t wheel
       # and cibuildwheel silently dropped cp310-win_arm64 (or vice versa), which
@@ -140,6 +146,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      - name: Load exact release toolchain snapshot
+        shell: bash
+        run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -150,10 +159,10 @@ jobs:
           path: .
       # `maturin sdist` packages source only (no compile), so no Rust toolchain here
       # (hence a standalone `uvx`, not `uv run`, which would try to build the project).
-      # Floor matches the authoritative `[build-system]`/dev-group maturin pin
-      # (`>=1.14.1,<2.0`) so the shipped sdist isn't built by an older or a 2.x maturin.
+      # The exact maturin version is shared with every wheel build via the snapshot.
       - name: Build sdist
-        run: uvx 'maturin>=1.14.1,<2.0' sdist --out dist
+        shell: bash
+        run: uvx "maturin==${MATURIN_VERSION}" sdist --out dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdist

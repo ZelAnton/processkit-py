@@ -44,6 +44,29 @@ provenance attestations.
    step is skipped and the push falls back to `GITHUB_TOKEN`, which the protection
    rejects — so set it before the first release.
 
+## Release toolchain snapshot
+
+`scripts/release/toolchain.env` is the single source of truth for the exact
+`cibuildwheel`, `maturin`, `twine`, and Rust versions used to build and check
+release artifacts. Both release workflows load it, and the reusable matrix passes
+the same Rust version to host builds and Linux containers. The wheel build installs
+the snapshot's maturin into each fresh build environment before running PEP 517
+without a second dependency resolution. `rust-toolchain.toml` mirrors the Rust pin
+for local development but does not independently select the release toolchain.
+
+Update the snapshot deliberately: verify the selected releases in PyPI and the
+official Rust stable channel, edit `scripts/release/toolchain.env`, mirror its Rust
+version in `rust-toolchain.toml`, and run:
+
+```bash
+uv run python scripts/release/toolchain.py verify
+uv run pytest tests/test_release_scripts.py
+```
+
+The verifier fails on floating ranges, `stable`, missing consumers, or drift between
+the snapshot and `rust-toolchain.toml`. Finish by dispatching the TestPyPI dry-run;
+only its full matrix proves the new snapshot on every release target.
+
 ## Cutting a release
 
 1. **Dry-run first (recommended):** Actions → **Test release (TestPyPI)** → *Run

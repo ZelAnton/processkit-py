@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Include the repository's root commit when auto-generating notes for a first
+  release; later releases remain bounded by the previous release tag.
+- Report failures while looking up `flush` on CLI stdout or stderr as output
+  loss at exit code 119, retaining the original error in emergency diagnostics
+  and preventing interpreter finalization from retrying the failed stream.
 - Keep `processkit supervise` setup best-effort when looking up or invoking
   `reconfigure` on a non-standard output stream fails; supervision continues
   without line buffering instead of aborting.

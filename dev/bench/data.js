@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788508733896,
+  "lastUpdate": 1788594016186,
   "repoUrl": "https://github.com/ZelAnton/processkit-py",
   "entries": {
     "processkit benchmarks": [
@@ -3810,6 +3810,133 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00168308195334093",
             "extra": "mean: 115.63809277777813 msec\nrounds: 9"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]",
+            "email": "49699333+dependabot[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "Zhelezniakou Anton",
+            "username": "ZelAnton",
+            "email": "github@zelanton.net"
+          },
+          "id": "e56827e7c1d0bcfb445cda9595a4cc2f42a7f5a5",
+          "message": "Update: Bump the python-dependencies group with 4 updates\n\nBumps the python-dependencies group with 4 updates: [maturin](https://github.com/pyo3/maturin), [ruff](https://github.com/astral-sh/ruff), [hypothesis](https://github.com/HypothesisWorks/hypothesis) and [pytest-benchmark](https://github.com/ionelmc/pytest-benchmark).\n\n\nUpdates `maturin` from 1.14.1 to 1.15.0\n- [Release notes](https://github.com/pyo3/maturin/releases)\n- [Changelog](https://github.com/PyO3/maturin/blob/main/Changelog.md)\n- [Commits](https://github.com/pyo3/maturin/compare/v1.14.1...v1.15.0)\n\nUpdates `ruff` from 0.16.4 to 0.16.5\n- [Release notes](https://github.com/astral-sh/ruff/releases)\n- [Changelog](https://github.com/astral-sh/ruff/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/astral-sh/ruff/compare/0.16.4...0.16.5)\n\nUpdates `hypothesis` from 6.165.10 to 6.167.0\n- [Release notes](https://github.com/HypothesisWorks/hypothesis/releases)\n- [Commits](https://github.com/HypothesisWorks/hypothesis/compare/v6.165.10...v6.167.0)\n\nUpdates `pytest-benchmark` from 5.2.3 to 5.3.0\n- [Release notes](https://github.com/ionelmc/pytest-benchmark/releases)\n- [Changelog](https://github.com/ionelmc/pytest-benchmark/blob/master/CHANGELOG.rst)\n- [Commits](https://github.com/ionelmc/pytest-benchmark/compare/v5.2.3...v5.3.0)\n\n---\nupdated-dependencies:\n- dependency-name: maturin\n  dependency-version: 1.15.0\n  dependency-type: direct:development\n  update-type: version-update:semver-minor\n  dependency-group: python-dependencies\n- dependency-name: ruff\n  dependency-version: 0.16.5\n  dependency-type: direct:development\n  update-type: version-update:semver-patch\n  dependency-group: python-dependencies\n- dependency-name: hypothesis\n  dependency-version: 6.167.0\n  dependency-type: direct:development\n  update-type: version-update:semver-minor\n  dependency-group: python-dependencies\n- dependency-name: pytest-benchmark\n  dependency-version: 5.3.0\n  dependency-type: direct:development\n  update-type: version-update:semver-minor\n  dependency-group: python-dependencies\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>",
+          "timestamp": "2026-09-02T05:35:51Z",
+          "url": "https://github.com/ZelAnton/processkit-py/commit/e56827e7c1d0bcfb445cda9595a4cc2f42a7f5a5"
+        },
+        "date": 1788594015464,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_aoutput_as_completed.py::test_aoutput_as_completed_throughput",
+            "value": 15.156526185245696,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003131771323173989",
+            "extra": "mean: 65.97817915383949 msec\nrounds: 13"
+          },
+          {
+            "name": "benchmarks/test_lifecycle_events.py::test_lifecycle_events_throughput",
+            "value": 28.344379846767513,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0022414064024999084",
+            "extra": "mean: 35.28036264706082 msec\nrounds: 34"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[1]",
+            "value": 87.45987906664246,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000263077302226143",
+            "extra": "mean: 11.433814117648419 msec\nrounds: 85"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[10]",
+            "value": 23.11921790767942,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010466530379164844",
+            "extra": "mean: 43.25405833334154 msec\nrounds: 24"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_output_all_concurrency[50]",
+            "value": 4.670275356053564,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024751385509294566",
+            "extra": "mean: 214.12013720000687 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[1]",
+            "value": 86.17477881424504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002973844846504606",
+            "extra": "mean: 11.604323373496097 msec\nrounds: 83"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[10]",
+            "value": 23.07669826820143,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012760669902341802",
+            "extra": "mean: 43.33375547826751 msec\nrounds: 23"
+          },
+          {
+            "name": "benchmarks/test_output_all.py::test_aoutput_all_concurrency[50]",
+            "value": 4.667753589187093,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002351568174028428",
+            "extra": "mean: 214.23581620000505 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_process_group.py::test_process_group_start_exit",
+            "value": 88.43062708750773,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002936514608612117",
+            "extra": "mean: 11.308299318181204 msec\nrounds: 88"
+          },
+          {
+            "name": "benchmarks/test_pty.py::test_pty_output_relay",
+            "value": 63.590296705741935,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000604104911542732",
+            "extra": "mean: 15.725669666669509 msec\nrounds: 63"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_processkit",
+            "value": 87.68579811022241,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017402620455410402",
+            "extra": "mean: 11.404355340906912 msec\nrounds: 88"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_subprocess",
+            "value": 89.59611547965552,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018600937602134004",
+            "extra": "mean: 11.161198168541901 msec\nrounds: 89"
+          },
+          {
+            "name": "benchmarks/test_spawn_capture.py::test_spawn_capture_asyncio_subprocess",
+            "value": 88.45992850648614,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021899841160353596",
+            "extra": "mean: 11.304553563217917 msec\nrounds: 87"
+          },
+          {
+            "name": "benchmarks/test_streaming_throughput.py::test_stdout_lines_throughput",
+            "value": 4.061035709816043,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005021831541558225",
+            "extra": "mean: 246.24260199999526 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_supervisor.py::test_live_supervisor_session_restarts",
+            "value": 10.658728138970032,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004858139965382157",
+            "extra": "mean: 93.81982418182133 msec\nrounds: 11"
           }
         ]
       }

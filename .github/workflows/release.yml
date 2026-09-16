@@ -122,7 +122,7 @@ jobs:
           fi
 
       - name: Install git-cliff
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
         with:
           tool: git-cliff@2
 
@@ -162,7 +162,7 @@ jobs:
       # with pyproject.toml. Re-lock now so the release commit carries a lockfile
       # consistent with the version it just bumped; no dependency changed, so this
       # only touches that one self-referential field.
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - name: Re-lock uv.lock against the bumped version
@@ -321,7 +321,7 @@ jobs:
       # exact snapshot `uvx twine check` below runs. (The publish action does its own
       # metadata check, but this strict pre-pivot gate catches a render/metadata
       # break BEFORE the irreversible step — free here, un-yankable once on PyPI.)
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - name: Check distribution metadata

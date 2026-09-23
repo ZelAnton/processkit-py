@@ -73,7 +73,7 @@ jobs:
         run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
       # Host toolchain for the Windows/macOS builds; the Linux manylinux container
       # installs the same exact Rust via the `before-all` hook (pyproject.toml).
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # exact snapshot
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # exact snapshot
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       # Add the Intel macOS cross-compile target — only meaningful on the
@@ -82,7 +82,7 @@ jobs:
       # outright to keep the step's purpose obvious in the log).
       - if: matrix.os == 'macos-14'
         run: rustup target add x86_64-apple-darwin
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       # Overlay the version-bumped manifests so the wheel carries the release version.
@@ -149,7 +149,7 @@ jobs:
       - name: Load exact release toolchain snapshot
         shell: bash
         run: python scripts/release/toolchain.py export-github-env >> "$GITHUB_ENV"
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
       - if: ${{ inputs.overlay-release-meta }}

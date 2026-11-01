@@ -215,7 +215,7 @@ reportUnusedFunction = "none"
 # just those pieces from this string.
 addopts = "-ra --strict-markers --strict-config --import-mode=importlib -n 4 --dist loadfile -m \"not leak\""
 markers = [
-  "leak: serial memory/reference-stability tests (tests/test_memory_leaks.py) — nightly-hardening only, never part of the default selection; run explicitly via `just leak-test` or `-m leak -p no:xdist`.",
+  "leak: serial memory/reference-stability tests (tests/test_memory_leaks.py). Weekly hardening runs these tests. The default selection excludes them. Run them with `just leak-test` or `-m leak -p no:xdist`.",
 ]
 filterwarnings = [
   "error",

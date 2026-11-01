@@ -21,12 +21,10 @@ def _stress_scale() -> int:
     """Multiplier for stress-test intensity (iterations/spawns), read from
     `PROCESSKIT_STRESS_SCALE`.
 
-    Defaults to 1, which reproduces exactly the fast, PR-gate-sized values
-    already hardcoded below. The scheduled nightly/weekly workflow
-    (`.github/workflows/nightly-stress.yml`) sets this higher to exercise many
-    more iterations per run, to catch rare teardown races that a single small
-    PR-gate run is unlikely to surface. An invalid/non-integer value falls
-    back to 1 rather than failing the test.
+    The default value, 1, preserves the iteration counts for pull requests.
+    The weekly workflow (`.github/workflows/nightly-hardening.yml`) increases
+    this value to check for rare teardown races.
+    An invalid value uses 1 and does not fail the test.
     """
     try:
         scale = int(os.environ.get("PROCESSKIT_STRESS_SCALE", "1"))

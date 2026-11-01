@@ -38,7 +38,7 @@ just lint               # ruff format --check + ruff check
 just typecheck          # mypy --strict, then stubtest against the compiled extension
 just docs               # build the mdBook site and validate rendered links
 just api-ref            # regenerate docs/api-reference.md
-just leak-test          # run the serial memory/reference-stability suite (nightly hardening)
+just leak-test          # run the serial memory/reference-stability suite (weekly hardening)
 just bench              # run the benchmark suite
 ```
 
@@ -49,6 +49,18 @@ part of the day-to-day dev cycle, so it has no `just` recipe).
 are the gates CI enforces, so run them locally before opening a pull request.
 CI additionally runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and
 the Rust unit tests.
+
+### Scheduled verification
+
+The `Weekly hardening` workflow runs each Saturday at 03:17 UTC.
+It retains all platform and interpreter combinations, stress repetitions, leak checks, mutation tests, and benchmarks.
+Use `workflow_dispatch` to start an additional run.
+The workflow keeps its `nightly-hardening.yml` filename for existing links and run history.
+
+Coverage and mutation artifacts expire after 14 days.
+
+CI and CodeQL continue to run on pushes and pull requests.
+CodeQL and both canary workflows keep their weekly schedules.
 
 ### Rust tests on Windows
 

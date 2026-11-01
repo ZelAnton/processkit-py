@@ -1,21 +1,15 @@
-name: Nightly hardening
+name: Weekly hardening
 
-# Runs nightly (never on push/PR) plus on manual dispatch. This is deliberately
-# separate from the `CI` workflow (ci.yml): it exists to catch the *rare*
-# teardown races and leaks that a single small stress run in the PR gate is
-# unlikely to surface, at a cost (full OS matrix x free-threaded interpreter x
-# repeated suite runs, with scaled-up stress iterations) that would be too slow
-# to pay on every push/PR. A failure here shows up as a red status for this
-# workflow in the Actions tab, and GitHub additionally emails the actor who
-# last modified this workflow file when a schedule-triggered run fails — both
-# are informative-only signals; this workflow never gates a PR (it has no
-# `pull_request`/`push` trigger, and nothing in `ci.yml` depends on it).
+# Weekly runs check for rare teardown races and leaks with the full platform and interpreter matrix.
+# Each run repeats the suite with increased stress iterations and runs mutation tests.
+# Manual dispatch permits additional checks between scheduled runs.
+# Failures appear in Actions and trigger scheduled-failure notifications.
+# This workflow does not run on pushes or pull requests and does not block merges.
+# The existing filename and concurrency group preserve workflow continuity.
 on:
   schedule:
-    # 03:17 UTC daily. Off-the-hour and distinct from codeql.yml's weekly
-    # '32 5 * * 1' slot, so the two scheduled workflows don't contend for
-    # runner capacity at the same instant.
-    - cron: '17 3 * * *'
+    # Saturday at 03:17 UTC avoids the other weekly verification schedules.
+    - cron: '17 3 * * 6'
   workflow_dispatch:
 
 concurrency:
@@ -127,15 +121,11 @@ jobs:
         run: uvx 'cibuildwheel>=4,<5' --output-dir wheelhouse
 
   bench:
-    # `benchmarks/` (pytest-benchmark: overhead vs subprocess/asyncio.subprocess,
-    # ProcessGroup start/exit, line-streaming throughput, output_all at varying
-    # concurrency — see benchmarks/README.md). One (ubuntu, default interpreter)
-    # runner, not the full stress matrix: this is a performance trend to watch
-    # across nights, not a correctness check that needs every OS/interpreter
-    # combination, and a single consistent runner keeps night-to-night numbers
-    # comparable (a matrix would split the trend across differently-noisy
-    # hosts). Never gates a PR — same `schedule`/`workflow_dispatch`-only
-    # triggers as `stress` above.
+    # The weekly benchmark job measures process, streaming, and concurrent output performance.
+    # See benchmarks/README.md for the full benchmark list.
+    # One Ubuntu runner with the default interpreter keeps measurements comparable between runs.
+    # The schedule and manual triggers match the stress job.
+    # This job does not block pull requests.
     #
     # History/regression-alert decision (see benchmarks/README.md for the
     # user-facing writeup): each run's `benchmark.json` is appended as a data
@@ -205,12 +195,9 @@ jobs:
                   f"| {stats['rounds']} |"
               )
           EOF
-      # `github-action-benchmark` (below) reads/writes `dev/bench/data.js` on
-      # this orphan branch via a plain `git fetch`/`git switch` — it does not
-      # create the branch itself if missing, only pushes updates to an
-      # already-existing one. Self-heal here instead of requiring a human to
-      # run `git checkout --orphan gh-pages && git push` out-of-band once
-      # before the first nightly run.
+      # github-action-benchmark stores dev/bench/data.js on the orphan gh-pages branch.
+      # It updates an existing branch but does not create a missing branch.
+      # This step creates the branch when necessary.
       - name: Ensure the gh-pages branch exists
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,13 +231,10 @@ jobs:
           benchmark-data-dir-path: dev/bench
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
-          # 130%: this run's mean is >=30% slower than the previous run's.
-          # Deliberately looser than the tool's 200% default but well above
-          # ordinary shared-runner noise, since a single-night jump this
-          # large is worth a look even though it never blocks anything --
-          # see benchmarks/README.md for what to do when it fires and how
-          # smaller, slower creep across many nights is instead caught by
-          # eyeballing the trend chart, not this per-run threshold.
+          # An alert marks a mean time at least 30% greater than the previous result.
+          # The threshold exceeds normal noise from shared runners and does not block checks.
+          # The chart also shows gradual changes below this threshold.
+          # See benchmarks/README.md for the response to an alert.
           alert-threshold: '130%'
           comment-on-alert: true
           fail-on-alert: false
@@ -318,6 +302,7 @@ jobs:
           name: mutmut-cicd-stats
           path: mutants/mutmut-cicd-stats.json
           if-no-files-found: error
+          retention-days: 14
 
   cargo-mutants:
     # Mutation testing for the Rust binding layer. The crate's default Cargo
@@ -400,3 +385,4 @@ jobs:
           name: cargo-mutants-stats-${{ matrix.shard }}-of-32
           path: mutation-stats/
           if-no-files-found: error
+          retention-days: 14

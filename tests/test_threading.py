@@ -16,9 +16,9 @@ signalled from another thread — the same pattern `test_command.py` and
 `test_cli_client.py` already use for `cancel_on`, not a substitute for real
 synchronization.
 
-`PROCESSKIT_STRESS_SCALE` (see `test_hardening.py`) scales the thread/
-iteration counts here too, so a scheduled nightly/weekly hardening run can
-exercise this file harder without slowing down the default PR-gate run.
+`PROCESSKIT_STRESS_SCALE` also controls the thread and iteration counts here.
+The weekly hardening workflow increases these counts.
+The default counts for pull requests stay unchanged.
 """
 
 from __future__ import annotations

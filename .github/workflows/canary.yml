@@ -15,9 +15,7 @@ name: Canary (processkit crate)
 # ci.yml or branch protection depends on it.
 on:
   schedule:
-    # 06:41 UTC every Tuesday -- off-the-hour and distinct from codeql.yml's
-    # Monday 05:32 UTC and nightly-hardening.yml's daily 03:17 UTC slots, so
-    # scheduled workflows don't contend for runner capacity at the same instant.
+    # Tuesday at 06:41 UTC avoids the other weekly verification schedules.
     - cron: '41 6 * * 2'
   workflow_dispatch:
 

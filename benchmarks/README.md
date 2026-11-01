@@ -30,10 +30,10 @@ attached instead of only the loose pass/fail bound in
 - **`test_supervisor.py`** — a live `Supervisor`/`SupervisionSession` that
   restarts a bounded crash workload and waits for the restart policy to end.
 
-The PTY benchmark is platform-aware by design: POSIX lanes use the native pty
-path, while Windows requires the ConPTY API (Windows 10 1809 or newer). The
-nightly trend job runs on Ubuntu, so its PTY point is a POSIX measurement and
-must not be compared directly with a Windows ConPTY run.
+The PTY benchmark uses the native pty implementation on POSIX.
+Windows requires ConPTY (Windows 10 1809 or newer).
+The weekly job runs on Ubuntu.
+Do not compare its POSIX measurements directly with Windows ConPTY measurements.
 
 ## Running locally
 
@@ -59,53 +59,46 @@ Useful extras:
   has none, but keeps the invocation copy-pasteable elsewhere.
 - `--benchmark-compare` / `--benchmark-autosave` — compare a run against a
   previously saved one, to check a change before landing it.
-- `--benchmark-json=out.json` — machine-readable results (what the nightly
-  CI job uses to render the job-summary table; see below).
+- `--benchmark-json=out.json` provides machine-readable results for the weekly job's summary table.
 
 ## CI
 
-The `bench` job in
-[`.github/workflows/nightly-hardening.yml`](../.github/workflows/nightly-hardening.yml)
-runs this suite on the same `schedule`/`workflow_dispatch` triggers as the
-`stress` job — never on `push`/`pull_request` — and publishes the results as
-a table in the job summary, so a regression shows up as a trend across nights
-rather than only when someone happens to run this locally.
+The `bench` job in [`.github/workflows/nightly-hardening.yml`](../.github/workflows/nightly-hardening.yml) runs each Saturday at 03:17 UTC.
+It shares the `schedule` and `workflow_dispatch` triggers with the `stress` job.
+It does not run on pushes or pull requests.
+Each run publishes a table in the job summary to show performance changes between runs.
 
 ### History and regression alerts
 
-A single night's numbers only catch a large jump, not a slow creep (e.g. the
-bridge getting +20% pricier over a series of small edits) — the raw
-per-run summary table above has no memory of previous nights. To fix that,
-the `bench` job also feeds each run's `benchmark.json` into
-[`benchmark-action/github-action-benchmark`][gh-action-benchmark], which
-appends it as a new point in a persistent time series stored on this repo's
-orphan `gh-pages` branch (`dev/bench/data.js`, plus a chart `index.html`
-alongside it). That branch is a plain data store here, not a live site: it is
-**not** wired up to GitHub Pages, since this repo's Pages site already
-publishes the mdBook docs via `.github/workflows/docs.yml`'s Actions-based
-deployment, and a repo can only have one Pages source at a time. To look at
-the trend:
+Each run's summary shows current measurements only.
+A persistent history also reveals gradual regressions, such as a 20% increase across several changes.
+The `bench` job passes each run's `benchmark.json` to [`benchmark-action/github-action-benchmark`][gh-action-benchmark].
+The action adds a point to `dev/bench/data.js` on the orphan `gh-pages` branch.
+The chart is in `dev/bench/index.html` on that branch.
+
+The `gh-pages` branch stores benchmark data and does not serve a live site.
+The repository's GitHub Pages site publishes the mdBook documentation through `.github/workflows/docs.yml`.
+A repository permits only one Pages source at a time.
+To examine the trend:
 
 - `git fetch origin gh-pages && git show gh-pages:dev/bench/data.js` for the
   raw JSON history, or
 - `git worktree add ../bench-history gh-pages` and open
   `dev/bench/index.html` in a browser locally for the chart view.
 
-**Regression alert.** Each run is compared against the immediately preceding
-one; if the mean time is 130% or more of the previous run's (i.e. at least
-30% slower), `github-action-benchmark` leaves an informative-only commit
-comment on the commit the nightly run checked out — it never fails the job
-(`fail-on-alert: false`) and, like the rest of this workflow, never gates a
-PR. The threshold is set above ordinary shared-GitHub-runner noise so a
-single-night 130% alert is worth a look, while a smaller multi-night creep
-(the "+20% over a series of edits" case above) stays below it by design and
-is instead something to notice by periodically eyeballing the chart, not
-something this per-run threshold catches automatically.
+**Regression alert.** Each run compares the mean time with the previous run.
+At 130% or more, `github-action-benchmark` adds a comment to the tested commit.
+This threshold represents an increase of at least 30%.
+The alert does not fail the job (`fail-on-alert: false`) or block pull requests.
 
-**What to do when it fires:** read the commit comment (it links the specific
-benchmark(s) involved and their before/after numbers), then use the chart
-above to tell a genuine regression from a one-off noisy run. If it looks
-real, open a follow-up task to investigate — the alert itself is only a
-pointer, never a blocking check.
+The threshold exceeds normal noise from shared GitHub runners.
+Smaller regressions across several runs can remain below this threshold.
+Review the chart periodically to find those gradual changes.
+
+**When an alert appears:** read the commit comment.
+It identifies the affected benchmarks and compares their results.
+Use the chart to distinguish a regression from a single noisy run.
+If the regression appears real, open a task to investigate.
+The alert provides information and does not block checks.
 
 [gh-action-benchmark]: https://github.com/benchmark-action/github-action-benchmark

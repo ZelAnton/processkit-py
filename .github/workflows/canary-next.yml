@@ -18,10 +18,7 @@ name: Canary (CPython next)
 # deadsnakes fallback is needed at the time this workflow was authored.
 on:
   schedule:
-    # 07:52 UTC every Wednesday -- off-the-hour and distinct from canary.yml's
-    # Tuesday 06:41 UTC, codeql.yml's Monday 05:32 UTC, and
-    # nightly-hardening.yml's daily 03:17 UTC slots, so scheduled workflows
-    # don't contend for runner capacity at the same instant.
+    # Wednesday at 07:52 UTC avoids the other weekly verification schedules.
     - cron: '52 7 * * 3'
   workflow_dispatch:
 

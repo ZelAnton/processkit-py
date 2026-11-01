@@ -69,11 +69,10 @@ Phase 5 asks with a real measurement instead of only the loose sanity bound in
 - **`test_supervisor.py`** — a live `Supervisor` session that performs a fixed
   number of crash restarts and then waits for the restart policy to finish.
 
-The PTY benchmark is intentionally platform-aware. The nightly benchmark job
-runs on Ubuntu, so its PTY result represents the POSIX implementation only;
-Windows ConPTY measurements are useful on their own host class and are not
-promised to be directly comparable with that nightly point. Unsupported PTY
-platforms skip the scenario instead of contributing a misleading measurement.
+The weekly benchmark job runs on Ubuntu, so its PTY result represents the POSIX implementation only.
+Windows ConPTY measurements apply to Windows hosts.
+Do not compare them directly with the Ubuntu result.
+Platforms without PTY support skip this benchmark.
 
 ## Reproducing locally
 
@@ -134,9 +133,7 @@ zero and negative values raise `ValueError`.
 
 ## Continuous tracking
 
-The `bench` job in
-[`nightly-hardening.yml`](https://github.com/ZelAnton/processkit-py/blob/main/.github/workflows/nightly-hardening.yml)
-runs this suite on the same `schedule`/`workflow_dispatch` triggers as the
-`stress` job — never on `push`/`pull_request` — and publishes the results as a
-table in the job summary, so a regression shows up as a trend across nights
-rather than only when someone happens to run the harness locally.
+The `bench` job in [`nightly-hardening.yml`](https://github.com/ZelAnton/processkit-py/blob/main/.github/workflows/nightly-hardening.yml) runs each Saturday at 03:17 UTC.
+It shares the `schedule` and `workflow_dispatch` triggers with the `stress` job.
+It does not run on pushes or pull requests.
+Each run publishes a table in the job summary to show performance changes between runs.

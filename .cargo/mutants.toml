@@ -1,6 +1,6 @@
-# The binding crate contains meaningful Rust-side orchestration beyond the PyO3
-# declarations. Keep mutation testing on the top-level binding modules; the
-# nightly workflow shards this complete list to keep each runner bounded.
+# The binding crate contains Rust orchestration code in addition to PyO3 declarations.
+# Keep mutation testing on all top-level binding modules.
+# The weekly workflow divides this complete list into shards to limit each job's duration.
 examine_globs = ["src/*.rs"]
 
 # A mutated completion or teardown path can hang instead of failing. Allow a

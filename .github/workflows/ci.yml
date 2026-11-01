@@ -312,6 +312,7 @@ jobs:
             htmlcov/
             coverage.xml
           if-no-files-found: error
+          retention-days: 14
 
   test-privileged:
     name: test (linux, privileged root + delegated cgroup v2)
@@ -552,16 +553,11 @@ jobs:
   rust-audit:
     name: cargo-deny
     runs-on: ubuntu-latest
-    # Supply-chain gate for the Rust dependency tree (pyo3, tokio, processkit,
-    # ...) that gets compiled into every wheel -- the pip-audit job below only
-    # covers the Python-side (dev/build) dependencies. Kept in this PR-gating
-    # workflow (not nightly-hardening.yml): the compiled extension ships to
-    # every user as-is, so a newly-disclosed RustSec advisory or a license/ban
-    # violation should block the next merge rather than wait for the nightly
-    # schedule -- the same reasoning already applied to pip-audit here. No
-    # network access beyond what pip-audit already needs (fetching the
-    # rust-secure-code/advisory-db + crates.io index, both cached by the
-    # action between runs).
+    # cargo-deny scans the Rust dependencies compiled into each wheel.
+    # pip-audit scans the Python development and build dependencies.
+    # Both checks block merges when they find prohibited dependencies or security advisories.
+    # Immediate checks prevent known issues from reaching users before the weekly schedule.
+    # The action stores the RustSec advisory database and crates.io index in its cache between runs.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

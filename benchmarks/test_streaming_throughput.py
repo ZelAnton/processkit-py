@@ -15,10 +15,9 @@ from ._shared import PY
 if TYPE_CHECKING:
     from pytest_benchmark.fixture import BenchmarkFixture
 
-#: How many lines the child emits per run. Large enough that the loop
-#: dominates over the fixed spawn cost, small enough that a bench round stays
-#: fast (this file runs once per nightly job, at whatever --benchmark-min-rounds
-#: pytest-benchmark's calibration lands on).
+#: This line count makes the loop cost greater than the fixed spawn cost.
+#: The count also keeps each round short.
+#: The weekly benchmark job uses pytest-benchmark to select the number of rounds.
 _LINE_COUNT = 5_000
 
 _PRODUCER = f"for i in range({_LINE_COUNT}): print(i)"
